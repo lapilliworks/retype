@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/retype-core", "crates/retype-watch", "crates/retype-cli"]
+members = ["crates/retype-core", "crates/retype-watch", "crates/retype-ipc", "crates/retype-cli"]
 resolver = "3"
 
 [workspace.package]
