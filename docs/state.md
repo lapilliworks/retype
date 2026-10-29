@@ -75,7 +75,7 @@ A record is a full snapshot of the job at that transition, so replay is last-win
 - `fsync` on transitions into `pending` and `done`; other transitions are best effort, because reconciliation covers the gap
 - Line order defines time; wall-clock fields are informational
 - A trailing line that does not parse is a torn write and is dropped silently
-- A non-trailing line that does not parse is corruption: the file is moved to `jobs.jsonl.corrupt.<ts>`, a new journal is started, and the event is reported once
+- A non-trailing line that does not parse is corruption: the file is moved to `jobs.jsonl.corrupt.<ts>`, a new journal is started, and the event is reported once. Records after the damage are still replayed, because losing jobs that are intact on disk would be a second failure on top of the first
 - A line whose `v` is not the supported identifier is skipped and reported once, so a downgrade remains usable
 - Adding fields is compatible within an identifier. Removing or renaming a field requires a new identifier, and the previous one stays readable for one major release
 

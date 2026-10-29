@@ -10,4 +10,5 @@ pub mod correlate;
 pub mod error;
 pub mod ext;
 pub mod job;
+pub mod journal;
 pub mod tools;
