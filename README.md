@@ -34,6 +34,29 @@ Transformations ride on the same gesture: `photo.heic` becomes `photo.webp+q80`.
 | `docs/events.md` | Filesystem event behaviour per platform (generated) |
 | `docs/fidelity.md` | Per pair fidelity claims (generated) |
 
+## Development
+
+Four checks, and the last two need a toolchain other than the default one.
+
+```
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+
+# the floor, which is not what `rustup` installs by default
+rustup toolchain install 1.85.0 --profile minimal --component clippy
+cargo +1.85.0 clippy --workspace --all-targets -- -D warnings
+cargo +1.85.0 test --workspace
+
+# the platforms we do not build on here
+rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin x86_64-unknown-freebsd
+cargo check --workspace --all-targets --target x86_64-pc-windows-msvc
+cargo check --workspace --all-targets --target aarch64-apple-darwin
+cargo check --workspace --all-targets --target x86_64-unknown-freebsd
+```
+
+`cargo check` is enough for a foreign target: no linker is involved, and it is what CI does. Clippy at the floor matters as much as clippy on stable, because a lint that exists in 1.85.0 and not in a later release fails only there.
+
 ## Installation tiers
 
 Two tiers exist, and the difference is deliberate.

@@ -65,9 +65,18 @@ fn set_private(_path: &Path) -> Result<()> {
 }
 
 fn random_hex() -> Result<String> {
+	const HEX: &[u8; 16] = b"0123456789abcdef";
+
 	let mut bytes = [0u8; 4];
 	getrandom::fill(&mut bytes).map_err(|error| Error::Core(retype_core::error::Error::Random(error.to_string())))?;
-	Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+
+	let mut identity = String::with_capacity(8);
+	for byte in bytes {
+		identity.push(char::from(HEX[usize::from(byte >> 4)]));
+		identity.push(char::from(HEX[usize::from(byte & 0x0f)]));
+	}
+
+	Ok(identity)
 }
 
 #[cfg(test)]
