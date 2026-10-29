@@ -22,6 +22,15 @@ pub enum Error {
 
 	#[error("{} has no file name", .0.display())]
 	NoFileName(PathBuf),
+
+	#[error("{} is not a job id", .0)]
+	JobId(String),
+
+	#[error("cannot read randomness: {0}")]
+	Random(String),
+
+	#[error("cannot encode a journal record: {0}")]
+	Json(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
