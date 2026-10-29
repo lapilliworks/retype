@@ -3,176 +3,176 @@
 platform: macos
 
 ## rename in place
-raw: Create(File) <tmp>/a.heic
-raw: Modify(Name(Any)) <tmp>/a.heic
-raw: Modify(Data(Content)) <tmp>/a.heic
-raw: Modify(Name(Any)) <tmp>/a.jpg
+raw: Create(File) a.heic
+raw: Modify(Name(Any)) a.heic
+raw: Modify(Data(Content)) a.heic
+raw: Modify(Name(Any)) a.jpg
 pair: no rename facts
-identity: <tmp>/a.heic (heic) -> <tmp>/a.jpg intent=jpg
+identity: a.heic (heic) -> a.jpg intent=jpg
 
 ## rename case only
-raw: Create(File) <tmp>/b.heic
-raw: Modify(Name(Any)) <tmp>/b.heic
-raw: Modify(Data(Content)) <tmp>/b.heic
-raw: Modify(Name(Any)) <tmp>/b.HEIC
+raw: Create(File) b.heic
+raw: Modify(Name(Any)) b.heic
+raw: Modify(Data(Content)) b.heic
+raw: Modify(Name(Any)) b.HEIC
 pair: no rename facts
 identity: no rename facts
 
 ## rename stem and extension
-raw: Create(File) <tmp>/c.heic
-raw: Modify(Name(Any)) <tmp>/c.heic
-raw: Modify(Data(Content)) <tmp>/c.heic
-raw: Modify(Name(Any)) <tmp>/c-renamed.jpg
+raw: Create(File) c.heic
+raw: Modify(Name(Any)) c.heic
+raw: Modify(Data(Content)) c.heic
+raw: Modify(Name(Any)) c-renamed.jpg
 pair: no rename facts
 identity: no rename facts
 
 ## rename across directories
-raw: Create(File) <tmp>/d.heic
-raw: Modify(Name(Any)) <tmp>/d.heic
-raw: Modify(Data(Content)) <tmp>/d.heic
-raw: Modify(Name(Any)) <tmp>/sub/d.jpg
+raw: Create(File) d.heic
+raw: Modify(Name(Any)) d.heic
+raw: Modify(Data(Content)) d.heic
+raw: Modify(Name(Any)) sub/d.jpg
 pair: no rename facts
 identity: no rename facts
 
 ## two renames in one window
-raw: Create(File) <tmp>/e.heic
-raw: Modify(Name(Any)) <tmp>/e.heic
-raw: Modify(Data(Content)) <tmp>/e.heic
-raw: Modify(Name(Any)) <tmp>/e.jpg
-raw: Modify(Name(Any)) <tmp>/e.webp
+raw: Create(File) e.heic
+raw: Modify(Name(Any)) e.heic
+raw: Modify(Data(Content)) e.heic
+raw: Modify(Name(Any)) e.jpg
+raw: Modify(Name(Any)) e.webp
 pair: no rename facts
-identity: <tmp>/e.heic (heic) -> <tmp>/e.webp intent=webp
+identity: e.heic (heic) -> e.webp intent=webp
 
 ## rename over an existing file
-raw: Create(File) <tmp>/f.heic
-raw: Modify(Name(Any)) <tmp>/f.heic
-raw: Modify(Data(Content)) <tmp>/f.heic
-raw: Modify(Name(Any)) <tmp>/f.jpg
-raw: Create(File) <tmp>/f.jpg
-raw: Modify(Name(Any)) <tmp>/f.jpg
-raw: Modify(Data(Content)) <tmp>/f.jpg
+raw: Create(File) f.heic
+raw: Modify(Name(Any)) f.heic
+raw: Modify(Data(Content)) f.heic
+raw: Modify(Name(Any)) f.jpg
+raw: Create(File) f.jpg
+raw: Modify(Name(Any)) f.jpg
+raw: Modify(Data(Content)) f.jpg
 pair: no rename facts
-identity: <tmp>/f.heic (heic) -> <tmp>/f.jpg intent=jpg
+identity: f.heic (heic) -> f.jpg intent=jpg
 
 ## twenty renames in one gesture
-raw: Create(File) <tmp>/g0.heic
-raw: Modify(Name(Any)) <tmp>/g0.heic
-raw: Modify(Data(Content)) <tmp>/g0.heic
-raw: Modify(Name(Any)) <tmp>/g0.jpg
-raw: Create(File) <tmp>/g1.heic
-raw: Modify(Name(Any)) <tmp>/g1.heic
-raw: Modify(Data(Content)) <tmp>/g1.heic
-raw: Modify(Name(Any)) <tmp>/g1.jpg
-raw: Create(File) <tmp>/g2.heic
-raw: Modify(Name(Any)) <tmp>/g2.heic
-raw: Modify(Data(Content)) <tmp>/g2.heic
-raw: Modify(Name(Any)) <tmp>/g2.jpg
-raw: Create(File) <tmp>/g3.heic
-raw: Modify(Name(Any)) <tmp>/g3.heic
-raw: Modify(Data(Content)) <tmp>/g3.heic
-raw: Modify(Name(Any)) <tmp>/g3.jpg
-raw: Create(File) <tmp>/g4.heic
-raw: Modify(Name(Any)) <tmp>/g4.heic
-raw: Modify(Data(Content)) <tmp>/g4.heic
-raw: Modify(Name(Any)) <tmp>/g4.jpg
-raw: Create(File) <tmp>/g5.heic
-raw: Modify(Name(Any)) <tmp>/g5.heic
-raw: Modify(Data(Content)) <tmp>/g5.heic
-raw: Modify(Name(Any)) <tmp>/g5.jpg
-raw: Create(File) <tmp>/g6.heic
-raw: Modify(Name(Any)) <tmp>/g6.heic
-raw: Modify(Data(Content)) <tmp>/g6.heic
-raw: Modify(Name(Any)) <tmp>/g6.jpg
-raw: Create(File) <tmp>/g7.heic
-raw: Modify(Name(Any)) <tmp>/g7.heic
-raw: Modify(Data(Content)) <tmp>/g7.heic
-raw: Modify(Name(Any)) <tmp>/g7.jpg
-raw: Create(File) <tmp>/g8.heic
-raw: Modify(Name(Any)) <tmp>/g8.heic
-raw: Modify(Data(Content)) <tmp>/g8.heic
-raw: Modify(Name(Any)) <tmp>/g8.jpg
-raw: Create(File) <tmp>/g9.heic
-raw: Modify(Name(Any)) <tmp>/g9.heic
-raw: Modify(Data(Content)) <tmp>/g9.heic
-raw: Modify(Name(Any)) <tmp>/g9.jpg
-raw: Create(File) <tmp>/g10.heic
-raw: Modify(Name(Any)) <tmp>/g10.heic
-raw: Modify(Data(Content)) <tmp>/g10.heic
-raw: Modify(Name(Any)) <tmp>/g10.jpg
-raw: Create(File) <tmp>/g11.heic
-raw: Modify(Name(Any)) <tmp>/g11.heic
-raw: Modify(Data(Content)) <tmp>/g11.heic
-raw: Modify(Name(Any)) <tmp>/g11.jpg
-raw: Create(File) <tmp>/g12.heic
-raw: Modify(Name(Any)) <tmp>/g12.heic
-raw: Modify(Data(Content)) <tmp>/g12.heic
-raw: Modify(Name(Any)) <tmp>/g12.jpg
-raw: Create(File) <tmp>/g13.heic
-raw: Modify(Name(Any)) <tmp>/g13.heic
-raw: Modify(Data(Content)) <tmp>/g13.heic
-raw: Modify(Name(Any)) <tmp>/g13.jpg
-raw: Create(File) <tmp>/g14.heic
-raw: Modify(Name(Any)) <tmp>/g14.heic
-raw: Modify(Data(Content)) <tmp>/g14.heic
-raw: Modify(Name(Any)) <tmp>/g14.jpg
-raw: Create(File) <tmp>/g15.heic
-raw: Modify(Name(Any)) <tmp>/g15.heic
-raw: Modify(Data(Content)) <tmp>/g15.heic
-raw: Modify(Name(Any)) <tmp>/g15.jpg
-raw: Create(File) <tmp>/g16.heic
-raw: Modify(Name(Any)) <tmp>/g16.heic
-raw: Modify(Data(Content)) <tmp>/g16.heic
-raw: Modify(Name(Any)) <tmp>/g16.jpg
-raw: Create(File) <tmp>/g17.heic
-raw: Modify(Name(Any)) <tmp>/g17.heic
-raw: Modify(Data(Content)) <tmp>/g17.heic
-raw: Modify(Name(Any)) <tmp>/g17.jpg
-raw: Create(File) <tmp>/g18.heic
-raw: Modify(Name(Any)) <tmp>/g18.heic
-raw: Modify(Data(Content)) <tmp>/g18.heic
-raw: Modify(Name(Any)) <tmp>/g18.jpg
-raw: Create(File) <tmp>/g19.heic
-raw: Modify(Name(Any)) <tmp>/g19.heic
-raw: Modify(Data(Content)) <tmp>/g19.heic
-raw: Modify(Name(Any)) <tmp>/g19.jpg
+raw: Create(File) g0.heic
+raw: Modify(Name(Any)) g0.heic
+raw: Modify(Data(Content)) g0.heic
+raw: Modify(Name(Any)) g0.jpg
+raw: Create(File) g1.heic
+raw: Modify(Name(Any)) g1.heic
+raw: Modify(Data(Content)) g1.heic
+raw: Modify(Name(Any)) g1.jpg
+raw: Create(File) g2.heic
+raw: Modify(Name(Any)) g2.heic
+raw: Modify(Data(Content)) g2.heic
+raw: Modify(Name(Any)) g2.jpg
+raw: Create(File) g3.heic
+raw: Modify(Name(Any)) g3.heic
+raw: Modify(Data(Content)) g3.heic
+raw: Modify(Name(Any)) g3.jpg
+raw: Create(File) g4.heic
+raw: Modify(Name(Any)) g4.heic
+raw: Modify(Data(Content)) g4.heic
+raw: Modify(Name(Any)) g4.jpg
+raw: Create(File) g5.heic
+raw: Modify(Name(Any)) g5.heic
+raw: Modify(Data(Content)) g5.heic
+raw: Modify(Name(Any)) g5.jpg
+raw: Create(File) g6.heic
+raw: Modify(Name(Any)) g6.heic
+raw: Modify(Data(Content)) g6.heic
+raw: Modify(Name(Any)) g6.jpg
+raw: Create(File) g7.heic
+raw: Modify(Name(Any)) g7.heic
+raw: Modify(Data(Content)) g7.heic
+raw: Modify(Name(Any)) g7.jpg
+raw: Create(File) g8.heic
+raw: Modify(Name(Any)) g8.heic
+raw: Modify(Data(Content)) g8.heic
+raw: Modify(Name(Any)) g8.jpg
+raw: Create(File) g9.heic
+raw: Modify(Name(Any)) g9.heic
+raw: Modify(Data(Content)) g9.heic
+raw: Modify(Name(Any)) g9.jpg
+raw: Create(File) g10.heic
+raw: Modify(Name(Any)) g10.heic
+raw: Modify(Data(Content)) g10.heic
+raw: Modify(Name(Any)) g10.jpg
+raw: Create(File) g11.heic
+raw: Modify(Name(Any)) g11.heic
+raw: Modify(Data(Content)) g11.heic
+raw: Modify(Name(Any)) g11.jpg
+raw: Create(File) g12.heic
+raw: Modify(Name(Any)) g12.heic
+raw: Modify(Data(Content)) g12.heic
+raw: Modify(Name(Any)) g12.jpg
+raw: Create(File) g13.heic
+raw: Modify(Name(Any)) g13.heic
+raw: Modify(Data(Content)) g13.heic
+raw: Modify(Name(Any)) g13.jpg
+raw: Create(File) g14.heic
+raw: Modify(Name(Any)) g14.heic
+raw: Modify(Data(Content)) g14.heic
+raw: Modify(Name(Any)) g14.jpg
+raw: Create(File) g15.heic
+raw: Modify(Name(Any)) g15.heic
+raw: Modify(Data(Content)) g15.heic
+raw: Modify(Name(Any)) g15.jpg
+raw: Create(File) g16.heic
+raw: Modify(Name(Any)) g16.heic
+raw: Modify(Data(Content)) g16.heic
+raw: Modify(Name(Any)) g16.jpg
+raw: Create(File) g17.heic
+raw: Modify(Name(Any)) g17.heic
+raw: Modify(Data(Content)) g17.heic
+raw: Modify(Name(Any)) g17.jpg
+raw: Create(File) g18.heic
+raw: Modify(Name(Any)) g18.heic
+raw: Modify(Data(Content)) g18.heic
+raw: Modify(Name(Any)) g18.jpg
+raw: Create(File) g19.heic
+raw: Modify(Name(Any)) g19.heic
+raw: Modify(Data(Content)) g19.heic
+raw: Modify(Name(Any)) g19.jpg
 pair: no rename facts
-identity: <tmp>/g0.heic (heic) -> <tmp>/g0.jpg intent=jpg
-identity: <tmp>/g1.heic (heic) -> <tmp>/g1.jpg intent=jpg
-identity: <tmp>/g2.heic (heic) -> <tmp>/g2.jpg intent=jpg
-identity: <tmp>/g3.heic (heic) -> <tmp>/g3.jpg intent=jpg
-identity: <tmp>/g4.heic (heic) -> <tmp>/g4.jpg intent=jpg
-identity: <tmp>/g5.heic (heic) -> <tmp>/g5.jpg intent=jpg
-identity: <tmp>/g6.heic (heic) -> <tmp>/g6.jpg intent=jpg
-identity: <tmp>/g7.heic (heic) -> <tmp>/g7.jpg intent=jpg
-identity: <tmp>/g8.heic (heic) -> <tmp>/g8.jpg intent=jpg
-identity: <tmp>/g9.heic (heic) -> <tmp>/g9.jpg intent=jpg
-identity: <tmp>/g10.heic (heic) -> <tmp>/g10.jpg intent=jpg
-identity: <tmp>/g11.heic (heic) -> <tmp>/g11.jpg intent=jpg
-identity: <tmp>/g12.heic (heic) -> <tmp>/g12.jpg intent=jpg
-identity: <tmp>/g13.heic (heic) -> <tmp>/g13.jpg intent=jpg
-identity: <tmp>/g14.heic (heic) -> <tmp>/g14.jpg intent=jpg
-identity: <tmp>/g15.heic (heic) -> <tmp>/g15.jpg intent=jpg
-identity: <tmp>/g16.heic (heic) -> <tmp>/g16.jpg intent=jpg
-identity: <tmp>/g17.heic (heic) -> <tmp>/g17.jpg intent=jpg
-identity: <tmp>/g18.heic (heic) -> <tmp>/g18.jpg intent=jpg
-identity: <tmp>/g19.heic (heic) -> <tmp>/g19.jpg intent=jpg
+identity: g0.heic (heic) -> g0.jpg intent=jpg
+identity: g1.heic (heic) -> g1.jpg intent=jpg
+identity: g2.heic (heic) -> g2.jpg intent=jpg
+identity: g3.heic (heic) -> g3.jpg intent=jpg
+identity: g4.heic (heic) -> g4.jpg intent=jpg
+identity: g5.heic (heic) -> g5.jpg intent=jpg
+identity: g6.heic (heic) -> g6.jpg intent=jpg
+identity: g7.heic (heic) -> g7.jpg intent=jpg
+identity: g8.heic (heic) -> g8.jpg intent=jpg
+identity: g9.heic (heic) -> g9.jpg intent=jpg
+identity: g10.heic (heic) -> g10.jpg intent=jpg
+identity: g11.heic (heic) -> g11.jpg intent=jpg
+identity: g12.heic (heic) -> g12.jpg intent=jpg
+identity: g13.heic (heic) -> g13.jpg intent=jpg
+identity: g14.heic (heic) -> g14.jpg intent=jpg
+identity: g15.heic (heic) -> g15.jpg intent=jpg
+identity: g16.heic (heic) -> g16.jpg intent=jpg
+identity: g17.heic (heic) -> g17.jpg intent=jpg
+identity: g18.heic (heic) -> g18.jpg intent=jpg
+identity: g19.heic (heic) -> g19.jpg intent=jpg
 
 ## rename then write
-raw: Create(File) <tmp>/h.heic
-raw: Modify(Name(Any)) <tmp>/h.heic
-raw: Modify(Data(Content)) <tmp>/h.heic
-raw: Modify(Name(Any)) <tmp>/h.jpg
-raw: Modify(Metadata(Any)) <tmp>/h.jpg
-raw: Modify(Data(Content)) <tmp>/h.jpg
+raw: Create(File) h.heic
+raw: Modify(Name(Any)) h.heic
+raw: Modify(Data(Content)) h.heic
+raw: Modify(Name(Any)) h.jpg
+raw: Modify(Metadata(Any)) h.jpg
+raw: Modify(Data(Content)) h.jpg
 pair: no rename facts
-identity: <tmp>/h.heic (heic) -> <tmp>/h.jpg intent=jpg
+identity: h.heic (heic) -> h.jpg intent=jpg
 
 ## rename then delete
-raw: Create(File) <tmp>/i.heic
-raw: Modify(Name(Any)) <tmp>/i.heic
-raw: Modify(Data(Content)) <tmp>/i.heic
-raw: Remove(File) <tmp>/i.jpg
-raw: Modify(Name(Any)) <tmp>/i.jpg
+raw: Create(File) i.heic
+raw: Modify(Name(Any)) i.heic
+raw: Modify(Data(Content)) i.heic
+raw: Remove(File) i.jpg
+raw: Modify(Name(Any)) i.jpg
 pair: no rename facts
 identity: no rename facts
 

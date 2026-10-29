@@ -68,7 +68,7 @@ Getting this backwards is invisible on Linux, because inotify also reports both 
 
 ## 2. Windows (ReadDirectoryChangesW, notify 8)
 
-Measured 2026-10-29, transcript `docs/probe/windows-2026-10-29.txt`. A first run was discarded: it predated cross-event pairing, and its empty pairing column described the probe rather than the platform.
+Measured 2026-10-29, transcript `docs/probe/windows-2026-10-29.txt`, from the probe that ships. Two earlier runs are in the history and neither describes the platform: the first predated cross-event pairing, so its empty pairing column described the probe, and the second predated chain coalescing, so it showed a double rename as two facts.
 
 ### 2.1 Raw events
 
@@ -100,7 +100,7 @@ No `Both` event exists on this platform. A rename is always two events, each car
 - **Chains must be collapsed.** A double rename arrives as two facts with an intermediate file the user never asked for. Converting the intermediate would re-encode twice, which is why `coalesce` exists and why it lives in the library rather than in a caller
 - **Moves are not renames on Windows**, which satisfies for free. The opposite of Linux, where the same gesture arrives as a rename and is rejected only by the parent check
 - **Victims of a rename produce removals**, so a removal is not a failure and not a trigger
-- **`rename then delete` produces a fact here**, exactly where Linux suppresses it, because identity is unavailable. Dispatch therefore has to check that the target still exists, which `docs/watch.md` §7 requires and this transcript demonstrates. The gesture is rare, but the failure it prevents is not: a deleted name can be recreated within the same window by an unrelated file, and dispatching on the name alone would convert bytes the user never touched
+- **`rename then delete` produces a fact here**, exactly where Linux suppresses it, because identity is unavailable. Dispatch therefore has to check that the target still exists and is a regular file, which `docs/watch.md` §7 requires and this transcript demonstrates. The gesture is rare, but the failure it prevents is not: a deleted name can be recreated within the same window by an unrelated file, and dispatching on the name alone would convert bytes the user never touched
 - **File identity is still unavailable.** `std` exposes no file id on Windows, so the identity column is empty by construction. Pairing plus coalescing covers every scenario above, which downgrades the Win32 shim from "required for correctness" to "required for robustness against a lost pair"
 
 ### 2.4 Consequences
@@ -155,6 +155,7 @@ Not yet measured, and not before the port. The backend reports a single-path `An
 | Rename as separate `From` and `To` | yes, in addition | yes | no | no (expected) |
 | Cross-directory move reported as rename | yes | no | yes | unknown |
 | Rename followed by delete yields a fact | no | yes | no | unknown |
+| Parent directory appears in the stream | no | yes, on a move | no | unknown |
 | File identity available | yes | needs Win32 | yes | yes |
 | Primary strategy | identity, pairing as backup | pairing plus coalescing | identity only | identity only (expected) |
 | Rules the platform forced | duplicate suppression, feed order | cross-event pairing, chain coalescing, existence check | canonical paths; no fallback when identity is unavailable | pending |
