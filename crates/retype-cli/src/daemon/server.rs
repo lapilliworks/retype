@@ -1,6 +1,6 @@
 //! The request loop, and what the daemon answers.
 
-use std::io::BufReader;
+use std::io::{BufRead, Write};
 use std::path::Path;
 use std::time::Instant;
 
@@ -50,18 +50,25 @@ impl Server {
 		self.stopped
 	}
 
-	#[cfg(unix)]
-	pub fn handle_connection(&mut self, mut stream: std::os::unix::net::UnixStream) -> Result<()> {
-		let mut reader = BufReader::new(stream.try_clone()?);
+	pub fn machine(&self) -> &str {
+		&self.machine
+	}
+
+	/// Serve one client until it disconnects or asks the daemon to stop.
+	///
+	/// Takes the two halves rather than a stream so that the same loop serves a
+	/// Unix socket and a Windows pipe, and so that it can be tested without a
+	/// socket at all.
+	pub fn serve_connection(&mut self, reader: &mut impl BufRead, writer: &mut impl Write) -> Result<()> {
 		let mut greeted = false;
 
 		loop {
-			let frame = match read_frame(&mut reader) {
+			let frame = match read_frame(reader) {
 				Ok(Some(frame)) => frame,
 				Ok(None) => return Ok(()),
 				Err(error) => {
 					let response = Response::error(0, WireError::new(code::FRAME, error.to_string()));
-					let _ = retype_ipc::write_frame(&mut stream, &response);
+					let _ = retype_ipc::write_frame(writer, &response);
 					return Ok(());
 				}
 			};
@@ -70,7 +77,7 @@ impl Server {
 				Ok(request) => request,
 				Err(error) => {
 					let response = Response::error(0, WireError::new(code::FRAME, error.to_string()));
-					retype_ipc::write_frame(&mut stream, &response)?;
+					retype_ipc::write_frame(writer, &response)?;
 					return Ok(());
 				}
 			};
@@ -81,7 +88,7 @@ impl Server {
 						request.id,
 						WireError::new(code::HANDSHAKE, "send hello before any other method"),
 					);
-					retype_ipc::write_frame(&mut stream, &response)?;
+					retype_ipc::write_frame(writer, &response)?;
 					return Ok(());
 				}
 
@@ -89,7 +96,7 @@ impl Server {
 					Ok(hello) => hello,
 					Err(error) => {
 						let response = Response::error(request.id, WireError::new(code::HANDSHAKE, error.to_string()));
-						retype_ipc::write_frame(&mut stream, &response)?;
+						retype_ipc::write_frame(writer, &response)?;
 						return Ok(());
 					}
 				};
@@ -102,19 +109,19 @@ impl Server {
 							format!("this daemon speaks {IPC_VERSION}, the client speaks {}", hello.ipc),
 						),
 					);
-					retype_ipc::write_frame(&mut stream, &response)?;
+					retype_ipc::write_frame(writer, &response)?;
 					return Ok(());
 				}
 
 				greeted = true;
 				let response = Response::ok(request.id, self.hello())?;
-				retype_ipc::write_frame(&mut stream, &response)?;
+				retype_ipc::write_frame(writer, &response)?;
 				continue;
 			}
 
 			let response = self.answer(&request)?;
 			let stopping = request.method == "shutdown";
-			retype_ipc::write_frame(&mut stream, &response)?;
+			retype_ipc::write_frame(writer, &response)?;
 
 			if stopping {
 				return Ok(());
@@ -170,8 +177,13 @@ impl Server {
 /// Accept connections until the daemon is asked to stop.
 #[cfg(unix)]
 pub fn serve(listener: std::os::unix::net::UnixListener, mut server: Server) -> Result<()> {
+	use std::io::BufReader;
+
 	for stream in listener.incoming() {
-		server.handle_connection(stream?)?;
+		let mut stream = stream?;
+		let mut reader = BufReader::new(stream.try_clone()?);
+
+		server.serve_connection(&mut reader, &mut stream)?;
 
 		if server.stopped() {
 			break;
@@ -179,9 +191,4 @@ pub fn serve(listener: std::os::unix::net::UnixListener, mut server: Server) -> 
 	}
 
 	Ok(())
-}
-
-#[cfg(not(unix))]
-pub fn serve(_listener: (), _server: Server) -> Result<()> {
-	Err(crate::error::Error::UnsupportedTransport)
 }

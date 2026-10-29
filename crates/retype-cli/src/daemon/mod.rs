@@ -6,11 +6,16 @@
 
 mod lock;
 mod machine;
+#[cfg(windows)]
+mod pipe;
 mod server;
 mod state;
 
-pub use server::{Server, serve};
+pub use server::Server;
+#[cfg(unix)]
+pub use server::serve;
 
+#[cfg(unix)]
 use std::fs;
 
 use crate::error::Result;
@@ -57,7 +62,21 @@ fn set_socket_private(path: &std::path::Path) -> Result<()> {
 	Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn run() -> Result<()> {
+	let state_dir = state::state_dir()?;
+	state::ensure_private_directory(&state_dir)?;
+
+	let _lock = Lock::acquire(&state_dir.join("lock"), &state_dir)?;
+	let mut server = Server::open(&state_dir)?;
+	let name = pipe::name(server.machine());
+
+	eprintln!("retype: daemon listening on {name} (pid {})", std::process::id());
+
+	pipe::serve(&name, &mut server)
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn run() -> Result<()> {
 	Err(crate::error::Error::UnsupportedTransport)
 }

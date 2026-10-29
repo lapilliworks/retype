@@ -7,6 +7,7 @@ use crate::error::{Error, Result};
 
 /// Paths below this length are safe for a Unix socket on every platform we
 /// support; the kernel limit is around 104 bytes including the terminator.
+#[cfg(unix)]
 const SOCKET_PATH_LIMIT: usize = 100;
 
 pub fn state_dir() -> Result<PathBuf> {
@@ -18,6 +19,7 @@ pub fn state_dir() -> Result<PathBuf> {
 	Ok(base.join("retype"))
 }
 
+#[cfg(unix)]
 pub fn socket_path(state_dir: &Path) -> Result<PathBuf> {
 	let path = state_dir.join("daemon.sock");
 	let length = path.as_os_str().len();
@@ -90,6 +92,7 @@ mod tests {
 		assert_eq!(configured, PathBuf::from("/tmp/retype-test-state"));
 	}
 
+	#[cfg(unix)]
 	#[test]
 	fn an_over_long_socket_path_is_refused_by_name() {
 		let long = PathBuf::from(format!("/tmp/{}", "a".repeat(SOCKET_PATH_LIMIT)));

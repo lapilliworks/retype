@@ -128,6 +128,11 @@ mod tests {
 		assert!(third.is_ok(), "the lock died with its owner");
 	}
 
+	/// Unix only: an exclusive byte-range lock makes the file unreadable through
+	/// any handle but the owner's on Windows, which is exactly how the lock is
+	/// supposed to behave there. The recorded pid is a diagnostic for a human
+	/// with a debugger, not something a second process can read.
+	#[cfg(unix)]
 	#[test]
 	fn the_lock_records_its_owner() {
 		let dir = tempfile::tempdir().unwrap();
