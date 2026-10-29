@@ -13,6 +13,7 @@ use crate::daemon::machine;
 use crate::error::Result;
 
 pub struct Server {
+	endpoint: Option<String>,
 	journal: Journal,
 	jobs: Vec<Job>,
 	machine: String,
@@ -34,6 +35,7 @@ impl Server {
 		}
 
 		Ok(Self {
+			endpoint: None,
 			journal,
 			jobs: replay.jobs,
 			machine: machine::load_or_create(state_dir)?,
@@ -48,6 +50,12 @@ impl Server {
 
 	pub fn stopped(&self) -> bool {
 		self.stopped
+	}
+
+	/// The endpoint this daemon is reachable at, which changes per platform and
+	/// per machine, so it is reported rather than assumed.
+	pub fn set_endpoint(&mut self, endpoint: impl Into<String>) {
+		self.endpoint = Some(endpoint.into());
 	}
 
 	pub fn machine(&self) -> &str {
@@ -150,6 +158,7 @@ impl Server {
 					"uptime_ms": self.started.elapsed().as_millis() as u64,
 					"jobs": self.jobs.len(),
 					"journal": self.journal_path().display().to_string(),
+					"endpoint": self.endpoint,
 				}),
 			)?,
 			"jobs.list" => Response::ok(

@@ -9,7 +9,6 @@ mod machine;
 #[cfg(windows)]
 mod pipe;
 mod server;
-mod state;
 
 pub use server::Server;
 #[cfg(unix)]
@@ -19,15 +18,16 @@ pub use server::serve;
 use std::fs;
 
 use crate::error::Result;
+use crate::state;
 use lock::Lock;
 
 /// Run in the foreground, which is what a user unit or a launchd agent
 /// executes, `docs/ipc.md` §1.
 #[cfg(unix)]
-pub fn run() -> Result<()> {
+pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	use std::os::unix::net::UnixListener;
 
-	let state_dir = state::state_dir()?;
+	let state_dir = state::resolve(state_dir)?;
 	state::ensure_private_directory(&state_dir)?;
 
 	let _lock = Lock::acquire(&state_dir.join("lock"), &state_dir)?;
@@ -38,20 +38,23 @@ pub fn run() -> Result<()> {
 		fs::remove_file(&socket)?;
 	}
 
-	let server = Server::open(&state_dir)?;
+	let mut server = Server::open(&state_dir)?;
 	let listener = UnixListener::bind(&socket)?;
 	set_socket_private(&socket)?;
 
-	eprintln!(
-		"retype: daemon listening on {} (pid {})",
-		socket.display(),
-		std::process::id()
-	);
+	let endpoint = socket.display().to_string();
+	state::publish_endpoint(&state_dir, &endpoint)?;
+	server.set_endpoint(endpoint.clone());
+
+	if banner {
+		eprintln!("retype: daemon listening on {endpoint} (pid {})", std::process::id());
+	}
 
 	let result = serve(listener, server);
 
 	// Graceful shutdown should not leave a path that looks like a live daemon.
 	let _ = fs::remove_file(&socket);
+	state::clear_endpoint(&state_dir);
 	result
 }
 
@@ -63,20 +66,28 @@ fn set_socket_private(path: &std::path::Path) -> Result<()> {
 }
 
 #[cfg(windows)]
-pub fn run() -> Result<()> {
-	let state_dir = state::state_dir()?;
+pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
+	let state_dir = state::resolve(state_dir)?;
 	state::ensure_private_directory(&state_dir)?;
 
 	let _lock = Lock::acquire(&state_dir.join("lock"), &state_dir)?;
 	let mut server = Server::open(&state_dir)?;
 	let name = pipe::name(server.machine());
 
-	eprintln!("retype: daemon listening on {name} (pid {})", std::process::id());
+	state::publish_endpoint(&state_dir, &name)?;
+	server.set_endpoint(name.clone());
 
-	pipe::serve(&name, &mut server)
+	if banner {
+		eprintln!("retype: daemon listening on {name} (pid {})", std::process::id());
+	}
+
+	let result = pipe::serve(&name, &mut server);
+
+	state::clear_endpoint(&state_dir);
+	result
 }
 
 #[cfg(not(any(unix, windows)))]
-pub fn run() -> Result<()> {
+pub fn run(_state_dir: Option<std::path::PathBuf>, _banner: bool) -> Result<()> {
 	Err(crate::error::Error::UnsupportedTransport)
 }

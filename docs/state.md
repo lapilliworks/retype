@@ -11,6 +11,8 @@ retype/
   jobs.jsonl                  append-only journal
   jobs.jsonl.corrupt.<ts>     quarantined journal
   lock                        exclusive lock, held by the running daemon
+  endpoint                    where the running daemon listens, one line
+  daemon.log                  output of an auto-started daemon
   daemon.sock                 IPC endpoint on Unix; a named pipe on Windows
   watches.toml                registered directories
   bench.toml                  estimator calibration
@@ -19,6 +21,8 @@ retype/
       meta.toml               record description
       source.<ext>            the original bytes, hard link or copy
 ```
+
+`endpoint` exists so that a client never derives the endpoint itself. On Unix the socket path is predictable, but on Windows it is a pipe name that includes the machine identity, and two places computing that name from a file that either of them may create is a race with a silent failure mode: the client waits three seconds for a name nobody listens on. The daemon publishes where it listens after it binds and removes the file when it stops, so a missing file means no daemon rather than an unknown one.
 
 Directory mode is `0700`, files `0600`. The store holds user data in plain form, so nothing here is world-readable.
 

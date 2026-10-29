@@ -4,6 +4,8 @@
 //! Domain logic lives in `retype-core`, the filesystem pipeline in
 //! `retype-watch`, and the wire in `retype-ipc`.
 
+pub mod client;
 pub mod daemon;
 pub mod doctor;
 pub mod error;
+pub mod state;

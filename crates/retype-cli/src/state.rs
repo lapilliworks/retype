@@ -10,6 +10,43 @@ use crate::error::{Error, Result};
 #[cfg(unix)]
 const SOCKET_PATH_LIMIT: usize = 100;
 
+/// Where the daemon says it listens, so a client never has to derive it.
+pub const ENDPOINT_FILE: &str = "endpoint";
+
+/// An explicit `--state-dir` wins over the environment, which wins over the
+/// default, `docs/config.md` §2.
+pub fn resolve(explicit: Option<PathBuf>) -> Result<PathBuf> {
+	match explicit {
+		Some(path) => Ok(path),
+		None => state_dir(),
+	}
+}
+
+pub fn publish_endpoint(state_dir: &Path, endpoint: &str) -> Result<()> {
+	let path = state_dir.join(ENDPOINT_FILE);
+	fs::write(&path, format!("{endpoint}\n"))?;
+	set_private(&path)?;
+	Ok(())
+}
+
+pub fn read_endpoint(state_dir: &Path) -> Result<String> {
+	let path = state_dir.join(ENDPOINT_FILE);
+
+	let endpoint = match fs::read_to_string(&path) {
+		Ok(endpoint) => endpoint,
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+			return Err(Error::DaemonUnavailable);
+		}
+		Err(error) => return Err(Error::Io(error)),
+	};
+
+	Ok(endpoint.trim().to_string())
+}
+
+pub fn clear_endpoint(state_dir: &Path) {
+	let _ = fs::remove_file(state_dir.join(ENDPOINT_FILE));
+}
+
 pub fn state_dir() -> Result<PathBuf> {
 	if let Some(configured) = std::env::var_os("RETYPE_STATE_DIR") {
 		return Ok(PathBuf::from(configured));

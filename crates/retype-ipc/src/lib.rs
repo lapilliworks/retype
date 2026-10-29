@@ -7,6 +7,10 @@
 //!
 //! Newline-delimited JSON, UTF-8, one object per line, one megabyte per frame.
 
+pub mod client;
+
+pub use client::{Client, ClientError};
+
 use std::io::{BufRead, Write};
 
 use serde::{Deserialize, Serialize};

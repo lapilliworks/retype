@@ -32,6 +32,15 @@ pub enum Error {
 
 	#[error("cannot read an identity from {}", .0.display())]
 	BadIdentity(PathBuf),
+
+	#[error("the daemon is not running, and starting it was not requested")]
+	DaemonUnavailable,
+
+	#[error("the daemon did not answer within {} ms; its output is in {}", .0.as_millis(), .1.display())]
+	DaemonStartFailed(std::time::Duration, PathBuf),
+
+	#[error(transparent)]
+	Client(#[from] retype_ipc::ClientError),
 }
 
 impl Error {
@@ -39,7 +48,8 @@ impl Error {
 	pub fn exit_code(&self) -> u8 {
 		match self {
 			Self::AlreadyRunning(_) => 7,
-			Self::UnsupportedTransport | Self::Frame(_) => 6,
+			Self::UnsupportedTransport | Self::Frame(_) | Self::DaemonUnavailable | Self::DaemonStartFailed(..) => 6,
+			Self::Client(_) => 6,
 			Self::Io(_) | Self::Core(_) | Self::SocketPathTooLong { .. } | Self::BadIdentity(_) => 5,
 			Self::NoStateDirectory => 1,
 		}
