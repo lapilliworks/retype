@@ -25,15 +25,31 @@ const POLL: Duration = Duration::from_millis(50);
 /// A job's cancel flag, shared between the runner that owns the child process and
 /// whoever asks for it to stop, `docs/ipc.md` §6.
 #[derive(Debug, Clone, Default)]
-pub struct Cancellation(Arc<AtomicBool>);
+pub struct Cancellation {
+	cancelled: Arc<AtomicBool>,
+	/// Set when the job is stopped because a later rename replaced it, which is a
+	/// different outcome from a user cancelling: nothing failed, the work was
+	/// overtaken, `docs/state.md` §5.3.
+	superseded: Arc<AtomicBool>,
+}
 
 impl Cancellation {
 	pub fn cancel(&self) {
-		self.0.store(true, Ordering::Relaxed);
+		self.cancelled.store(true, Ordering::Relaxed);
+	}
+
+	/// The same stop, with the reason recorded.
+	pub fn supersede(&self) {
+		self.superseded.store(true, Ordering::Relaxed);
+		self.cancel();
 	}
 
 	pub fn is_cancelled(&self) -> bool {
-		self.0.load(Ordering::Relaxed)
+		self.cancelled.load(Ordering::Relaxed)
+	}
+
+	pub fn is_superseded(&self) -> bool {
+		self.superseded.load(Ordering::Relaxed)
 	}
 }
 

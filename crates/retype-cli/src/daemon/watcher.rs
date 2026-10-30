@@ -223,11 +223,26 @@ fn spawn_worker(
 					continue;
 				};
 
+				// A rename chain that spans two batches: the file being renamed is
+				// what an earlier job is writing, so the earlier job is spent and the
+				// chain becomes one conversion, `docs/state.md` §5.3.
+				// The rename just put the bytes at the target, so that is where they
+				// are. What the chain changes is the *source* name: after two renames
+				// the file is not what its intermediate name claimed, it is what the
+				// job that was overtaken was reading, `docs/state.md` §5.3.
+				let earlier = producers(shared.as_ref(), pool.as_ref(), &fact.source);
+
+				let source = match earlier.is_empty() {
+					true => fact.source.clone(),
+					false => supersede(shared.as_ref(), pool.as_ref(), &earlier),
+				};
+
 				let work = crate::daemon::queue::Work {
 					id,
 					kind: crate::daemon::queue::Kind::Rename {
 						root: watched_root.clone(),
-						source: fact.source,
+						bytes: fact.target.clone(),
+						source,
 						target: fact.target,
 					},
 				};
@@ -247,10 +262,102 @@ fn spawn_worker(
 	Ok((stop, handle))
 }
 
+/// Every job still in flight that this path belongs to.
+///
+/// Two of them are worth matching, and the second is the common one. A rename of
+/// what a job is writing is the user changing their mind about the result. A
+/// rename of the *source* name is the same decision taken a moment later, and it
+/// is the one people make in practice: while a job converts, the file shows its
+/// source name again, because that is the name its bytes belong under,
+/// `docs/state.md` §5.4.
+fn producers(shared: &Shared, pool: &Pool, path: &Path) -> Vec<Job> {
+	let Ok(jobs) = shared.jobs.lock() else {
+		return Vec::new();
+	};
+
+	let in_flight = pool.ids();
+
+	jobs.iter()
+		.filter(|job| {
+			matches!(
+				job.state,
+				JobState::Pending | JobState::Queued | JobState::Running | JobState::Partial
+			) && in_flight.contains(&job.id)
+				&& (job.source.path == path || job.outputs.iter().any(|output| output.path == path))
+		})
+		.cloned()
+		.collect()
+}
+
+/// Retire the job a rename overtook, and answer with the name the bytes are
+/// actually under plus a fresh id for the replacement.
+///
+/// The undo record goes with it. It is a name for bytes that are still where the
+/// earlier job left them, so the replacement records its own when it starts; the
+/// alternative is rewriting the record's id and intent for no gain.
+fn supersede(shared: &Shared, pool: &Pool, earlier: &[Job]) -> PathBuf {
+	for job in earlier {
+		let (_, queued) = pool.supersede(&job.id);
+
+		// A queued job never started, so nothing will write its terminal record for
+		// it. A running one notices the flag and records itself.
+		if let Some(work) = queued {
+			eprintln!("retype: {} was replaced by a later rename before it started", job.id);
+			retire(shared, &work, JobState::Superseded);
+		}
+
+		let _ = retype_core::undo::Store::open(&shared.state_dir).remove(&job.id);
+	}
+
+	// The name the bytes belong under is the one the earliest job was reading: a
+	// chain of renames says nothing about the format, and the original name does.
+	earlier.first().map(|job| job.source.path.clone()).unwrap_or_default()
+}
+
+/// Record a job that will not run, so its id stays answerable.
+fn retire(shared: &Shared, work: &crate::daemon::queue::Work, state: JobState) {
+	use crate::daemon::queue::Kind;
+
+	let (source, target) = match &work.kind {
+		Kind::Rename { source, target, .. } => (source.clone(), target.clone()),
+		Kind::Immediate(request) => (request.input.clone(), request.input.clone()),
+	};
+
+	let mut job = Job {
+		id: work.id.clone(),
+		created: now_ms(),
+		updated: now_ms(),
+		source: Source {
+			path: source,
+			format: String::new(),
+			size: 0,
+			mtime_ns: 0,
+		},
+		intent: None,
+		outputs: vec![Output::pending(
+			target,
+			String::new(),
+			retype_core::job::Tier::Converted,
+		)],
+		state,
+		backend: None,
+		engine: None,
+		machine: shared.machine.clone(),
+		error: Some(JobError {
+			code: Code::JobSuperseded.to_string(),
+			message: "replaced by a later rename before it started".to_string(),
+		}),
+	};
+
+	job.outputs[0].state = OutputState::Skipped;
+	publish(shared, &job);
+}
+
 /// Turn one rename into jobs, or explain in the log why it is not one.
 pub fn convert(
 	shared: &Shared,
 	root: &Path,
+	bytes: &Path,
 	source: &Path,
 	target: &Path,
 	id: &retype_core::job::JobId,
@@ -343,7 +450,7 @@ pub fn convert(
 
 		let log = crate::state::log_path(&shared.state_dir, &id);
 
-		match execute::convert_rename(plan, target, stem, source_format, &output, cancellation, Some(&log)) {
+		match execute::convert_rename(plan, bytes, stem, source_format, &output, cancellation, Some(&log)) {
 			Ok(report) => outputs.push(record(
 				&output,
 				plan,
@@ -356,15 +463,18 @@ pub fn convert(
 				None,
 			)),
 			Err(error) => {
-				eprintln!("retype: {}: {error}", output.display());
-				outputs.push(record(
-					&output,
-					plan,
-					OutputState::Failed,
-					None,
-					None,
-					Some(error.to_string()),
-				));
+				// A superseded job did not fail: the work was overtaken, so its output
+				// is skipped rather than failed, `docs/state.md` §5.3.
+				let (state, message) = match cancellation.is_superseded() {
+					true => (OutputState::Skipped, "replaced by a later rename".to_string()),
+					false => (OutputState::Failed, error.to_string()),
+				};
+
+				if state == OutputState::Failed {
+					eprintln!("retype: {}: {error}", output.display());
+				}
+
+				outputs.push(record(&output, plan, state, None, None, Some(message)));
 			}
 		}
 	}
@@ -383,6 +493,7 @@ pub fn convert(
 		cancelled,
 		outputs.iter().all(|output| output.state == OutputState::Done),
 	) {
+		(true, _) if cancellation.is_superseded() => JobState::Superseded,
 		(true, _) => JobState::Cancelled,
 		(false, true) => JobState::Done,
 		(false, false) if outputs.iter().any(|output| output.state == OutputState::Done) => JobState::Partial,

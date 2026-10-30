@@ -172,7 +172,11 @@ Replacement is not only a target change. Two details make it safe, and the first
 
 If the restored source name is already taken, by a file the user created or by another rename, the restore is refused and B becomes an ordinary job from A's target instead. A wrong file is worse than a second encode.
 
-The undo record follows the bytes, not the job: A's record already holds the source inode, so the replacement adopts it and A becomes `superseded`. One record, one restore target.
+Two renames reach the replacement, and the second is the common one. A rename of what A is writing is the decision about the result; a rename of the *source* name is the same decision taken a moment later, and it is what happens in practice, because during a conversion the file shows its source name again, §5.4. Both are the same supersession.
+
+A superseded job's outputs are `skipped` rather than `failed`: nothing went wrong with the file, the work was overtaken. Its record says `superseded` and the replacement carries the chain.
+
+The undo record follows the bytes, not the job, and A's record is removed rather than adopted: it is a name for bytes still where A left them, so the replacement records its own when it starts. Adopting it would mean rewriting an id and an intent to say what the next record will say anyway. One record, one restore target, either way.
 
 ## 5.4 Input naming
 

@@ -56,6 +56,11 @@ pub enum Kind {
 	/// A rename a watcher saw, `docs/watch.md`.
 	Rename {
 		root: PathBuf,
+		/// Where the bytes are now. Usually the target, because a rename put them
+		/// there; after a rename chain that overtook an earlier job, at the name
+		/// that job was writing.
+		bytes: PathBuf,
+		/// The name the bytes belong under while the conversion runs.
 		source: PathBuf,
 		target: PathBuf,
 	},
@@ -232,6 +237,24 @@ impl Pool {
 		self.queue.dropped()
 	}
 
+	/// Stop a job because a later rename replaced it, `docs/state.md` §5.3.
+	pub fn supersede(&self, id: &JobId) -> (Cancelled, Option<Work>) {
+		if let Some(work) = self.queue.take_back(id) {
+			return (Cancelled::Queued, Some(work));
+		}
+
+		match self.inflight.tokens.lock() {
+			Ok(tokens) => match tokens.get(id) {
+				Some(token) => {
+					token.supersede();
+					(Cancelled::Running, None)
+				}
+				None => (Cancelled::Unknown, None),
+			},
+			Err(_) => (Cancelled::Unknown, None),
+		}
+	}
+
 	/// Stop a job, whether it is waiting or running. The work a queued job stood
 	/// for is returned so the caller can record it as cancelled.
 	pub fn cancel(&self, id: &JobId) -> (Cancelled, Option<Work>) {
@@ -292,8 +315,13 @@ fn serve(shared: &Shared, queue: &Queue, inflight: &Inflight) {
 				let cancellation = inflight.begin(&work.id);
 
 				match &work.kind {
-					Kind::Rename { root, source, target } => {
-						convert(shared, root, source, target, &work.id, &cancellation);
+					Kind::Rename {
+						root,
+						bytes,
+						source,
+						target,
+					} => {
+						convert(shared, root, bytes, source, target, &work.id, &cancellation);
 					}
 					Kind::Immediate(request) => {
 						crate::daemon::immediate::run(shared, request, &work.id, &cancellation);
@@ -395,6 +423,7 @@ tier = 'converted'
 				id: id(index),
 				kind: Kind::Rename {
 					root: photos.clone(),
+					bytes: target.clone(),
 					source,
 					target,
 				},
@@ -434,6 +463,7 @@ tier = 'converted'
 			id: id(0),
 			kind: Kind::Rename {
 				root: photos.clone(),
+				bytes: target.clone(),
 				source,
 				target,
 			},
@@ -462,6 +492,7 @@ tier = 'converted'
 					id: id(*index),
 					kind: Kind::Rename {
 						root: photos.clone(),
+						bytes: photos.join(format!("{index}.webp")),
 						source: photos.join(format!("{index}.png")),
 						target: photos.join(format!("{index}.webp")),
 					},

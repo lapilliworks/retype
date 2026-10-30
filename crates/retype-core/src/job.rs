@@ -204,6 +204,8 @@ pub enum OutputState {
 	Running,
 	Done,
 	Failed,
+	/// Not attempted because the job was replaced, `docs/state.md` §5.3.
+	Skipped,
 }
 
 /// Fidelity of an output, `docs/fidelity.md`.

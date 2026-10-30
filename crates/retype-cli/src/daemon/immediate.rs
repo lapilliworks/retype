@@ -183,14 +183,12 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 					false => Code::ToolFailed,
 				};
 
-				outputs.push(record(
-					path,
-					plan,
-					OutputState::Failed,
-					None,
-					None,
-					Some((code, error.to_string())),
-				));
+				let state = match cancellation.is_superseded() {
+					true => OutputState::Skipped,
+					false => OutputState::Failed,
+				};
+
+				outputs.push(record(path, plan, state, None, None, Some((code, error.to_string()))));
 			}
 		}
 	}
