@@ -12,7 +12,7 @@ use std::path::Path;
 use crate::error::{Code, Diagnoses, Diagnostic, Error};
 use crate::job::Tier;
 use crate::print;
-use crate::registry::{Fragment, NATIVE, Registry};
+use crate::registry::{Fragment, Registry};
 use crate::resolve::{self, Resolved};
 use crate::tools::Tool;
 
@@ -49,20 +49,18 @@ impl Presence for crate::tools::Machine {
 	}
 }
 
-/// Where a plan will run.
+/// Where a plan will run. One variant today: every conversion is a process. The
+/// enum is the seam a second kind of backend would arrive through, so that the
+/// rest of the compiler does not change shape when one does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend<'a> {
-	/// A compiled implementation, which needs no argv.
-	Native,
 	Tool(&'a Tool),
 }
 
 impl Backend<'_> {
 	pub fn name(&self) -> &str {
-		match self {
-			Self::Native => NATIVE,
-			Self::Tool(tool) => &tool.name,
-		}
+		let Self::Tool(tool) = self;
+		&tool.name
 	}
 }
 
@@ -81,7 +79,7 @@ pub struct Plan<'a> {
 	/// The format this output carries.
 	pub format: String,
 	pub backend: Backend<'a>,
-	/// The layout with `{ops}` expanded, empty for a native backend.
+	/// The layout with `{ops}` expanded.
 	pub argv: Vec<Arg>,
 	pub tier: Tier,
 	/// The engine that made it in: its name and the candidate that resolved it,
@@ -136,21 +134,6 @@ fn plan_group<'a>(
 	let mut unavailable: Vec<&Tool> = Vec::new();
 
 	for candidate in registry.backends() {
-		if candidate == NATIVE {
-			// A native backend is compiled in or absent; there is nothing to
-			// probe, so it wins whenever it carries the whole group.
-			if ordered.iter().all(|op| native(registry, op)) {
-				return Ok(Plan {
-					format: group.format.clone(),
-					backend: Backend::Native,
-					argv: Vec::new(),
-					tier: tier_of(registry, &group.format),
-					engine: None,
-				});
-			}
-			continue;
-		}
-
 		let Some(tool) = registry.tool(candidate) else {
 			continue;
 		};
@@ -176,10 +159,6 @@ fn plan_group<'a>(
 	Err(vec![unsatisfiable(registry, group, &ordered, &unavailable)])
 }
 
-fn native(registry: &Registry, op: &resolve::Op) -> bool {
-	registry.op(&op.key).is_some_and(|op| op.native.is_some())
-}
-
 /// Why no backend could carry this group, said in terms the user can act on.
 fn unsatisfiable(
 	registry: &Registry,
@@ -191,11 +170,10 @@ fn unsatisfiable(
 
 	// `docs/tools.md` §1: no tool could ever provide it, as distinct from a tool
 	// that could and is not installed.
-	if let Some(op) = ordered.iter().find(|op| {
-		registry
-			.op(&op.key)
-			.is_none_or(|declared| declared.native.is_none() && declared.argv.is_empty())
-	}) {
+	if let Some(op) = ordered
+		.iter()
+		.find(|op| registry.op(&op.key).is_none_or(|declared| declared.argv.is_empty()))
+	{
 		return Error::Diagnostic(Diagnostic::new(
 			Code::Unsupported,
 			format!("no backend carries '{}' for {format}", op.name),
@@ -350,7 +328,7 @@ mod tests {
 version = 'retype-config-1'
 
 [backends]
-prefer = ['native', 'magick', 'pandoc', 'ffmpeg']
+prefer = ['magick', 'pandoc', 'ffmpeg']
 
 [tools.magick]
 command = 'magick'

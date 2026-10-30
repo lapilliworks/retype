@@ -80,7 +80,7 @@ Handshake, required before any other method:
 ```json
 {"id":1,"method":"hello","params":{"ipc":"retype-ipc-1","client":"retype-cli/0.1.0","features":["events"]}}
 {"id":1,"ok":true,"result":{"ipc":"retype-ipc-1","pid":41233,"machine":"7f3c1a2b","uptime_ms":91000,
- "features":["events","notify"],"capabilities":{"backends":["native","magick"]}}}
+ "features":["events","notify"],"capabilities":{"backends":["magick"]}}}
 ```
 
 A different major receives `E_IPC_VERSION` and the connection closes. New fields and new methods do not change the major. A client that does not send `hello` first receives `E_IPC_HANDSHAKE`.

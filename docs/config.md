@@ -12,7 +12,7 @@ One schema, two sources, one validator.
 - `retype.toml` in the user config directory overrides and extends it by name
 - `.retype.toml` in a watched directory carries policy only
 
-Both files are parsed by the same loader and validated by the same rules. Nothing is declared twice, and no operation, format or preset is hardcoded in Rust except the native backends, which are named and verified against a compiled list.
+Both files are parsed by the same loader and validated by the same rules. Nothing is declared twice, and no operation, format, tool or preset is hardcoded in Rust at all.
 
 Configuration is declarative throughout. There is no shell evaluation, no conditionals, no string interpolation beyond a closed placeholder set.
 
@@ -197,8 +197,7 @@ args = ['-resize', '{value}']
 | `exclusive` | no | Group names; two members of one group conflict |
 | `param` | when it takes a value | `class`, plus `min` and `max` for the numeric classes, `values` for `enum`, and `scalar` for `range`, which is `int` unless it says `time` |
 | `formats` | yes | Formats the operation applies to, or `['*']` |
-| `argv.<tool>` | unless `native` | Fragment contributed to that tool's `{ops}` |
-| `native` | unless `argv` | Name of a compiled implementation |
+| `argv.<tool>` | once the vertical has landed | Fragment contributed to that tool's `{ops}` |
 
 Formats, operations and presets enter one name space. Aliases are declared per operation.
 
@@ -228,14 +227,16 @@ No splicing happens inside an argument; a placeholder occupying a whole argument
 
 Placeholders belong to one position and not the other. `{input}`, `{ops}` and `{output}` are layout holes; `{value}` and `{engine.<name>}` are fragment holes. A fragment naming a layout hole, or a layout naming a fragment hole, is a validation error rather than a literal brace in the argv.
 
-For a native backend there is no argv: operations compile to a typed plan.
+Every operation reaches a process this way. There is no in-process backend, and no plan carries a typed implementation instead of an argv.
 
 Backend selection:
 
 ```toml
 [backends]
-prefer = ['native', 'magick', 'ffmpeg', 'pandoc', '7z']
+prefer = ['magick', 'ffmpeg', 'pandoc', '7z']
 ```
+
+`prefer` names tools and nothing else. A file that omits the table gets every declared tool in name order, which is deterministic but rarely what a user wants, so the shipped file states an order.
 
 The first backend in `prefer` that implements every operation in the plan and is available wins. Determinism is required: a plan never depends on discovery order, so a missing earlier backend moves the plan down the list rather than shuffling it.
 
@@ -282,8 +283,9 @@ Loading fails, naming the file and key, on any of:
 | V9 | A format or tool referenced by an operation, fragment or `backends.prefer` but not declared |
 | V10 | A tier outside `exact`, `converted`, `delegated`, `docs/fidelity.md` |
 | V11 | `version_min` that does not parse as a version |
-| V12 | A `native` name not present in the compiled implementation list, which is empty until the first native backend lands |
 | V13 | A per-directory file defining `tools`, `formats`, `ops`, `presets`, or any key of the `[watch]` table |
+
+V12 named an in-process backend and was retired with it. The number is not reused, so that a configuration error reported against an older build stays identifiable.
 
 Warnings, not errors: a name that is a prefix of another name; a tool that fails its probe; a pair whose tier is `delegated` but has no `argv` fragment.
 

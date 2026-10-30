@@ -347,7 +347,7 @@ mod tests {
 			machine: "7f3c1a2b".to_string(),
 			uptime_ms: 91_000,
 			features: vec!["events".to_string(), "notify".to_string()],
-			capabilities: serde_json::json!({"backends": ["native", "magick"]}),
+			capabilities: serde_json::json!({"backends": ["magick"]}),
 		};
 		let value = serde_json::to_value(&result).unwrap();
 

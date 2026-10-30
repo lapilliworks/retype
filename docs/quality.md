@@ -35,7 +35,7 @@ Per-format rules:
 
 - `jpg`: `quality` scales the quantization tables. At `quality >= 90` chroma subsampling is 4:4:4, below it 4:2:0. Sampling is set explicitly, never left to the encoder default. Progressive encoding and Huffman optimisation are on by default
 - `png`: always lossless. `compress` is the deflate level. Filter selection is adaptive. No quality axis exists, and a request for one is an error
-- `webp`: lossy by default. `lossless` switches to lossless mode, where `quality` instead trades speed for size and `effort` sets the method. The `native` backend implements lossless WebP only, so a plan that asks for lossy WebP is served by the next backend in the preference order
+- `webp`: lossy by default. `lossless` switches to lossless mode, where `quality` instead trades speed for size and `effort` sets the method. Both modes go through libwebp, which is what ImageMagick and FFmpeg link
 - `avif`: `quality` is the colour quantiser, 100 being lossless; alpha uses the same value. `effort` is the encoder speed
 - `heic`: `quality` is the encoder quality; `lossless` overrides it, and combining the two is `E_EXCLUSIVE`
 - `gif`: paletted, at most 256 entries. `colors` sets the palette size; dithering is Floyd-Steinberg

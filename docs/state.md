@@ -203,7 +203,7 @@ machine = '7f3c1a2b'
 [[throughput]]
 family = 'image'
 format = 'jpg'
-backend = 'native'
+backend = 'magick'
 megapixels_per_second = 12.4
 ```
 

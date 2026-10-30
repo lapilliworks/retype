@@ -25,7 +25,7 @@ version = 'retype-config-1'
 # operation of an output and is usable wins, so the order here is the product's
 # opinion about which encoder to prefer, not what happens to be installed.
 [backends]
-prefer = ['native', 'magick', 'ffmpeg', 'pandoc', '7z']
+prefer = ['magick', 'ffmpeg', 'pandoc', '7z']
 
 [tools.magick]
 command = 'magick'

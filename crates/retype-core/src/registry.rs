@@ -10,17 +10,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
-use crate::convert::NATIVE_BACKENDS;
 use crate::error::{Code, Diagnoses, Diagnostic, Error};
 use crate::job::Tier;
 use crate::tools::{Tool, Version};
 
 /// Schema identifier, `docs/config.md` §1.
 pub const CONFIG_VERSION: &str = "retype-config-1";
-
-/// The backend name for an implementation compiled into this build rather than
-/// run as a process, `docs/config.md` §8.
-pub const NATIVE: &str = "native";
 
 const FAMILIES: &[&str] = &["image", "audio", "video", "document", "archive", "folder"];
 
@@ -103,8 +98,6 @@ pub struct Op {
 	pub param: Option<Param>,
 	/// What this operation contributes to each tool's `{ops}`, by tool name.
 	pub argv: BTreeMap<String, Fragment>,
-	/// Name of a compiled implementation, `docs/config.md` V12.
-	pub native: Option<String>,
 }
 
 impl Format {
@@ -206,10 +199,9 @@ impl Registry {
 
 		let tool_names: BTreeSet<&str> = tools.keys().map(String::as_str).collect();
 
-		// Default order: the compiled backend first, then every declared tool by
-		// name, so a configuration that says nothing is still deterministic.
-		let mut backends = vec![NATIVE.to_string()];
-		backends.extend(tools.keys().cloned());
+		// Default order: every declared tool by name, so a configuration that says
+		// nothing is still deterministic.
+		let mut backends: Vec<String> = tools.keys().cloned().collect();
 
 		if let Some(declared) = &document.backends {
 			backends = declared.prefer.clone();
@@ -282,19 +274,6 @@ impl Registry {
 				label,
 			));
 
-			// V12: a native backend is compiled in, so a name that is not in the
-			// list can never be honoured.
-			if let Some(native) = &op.native {
-				if !NATIVE_BACKENDS.contains(&native.as_str()) {
-					problems.push(fail(
-						Code::CfgValidation,
-						format!(
-							"{label}: operation '{key}' names native backend '{native}', which this build does not have"
-						),
-					));
-				}
-			}
-
 			// V3: a parameter no fragment interpolates never reaches a command.
 			if op.param.is_some() && !op.argv.is_empty() && !op.argv.values().any(Fragment::uses_value) {
 				problems.push(fail(
@@ -329,7 +308,7 @@ impl Registry {
 		})
 	}
 
-	/// Backend names in preference order, `native` and tools alike.
+	/// Backend names in preference order, `docs/config.md` §8.
 	pub fn backends(&self) -> &[String] {
 		&self.backends
 	}
@@ -435,12 +414,10 @@ fn validate_backends(backends: &[String], tool_names: &BTreeSet<&str>, label: &s
 	let mut seen: BTreeSet<&str> = BTreeSet::new();
 
 	for name in backends {
-		let known = name == NATIVE || tool_names.contains(name.as_str());
-
-		if !known {
+		if !tool_names.contains(name.as_str()) {
 			problems.push(fail(
 				Code::CfgValidation,
-				format!("{label}: backends.prefer names '{name}', which is neither '{NATIVE}' nor a declared tool"),
+				format!("{label}: backends.prefer names '{name}', which is not a declared tool"),
 			));
 		}
 
@@ -810,8 +787,6 @@ struct OpEntry {
 	param: Option<Param>,
 	#[serde(default)]
 	argv: BTreeMap<String, FragmentEntry>,
-	#[serde(default)]
-	native: Option<String>,
 }
 
 impl OpEntry {
@@ -829,7 +804,6 @@ impl OpEntry {
 				.iter()
 				.map(|(tool, entry)| (tool.clone(), entry.view()))
 				.collect(),
-			native: self.native.clone(),
 		}
 	}
 }
@@ -1112,17 +1086,15 @@ tier = 'converted'
 	}
 
 	#[test]
-	fn the_builtin_prefers_the_compiled_backend_first() {
+	fn the_builtin_states_its_preference() {
 		let registry = builtin();
-		let backends = registry.backends();
 
-		assert_eq!(backends.first().map(String::as_str), Some(NATIVE));
-		assert!(backends.iter().any(|name| name == "magick"));
+		assert_eq!(registry.backends(), ["magick", "ffmpeg", "pandoc", "7z"]);
 	}
 
 	#[test]
 	fn a_backend_that_is_not_declared_is_refused() {
-		let unknown = "[backends]\nprefer = ['native', 'ghostscript']\n";
+		let unknown = "[backends]\nprefer = ['magick', 'ghostscript']\n";
 		assert_eq!(config(unknown).unwrap_err(), [Code::CfgValidation]);
 
 		let twice = "[backends]\nprefer = ['magick', 'magick']\n";
@@ -1134,18 +1106,6 @@ tier = 'converted'
 		let registry = config("[backends]\nprefer = ['pandoc', 'magick']\n").expect("loads");
 
 		assert_eq!(registry.backends(), ["pandoc", "magick"]);
-	}
-
-	#[test]
-	fn a_native_backend_must_be_compiled_in() {
-		let text = [
-			WEBP,
-			"[ops.recode]\nslot = 0\nformats = ['webp']\nnative = 'webp-encode'\n",
-		]
-		.concat();
-		let problems = config(&text).unwrap_err();
-
-		assert_eq!(problems, [Code::CfgValidation], "no native backend exists yet");
 	}
 
 	#[test]
