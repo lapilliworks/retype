@@ -181,21 +181,72 @@ fn database_side(part: &str, _name: &str) -> Option<u32> {
 	part.parse().ok()
 }
 
-/// `int ( "kb" / "mb" / "gb" )`, decimal rather than binary.
+/// `decimal ( "kb" / "mb" / "gb" )`, decimal rather than binary.
+///
+/// A fraction is allowed here and nowhere else, because there is no byte unit to
+/// fall back on: without decimals, 1234 bytes has no spelling at all. The units
+/// are powers of a thousand, so a decimal is exact; what a literal cannot be is
+/// a fraction of a byte, and `1.2345kb` is one.
 fn size(text: &str) -> Result<u64, Fault> {
 	let lower = text.to_ascii_lowercase();
 
-	for (unit, scale) in [("gb", 1_000_000_000u64), ("mb", 1_000_000), ("kb", 1_000)] {
-		if let Some(digits) = lower.strip_suffix(unit) {
-			let number = number(digits)?;
+	for (unit, scale) in [("gb", 1_000_000_000u128), ("mb", 1_000_000u128), ("kb", 1_000u128)] {
+		let Some(number) = lower.strip_suffix(unit) else {
+			continue;
+		};
 
-			return number
-				.checked_mul(scale)
-				.ok_or_else(|| out_of_range(format!("'{text}' is larger than a byte count can hold")));
+		let (whole, fraction) = match number.split_once('.') {
+			Some((_whole, "")) => {
+				return Err(syntax(format!("'{text}' ends at the decimal point")));
+			}
+			Some((whole, fraction)) => (whole, fraction),
+			None => (number, ""),
+		};
+
+		let whole = if whole.is_empty() {
+			return Err(syntax(format!("'{text}' has no whole part")));
+		} else {
+			number_of(whole).ok_or_else(|| syntax(format!("'{text}' is not a number")))?
+		};
+
+		let mut bytes = (whole as u128)
+			.checked_mul(scale)
+			.ok_or_else(|| out_of_range(format!("'{text}' is larger than a byte count can hold")))?;
+
+		if !fraction.is_empty() {
+			if fraction.len() > 9 {
+				return Err(syntax(format!(
+					"'{text}' has more decimal places than a byte count allows"
+				)));
+			}
+
+			let Some(digits) = number_of(fraction) else {
+				return Err(syntax(format!("'{text}' is not a number")));
+			};
+
+			let denominator = 10u128.pow(fraction.len() as u32);
+			let scaled = (digits as u128) * scale;
+
+			if scaled % denominator != 0 {
+				return Err(syntax(format!("'{text}' is a fraction of a byte")));
+			}
+
+			bytes += scaled / denominator;
 		}
+
+		return u64::try_from(bytes)
+			.map_err(|_| out_of_range(format!("'{text}' is larger than a byte count can hold")));
 	}
 
 	Err(syntax(format!("'{text}' has no kb, mb or gb unit")))
+}
+
+fn number_of(text: &str) -> Option<u64> {
+	if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+		return None;
+	}
+
+	text.parse().ok()
 }
 
 /// A duration, `docs/grammar.md` §7: units in order with the ones between them
@@ -444,6 +495,26 @@ mod tests {
 		assert_eq!(interpret(&class, "1500kb"), Ok(Value::Size(1_500_000)));
 		assert_eq!(interpret(&class, "5").unwrap_err().code, Code::ValueSyntax);
 		assert_eq!(interpret(&class, "5tb").unwrap_err().code, Code::ValueSyntax);
+	}
+
+	#[test]
+	fn a_size_may_have_a_fraction_because_it_is_exact() {
+		let class = param(Class::Size);
+
+		assert_eq!(interpret(&class, "1.5mb"), Ok(Value::Size(1_500_000)));
+		assert_eq!(interpret(&class, "0.5mb"), Ok(Value::Size(500_000)));
+		assert_eq!(interpret(&class, "1.234kb"), Ok(Value::Size(1_234)));
+		assert_eq!(interpret(&class, "1234.5kb"), Ok(Value::Size(1_234_500)));
+		assert_eq!(interpret(&class, "1.000mb"), Ok(Value::Size(1_000_000)));
+	}
+
+	#[test]
+	fn a_size_that_is_not_a_whole_number_of_bytes_is_refused() {
+		let class = param(Class::Size);
+
+		assert_eq!(interpret(&class, "1.2345kb").unwrap_err().code, Code::ValueSyntax);
+		assert_eq!(interpret(&class, ".5mb").unwrap_err().code, Code::ValueSyntax);
+		assert_eq!(interpret(&class, "1.mb").unwrap_err().code, Code::ValueSyntax);
 	}
 
 	#[test]

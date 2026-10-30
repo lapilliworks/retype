@@ -84,16 +84,38 @@ pub fn value(value: &Value) -> String {
 	}
 }
 
-/// The largest unit that divides the byte count exactly, which always exists
-/// because a size is written as a whole number of a unit.
+/// The largest unit that expresses the byte count exactly, and failing that the
+/// largest that needs at most three decimal places. `kb` always suffices, so
+/// every byte count has a spelling.
 fn size(bytes: u64) -> String {
-	for (unit, scale) in [("gb", 1_000_000_000u64), ("mb", 1_000_000), ("kb", 1_000)] {
+	const UNITS: [(&str, u64); 3] = [("gb", 1_000_000_000), ("mb", 1_000_000), ("kb", 1_000)];
+
+	for (unit, scale) in UNITS {
 		if bytes % scale == 0 {
 			return format!("{}{unit}", bytes / scale);
 		}
 	}
 
-	bytes.to_string()
+	for (unit, scale) in UNITS {
+		let step = scale / 1_000;
+
+		// Three decimal places of this unit, if the byte count fills them evenly.
+		if bytes % step != 0 {
+			continue;
+		}
+
+		let mut text = format!("{}.{:03}", bytes / scale, (bytes % scale) / step);
+		while text.ends_with('0') {
+			text.pop();
+		}
+		if text.ends_with('.') {
+			text.pop();
+		}
+
+		return format!("{text}{unit}");
+	}
+
+	unreachable!("a kb is a thousand bytes, so three decimal places always suffice")
 }
 
 /// The tagged form with zero units left out, so `1:00:30` prints `1h30s`.
