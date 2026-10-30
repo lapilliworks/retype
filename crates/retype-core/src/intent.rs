@@ -6,7 +6,7 @@
 //! registry, which arrives with configuration, so tokens carry their value as
 //! written and nothing here guesses what it means.
 
-use crate::error::{Code, Error, Span};
+use crate::error::{Code, Diagnostic, Error, Span};
 
 /// Limits from `docs/grammar.md` §5.
 pub const MAX_LENGTH: usize = 255;
@@ -56,6 +56,9 @@ pub struct Intent {
 	pub text: String,
 	pub meta: Meta,
 	pub groups: Vec<Group>,
+	/// Conditions the parser resolved in the user's favour rather than
+	/// refusing. They are not failures, and they are not silent either.
+	pub warnings: Vec<Diagnostic>,
 }
 
 /// Everything wrong with one intent string, ordered by offset and capped.
@@ -163,7 +166,7 @@ pub fn parse(text: &str) -> Result<Intent, Diagnoses> {
 		return Err(Diagnoses::new(errors));
 	}
 
-	let (meta, body) = meta(text, &mut errors);
+	let (meta, body, warnings) = meta(text);
 
 	if body.is_empty() {
 		errors.push(Error::diagnostic(
@@ -202,12 +205,18 @@ pub fn parse(text: &str) -> Result<Intent, Diagnoses> {
 		text: text.to_string(),
 		meta,
 		groups,
+		warnings,
 	})
 }
 
 /// Strip the meta suffixes, which live outside the groups, `docs/grammar.md` §6.
-fn meta<'a>(text: &'a str, errors: &mut Vec<Error>) -> (Meta, &'a str) {
+///
+/// Asking wins over demanding `now`, because one of those outcomes is
+/// recoverable: an unwanted prompt is dismissed with a key, while a refused
+/// rename has to be performed again.
+fn meta(text: &str) -> (Meta, &str, Vec<Diagnostic>) {
 	let mut meta = Meta::default();
+	let mut warnings = Vec::new();
 	let mut body = text;
 
 	if let Some(stripped) = body.strip_suffix('!') {
@@ -220,14 +229,15 @@ fn meta<'a>(text: &'a str, errors: &mut Vec<Error>) -> (Meta, &'a str) {
 	}
 
 	if meta.ask && meta.now {
-		errors.push(Error::diagnostic(
+		meta.now = false;
+		warnings.push(Diagnostic::new(
 			Code::MetaConflict,
-			"'ask' and 'now' cannot both be requested",
+			"ignored 'now' because the intent also asks, and asking wins",
 			Span::new(body.len(), text.len()),
 		));
 	}
 
-	(meta, body)
+	(meta, body, warnings)
 }
 
 fn scan_groups(body: &str, errors: &mut Vec<Error>) -> (Vec<Group>, usize) {
@@ -475,7 +485,17 @@ mod tests {
 	fn the_meta_suffixes_are_read_from_the_end() {
 		assert_eq!(parse("jpg!").unwrap().meta, Meta { ask: false, now: true });
 		assert_eq!(parse("jpg+").unwrap().meta, Meta { ask: true, now: false });
-		assert_eq!(codes(&parse("jpg+!")), vec![Code::MetaConflict]);
+	}
+
+	#[test]
+	fn asking_wins_over_demanding_now() {
+		let intent = parse("jpg+!").unwrap();
+
+		assert_eq!(intent.meta, Meta { ask: true, now: false });
+		assert_eq!(intent.warnings.len(), 1);
+		assert_eq!(intent.warnings[0].code, Code::MetaConflict);
+		assert_eq!(intent.warnings[0].span, Span::new(3, 5));
+		assert!(intent.warnings[0].message.contains("ignored 'now'"));
 	}
 
 	#[test]

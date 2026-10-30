@@ -36,7 +36,7 @@ pub struct Error {
 
 ## 3. Codes
 
-Grammar diagnostics keep their unprefixed names, fixed by `retype-grammar-1`: `E_ANCHOR`, `E_CHARSET`, `E_INTENT_EMPTY`, `E_TOO_LONG`, `E_TOO_MANY`, `E_GROUP_EMPTY`, `E_TOKEN_EMPTY`, `E_FORMAT_UNKNOWN`, `E_FORMAT_FOLDER`, `E_NAME_UNKNOWN`, `E_VALUE_MISSING`, `E_VALUE_UNEXPECTED`, `E_VALUE_SYNTAX`, `E_VALUE_RANGE`, `E_DUPLICATE`, `E_EXCLUSIVE`, `E_META_CONFLICT`, `E_NOOP`, `E_INAPPLICABLE`, `E_UNSUPPORTED`.
+Grammar diagnostics keep their unprefixed names, fixed by `retype-grammar-1`: `E_ANCHOR`, `E_CHARSET`, `E_INTENT_EMPTY`, `E_TOO_LONG`, `E_TOO_MANY`, `E_GROUP_EMPTY`, `E_TOKEN_EMPTY`, `E_FORMAT_UNKNOWN`, `E_FORMAT_FOLDER`, `E_NAME_UNKNOWN`, `E_VALUE_MISSING`, `E_VALUE_UNEXPECTED`, `E_VALUE_SYNTAX`, `E_VALUE_RANGE`, `E_DUPLICATE`, `E_EXCLUSIVE`, `E_META_CONFLICT`, `E_NOOP`, `E_INAPPLICABLE`, `E_UNSUPPORTED`. `E_META_CONFLICT` is the one grammar code that can be a warning rather than a diagnosis, `docs/grammar.md` §6.
 
 A code is an enum in `retype-core::error::Code`, serialised as the string above. The variant name is the only place a code is written: `IoPermission` is `E_IO_PERMISSION` because the derive in `retype-macros` says so. Renaming a variant therefore changes a code, which is a wire-breaking change, and the test at the end of this section exists to make that loud.
 

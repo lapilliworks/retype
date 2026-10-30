@@ -105,7 +105,7 @@ parse(source, new_name) -> Job | Diagnosis
 6. For each token: split at `=` when present and require an exact name match. Otherwise resolve the longest registered name prefix; the remainder is the value. No name prefix is `E_NAME_UNKNOWN`.
 7. Validate the value against its class and bounds, then against the duplicate and exclusive rules in 8.
 8. Check applicability against the group's format and the pair's backend support.
-9. Reject `ask` together with `now` as `E_META_CONFLICT`.
+9. When both `ask` and `now` are present, keep `ask`, drop `now`, and record a warning with code `E_META_CONFLICT`. A prompt can be dismissed with one key; a refused rename has to be performed again, so the recoverable reading wins
 10. Reject an intent whose only group has the source format and no tokens as `E_NOOP`. In a multi-group intent such a group means: keep the source unchanged.
 
 The parser MUST NOT backtrack and MUST be total: every string in the character set produces either a job or a diagnosis.
@@ -261,12 +261,13 @@ A diagnosis carries a code and a half-open byte span into the intent string.
 | `E_VALUE_RANGE` | Value outside its bounds |
 | `E_DUPLICATE` | Repeated key |
 | `E_EXCLUSIVE` | Conflict within an exclusive group |
-| `E_META_CONFLICT` | `ask` together with `now` |
 | `E_NOOP` | Only group equals the source format and carries no tokens |
 | `E_INAPPLICABLE` | Operation not applicable to the group's format |
 | `E_UNSUPPORTED` | No backend for the pair at the required tier |
 
 Diagnostics SHOULD carry a suggestion when a registered name is within edit distance 2 of an unknown token.
+
+One code is a warning rather than a diagnosis: `E_META_CONFLICT`, when an intent asks (`+`) and also demands `now` (`!`). Asking wins, `now` is dropped, and the warning names what was ignored. Every other condition in the table fails the parse.
 
 ## 13. Application on diagnosis
 
@@ -299,6 +300,7 @@ Valid, with canonical form:
 | `photo.jpg,jpg+q60,jpg+q90` | `photo.jpg,jpg+quality60,jpg+quality90` | Kept plus `photo-quality60.jpg`, `photo-quality90.jpg` |
 | `clip.mp4+1080p+mute` | `clip.mp4+cap1080+mute` | Downscale only, drop audio |
 | `clip.mp4+mute!` | `clip.mp4+mute+now` | No confirmation |
+| `clip.mp4+!` | `clip.mp4+ask` | Warned and asked: a dismissed prompt beats a refused rename |
 | `photo.webp+q80+` | `photo.webp+quality80+ask` | Editor prefilled |
 | `scan.pdf` -> `scan.png+page2-5+dpi300` | unchanged | Page range rendered |
 | `Photos` -> `Photos.folder,zip` | unchanged | Keep the directory, add an archive |
@@ -307,7 +309,6 @@ Invalid:
 
 | Input | Code |
 |---|---|
-| `clip.mp4+!` | `E_META_CONFLICT` |
 | `photo.jpg++quality80` | `E_TOKEN_EMPTY` |
 | `photo.jpg,` | `E_GROUP_EMPTY` |
 | `photo.jpg+zzz` | `E_NAME_UNKNOWN` |
