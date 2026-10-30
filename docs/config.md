@@ -89,6 +89,7 @@ layout = ['{input}', '{ops}', '{output}']
 | `version_min` | no | Minimum accepted version, compared against the probe output |
 | `purpose` | no | One line, printed by `retype doctor` |
 | `components` | no | Substrings the probe output has to mention, see 3.2 |
+| `families` | no | The format families this tool can carry: `image`, `audio`, `video`, `document`, `archive`, `folder`. A tool that names any is only chosen for a conversion that starts and ends inside them, see 3.3. Empty means no claim, which is what a user-written tool gets |
 | `layout` | yes | Argv template. Names `{input}`, `{ops}` and `{output}` once each, in any order |
 | `engines` | no | Named alternatives resolved at plan time, see 3.1 |
 
@@ -125,6 +126,14 @@ Rules:
 - When no candidate exists, the plan fails with `E_TOOL_MISSING`, naming every candidate so the message tells the user what to install
 - The resolved candidate is recorded with the job and reported by `retype why`, because the same intent with a different engine is a different result
 - An `argv` fragment may also name an engine literally, for example `args = ['--pdf-engine=xelatex']`. That pins the engine, bypasses resolution, and fails as `E_TOOL_MISSING` if the named engine is absent
+
+### 3.3 Families
+
+`families` is the one thing about a tool that a probe cannot check, and without it the matrix offers ImageMagick for a video container: an encoder that cannot open the file, chosen because it was first in `prefer` and carried the operations.
+
+A tool that states families is eligible only when both the source and the target family are among them. A tool that states none makes no claim and is eligible for anything, so a user who writes their own tool is not forced to describe it.
+
+The consequence is deliberate: `mp4` to `png` is `E_UNSUPPORTED`, because no single tool in the shipped table carries both. Claiming otherwise would be a promise to fail at run time.
 
 ## 4. Formats
 
@@ -337,6 +346,7 @@ Loading fails, naming the file and key, on any of:
 | V13 | A per-directory file defining `tools`, `formats`, `ops`, `presets`, or any key of the `[watch]` table |
 | V16 | `components` declared by a tool that declares no `probe` |
 | V17 | `version_min` declared by a tool that declares no `probe`, since the floor could then never be met |
+| V18 | A `families` entry naming a family that does not exist |
 
 V12 named an in-process backend and was retired with it. The number is not reused, so that a configuration error reported against an older build stays identifiable.
 

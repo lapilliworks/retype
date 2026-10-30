@@ -899,6 +899,20 @@ fn validate_tool(tool: &Tool, label: &str) -> Vec<Error> {
 	let mut problems = Vec::new();
 	let name = &tool.name;
 
+	// V18: a family is a claim about what a tool can carry, and a claim naming a
+	// family that does not exist would silently match nothing.
+	for family in &tool.families {
+		if !FAMILIES.contains(&family.as_str()) {
+			problems.push(fail(
+				Code::CfgValidation,
+				format!(
+					"{label}: tool '{name}' claims unknown family '{family}', which is not one of {}",
+					FAMILIES.join(", ")
+				),
+			));
+		}
+	}
+
 	// V17: a floor is a comparison against a version, and the version comes from
 	// the probe. Without one the floor can never be met, so the tool would be
 	// unusable everywhere for a reason nobody could see.
@@ -1283,6 +1297,8 @@ struct ToolEntry {
 	purpose: String,
 	#[serde(default)]
 	components: Vec<String>,
+	#[serde(default)]
+	families: Vec<String>,
 	layout: Vec<String>,
 	#[serde(default)]
 	engines: BTreeMap<String, Vec<String>>,
@@ -1310,6 +1326,7 @@ impl ToolEntry {
 			version_min,
 			purpose: self.purpose.clone(),
 			components: self.components.clone(),
+			families: self.families.clone(),
 			layout: self.layout.clone(),
 			engines: self.engines.clone(),
 		})
@@ -1460,8 +1477,16 @@ mod tests {
 		let registry = builtin();
 
 		assert!(registry.format("jpg").is_some());
-		assert_eq!(registry.formats().count(), 9);
+		// Nine image formats, four video containers and four audio ones.
+		assert_eq!(registry.formats().count(), 17);
 		assert_eq!(registry.ops().count(), 30);
+
+		// Every shipped tool says which families it carries, because a tool without
+		// the claim is eligible for every pair and the matrix would offer a video
+		// container to an image encoder.
+		for tool in registry.tools() {
+			assert!(!tool.families.is_empty(), "{} claims no families", tool.name);
+		}
 
 		for (key, op) in registry.ops() {
 			for format in &op.formats {

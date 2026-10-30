@@ -89,10 +89,20 @@ fn an_alias_is_a_bare_format_too() {
 
 #[test]
 fn an_unknown_source_format_is_refused() {
-	let output = retype().args(["explain", "clip.mov", "webp"]).output().unwrap();
+	let output = retype().args(["explain", "notes.txt", "webp"]).output().unwrap();
 
 	assert_eq!(output.status.code(), Some(3));
 	assert!(String::from_utf8_lossy(&output.stderr).contains("E_FORMAT_UNKNOWN"));
+}
+
+/// A video source and an image target is a diagnosis, not a plan: no single tool
+/// carries both families, and the answer says which.
+#[test]
+fn a_cross_family_conversion_is_unsupported() {
+	let output = retype().args(["explain", "clip.mov", "webp"]).output().unwrap();
+
+	assert_eq!(output.status.code(), Some(3));
+	assert!(String::from_utf8_lossy(&output.stderr).contains("E_UNSUPPORTED"));
 }
 
 #[test]

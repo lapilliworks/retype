@@ -115,7 +115,7 @@ pub fn compile<'a>(
 	let mut problems = Vec::new();
 
 	for group in &resolved.groups {
-		match plan_group(registry, presence, group) {
+		match plan_group(registry, presence, group, &resolved.origin) {
 			Ok(plan) => plans.push(plan),
 			Err(diagnosed) => problems.extend(diagnosed),
 		}
@@ -132,6 +132,7 @@ fn plan_group<'a>(
 	registry: &'a Registry,
 	presence: &dyn Presence,
 	group: &resolve::Group,
+	origin: &str,
 ) -> Result<Plan<'a>, Vec<Error>> {
 	let pipeline = group.pipeline();
 	let mut unavailable: Vec<&Tool> = Vec::new();
@@ -151,6 +152,18 @@ fn plan_group<'a>(
 			continue;
 		}
 
+		// A tool that states which families it handles is not eligible for a
+		// conversion that starts or ends outside them: ImageMagick opening a video
+		// container is not a plan, it is a failure with a delay, `docs/config.md` §3.
+		if !tool.families.is_empty() {
+			let from = family_of(registry, origin);
+			let to = family_of(registry, &group.format);
+
+			if !tool.families.contains(&from) || !tool.families.contains(&to) {
+				continue;
+			}
+		}
+
 		let Some(command) = presence.command(tool) else {
 			unavailable.push(tool);
 			continue;
@@ -160,6 +173,15 @@ fn plan_group<'a>(
 	}
 
 	Err(vec![unsatisfiable(registry, group, pipeline, &unavailable)])
+}
+
+/// The family a format belongs to, or the empty string for a format the registry
+/// does not declare, which validation has already refused by then.
+fn family_of(registry: &Registry, format: &str) -> String {
+	registry
+		.format(format)
+		.map(|format| format.family.clone())
+		.unwrap_or_default()
 }
 
 /// Why no backend could carry this group, said in terms the user can act on.
@@ -464,6 +486,65 @@ args = ['--pdf-engine', '{engine.pdf}']
 				Arg::Output,
 			]
 		);
+	}
+
+	#[test]
+	fn a_tool_that_names_families_is_not_chosen_outside_them() {
+		let registry = Registry::load(
+			"\
+version = 'retype-config-1'
+
+[backends]
+prefer = ['painter']
+
+[tools.painter]
+command = 'true'
+families = ['image']
+layout = ['{input}', '{ops}', '{output}']
+
+[formats.png]
+family = 'image'
+lossy = false
+alpha = true
+tier = 'exact'
+
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+
+[formats.mp4]
+family = 'video'
+lossy = true
+alpha = false
+tier = 'converted'
+",
+		)
+		.expect("a configuration");
+
+		let codes = |from: &str, written: &str| {
+			let intent = intent::parse(written).expect("the intent scans");
+			let resolved = resolve::resolve(
+				&intent,
+				resolve::Source {
+					format: from,
+					is_directory: false,
+				},
+				&registry,
+			)
+			.expect("the intent resolves");
+
+			compile(&registry, &crate::tools::Machine, &resolved).map_err(|problems| problems.codes())
+		};
+
+		// Inside the claim, the only backend carries it.
+		assert!(codes("png", "webp").is_ok());
+
+		// Across families it is not eligible, so there is no backend at all, which is
+		// the difference between a matrix that offers a failure and one that says no.
+		assert_eq!(codes("png", "mp4"), Err(vec![Code::Unsupported]));
+		assert_eq!(codes("mp4", "webp"), Err(vec![Code::Unsupported]));
 	}
 
 	#[test]

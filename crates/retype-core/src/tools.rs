@@ -31,6 +31,11 @@ pub struct Tool {
 	/// Substrings the probe output has to mention for the claimed formats to
 	/// work, e.g. `heic` for a build of ImageMagick without libheif.
 	pub components: Vec<String>,
+	/// The families this tool can carry, `docs/config.md` §3. Empty means it makes
+	/// no claim and is eligible for anything, which is what a user-written tool
+	/// gets; the shipped tools state theirs, because a matrix that offers ImageMagick
+	/// for a video container is a claim that is simply false.
+	pub families: Vec<String>,
 	/// Argv template with `{input}`, `{ops}` and `{output}`.
 	pub layout: Vec<String>,
 	/// Named alternatives resolved first-present, `docs/tools.md` §5.1.
@@ -333,6 +338,7 @@ mod tests {
 			version_min: version_min.map(|version| Version::parse(version).expect("a parsable floor")),
 			purpose: "testing".to_string(),
 			components: Vec::new(),
+			families: Vec::new(),
 			layout: vec!["{input}".to_string(), "{ops}".to_string(), "{output}".to_string()],
 			engines: BTreeMap::new(),
 		}
@@ -359,6 +365,7 @@ mod tests {
 			version_min: None,
 			purpose: String::new(),
 			components: Vec::new(),
+			families: Vec::new(),
 			layout: vec!["{input}".to_string()],
 			engines: Default::default(),
 		};

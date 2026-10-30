@@ -187,3 +187,35 @@ fn retype_log_sets_the_same_level() {
 
 	assert!(String::from_utf8_lossy(&output.stderr).contains("configuration"));
 }
+
+#[test]
+fn a_pair_that_no_single_tool_carries_is_not_offered() {
+	// The shipped table says which families each tool handles, so an image encoder
+	// is not offered for a video container even though it carries the operations.
+	let installed = std::process::Command::new("ffmpeg")
+		.arg("-version")
+		.stdout(std::process::Stdio::null())
+		.stderr(std::process::Stdio::null())
+		.status()
+		.map(|status| status.success())
+		.unwrap_or(false);
+
+	if !installed {
+		return;
+	}
+
+	let output = retype().args(["list", "--tiers"]).output().unwrap();
+	let stdout = String::from_utf8_lossy(&output.stdout);
+
+	let pair = |from: &str, to: &str| {
+		stdout
+			.lines()
+			.find(|line| line.starts_with(from) && line.split_whitespace().nth(1) == Some(to))
+			.unwrap_or_default()
+			.to_string()
+	};
+
+	assert!(pair("mp4", "mkv").contains("ffmpeg"), "{}", pair("mp4", "mkv"));
+	assert!(pair("png", "mp4").contains("E_UNSUPPORTED"), "{}", pair("png", "mp4"));
+	assert!(pair("mp4", "png").contains("E_UNSUPPORTED"), "{}", pair("mp4", "png"));
+}

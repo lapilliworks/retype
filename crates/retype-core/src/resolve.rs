@@ -22,6 +22,9 @@ pub struct Source<'a> {
 /// An intent whose tokens and formats are all real.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
+	/// The format the conversion starts from, which decides which tools can carry
+	/// it, `docs/config.md` §3.
+	pub origin: String,
 	pub meta: Meta,
 	pub groups: Vec<Group>,
 	/// Conditions resolved in the user's favour rather than refused.
@@ -264,7 +267,12 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 		return Err(Diagnoses::new(problems));
 	}
 
-	Ok(Resolved { meta, groups, warnings })
+	Ok(Resolved {
+		origin: source.format.to_string(),
+		meta,
+		groups,
+		warnings,
+	})
 }
 
 /// The intent a rename carries, or none if it carries nothing, `docs/grammar.md`

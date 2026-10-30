@@ -55,6 +55,7 @@ probe = ['-version']
 version_min = '7.1'
 purpose = 'image conversion'
 components = ['heic', 'webp']
+families = ['image']
 layout = ['{input}', '{ops}', '{output}']
 
 [tools.ffmpeg]
@@ -62,6 +63,7 @@ command = 'ffmpeg'
 probe = ['-version']
 version_min = '6.0'
 purpose = 'audio and video conversion'
+families = ['video', 'audio']
 layout = ['-y', '-i', '{input}', '{ops}', '{output}']
 
 [tools.pandoc]
@@ -69,6 +71,7 @@ command = 'pandoc'
 probe = ['--version']
 version_min = '3.0'
 purpose = 'document conversion'
+families = ['document']
 layout = ['{input}', '{ops}', '-o', '{output}']
 engines = { pdf = ['typst', 'xelatex', 'lualatex', 'pdflatex', 'weasyprint', 'wkhtmltopdf'] }
 
@@ -81,6 +84,7 @@ aliases = ['7z', '7za']
 probe = ['i']
 version_min = '23.0'
 purpose = '7z archives'
+families = ['archive']
 layout = ['a', '-y', '{ops}', '{output}', '{input}']
 
 [formats.jpg]
@@ -146,6 +150,67 @@ alpha = true
 tier = 'converted'
 aliases = []
 
+# Video and audio, `docs/operations.md`. The format fragment names the codecs the
+# container holds, because ffmpeg needs to be told what to encode rather than
+# inferring from the extension. `-vn` on an audio target is what makes extracting
+# the sound from a clip a conversion rather than an error.
+[formats.mp4]
+family = 'video'
+lossy = true
+alpha = false
+tier = 'converted'
+argv.ffmpeg = { args = ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart'] }
+
+[formats.webm]
+family = 'video'
+lossy = true
+alpha = false
+tier = 'converted'
+argv.ffmpeg = { args = ['-c:v', 'libvpx-vp9', '-c:a', 'libopus'] }
+
+[formats.mkv]
+family = 'video'
+lossy = true
+alpha = false
+tier = 'converted'
+argv.ffmpeg = { args = ['-c:v', 'libx264', '-c:a', 'aac'] }
+
+[formats.mov]
+family = 'video'
+lossy = true
+alpha = false
+tier = 'converted'
+aliases = ['qt']
+argv.ffmpeg = { args = ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart'] }
+
+[formats.mp3]
+family = 'audio'
+lossy = true
+alpha = false
+tier = 'converted'
+argv.ffmpeg = { args = ['-vn', '-c:a', 'libmp3lame'] }
+
+[formats.m4a]
+family = 'audio'
+lossy = true
+alpha = false
+tier = 'converted'
+argv.ffmpeg = { args = ['-vn', '-c:a', 'aac'] }
+
+[formats.flac]
+family = 'audio'
+lossy = false
+alpha = false
+tier = 'converted'
+argv.ffmpeg = { args = ['-vn', '-c:a', 'flac'] }
+
+[formats.wav]
+family = 'audio'
+lossy = false
+alpha = false
+tier = 'converted'
+argv.ffmpeg = { args = ['-vn', '-c:a', 'pcm_s16le'] }
+
 [ops.quality]
 aliases = ['q']
 slot = 50
@@ -190,12 +255,14 @@ say = '{value} colours'
 [ops.cap]
 slot = 28
 exclusive = ['scale']
-formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
+formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico', 'mp4', 'webm', 'mkv', 'mov']
 param = { class = 'int', min = 16, max = 16384 }
 say = 'cap to {value}'
 
 [ops.cap.argv.magick]
 args = ['-filter', 'Lanczos', '-resize', '{value}x{value}>']
+[ops.cap.argv.ffmpeg]
+args = ['-vf', 'scale={value}:{value}:force_original_aspect_ratio=decrease']
 [ops.resize]
 slot = 25
 exclusive = ['scale']
@@ -289,9 +356,14 @@ say = 'keep only {value}'
 
 [ops.at]
 slot = 10
-formats = []
+formats = ['mp4', 'webm', 'mkv', 'mov', 'mp3', 'm4a', 'flac', 'wav']
 param = { class = 'time' }
 say = 'starting at {value}'
+
+# After `-i` rather than before it: seeking by keyframe is faster and lands on the
+# wrong second, and a clip that starts late is worse than one that starts slowly.
+[ops.at.argv.ffmpeg]
+args = ['-ss', '{value}']
 
 [ops.speed]
 slot = 10
@@ -301,14 +373,20 @@ say = 'speed at {value} percent'
 
 [ops.fps]
 slot = 10
-formats = []
+formats = ['mp4', 'webm', 'mkv', 'mov']
 param = { class = 'int', min = 1, max = 240 }
 say = '{value} frames per second'
 
+[ops.fps.argv.ffmpeg]
+args = ['-r', '{value}']
+
 [ops.mute]
 slot = 40
-formats = []
+formats = ['mp4', 'webm', 'mkv', 'mov']
 say = 'remove the audio'
+
+[ops.mute.argv.ffmpeg]
+args = ['-an']
 
 [ops.normalize]
 slot = 40

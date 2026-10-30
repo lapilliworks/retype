@@ -128,7 +128,7 @@ Per-format constraints of this kind come from `docs/tools.md`, because they are 
 
 ## 6. Not specified yet
 
-`trim`, `at`, `speed`, `fps`, `mute`, `normalize`, `mono`, `bitrate`, `codec`, `page`, `dpi` are reserved with their slots and parameters. Ranges, defaults and per-container applicability are defined with the video, audio and document verticals. Until then a job that uses them is `E_UNSUPPORTED`, not `E_NAME_UNKNOWN`.
+`at`, `fps`, `mute` and `cap` have landed for video and audio, `docs/tools.md` §3.1. `trim`, `speed`, `normalize`, `mono`, `bitrate`, `codec`, `page` and `dpi` are reserved with their slots and parameters. Ranges, defaults and per-container applicability are defined with the video, audio and document verticals. Until then a job that uses them is `E_UNSUPPORTED`, not `E_NAME_UNKNOWN`.
 
 ## 7. Presets
 
