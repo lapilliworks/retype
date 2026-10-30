@@ -179,6 +179,9 @@ impl<'a> Resolved<'a> {
 pub struct Registry {
 	tools: BTreeMap<String, Tool>,
 	presets: BTreeMap<String, Preset>,
+	/// Conditions the configuration raised but did not refuse, such as a user
+	/// preset replacing a shipped one, `docs/config.md` §2.
+	warnings: Vec<Diagnostic>,
 	/// Backend preference order, `docs/config.md` §8. The first entry that
 	/// carries every operation in a plan and is present wins.
 	backends: Vec<String>,
@@ -202,6 +205,77 @@ impl Registry {
 
 	pub fn load(text: &str) -> Result<Self, Diagnoses> {
 		Self::load_in(text, "the configuration")
+	}
+
+	/// The shipped table with a user file merged over it, `docs/config.md` §2.
+	pub fn with_user(user: &str, label: &str) -> Result<Self, Diagnoses> {
+		Self::load_layers(include_str!("../builtin.toml"), user, label)
+	}
+
+	/// Merge `user` over `base` and load the result.
+	///
+	/// The merge is on the document rather than on the loaded tables, because the
+	/// rules are about keys: a table is merged key by key, an array is replaced
+	/// whole, and `enabled = false` removes an entry. What a user may *change* is
+	/// narrower than what they may add, so shadowing is checked before the merge.
+	pub fn load_layers(base: &str, user: &str, label: &str) -> Result<Self, Diagnoses> {
+		let mut base: toml::Value = match toml::from_str(base) {
+			Ok(value) => value,
+			Err(error) => {
+				return Err(Diagnoses::one(fail(
+					Code::CfgParse,
+					format!("the built-in configuration: {error}"),
+				)));
+			}
+		};
+
+		let over: toml::Value = match toml::from_str(user) {
+			Ok(value) => value,
+			Err(error) => return Err(Diagnoses::one(fail(Code::CfgParse, format!("{label}: {error}")))),
+		};
+
+		let mut problems = Vec::new();
+		let mut warnings = Vec::new();
+
+		// A user file declares its version, `docs/config.md` §12: without it the
+		// merge would silently inherit the built-in one and hide a stale file.
+		match over.get("version").and_then(toml::Value::as_str) {
+			None => problems.push(fail(
+				Code::CfgVersion,
+				format!("{label} declares no version; it must say version = '{CONFIG_VERSION}'"),
+			)),
+			Some(version) if version != CONFIG_VERSION => problems.push(fail(
+				Code::CfgVersion,
+				format!("{label} declares '{version}', this build reads '{CONFIG_VERSION}'"),
+			)),
+			Some(_) => {}
+		}
+
+		problems.extend(shadowing(&base, &over, label, &mut warnings));
+
+		if problems.is_empty() {
+			let before = base.clone();
+			merge(&mut base, &over);
+			prune_preference(&before, &mut base);
+		}
+
+		if !problems.is_empty() {
+			return Err(Diagnoses::new(problems));
+		}
+
+		let merged = match toml::to_string(&base) {
+			Ok(merged) => merged,
+			Err(error) => {
+				return Err(Diagnoses::one(fail(
+					Code::CfgParse,
+					format!("the merged configuration does not serialize: {error}"),
+				)));
+			}
+		};
+
+		let mut registry = Self::load_in(&merged, label)?;
+		registry.warnings = warnings;
+		Ok(registry)
 	}
 
 	fn load_in(text: &str, label: &str) -> Result<Self, Diagnoses> {
@@ -365,6 +439,17 @@ impl Registry {
 			presets.insert(preset.key.clone(), preset);
 		}
 
+		// The two tables are one name space, and identical keys are the case the
+		// uniqueness pass over names cannot see.
+		for key in presets.keys() {
+			if ops.contains_key(key) {
+				problems.push(fail(
+					Code::CfgNameClash,
+					format!("{label}: '{key}' is declared as both an operation and a preset"),
+				));
+			}
+		}
+
 		let mut names = collect_names(&ops);
 		names.extend(collect_preset_names(&presets));
 		problems.extend(uniqueness(&names, label));
@@ -383,6 +468,7 @@ impl Registry {
 			ops,
 			names,
 			format_names,
+			warnings: Vec::new(),
 		};
 
 		// Presets are checked against the registry they are part of, because a
@@ -394,6 +480,12 @@ impl Registry {
 		}
 
 		Ok(registry)
+	}
+
+	/// What the configuration said in passing. Not errors: each one is a decision
+	/// resolved in the user's favour and reported rather than hidden.
+	pub fn warnings(&self) -> &[Diagnostic] {
+		&self.warnings
 	}
 
 	/// Backend names in preference order, `docs/config.md` §8.
@@ -841,6 +933,118 @@ fn collect_format_names(formats: &BTreeMap<String, Format>) -> Vec<(String, Stri
 	}
 
 	names
+}
+
+/// Keys a user may change on an operation that already exists. Everything else
+/// about it is the published grammar, so changing it would make two machines
+/// disagree about the same intent string, `docs/config.md` §2.
+const OPERATION_BEHAVIOUR: &[&str] = &["argv", "say"];
+
+/// What a user file may not do: redefine an operation's identity, or replace a
+/// shipped preset without being told.
+fn shadowing(base: &toml::Value, over: &toml::Value, label: &str, warnings: &mut Vec<Diagnostic>) -> Vec<Error> {
+	let mut problems = Vec::new();
+
+	let base_ops = table(base, "ops");
+	let over_ops = table(over, "ops");
+
+	for (key, entry) in &over_ops {
+		if !base_ops.contains_key(key) {
+			continue;
+		}
+
+		let Some(changed) = entry.as_table() else {
+			continue;
+		};
+
+		for name in changed.keys() {
+			if !OPERATION_BEHAVIOUR.contains(&name.as_str()) && name != "enabled" {
+				problems.push(fail(
+					Code::CfgValidation,
+					format!(
+						"{label}: operation '{key}' may not redefine '{name}': the grammar is a published contract, so only {} may differ",
+						OPERATION_BEHAVIOUR.join(" and ")
+					),
+				));
+			}
+		}
+	}
+
+	let base_presets = table(base, "presets");
+	for key in table(over, "presets").keys() {
+		if base_presets.contains_key(key) {
+			warnings.push(Diagnostic::global(
+				Code::CfgShadowed,
+				format!("{label}: preset '{key}' replaces the shipped one"),
+			));
+		}
+	}
+
+	problems
+}
+
+fn table(value: &toml::Value, path: &str) -> toml::value::Table {
+	value
+		.get(path)
+		.and_then(toml::Value::as_table)
+		.cloned()
+		.unwrap_or_default()
+}
+
+/// A tool the user removed cannot stay in the preference list. Dropping it is the
+/// only reading that does not force a user who disables one tool to restate the
+/// whole order, and it is narrow: a name that was never declared still fails V9.
+fn prune_preference(before: &toml::Value, merged: &mut toml::Value) {
+	let names = |value: &toml::Value| -> Vec<String> { table(value, "tools").keys().cloned().collect() };
+
+	let removed: Vec<String> = names(before)
+		.into_iter()
+		.filter(|tool| !names(merged).contains(tool))
+		.collect();
+
+	if removed.is_empty() {
+		return;
+	}
+
+	if let Some(prefer) = merged
+		.get_mut("backends")
+		.and_then(|backends| backends.get_mut("prefer"))
+		.and_then(toml::Value::as_array_mut)
+	{
+		prefer.retain(|name| {
+			name.as_str()
+				.is_none_or(|name| !removed.iter().any(|removed| removed == name))
+		});
+	}
+}
+
+/// Merge `over` into `base`, key by key for tables, whole for arrays and scalars,
+/// with `enabled = false` removing an entry, `docs/config.md` §2.
+fn merge(base: &mut toml::Value, over: &toml::Value) {
+	match (base, over) {
+		(toml::Value::Table(base), toml::Value::Table(over)) => {
+			for (key, value) in over {
+				let disables = value
+					.get("enabled")
+					.and_then(toml::Value::as_bool)
+					.is_some_and(|enabled| !enabled);
+
+				if disables {
+					base.remove(key);
+					continue;
+				}
+
+				match base.get_mut(key) {
+					Some(existing) => merge(existing, value),
+					None => {
+						base.insert(key.clone(), value.clone());
+					}
+				}
+			}
+		}
+		// An array or a scalar replaces what was there rather than joining it.
+		(base, over) => *base = over.clone(),
+	}
 }
 
 fn collect_preset_names(presets: &BTreeMap<String, Preset>) -> Vec<(String, String)> {
@@ -1617,5 +1821,230 @@ tier = 'converted'
 		assert_eq!(quality.param.as_ref().unwrap().class, Class::Int);
 		assert_eq!(quality.param.as_ref().unwrap().min, Some(1));
 		assert_eq!(quality.param.as_ref().unwrap().max, Some(100));
+	}
+	/// The built-in table with a user file merged over it, as `retype` loads it.
+	fn merged(user: &str) -> Result<Registry, Vec<Code>> {
+		Registry::load_layers(include_str!("../builtin.toml"), user, "retype.toml").map_err(|problems| problems.codes())
+	}
+
+	#[test]
+	fn a_user_may_change_how_a_shipped_operation_runs() {
+		let registry = merged(
+			"\
+version = 'retype-config-1'
+
+[ops.quality.argv.magick]
+args = ['-quality', '{value}', '-define', 'jpeg:dct-method=float']
+",
+		)
+		.expect("loads");
+
+		let op = registry.op("quality").expect("declared");
+		assert_eq!(
+			op.fragment("magick").expect("magick fragment").args,
+			["-quality", "{value}", "-define", "jpeg:dct-method=float"]
+		);
+		assert_eq!(op.slot, 50, "the identity is untouched");
+	}
+
+	#[test]
+	fn a_user_may_not_redefine_an_operation_identity() {
+		assert_eq!(
+			merged("version = 'retype-config-1'\n\n[ops.quality]\nslot = 10\n").unwrap_err(),
+			[Code::CfgValidation]
+		);
+		assert_eq!(
+			merged("version = 'retype-config-1'\n\n[ops.quality]\nformats = ['png']\n").unwrap_err(),
+			[Code::CfgValidation]
+		);
+	}
+
+	#[test]
+	fn a_user_may_add_a_tool_and_an_operation() {
+		let registry = merged(
+			"\
+version = 'retype-config-1'
+
+[tools.blurrer]
+command = 'blurrer'
+layout = ['{input}', '{ops}', '{output}']
+
+[ops.blur]
+slot = 20
+formats = ['webp']
+param = { class = 'int', min = 1, max = 100 }
+say = 'blur by {value}'
+
+[ops.blur.argv.blurrer]
+args = ['--blur', '{value}']
+",
+		)
+		.expect("loads");
+
+		assert!(registry.tool("blurrer").is_some());
+		assert!(registry.op("blur").is_some());
+	}
+
+	#[test]
+	fn enabled_false_removes_what_was_shipped() {
+		let registry = merged(
+			"\
+version = 'retype-config-1'
+
+[ops.nometa]
+enabled = false
+
+[tools.pandoc]
+enabled = false
+",
+		)
+		.expect("loads");
+
+		assert!(registry.op("nometa").is_none());
+		assert!(registry.tool("pandoc").is_none());
+		assert!(
+			!registry.backends().iter().any(|name| name == "pandoc"),
+			"a removed tool leaves the preference list with it"
+		);
+	}
+
+	#[test]
+	fn an_array_is_replaced_rather_than_joined() {
+		let registry =
+			merged("version = 'retype-config-1'\n\n[ops.quality.argv.magick]\nargs = ['-quality', '{value}']\n")
+				.expect("loads");
+
+		let op = registry.op("quality").expect("declared");
+		assert_eq!(op.fragment("magick").expect("fragment").args, ["-quality", "{value}"]);
+	}
+
+	#[test]
+	fn a_user_file_must_declare_its_version() {
+		assert_eq!(merged("[ops.quality]\n").unwrap_err(), [Code::CfgVersion]);
+		assert_eq!(merged("version = 'retype-config-2'\n").unwrap_err(), [Code::CfgVersion]);
+	}
+
+	#[test]
+	fn replacing_a_shipped_preset_is_a_warning_rather_than_a_failure() {
+		let registry = merged(
+			"\
+version = 'retype-config-1'
+
+[presets.thumbnail]
+tokens = ['cap={value}', 'quality90']
+",
+		)
+		.expect("loads");
+
+		assert_eq!(registry.warnings().len(), 1);
+		assert_eq!(registry.warnings()[0].code, Code::CfgShadowed);
+		assert_eq!(
+			registry.preset("thumbnail").expect("declared").tokens,
+			["cap={value}", "quality90"]
+		);
+	}
+
+	#[test]
+	fn a_user_operation_may_not_take_a_shipped_preset_name() {
+		assert_eq!(
+			merged("version = 'retype-config-1'\n\n[ops.thumbnail]\nslot = 20\nformats = ['webp']\n").unwrap_err(),
+			[Code::CfgNameClash]
+		);
+	}
+
+	#[test]
+	fn a_preset_joins_the_name_space() {
+		let text = [
+			WEBP,
+			"[ops.quality]\nslot = 50\nparam = { class = 'int' }\n",
+			"[presets.quality]\ntokens = ['quality80']\n",
+		]
+		.concat();
+
+		let problems = config(&text).unwrap_err();
+		assert!(problems.contains(&Code::CfgNameClash), "{problems:?}");
+	}
+
+	#[test]
+	fn a_preset_names_only_real_tokens() {
+		let unknown = [WEBP, "[presets.look]\ntokens = ['blur5']\n"].concat();
+		assert_eq!(config(&unknown).unwrap_err(), [Code::CfgValidation]);
+	}
+
+	#[test]
+	fn a_preset_may_not_smuggle_a_control_token() {
+		let text = [WEBP, "[presets.look]\ntokens = ['ask']\n"].concat();
+		assert_eq!(config(&text).unwrap_err(), [Code::CfgValidation]);
+	}
+
+	#[test]
+	fn a_preset_cycle_is_refused() {
+		let text = [
+			WEBP,
+			"[presets.alpha]\ntokens = ['beta']\n",
+			"[presets.beta]\ntokens = ['alpha']\n",
+		]
+		.concat();
+
+		let problems = config(&text).unwrap_err();
+		assert!(!problems.is_empty(), "a cycle is refused");
+		assert!(problems.iter().all(|code| *code == Code::CfgValidation), "{problems:?}");
+	}
+
+	#[test]
+	fn a_preset_parameter_must_match_its_tokens() {
+		let quality = "\n[ops.quality]\nslot = 50\nparam = { class = 'int' }\n";
+		let unused = [
+			WEBP,
+			quality,
+			"[presets.look]\nparam = { class = 'int' }\ntokens = ['quality80']\n",
+		]
+		.concat();
+		assert_eq!(config(&unused).unwrap_err(), [Code::CfgValidation]);
+
+		let invented = [WEBP, quality, "[presets.look]\ntokens = ['quality={value}']\n"].concat();
+		assert_eq!(config(&invented).unwrap_err(), [Code::CfgValidation]);
+
+		let used = [
+			WEBP,
+			quality,
+			"[presets.look]\nparam = { class = 'int' }\ntokens = ['quality={value}']\n",
+		]
+		.concat();
+		assert!(config(&used).is_ok());
+	}
+
+	#[test]
+	fn a_phrase_must_agree_with_the_parameter() {
+		let with_value = [
+			WEBP,
+			"[ops.blur]\nslot = 20\nformats = ['webp']\nparam = { class = 'int' }\nsay = 'blur by {value}'\n",
+		]
+		.concat();
+		assert!(config(&with_value).is_ok());
+
+		let hides_value = [
+			WEBP,
+			"[ops.blur]\nslot = 20\nformats = ['webp']\nparam = { class = 'int' }\nsay = 'blur'\n",
+		]
+		.concat();
+		assert_eq!(config(&hides_value).unwrap_err(), [Code::CfgValidation]);
+
+		let invents_value = [
+			WEBP,
+			"[ops.blur]\nslot = 20\nformats = ['webp']\nsay = 'blur by {value}'\n",
+		]
+		.concat();
+		assert_eq!(config(&invents_value).unwrap_err(), [Code::CfgValidation]);
+	}
+
+	#[test]
+	fn a_phrase_takes_only_the_value_hole() {
+		let unknown = [
+			WEBP,
+			"[ops.blur]\nslot = 20\nformats = ['webp']\nsay = 'blur by {amount}'\n",
+		]
+		.concat();
+		assert_eq!(config(&unknown).unwrap_err(), [Code::CfgValidation]);
 	}
 }

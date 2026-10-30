@@ -58,6 +58,7 @@ pub enum Code {
 	CfgMissing,
 	CfgUnknownKey,
 	CfgNameClash,
+	CfgShadowed,
 
 	// Watches, `docs/watch.md`.
 	WatchPausedByPolicy,

@@ -56,9 +56,11 @@ Shadowing:
 | User overrides a built-in operation's `argv` | Yes | The operation behaves differently, the grammar does not change |
 | User overrides a built-in operation's `slot`, `param` or `formats` | No | `E_CFG_VALIDATION` |
 | User defines an operation with a built-in name | No | `E_CFG_NAME_CLASH` |
-| User preset with a built-in preset name | Yes, with a warning | The user pipeline replaces the shipped one |
+| User preset with a built-in preset name | Yes, with a warning, `E_CFG_SHADOWED` | The user pipeline replaces the shipped one. Its `param` is part of the merge, so a preset that needs a different parameter is a new preset rather than an override |
 | User preset with an operation name | No | `E_CFG_NAME_CLASH` |
 | Directory file defining anything but policy | No | `E_CFG_VALIDATION` |
+
+A removed entry leaves the preference list with it: disabling a tool drops it from `backends.prefer` rather than making the user restate the whole order. A name that was never declared is still a V9 error, so a typo is not silently ignored.
 
 The distinction exists because the grammar is a published contract. A configuration file may change how an operation is executed, and may add new names to the vocabulary, but may not silently change what a shipped name means. Otherwise two machines running `retype-grammar-1` would disagree about the same intent string.
 

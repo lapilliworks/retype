@@ -47,7 +47,7 @@ Everything else is namespaced, and the table lists every code in full so that a 
 | Group | Codes |
 |---|---|
 | Invocation | `E_USAGE_ARGS`, `E_USAGE_CONFLICT`, `E_USAGE_OUTPUT_COUNT` |
-| Configuration | `E_CFG_PARSE`, `E_CFG_VERSION`, `E_CFG_VALIDATION`, `E_CFG_MISSING`, `E_CFG_UNKNOWN_KEY`, `E_CFG_NAME_CLASH` |
+| Configuration | `E_CFG_PARSE`, `E_CFG_VERSION`, `E_CFG_VALIDATION`, `E_CFG_MISSING`, `E_CFG_UNKNOWN_KEY`, `E_CFG_NAME_CLASH`, `E_CFG_SHADOWED` |
 | Watches | `E_WATCH_PAUSED_BY_POLICY` |
 | Tools | `E_TOOL_MISSING`, `E_TOOL_VERSION`, `E_TOOL_FAILED`, `E_TOOL_TIMEOUT` |
 | Filesystem and state | `E_IO_FAILED`, `E_IO_PERMISSION`, `E_IO_SPACE`, `E_IO_NOT_FOUND`, `E_IO_EXISTS`, `E_IO_LOCKED`, `E_IO_CORRUPT_JOURNAL` |
@@ -55,7 +55,7 @@ Everything else is namespaced, and the table lists every code in full so that a 
 | Transport | `E_IPC_VERSION`, `E_IPC_HANDSHAKE`, `E_IPC_FRAME`, `E_IPC_METHOD`, `E_IPC_UNAVAILABLE`, `E_IPC_AMBIGUOUS`, `E_IPC_RESYNC`, `E_IPC_SUPERVISED`, `E_IPC_AUTH`, `E_IPC_INTERNAL` |
 | Bugs | `E_INTERNAL_INVARIANT`, `E_INTERNAL_PANIC`, `E_INTERNAL_UNEXPECTED` |
 
-`docs/ipc.md` §8 defines the transport codes; they are listed here as well so that one table answers "what can this build emit". A test compares this document against the enum in both directions, so a code that exists without documentation, or is documented without existing, fails the build.
+`docs/ipc.md` §8 defines the transport codes; they are listed here as well so that one table answers "what can this build emit". `E_CFG_SHADOWED` is the one configuration code that is a warning rather than a failure: a user preset replacing a shipped one is allowed and reported. A test compares this document against the enum in both directions, so a code that exists without documentation, or is documented without existing, fails the build.
 
 ## 4. Categories
 

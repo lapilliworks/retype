@@ -5,6 +5,7 @@
 //! `retype-watch`, and the wire in `retype-ipc`.
 
 pub mod client;
+pub mod config;
 pub mod daemon;
 pub mod doctor;
 pub mod error;
