@@ -12,6 +12,11 @@
 #
 # An exclusive group with a single member is not declared, because a group of one
 # cannot conflict; `docs/config.md` V8 makes that an error for the same reason.
+#
+# An operation with no `argv` fragment for any tool is declared but unusable: the
+# planner reports it as unsupported. Fragments land with a vertical, and only for
+# flags whose behaviour matches `docs/operations.md`; the geometry ones below were
+# measured against ImageMagick 7.1.2.
 
 version = 'retype-config-1'
 
@@ -128,6 +133,9 @@ exclusive = ['encode-target']
 formats = ['jpg', 'webp', 'avif', 'heic']
 param = { class = 'int', min = 1, max = 100 }
 
+
+[ops.quality.argv.magick]
+args = ['-quality', '{value}']
 [ops.lossless]
 slot = 50
 exclusive = ['encode-target']
@@ -155,49 +163,70 @@ formats = ['png', 'gif']
 param = { class = 'int', min = 2, max = 256 }
 
 [ops.cap]
-slot = 20
+slot = 28
 exclusive = ['scale']
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 param = { class = 'int', min = 16, max = 16384 }
 
+
+[ops.cap.argv.magick]
+args = ['-filter', 'Lanczos', '-resize', '{value}x{value}>']
 [ops.resize]
-slot = 20
+slot = 25
 exclusive = ['scale']
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 param = { class = 'dim', min = 1, max = 16384 }
 
+
+[ops.resize.argv.magick]
+args = ['-filter', 'Lanczos', '-resize', '{value}>']
 [ops.width]
 aliases = ['w']
-slot = 20
+slot = 26
 exclusive = ['scale']
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 param = { class = 'int', min = 16, max = 16384 }
 
+
+[ops.width.argv.magick]
+args = ['-filter', 'Lanczos', '-resize', '{value}x>']
 [ops.height]
 aliases = ['h']
-slot = 20
+slot = 27
 exclusive = ['scale']
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 param = { class = 'int', min = 16, max = 16384 }
 
+
+[ops.height.argv.magick]
+args = ['-filter', 'Lanczos', '-resize', 'x{value}>']
 [ops.crop]
-slot = 20
+slot = 24
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 param = { class = 'ratio', min = 1, max = 1000 }
 
 [ops.rotate]
-slot = 20
+slot = 21
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 param = { class = 'enum', values = ['90', '180', '270'] }
 
+
+[ops.rotate.argv.magick]
+args = ['-rotate', '{value}']
 [ops.fliph]
-slot = 20
+slot = 22
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 
+
+[ops.fliph.argv.magick]
+args = ['-flop']
 [ops.flipv]
-slot = 20
+slot = 23
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 
+
+[ops.flipv.argv.magick]
+args = ['-flip']
 [ops.gray]
 aliases = ['grey', 'grayscale']
 slot = 30

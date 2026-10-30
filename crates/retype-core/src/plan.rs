@@ -585,6 +585,61 @@ formats = ['webp']
 	}
 
 	#[test]
+	fn the_shipped_table_plans_an_image_conversion_through_magick() {
+		let registry = Registry::builtin().expect("the built-in table loads");
+		let intent = intent::parse("jpg+quality80+cap1080+rotate90").expect("scans");
+		let resolved = resolve::resolve(
+			&intent,
+			resolve::Source {
+				format: "heic",
+				is_directory: false,
+			},
+			&registry,
+		)
+		.expect("resolves");
+
+		let plans = compile(&registry, &Machine::with(&["magick"]), &resolved).expect("plans");
+
+		assert_eq!(plans[0].backend.name(), "magick");
+		assert_eq!(
+			literals(&plans[0]),
+			[
+				"-rotate",
+				"90",
+				"-filter",
+				"Lanczos",
+				"-resize",
+				"1080x1080>",
+				"-quality",
+				"80"
+			],
+			"geometry runs in the order docs/operations.md 2 gives"
+		);
+	}
+
+	#[test]
+	fn an_operation_with_no_fragment_is_unsupported_even_though_it_is_declared() {
+		let registry = Registry::builtin().expect("the built-in table loads");
+		let intent = intent::parse("png+compress9").expect("scans");
+		let resolved = resolve::resolve(
+			&intent,
+			resolve::Source {
+				format: "heic",
+				is_directory: false,
+			},
+			&registry,
+		)
+		.expect("the operation applies");
+
+		assert_eq!(
+			compile(&registry, &Machine::with(&["magick"]), &resolved)
+				.unwrap_err()
+				.codes(),
+			[Code::Unsupported]
+		);
+	}
+
+	#[test]
 	fn argv_fills_the_paths_it_was_given() {
 		let plan = plan_one("webp+quality85", &Machine::with(&["magick"]));
 		let argv = plan.argv(Path::new("/in.jpg"), Path::new("/out.webp"));

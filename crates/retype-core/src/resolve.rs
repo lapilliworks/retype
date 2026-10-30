@@ -562,9 +562,10 @@ aliases = ['tar.gz']
 			.filter_map(|op| op.value.as_ref().map(|argument| &argument.parsed))
 			.collect();
 
+		// `docs/operations.md` §2: rotate, then cap, then the encoder dial.
 		assert_eq!(
 			values,
-			vec![&Value::Int(1000), &Value::Enum("90".to_string()), &Value::Int(85)]
+			vec![&Value::Enum("90".to_string()), &Value::Int(1000), &Value::Int(85)]
 		);
 	}
 

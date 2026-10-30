@@ -18,14 +18,14 @@ Reserved keys, all phases. Keys are permanent; a key is never reused for a diffe
 | `effort` | `effort` | 50 | none | `int`, range per format | 3 |
 | `compress` | `compress` | 50 | none | `int`, 0 to 9 | 3 |
 | `colors` | `colors` | 50 | none | `int`, 2 to 256 | 3 |
-| `cap` | `cap` | 20 | `scale` | `int`, 16 to 16384 | 3 |
-| `resize` | `resize` | 20 | `scale` | `dim`, 1 to 16384 per side | 3 |
-| `width` | `width` | 20 | `scale` | `int`, 16 to 16384 | 3 |
-| `height` | `height` | 20 | `scale` | `int`, 16 to 16384 | 3 |
-| `crop` | `crop` | 20 | none | `ratio`, 1 to 1000 per side | 3 |
-| `rotate` | `rotate` | 20 | none | `enum`: 90, 180, 270 | 3 |
-| `fliph` | `fliph` | 20 | none | none | 3 |
-| `flipv` | `flipv` | 20 | none | none | 3 |
+| `cap` | `cap` | 28 | `scale` | `int`, 16 to 16384 | 3 |
+| `resize` | `resize` | 25 | `scale` | `dim`, 1 to 16384 per side | 3 |
+| `width` | `width` | 26 | `scale` | `int`, 16 to 16384 | 3 |
+| `height` | `height` | 27 | `scale` | `int`, 16 to 16384 | 3 |
+| `crop` | `crop` | 24 | none | `ratio`, 1 to 1000 per side | 3 |
+| `rotate` | `rotate` | 21 | none | `enum`: 90, 180, 270 | 3 |
+| `fliph` | `fliph` | 22 | none | none | 3 |
+| `flipv` | `flipv` | 23 | none | none | 3 |
 | `gray` | `gray` | 30 | none | none | 3 |
 | `nometa` | `nometa` | 60 | none | none | 3 |
 | `noprofile` | `noprofile` | 60 | none | none | 3 |
@@ -42,6 +42,8 @@ Reserved keys, all phases. Keys are permanent; a key is never reused for a diffe
 | `dpi` | `dpi` | 10 | none | `int`, 36 to 1200 | 4 |
 | `ask` | `ask` | 90 | `confirm` | none | 1 |
 | `now` | `now` | 90 | `confirm` | none | 1 |
+
+Slots are integers, and the canonical order is by slot then key, so a sequence that must run in order is encoded in the numbers. The geometry numbers are `§2`'s sequence: `rotate` 21, `fliph` 22, `flipv` 23, `crop` 24, `resize` 25, `width` 26, `height` 27, `cap` 28. Two operations in one slot are printed in key order, which is why no two operations that interact share one.
 
 Aliases:
 
