@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -28,9 +28,10 @@ use retype_core::resolve::{self, Source as Origin};
 use retype_core::{execute, print, watches};
 use retype_watch::{Window, feed};
 
+use crate::daemon::queue::Pool;
 use crate::error::Result;
 
-/// What the daemon and the watcher threads share.
+/// What the daemon, its watchers and its runners share.
 pub struct Shared {
 	pub registry: Registry,
 	pub journal: Mutex<Journal>,
@@ -39,6 +40,8 @@ pub struct Shared {
 	/// What this process has converted, so its own writes are not mistaken for a
 	/// rename request.
 	pub recent: Recent,
+	/// Automatic jobs refused because the queue was full, `docs/watch.md` §8.
+	pub dropped: AtomicU64,
 }
 
 /// A conversion consumes one path and produces another. The filesystem reports
@@ -96,14 +99,14 @@ impl Watcher {
 /// added while the daemon runs is picked up within a second, and a root removed
 /// stops being watched. That is what makes `retype watch` answer while a daemon is
 /// already running, rather than only after a restart.
-pub fn start(shared: Arc<Shared>, state_dir: &Path) -> Result<Option<Watcher>> {
+pub fn start(shared: Arc<Shared>, pool: Arc<Pool>, state_dir: &Path) -> Result<Option<Watcher>> {
 	let stop = Arc::new(AtomicBool::new(false));
 	let supervisor = {
 		let shared = Arc::clone(&shared);
 		let stop = Arc::clone(&stop);
 		let state_dir = state_dir.to_path_buf();
 
-		thread::spawn(move || supervise(&shared, &state_dir, &stop))
+		thread::spawn(move || supervise(&shared, &pool, &state_dir, &stop))
 	};
 
 	Ok(Some(Watcher {
@@ -115,7 +118,7 @@ pub fn start(shared: Arc<Shared>, state_dir: &Path) -> Result<Option<Watcher>> {
 /// How often the registration file is re-read.
 const RELOAD: Duration = Duration::from_secs(1);
 
-fn supervise(shared: &Arc<Shared>, state_dir: &Path, stop: &AtomicBool) {
+fn supervise(shared: &Arc<Shared>, pool: &Arc<Pool>, state_dir: &Path, stop: &AtomicBool) {
 	// One worker per root, keyed by the canonical path the registration holds.
 	let mut workers: BTreeMap<PathBuf, (Arc<AtomicBool>, JoinHandle<()>)> = BTreeMap::new();
 
@@ -155,7 +158,12 @@ fn supervise(shared: &Arc<Shared>, state_dir: &Path, stop: &AtomicBool) {
 				continue;
 			}
 
-			match spawn_worker(Arc::clone(shared), &registration.path, registration.recursive) {
+			match spawn_worker(
+				Arc::clone(shared),
+				Arc::clone(pool),
+				&registration.path,
+				registration.recursive,
+			) {
 				Ok((worker_stop, handle)) => {
 					workers.insert(registration.path.clone(), (worker_stop, handle));
 				}
@@ -174,6 +182,7 @@ fn supervise(shared: &Arc<Shared>, state_dir: &Path, stop: &AtomicBool) {
 
 fn spawn_worker(
 	shared: Arc<Shared>,
+	pool: Arc<Pool>,
 	root: &Path,
 	recursive: bool,
 ) -> std::result::Result<(Arc<AtomicBool>, JoinHandle<()>), retype_watch::notify::Error> {
@@ -205,7 +214,20 @@ fn spawn_worker(
 					continue;
 				}
 
-				convert(&shared, &watched_root, &fact.source, &fact.target);
+				let work = crate::daemon::queue::Work {
+					root: watched_root.clone(),
+					source: fact.source,
+					target: fact.target,
+				};
+
+				if !pool.submit(work) {
+					shared.dropped.fetch_add(1, Ordering::Relaxed);
+					eprintln!(
+						"retype: conversion is paused for {}: {} jobs are waiting",
+						watched_root.display(),
+						crate::daemon::queue::CAPACITY
+					);
+				}
 			}
 		}
 	});
@@ -214,7 +236,7 @@ fn spawn_worker(
 }
 
 /// Turn one rename into jobs, or explain in the log why it is not one.
-fn convert(shared: &Shared, root: &Path, source: &Path, target: &Path) {
+pub fn convert(shared: &Shared, root: &Path, source: &Path, target: &Path) {
 	let (Some(source_name), Some(target_name)) = (
 		source.file_name().and_then(|name| name.to_str()),
 		target.file_name().and_then(|name| name.to_str()),

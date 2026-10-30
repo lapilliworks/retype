@@ -1,0 +1,340 @@
+//! The runner pool, `docs/ipc.md` §6 and `docs/watch.md` §8.
+//!
+//! Watchers submit work; runners take one job each, run it, and come back for the
+//! next. Nobody holds a batch: a runner that finishes the last queued job waits
+//! idle, so a burst of renames is worked through at the pool's width rather than
+//! converted in whatever order the events arrived.
+//!
+//! The queue is bounded on purpose. A build system writing through a watched tree
+//! can ask for more conversions than any machine should accept, so automatic
+//! submissions above the cap are dropped and counted rather than piling up: the
+//! number is reported so a notification can say conversion paused instead of
+//! pretending a file is on its way.
+
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+use crate::daemon::watcher::{Shared, convert};
+
+/// How many automatic jobs may wait. Fixed rather than derived from the machine,
+/// because a different number of cores must not change how much a directory may
+/// ask for.
+pub const CAPACITY: usize = 256;
+
+/// How many conversions run at once: enough to keep a machine busy without
+/// turning a burst of renames into a burst of encoders.
+pub fn runners() -> usize {
+	std::thread::available_parallelism()
+		.map(|count| count.get())
+		.unwrap_or(2)
+		.clamp(1, 4)
+}
+
+/// Wait this long for work before checking whether to stop.
+const IDLE: Duration = Duration::from_millis(200);
+
+/// One conversion, named by the rename that asked for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Work {
+	pub root: PathBuf,
+	pub source: PathBuf,
+	pub target: PathBuf,
+}
+
+#[derive(Default)]
+struct Inner {
+	waiting: VecDeque<Work>,
+	closed: bool,
+}
+
+/// The queue itself: a bounded deque with runners waiting on it. Runners take one
+/// job each and come back, so a runner never holds work it is not executing.
+#[derive(Default)]
+pub struct Queue {
+	inner: Mutex<Inner>,
+	ready: Condvar,
+	dropped: AtomicU64,
+}
+
+impl Queue {
+	/// Offer work to the queue. `false` means it was full and the job was dropped,
+	/// which `docs/watch.md` §8 asks for rather than absorbing churn.
+	pub fn submit(&self, work: Work) -> bool {
+		let Ok(mut inner) = self.inner.lock() else {
+			return false;
+		};
+
+		if inner.closed || inner.waiting.len() >= CAPACITY {
+			self.dropped.fetch_add(1, Ordering::Relaxed);
+			return false;
+		}
+
+		inner.waiting.push_back(work);
+		self.ready.notify_one();
+		true
+	}
+
+	/// Wait up to `idle` for a job.
+	fn take(&self, idle: Duration) -> Take {
+		let deadline = Instant::now() + idle;
+		let Ok(mut inner) = self.inner.lock() else {
+			return Take::Closed;
+		};
+
+		loop {
+			if let Some(work) = inner.waiting.pop_front() {
+				return Take::Work(work);
+			}
+
+			if inner.closed {
+				return Take::Closed;
+			}
+
+			let left = deadline.saturating_duration_since(Instant::now());
+			if left.is_zero() {
+				return Take::Idle;
+			}
+
+			match self.ready.wait_timeout(inner, left) {
+				Ok((guard, _)) => inner = guard,
+				Err(_) => return Take::Closed,
+			}
+		}
+	}
+
+	fn close(&self) {
+		if let Ok(mut inner) = self.inner.lock() {
+			inner.closed = true;
+		}
+		self.ready.notify_all();
+	}
+
+	/// How many automatic jobs were refused because the queue was full.
+	pub fn dropped(&self) -> u64 {
+		self.dropped.load(Ordering::Relaxed)
+	}
+}
+
+pub struct Pool {
+	queue: Arc<Queue>,
+	workers: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl Pool {
+	/// Start `size` runners, each of which takes one job at a time.
+	pub fn start(shared: Arc<Shared>, size: usize) -> Arc<Self> {
+		let queue = Arc::new(Queue::default());
+		let mut workers = Vec::with_capacity(size);
+
+		for _ in 0..size {
+			let queue = Arc::clone(&queue);
+			let shared = Arc::clone(&shared);
+
+			workers.push(thread::spawn(move || serve(&shared, &queue)));
+		}
+
+		Arc::new(Self {
+			queue,
+			workers: Mutex::new(workers),
+		})
+	}
+
+	pub fn submit(&self, work: Work) -> bool {
+		self.queue.submit(work)
+	}
+
+	pub fn dropped(&self) -> u64 {
+		self.queue.dropped()
+	}
+
+	/// Stop taking work and wait for the runners to finish what they took.
+	pub fn stop(&self) {
+		self.queue.close();
+
+		let workers = self
+			.workers
+			.lock()
+			.map(|mut workers| std::mem::take(&mut *workers))
+			.unwrap_or_default();
+
+		for handle in workers {
+			let _ = handle.join();
+		}
+	}
+}
+
+/// What a runner found when it asked for work.
+enum Take {
+	Work(Work),
+	/// Nothing waiting, and the queue is still open: wait again.
+	Idle,
+	/// The queue is closed and empty, so this runner is done.
+	Closed,
+}
+
+fn serve(shared: &Shared, queue: &Queue) {
+	// One job per turn: the loop dequeues only after the previous job is done, so
+	// a runner never holds work it is not executing.
+	loop {
+		match queue.take(IDLE) {
+			Take::Work(work) => convert(shared, &work.root, &work.source, &work.target),
+			Take::Idle => continue,
+			Take::Closed => break,
+		}
+	}
+}
+
+/// The queue's own report: how many automatic jobs were dropped.
+#[derive(Default)]
+pub struct Dropped(AtomicU64);
+
+impl Dropped {
+	pub fn note(&self) {
+		self.0.fetch_add(1, Ordering::Relaxed);
+	}
+
+	pub fn count(&self) -> u64 {
+		self.0.load(Ordering::Relaxed)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::fs;
+	use std::sync::atomic::AtomicU64;
+
+	use super::*;
+	use crate::daemon::watcher::Recent;
+	use retype_core::journal::Journal;
+	use retype_core::registry::Registry;
+
+	fn shared(state: &std::path::Path) -> Arc<Shared> {
+		let registry = Registry::load(
+			"\
+version = 'retype-config-1'
+
+[backends]
+prefer = ['copy']
+
+[tools.copy]
+command = 'true'
+layout = ['{input}', '{ops}', '{output}']
+
+[formats.png]
+family = 'image'
+lossy = false
+alpha = true
+tier = 'exact'
+
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+",
+		)
+		.expect("the fixture loads");
+
+		let (journal, replay) = Journal::open(&state.join("jobs.jsonl")).expect("journal");
+
+		Arc::new(Shared {
+			registry,
+			journal: std::sync::Mutex::new(journal),
+			jobs: std::sync::Mutex::new(replay.jobs),
+			recent: Recent::default(),
+			dropped: AtomicU64::new(0),
+		})
+	}
+
+	#[test]
+	fn every_submitted_job_is_run_once() {
+		let dir = tempfile::tempdir().unwrap();
+		let shared = shared(dir.path());
+		let photos = dir.path().join("photos");
+		fs::create_dir(&photos).unwrap();
+
+		let pool = Pool::start(Arc::clone(&shared), 2);
+
+		for index in 0..8 {
+			let source = photos.join(format!("a{index}.png"));
+			let target = photos.join(format!("a{index}.webp"));
+			fs::write(&source, b"pixels").unwrap();
+
+			assert!(pool.submit(Work {
+				root: photos.clone(),
+				source,
+				target,
+			}));
+		}
+
+		// The fixture's command is `true`, so each job fails; what matters here is
+		// that each was taken exactly once, which the job list records.
+		let deadline = std::time::Instant::now() + Duration::from_secs(10);
+		while shared.jobs.lock().map(|jobs| jobs.len()).unwrap_or_default() < 8 {
+			assert!(std::time::Instant::now() < deadline, "jobs did not run");
+			thread::sleep(Duration::from_millis(20));
+		}
+
+		pool.stop();
+
+		assert_eq!(shared.jobs.lock().unwrap().len(), 8);
+	}
+
+	#[test]
+	fn a_runner_waits_for_the_next_job_instead_of_exiting() {
+		let dir = tempfile::tempdir().unwrap();
+		let shared = shared(dir.path());
+		let photos = dir.path().join("photos");
+		fs::create_dir(&photos).unwrap();
+
+		let pool = Pool::start(Arc::clone(&shared), 1);
+
+		// Longer than the idle wait, so a runner that gave up when the queue was
+		// empty would have gone by now.
+		thread::sleep(IDLE * 3);
+
+		let source = photos.join("late.png");
+		let target = photos.join("late.webp");
+		fs::write(&source, b"pixels").unwrap();
+		assert!(pool.submit(Work {
+			root: photos.clone(),
+			source,
+			target,
+		}));
+
+		let deadline = std::time::Instant::now() + Duration::from_secs(10);
+		while shared.jobs.lock().map(|jobs| jobs.len()).unwrap_or_default() < 1 {
+			assert!(std::time::Instant::now() < deadline, "the runner had gone");
+			thread::sleep(Duration::from_millis(20));
+		}
+
+		pool.stop();
+	}
+
+	#[test]
+	fn a_full_queue_drops_and_says_so() {
+		let dir = tempfile::tempdir().unwrap();
+		let shared = shared(dir.path());
+
+		// No runners, so nothing is taken and the queue fills at its cap.
+		let pool = Pool::start(shared, 0);
+		let photos = dir.path().to_path_buf();
+		let accepted = (0..CAPACITY + 5)
+			.filter(|index| {
+				pool.submit(Work {
+					root: photos.clone(),
+					source: photos.join(format!("{index}.png")),
+					target: photos.join(format!("{index}.webp")),
+				})
+			})
+			.count();
+
+		pool.stop();
+
+		assert_eq!(accepted, CAPACITY, "the cap is the queue, not the machine");
+	}
+}

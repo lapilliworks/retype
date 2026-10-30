@@ -2,6 +2,7 @@
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -42,6 +43,7 @@ impl Server {
 				journal: Mutex::new(journal),
 				jobs: Mutex::new(replay.jobs),
 				recent: Default::default(),
+				dropped: AtomicU64::new(0),
 			}),
 			machine: machine::load_or_create(state_dir)?,
 			started: Instant::now(),
@@ -172,6 +174,7 @@ impl Server {
 					"uptime_ms": self.started.elapsed().as_millis() as u64,
 					"jobs": self.shared.jobs.lock().map(|jobs| jobs.len()).unwrap_or_default(),
 					"journal": self.journal_path().display().to_string(),
+					"dropped": self.shared.dropped.load(Ordering::Relaxed),
 					"endpoint": self.endpoint,
 				}),
 			)?,

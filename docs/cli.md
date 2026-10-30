@@ -57,7 +57,7 @@ Shell quoting is rarely needed: the intent character set excludes every shell me
 
 `--dry-run` is `explain` with a real file: same output, including the estimate from the file's actual size and the resolved backend.
 
-The command runs in this process for now, and journals the job it ran. Running through the daemon as an immediate job, and undo, arrive with the queue: the record written today is the one both will use, so a job converted now stays visible to `jobs list` and to `undo` once they exist.
+The command runs in this process for now, and journals the job it ran. A rename in a watched directory runs on the daemon's pool of runners, which is what bounds parallelism; `convert` does not go through it yet. Running through the daemon as an immediate job, and undo, arrive with the queue: the record written today is the one both will use, so a job converted now stays visible to `jobs list` and to `undo` once they exist.
 
 A failure writes nothing and leaves nothing behind. The output is staged in its target directory and renamed into place only when the tool exits zero, so an output path is absent or complete, never empty and never half written.
 
