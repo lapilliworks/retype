@@ -9,6 +9,7 @@ pub mod machine;
 #[cfg(windows)]
 mod pipe;
 mod server;
+pub mod watcher;
 
 pub use server::Server;
 #[cfg(unix)]
@@ -39,6 +40,7 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	}
 
 	let mut server = Server::open(&state_dir)?;
+	let watcher = watcher::start(server.shared(), &state_dir)?;
 	let listener = UnixListener::bind(&socket)?;
 	set_socket_private(&socket)?;
 
@@ -51,6 +53,10 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	}
 
 	let result = serve(listener, server);
+
+	if let Some(watcher) = watcher {
+		watcher.stop();
+	}
 
 	// Graceful shutdown should not leave a path that looks like a live daemon.
 	let _ = fs::remove_file(&socket);
@@ -72,6 +78,7 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 
 	let _lock = Lock::acquire(&state_dir.join("lock"), &state_dir)?;
 	let mut server = Server::open(&state_dir)?;
+	let watcher = watcher::start(server.shared(), &state_dir)?;
 	let name = pipe::name(server.machine());
 
 	state::publish_endpoint(&state_dir, &name)?;
@@ -82,6 +89,10 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	}
 
 	let result = pipe::serve(&name, &mut server);
+
+	if let Some(watcher) = watcher {
+		watcher.stop();
+	}
 
 	state::clear_endpoint(&state_dir);
 	result

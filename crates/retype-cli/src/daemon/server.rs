@@ -1,22 +1,22 @@
 //! The request loop, and what the daemon answers.
 
 use std::io::{BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use retype_core::error::Code;
-use retype_core::job::Job;
 use retype_core::journal::Journal;
 use retype_ipc::{Hello, HelloResult, IPC_VERSION, Request, Response, WireError, read_frame, same_major};
 use serde_json::json;
 
 use crate::daemon::machine;
+use crate::daemon::watcher::Shared;
 use crate::error::Result;
 
 pub struct Server {
 	endpoint: Option<String>,
-	journal: Journal,
-	jobs: Vec<Job>,
+	shared: Arc<Shared>,
 	machine: String,
 	started: Instant,
 	stopped: bool,
@@ -37,16 +37,28 @@ impl Server {
 
 		Ok(Self {
 			endpoint: None,
-			journal,
-			jobs: replay.jobs,
+			shared: Arc::new(Shared {
+				registry: crate::config::load()?,
+				journal: Mutex::new(journal),
+				jobs: Mutex::new(replay.jobs),
+				recent: Default::default(),
+			}),
 			machine: machine::load_or_create(state_dir)?,
 			started: Instant::now(),
 			stopped: false,
 		})
 	}
 
-	pub fn journal_path(&self) -> &Path {
-		self.journal.path()
+	/// What the watcher threads need, so one registry and one journal serve both.
+	pub fn shared(&self) -> Arc<Shared> {
+		Arc::clone(&self.shared)
+	}
+
+	pub fn journal_path(&self) -> PathBuf {
+		match self.shared.journal.lock() {
+			Ok(journal) => journal.path().to_path_buf(),
+			Err(_) => PathBuf::new(),
+		}
 	}
 
 	pub fn stopped(&self) -> bool {
@@ -158,7 +170,7 @@ impl Server {
 					"pid": std::process::id(),
 					"machine": self.machine,
 					"uptime_ms": self.started.elapsed().as_millis() as u64,
-					"jobs": self.jobs.len(),
+					"jobs": self.shared.jobs.lock().map(|jobs| jobs.len()).unwrap_or_default(),
 					"journal": self.journal_path().display().to_string(),
 					"endpoint": self.endpoint,
 				}),
@@ -166,9 +178,9 @@ impl Server {
 			"jobs.list" => Response::ok(
 				request.id,
 				json!({
-					"jobs": self.jobs.iter().map(|job| {
+					"jobs": self.shared.jobs.lock().map(|jobs| jobs.iter().map(|job| {
 						json!({"id": job.id, "state": job.state, "source": job.source.path, "created": job.created})
-					}).collect::<Vec<_>>(),
+					}).collect::<Vec<_>>()).unwrap_or_default(),
 				}),
 			)?,
 			"shutdown" => {

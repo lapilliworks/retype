@@ -80,6 +80,38 @@ pub fn run(plan: &Plan<'_>, input: &Path, output: &Path) -> Result<Report> {
 	})
 }
 
+/// Convert a rename that has already happened.
+///
+/// The target path holds the source bytes under the new name, so the bytes are
+/// relabelled first: the input name carries the format its content actually has
+/// while the conversion runs, and no observer sees a WebP path holding HEIC
+/// bytes. A failure puts the source name back, so the file is left saying what it
+/// contains.
+pub fn convert_rename(
+	plan: &Plan<'_>,
+	renamed: &Path,
+	stem: &str,
+	source_format: &str,
+	output: &Path,
+) -> Result<Report> {
+	let prepared = crate::convert::prepare_input(renamed, stem, source_format)?;
+	let result = run(plan, prepared.input(), output);
+
+	if result.is_ok() && !prepared.is_temporary() {
+		// The rename meant this file to become the target, so once the target
+		// exists the source-named copy is the leftover of the relabelling.
+		let _ = std::fs::remove_file(prepared.input());
+	}
+
+	if result.is_err() && prepared.is_temporary() {
+		// The source name was occupied, so the bytes sit at the renamed path under a
+		// name that lies about them. Nothing is deleted: the record names the path.
+		let _ = crate::convert::restore_source_name(renamed, stem, source_format);
+	}
+
+	result
+}
+
 /// Where a resolved command name actually lives. An absolute path was pinned by
 /// the configuration, so it is used as written, `docs/config.md` §3.
 fn executable(command: &str) -> Option<PathBuf> {
@@ -227,6 +259,61 @@ tier = 'converted'
 
 		assert_eq!(error.code(), Code::ToolFailed);
 		assert!(error.to_string().contains("wrote nothing"), "{error}");
+	}
+
+	#[test]
+	fn a_rename_is_relabelled_before_it_is_converted() {
+		let registry = copy_fixture();
+		let plans = plans(&registry, "webp");
+		let dir = tempfile::tempdir().unwrap();
+		let target = dir.path().join("photo.webp");
+		fs::write(&target, b"pixels").unwrap();
+
+		let report = convert_rename(&plans[0], &target, "photo", "png", &target).expect("converts");
+
+		assert_eq!(report.bytes, 6);
+		assert_eq!(fs::read(&target).unwrap(), b"pixels");
+		assert!(
+			!dir.path().join("photo.png").exists(),
+			"the source name is not left behind"
+		);
+	}
+
+	#[test]
+	fn a_failed_rename_conversion_puts_the_source_name_back() {
+		let registry = Registry::load(
+			"\
+version = 'retype-config-1'
+
+[backends]
+prefer = ['noop']
+
+[tools.noop]
+command = 'true'
+layout = ['{input}', '{ops}', '{output}']
+
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+",
+		)
+		.expect("the fixture loads");
+		let plans = plans(&registry, "webp");
+		let dir = tempfile::tempdir().unwrap();
+		let target = dir.path().join("photo.webp");
+		fs::write(&target, b"pixels").unwrap();
+
+		let error = convert_rename(&plans[0], &target, "photo", "png", &target).unwrap_err();
+
+		assert_eq!(error.code(), Code::ToolFailed);
+		assert!(!target.exists(), "a webp path does not keep png bytes");
+		assert_eq!(
+			fs::read(dir.path().join("photo.png")).unwrap(),
+			b"pixels",
+			"the file says what it contains"
+		);
 	}
 
 	#[test]

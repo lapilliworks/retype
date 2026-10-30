@@ -363,6 +363,7 @@ dependencies = [
  "libc",
  "retype-core",
  "retype-ipc",
+ "retype-watch",
  "serde_json",
  "tempfile",
  "thiserror",

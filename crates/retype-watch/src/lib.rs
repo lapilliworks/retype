@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+pub use notify;
+
 use notify::event::{EventKind, ModifyKind, RenameMode};
 pub use notify::{Event, RecommendedWatcher, Result as NotifyResult};
 use notify::{RecursiveMode, Watcher};
