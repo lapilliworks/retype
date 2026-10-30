@@ -200,6 +200,7 @@ args = ['-resize', '{value}']
 | `param` | when it takes a value | `class`, plus `min` and `max` for the numeric classes, `values` for `enum`, and `scalar` for `range`, which is `int` unless it says `time` |
 | `formats` | yes | Formats the operation applies to, or `['*']` |
 | `argv.<tool>` | once the vertical has landed | Fragment contributed to that tool's `{ops}` |
+| `say` | no | How the operation reads in a sentence, with `{value}` where its parameter goes. Absent, the canonical token is used |
 
 Formats, operations and presets enter one name space. Aliases are declared per operation.
 
@@ -277,6 +278,7 @@ Loading fails, naming the file and key, on any of:
 | V1 | A placeholder outside `{input}`, `{ops}`, `{output}`, `{value}`, `{engine.<name>}`, or in the wrong position |
 | V2 | A `layout` that does not name `{input}`, `{ops}` and `{output}` exactly once each |
 | V3 | `{value}` in an entity that declares no `param`, or a declared `param` never used |
+| V14 | A `say` with a hole other than `{value}`, or whose `{value}` disagrees with whether the operation takes a parameter |
 | V4 | `{engine.<name>}` naming an engine the tool does not declare |
 | V5 | A command containing a shell metacharacter or a space |
 | V6 | A name used twice, or a preset name equal to an operation name or alias |

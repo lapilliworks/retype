@@ -13,6 +13,11 @@
 # An exclusive group with a single member is not declared, because a group of one
 # cannot conflict; `docs/config.md` V8 makes that an error for the same reason.
 #
+# `say` is how the operation reads in a sentence, `docs/cli.md` §3: a template with
+# `{value}` where the parameter goes, and nothing else. It is the operation's name
+# spelled for a person rather than for the grammar, so `cap to 1080` and
+# `rotate 90 degrees` are the strings the product shows.
+#
 # An operation with no `argv` fragment for any tool is declared but unusable: the
 # planner reports it as unsupported. Fragments land with a vertical, and only for
 # flags whose behaviour matches `docs/operations.md`; the geometry ones below were
@@ -132,7 +137,7 @@ slot = 50
 exclusive = ['encode-target']
 formats = ['jpg', 'webp', 'avif', 'heic']
 param = { class = 'int', min = 1, max = 100 }
-
+say = 'quality at {value}'
 
 [ops.quality.argv.magick]
 args = ['-quality', '{value}']
@@ -140,34 +145,39 @@ args = ['-quality', '{value}']
 slot = 50
 exclusive = ['encode-target']
 formats = ['webp', 'avif', 'heic']
+say = 'without loss'
 
 [ops.size]
 slot = 50
 exclusive = ['encode-target']
 formats = ['jpg', 'png', 'webp', 'avif', 'heic']
 param = { class = 'size', min = 1 }
+say = 'at most {value}'
 
 [ops.effort]
 slot = 50
 formats = ['webp', 'avif']
 param = { class = 'int', min = 0, max = 10 }
+say = 'effort {value}'
 
 [ops.compress]
 slot = 50
 formats = ['png', 'tiff']
 param = { class = 'int', min = 0, max = 9 }
+say = 'compression level {value}'
 
 [ops.colors]
 slot = 50
 formats = ['png', 'gif']
 param = { class = 'int', min = 2, max = 256 }
+say = '{value} colours'
 
 [ops.cap]
 slot = 28
 exclusive = ['scale']
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 param = { class = 'int', min = 16, max = 16384 }
-
+say = 'cap to {value}'
 
 [ops.cap.argv.magick]
 args = ['-filter', 'Lanczos', '-resize', '{value}x{value}>']
@@ -176,7 +186,7 @@ slot = 25
 exclusive = ['scale']
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 param = { class = 'dim', min = 1, max = 16384 }
-
+say = 'resize to {value}'
 
 [ops.resize.argv.magick]
 args = ['-filter', 'Lanczos', '-resize', '{value}>']
@@ -186,7 +196,7 @@ slot = 26
 exclusive = ['scale']
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 param = { class = 'int', min = 16, max = 16384 }
-
+say = 'width {value}'
 
 [ops.width.argv.magick]
 args = ['-filter', 'Lanczos', '-resize', '{value}x>']
@@ -196,7 +206,7 @@ slot = 27
 exclusive = ['scale']
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 param = { class = 'int', min = 16, max = 16384 }
-
+say = 'height {value}'
 
 [ops.height.argv.magick]
 args = ['-filter', 'Lanczos', '-resize', 'x{value}>']
@@ -204,26 +214,27 @@ args = ['-filter', 'Lanczos', '-resize', 'x{value}>']
 slot = 24
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 param = { class = 'ratio', min = 1, max = 1000 }
+say = 'crop to {value}'
 
 [ops.rotate]
 slot = 21
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
 param = { class = 'enum', values = ['90', '180', '270'] }
-
+say = 'rotate {value} degrees'
 
 [ops.rotate.argv.magick]
 args = ['-rotate', '{value}']
 [ops.fliph]
 slot = 22
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
-
+say = 'flip horizontally'
 
 [ops.fliph.argv.magick]
 args = ['-flop']
 [ops.flipv]
 slot = 23
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
-
+say = 'flip vertically'
 
 [ops.flipv.argv.magick]
 args = ['-flip']
@@ -231,74 +242,90 @@ args = ['-flip']
 aliases = ['grey', 'grayscale']
 slot = 30
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
+say = 'convert to greyscale'
 
 [ops.nometa]
 slot = 60
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'ico']
+say = 'strip metadata'
 
 [ops.noprofile]
 slot = 60
 formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'ico']
+say = 'strip the colour profile'
 
 [ops.ask]
 slot = 90
 exclusive = ['confirm']
 formats = ['*']
+say = 'ask first'
 
 [ops.now]
 slot = 90
 exclusive = ['confirm']
 formats = ['*']
+say = 'do it now'
 
 [ops.trim]
 slot = 10
 formats = []
 param = { class = 'range', scalar = 'time' }
+say = 'keep only {value}'
 
 [ops.at]
 slot = 10
 formats = []
 param = { class = 'time' }
+say = 'starting at {value}'
 
 [ops.speed]
 slot = 10
 formats = []
 param = { class = 'int', min = 1, max = 400 }
+say = 'speed at {value} percent'
 
 [ops.fps]
 slot = 10
 formats = []
 param = { class = 'int', min = 1, max = 240 }
+say = '{value} frames per second'
 
 [ops.mute]
 slot = 40
 formats = []
+say = 'remove the audio'
 
 [ops.normalize]
 slot = 40
 formats = []
+say = 'normalise loudness'
 
 [ops.mono]
 slot = 40
 formats = []
+say = 'mix down to mono'
 
 [ops.bitrate]
 slot = 40
 formats = []
 param = { class = 'int', min = 1 }
+say = 'bitrate {value}'
 
 [ops.codec]
 slot = 40
 formats = []
 param = { class = 'enum', values = [] }
+say = 'codec {value}'
 
 [ops.page]
 slot = 10
 formats = []
 param = { class = 'range' }
+say = 'pages {value}'
 
 [ops.dpi]
 aliases = ['d']
 slot = 10
 formats = []
 param = { class = 'int', min = 36, max = 1200 }
+say = 'resolution {value} dpi'

@@ -66,6 +66,56 @@ fn token(op: &Op, registry: &Registry) -> String {
 	}
 }
 
+/// What the intent does, in one sentence, `docs/cli.md` §3.
+///
+/// The wording comes from each operation's `say`, so a user-declared operation
+/// describes itself without a build, and the order is the order the operations
+/// run in. It reads aloud, which is the point: this is the line a notification
+/// shows and the line a user can check against what they meant.
+pub fn sentence(resolved: &Resolved, registry: &Registry, source: &str) -> String {
+	let mut text = resolved
+		.groups
+		.iter()
+		.map(|group| group_sentence(group, registry, source))
+		.collect::<Vec<String>>()
+		.join("; ");
+
+	if resolved.meta.ask {
+		text.push_str(", after asking");
+	}
+	if resolved.meta.now {
+		text.push_str(", without asking");
+	}
+
+	text
+}
+
+fn group_sentence(group: &crate::resolve::Group, registry: &Registry, source: &str) -> String {
+	if group.keep_source {
+		return format!("keep the source {source} as it is");
+	}
+
+	let mut text = format!("convert from {source} to {}", group.format);
+
+	for (index, op) in group.pipeline().iter().enumerate() {
+		text.push_str(if index == 0 { " with " } else { ", then " });
+		text.push_str(&phrase(op, registry));
+	}
+
+	text
+}
+
+fn phrase(op: &Op, registry: &Registry) -> String {
+	let value = op.value.as_ref().map(|argument| value(&argument.parsed));
+
+	match registry.op(&op.key).and_then(|declared| declared.say.as_deref()) {
+		Some(template) => template.replace("{value}", value.as_deref().unwrap_or_default()),
+		// A declaration without a phrase still has to be readable, so the token
+		// stands in for it rather than leaving a gap in the sentence.
+		None => token(op, registry),
+	}
+}
+
 /// A value in the form its class produces, `docs/grammar.md` C4.
 pub fn value(value: &Value) -> String {
 	match value {
@@ -176,6 +226,84 @@ mod tests {
 		.expect("the intent should resolve");
 
 		(resolved, registry)
+	}
+
+	fn sentence_of(text: &str) -> String {
+		let (resolved, registry) = resolved(text);
+		sentence(&resolved, &registry, "heic")
+	}
+
+	#[test]
+	fn a_sentence_lists_the_actions_in_the_order_they_run() {
+		assert_eq!(
+			sentence_of("webp+q80+cap1080+rotate90"),
+			"convert from heic to webp with quality at 80, then cap to 1080, then rotate 90 degrees"
+		);
+	}
+
+	#[test]
+	fn a_sentence_without_actions_names_the_formats() {
+		assert_eq!(sentence_of("jpg"), "convert from heic to jpg");
+	}
+
+	#[test]
+	fn a_kept_source_says_so() {
+		assert_eq!(
+			sentence_of("heic,webp+q80"),
+			"keep the source heic as it is; convert from heic to webp with quality at 80"
+		);
+	}
+
+	#[test]
+	fn every_output_gets_a_clause() {
+		assert_eq!(
+			sentence_of("jpg,webp+q80"),
+			"convert from heic to jpg; convert from heic to webp with quality at 80"
+		);
+	}
+
+	#[test]
+	fn asking_is_part_of_the_sentence() {
+		assert_eq!(sentence_of("jpg!"), "convert from heic to jpg, without asking");
+		assert_eq!(sentence_of("jpg+ask"), "convert from heic to jpg, after asking");
+	}
+
+	#[test]
+	fn an_operation_without_a_phrase_still_reads() {
+		let registry = Registry::load(
+			"\
+version = 'retype-config-1'
+
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+
+[ops.blur]
+slot = 20
+formats = ['webp']
+param = { class = 'int', min = 1, max = 100 }
+",
+		)
+		.expect("loads");
+
+		let intent = intent::parse("webp+blur5").expect("scans");
+		let resolved = resolve::resolve(
+			&intent,
+			Source {
+				format: "heic",
+				is_directory: false,
+			},
+			&registry,
+		)
+		.expect("resolves");
+
+		assert_eq!(
+			sentence(&resolved, &registry, "heic"),
+			"convert from heic to webp with blur5",
+			"the token stands in for a missing phrase"
+		);
 	}
 
 	fn canonical(text: &str) -> String {

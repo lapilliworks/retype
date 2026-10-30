@@ -23,6 +23,20 @@ fn explains_an_intent_without_a_file() {
 }
 
 #[test]
+fn explains_the_actions_in_words() {
+	let output = retype()
+		.args(["explain", "holiday.heic", "webp+q80+cap1080+rotate90"])
+		.output()
+		.unwrap();
+	let stdout = String::from_utf8_lossy(&output.stdout);
+
+	assert!(
+		stdout.contains("convert from heic to webp with quality at 80, then cap to 1080, then rotate 90 degrees"),
+		"{stdout}"
+	);
+}
+
+#[test]
 fn a_conflicting_intent_is_a_diagnosis() {
 	let output = retype()
 		.args(["explain", "holiday.heic", "webp+q80+size5mb"])

@@ -81,12 +81,13 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	}
 
 	let canonical = print::intent(&resolved, registry);
+	let sentence = print::sentence(&resolved, registry, &source.format);
 	let derived = output::derive(&source.stem, &source.format, &resolved.groups);
 
 	if request.json {
-		print_json(&canonical, &source.display(), &derived, &plans, installed);
+		print_json(&canonical, &sentence, &source.display(), &derived, &plans, installed);
 	} else if !request.quiet {
-		print_human(&canonical, &source.display(), &derived, &plans, installed);
+		print_human(&canonical, &sentence, &source.display(), &derived, &plans, installed);
 	}
 
 	Ok(if installed {
@@ -141,13 +142,21 @@ fn source_of(registry: &Registry, name: &str) -> std::result::Result<Named, Diag
 	))
 }
 
-fn print_human(canonical: &str, source: &str, derived: &[Derived], plans: &[Plan<'_>], installed: bool) {
+fn print_human(
+	canonical: &str,
+	sentence: &str,
+	source: &str,
+	derived: &[Derived],
+	plans: &[Plan<'_>],
+	installed: bool,
+) {
 	println!("{:<10}{canonical}", "intent");
 	println!(
 		"{:<10}{}",
 		"source",
 		if source.is_empty() { "not given" } else { source }
 	);
+	println!("{:<10}{sentence}", "says");
 
 	for (index, plan) in plans.iter().enumerate() {
 		let name = derived
@@ -174,7 +183,7 @@ fn print_human(canonical: &str, source: &str, derived: &[Derived], plans: &[Plan
 	}
 }
 
-fn print_json(canonical: &str, source: &str, derived: &[Derived], plans: &[Plan<'_>], installed: bool) {
+fn print_json(canonical: &str, sentence: &str, source: &str, derived: &[Derived], plans: &[Plan<'_>], installed: bool) {
 	let outputs: Vec<serde_json::Value> = plans
 		.iter()
 		.enumerate()
@@ -199,6 +208,7 @@ fn print_json(canonical: &str, source: &str, derived: &[Derived], plans: &[Plan<
 		json!({
 			"v": "retype-cli-json-1",
 			"intent": canonical,
+			"says": sentence,
 			"source": if source.is_empty() { serde_json::Value::Null } else { json!(source) },
 			"outputs": outputs,
 		})

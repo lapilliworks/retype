@@ -72,7 +72,19 @@ Two positionals, the same two `convert` takes, so `convert --dry-run` and `expla
 | `<name>` | The path being replaced. It need not exist, because only its stem and suffix are read |
 | `<intent>` | The intent string, `docs/grammar.md` |
 
-Prints the canonical intent, the derived output names, the resolved plan in pipeline order, the chosen backend, the argv it would run, the tier and every diagnostic.
+Prints the canonical intent, the same intent in words, the derived output names, the resolved plan in pipeline order, the chosen backend, the argv it would run, the tier and every diagnostic:
+
+```
+intent    webp+quality80+cap1080+rotate90
+source    holiday.heic
+says      convert from heic to webp with quality at 80, then cap to 1080, then rotate 90 degrees
+output    holiday-quality80-cap1080-rotate90.webp
+  backend magick
+  argv    magick {input} -quality 80 -filter Lanczos -resize 1080x1080> -rotate 90 {output}
+  tier    converted
+```
+
+The sentence is fixed rather than generated: each operation declares how it reads, in `say`, with `{value}` where its parameter goes, so the wording is the same every time and a user-declared operation describes itself. Actions appear in the order they run, outputs are separated by a semicolon, `ask` and `now` close the sentence, and an operation without a phrase falls back to its canonical token rather than leaving a gap.
 
 A name whose suffix is a declared format is a file of that format; a name with no dot is a directory, which is what makes `explain Photos zip` work; a name whose suffix is undeclared is a diagnosis, because retype does not convert what it does not know.
 
@@ -165,6 +177,7 @@ retype jobs get 01J8Z
 retype undo --last
 retype why photo.webp
 retype explain clip.mov 'mp4+cap1080+trim10s-30s+mute+now'
+retype explain photo.heic 'webp+q80+cap1080+rotate90'
 retype doctor --emit
 retype tools list --installed
 retype tools install ffmpeg@gpl

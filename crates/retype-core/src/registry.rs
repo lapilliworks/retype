@@ -98,6 +98,10 @@ pub struct Op {
 	pub param: Option<Param>,
 	/// What this operation contributes to each tool's `{ops}`, by tool name.
 	pub argv: BTreeMap<String, Fragment>,
+	/// How the operation reads in a sentence, `docs/cli.md` §3. A template whose
+	/// only hole is `{value}`, so a user-declared operation can say what it does
+	/// without a build.
+	pub say: Option<String>,
 }
 
 impl Format {
@@ -273,6 +277,30 @@ impl Registry {
 				op.param.is_some(),
 				label,
 			));
+
+			// The sentence is part of the declaration: a phrase that hides its
+			// parameter would describe a conversion that does something else.
+			if let Some(say) = &op.say {
+				let holes = placeholders(say);
+
+				if let Some(unknown) = holes.iter().find(|hole| **hole != "value") {
+					problems.push(fail(
+						Code::CfgValidation,
+						format!(
+							"{label}: operation '{key}' says '{{{unknown}}}', and only {{value}} may appear in a phrase"
+						),
+					));
+				}
+
+				if op.param.is_some() != holes.contains(&"value") {
+					problems.push(fail(
+						Code::CfgValidation,
+						format!(
+							"{label}: operation '{key}' says '{say}', which disagrees with whether it takes a value"
+						),
+					));
+				}
+			}
 
 			// V3: a parameter no fragment interpolates never reaches a command.
 			if op.param.is_some() && !op.argv.is_empty() && !op.argv.values().any(Fragment::uses_value) {
@@ -798,6 +826,8 @@ struct OpEntry {
 	param: Option<Param>,
 	#[serde(default)]
 	argv: BTreeMap<String, FragmentEntry>,
+	#[serde(default)]
+	say: Option<String>,
 }
 
 impl OpEntry {
@@ -815,6 +845,7 @@ impl OpEntry {
 				.iter()
 				.map(|(tool, entry)| (tool.clone(), entry.view()))
 				.collect(),
+			say: self.say.clone(),
 		}
 	}
 }
