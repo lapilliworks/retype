@@ -43,6 +43,8 @@ pub struct Shared {
 	pub recent: Recent,
 	/// Automatic jobs refused because the queue was full, `docs/watch.md` §8.
 	pub dropped: AtomicU64,
+	/// What clients replay from, `docs/ipc.md` §7.
+	pub events: Mutex<crate::daemon::events::Events>,
 	/// This install's identity, recorded with every job and undo record.
 	pub machine: String,
 	/// Where the state lives, which is where undo records go.
@@ -612,6 +614,12 @@ pub fn publish(shared: &Shared, job: &Job) {
 		if let Err(error) = journal.append(job) {
 			eprintln!("retype: cannot journal {}: {error}", job.id);
 		}
+	}
+
+	// One event per snapshot, so a client polling `events` sees the same
+	// transitions the journal records, `docs/ipc.md` §7.
+	if let Ok(mut events) = shared.events.lock() {
+		events.push(job);
 	}
 
 	if let Ok(mut jobs) = shared.jobs.lock() {

@@ -400,6 +400,7 @@ tier = 'converted'
 			jobs: std::sync::Mutex::new(replay.jobs),
 			recent: Recent::default(),
 			dropped: AtomicU64::new(0),
+			events: std::sync::Mutex::new(crate::daemon::events::Events::default()),
 			machine: "test".to_string(),
 			state_dir: state.to_path_buf(),
 		})

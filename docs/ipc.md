@@ -119,9 +119,15 @@ Request timeout defaults to 5 s. No method blocks on work that can outlive it.
 {"event":"job","seq":91,"job":{...}}
 ```
 
-- `seq` is monotonic per daemon lifetime, shared across connections
-- The last 1024 events are retained in memory; `since` replays from a sequence
-- A `since` older than the retention window returns `E_IPC_RESYNC`, and the client reloads with `jobs.list`
+```
+events {"since": 90}  ->  {"events": [...], "seq": 91}
+```
+
+- `seq` is monotonic per daemon lifetime, shared across connections, and starts at one. `since` is the last sequence the client saw, so `since = 0` asks for everything retained
+- The last 1024 events are retained in memory, one per job snapshot, in the order the journal recorded them
+- The answer carries the newest sequence, so a client knows where it now stands without a second call
+- A `since` older than the retention window cannot be filled: the call fails with `E_IPC_RESYNC` and the client reloads with `jobs.list`. A `since` ahead of the daemon is not an error, it is an empty answer
+- Events are read by polling `since`, not by holding a connection open. One connection at a time is therefore still enough, and a client that would rather stream asks again as soon as an answer arrives
 - Events are advisory. State is authoritative only in `jobs.list` and `jobs.get`
 
 ## 8. Errors

@@ -1,9 +1,10 @@
 //! The daemon: one per user session, the only writer of state, `docs/ipc.md`.
 //!
-//! Connections are served one at a time, which is enough while every method is
-//! a request and answer. The event stream in `docs/ipc.md` §7 is what forces a
-//! connection per thread, and it arrives with the job queue.
+//! Connections are served one at a time, which is enough while every method is a
+//! request and answer, and the event ring is read the same way: a client asks for
+//! what followed the last sequence it saw rather than holding a stream open.
 
+pub mod events;
 pub mod immediate;
 mod lock;
 pub mod machine;

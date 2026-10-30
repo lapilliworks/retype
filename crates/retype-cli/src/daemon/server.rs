@@ -74,6 +74,7 @@ impl Server {
 			jobs: Mutex::new(jobs),
 			recent: Default::default(),
 			dropped: AtomicU64::new(0),
+			events: Mutex::new(crate::daemon::events::Events::default()),
 		});
 
 		let pool = crate::daemon::queue::Pool::start(Arc::clone(&shared), crate::daemon::queue::runners());
@@ -450,6 +451,29 @@ impl Server {
 		}
 	}
 
+	/// What followed `since`, or `E_IPC_RESYNC` when the window no longer holds it,
+	/// `docs/ipc.md` §7.
+	fn events(&self, request: &Request) -> Result<Response> {
+		let since = request
+			.params
+			.get("since")
+			.and_then(serde_json::Value::as_u64)
+			.unwrap_or(0);
+
+		let replayed = self.shared.events.lock().ok().and_then(|events| events.since(since));
+
+		match replayed {
+			Some((events, newest)) => Ok(Response::ok(request.id, json!({"events": events, "seq": newest}))?),
+			None => Ok(Response::error(
+				request.id,
+				WireError::new(
+					Code::IpcResync,
+					"this client is older than the events still retained; reload with jobs.list",
+				),
+			)),
+		}
+	}
+
 	/// A job by full id or unique prefix.
 	fn find(&self, written: &str) -> Option<Job> {
 		let wanted = written.to_ascii_lowercase();
@@ -505,13 +529,7 @@ impl Server {
 			error: None,
 		};
 
-		if let Ok(mut journal) = self.shared.journal.lock() {
-			let _ = journal.append(&job);
-		}
-
-		if let Ok(mut jobs) = self.shared.jobs.lock() {
-			jobs.push(job);
-		}
+		crate::daemon::watcher::publish(&self.shared, &job);
 	}
 
 	fn hello(&self) -> HelloResult {
@@ -547,6 +565,7 @@ impl Server {
 					}).collect::<Vec<_>>()).unwrap_or_default(),
 				}),
 			)?,
+			"events" => self.events(request)?,
 			"why" => self.why(request)?,
 			"jobs.get" => self.get(request)?,
 			"jobs.submit" => self.submit(request)?,
