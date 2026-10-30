@@ -148,7 +148,9 @@ retype undo <id|prefix|--last>
 retype why <path>
 ```
 
-`jobs list`, `jobs cancel` and `undo` exist today; `jobs get`, `jobs resume`, `jobs logs` and `why` arrive with the recorded output identities and the event stream. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled.
+`jobs list`, `jobs cancel`, `jobs resume` and `undo` exist today; `jobs get`, `jobs logs` and `why` arrive with the event stream. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled.
+
+`jobs resume` continues a `partial` job: an output that still carries the identity and size the job recorded is skipped, and the output that failed is run again from the source bytes, which come from the source path or from the undo record when a rename consumed the name.
 
 `undo` reads the undo store rather than the journal, so it answers even when the journal is gone, and it removes the record it used: one record, one restore target.
 

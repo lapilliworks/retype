@@ -465,7 +465,12 @@ fn record(path: &Path, plan: &Plan<'_>, state: OutputState, bytes: Option<u64>, 
 		state,
 		bytes,
 		tier: plan.tier,
-		identity: None,
+		// Recorded on success only: an identity for a file that was never written
+		// would tell a resume to skip work that was never done.
+		identity: match state {
+			OutputState::Done => retype_core::job::FileIdentity::of(path),
+			_ => None,
+		},
 		error: error.map(|message| JobError {
 			code: Code::ToolFailed.to_string(),
 			message,

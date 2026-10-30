@@ -208,6 +208,62 @@ impl Server {
 		Ok(response)
 	}
 
+	/// Continue a `partial` job, `docs/ipc.md` §6: outputs that still carry the
+	/// recorded identity are skipped, the rest run again.
+	fn resume(&self, request: &Request) -> Result<Response> {
+		let Some(written) = request.params.get("id").and_then(|id| id.as_str()) else {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::IpcMethod, "jobs.resume needs an id"),
+			));
+		};
+
+		let force = request
+			.params
+			.get("force")
+			.and_then(serde_json::Value::as_bool)
+			.unwrap_or(false);
+
+		let Some(job) = self.find(written) else {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::JobState, format!("no job matches '{written}'")),
+			));
+		};
+
+		if job.state != JobState::Partial {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(
+					Code::JobState,
+					format!("{} is {:?}, and only a partial job resumes", job.id, job.state),
+				),
+			));
+		}
+
+		match crate::daemon::resume::run(&self.shared, &self.machine, &job, force) {
+			Ok(state) => Ok(Response::ok(request.id, json!({"id": job.id, "state": state}))?),
+			Err(error) => Ok(Response::error(
+				request.id,
+				WireError::new(error.code(), error.to_string()),
+			)),
+		}
+	}
+
+	/// A job by full id or unique prefix.
+	fn find(&self, written: &str) -> Option<Job> {
+		let wanted = written.to_ascii_uppercase();
+
+		self.shared
+			.jobs
+			.lock()
+			.ok()?
+			.iter()
+			.rev()
+			.find(|job| job.id.as_str().to_ascii_uppercase().starts_with(&wanted))
+			.cloned()
+	}
+
 	/// A queued job that never started still gets a record, so its id is answerable
 	/// afterwards.
 	fn record_cancelled(&self, id: &retype_core::job::JobId, work: &crate::daemon::queue::Work) {
@@ -283,6 +339,7 @@ impl Server {
 				}),
 			)?,
 			"jobs.cancel" => self.cancel(request)?,
+			"jobs.resume" => self.resume(request)?,
 			"shutdown" => {
 				self.stopped = true;
 				Response::ok(request.id, json!({"stopping": true}))?

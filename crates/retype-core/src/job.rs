@@ -218,6 +218,58 @@ pub enum FileIdentity {
 		file: String,
 	},
 }
+impl FileIdentity {
+	/// The identity of a file on disk, when the platform reports one. Recorded with
+	/// an output so a resume can tell an existing output from a different file that
+	/// happens to have the same name.
+	pub fn of(path: &std::path::Path) -> Option<Self> {
+		let metadata = std::fs::metadata(path).ok()?;
+
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::MetadataExt;
+
+			Some(Self::Unix {
+				dev: metadata.dev(),
+				ino: metadata.ino(),
+				birth_ns: None,
+			})
+		}
+
+		// A Windows file id comes from a handle, and the stable metadata API does not
+		// expose one. Identity-based skipping is therefore a Unix answer today; a
+		// resume on Windows runs the outputs again rather than guessing that a file
+		// with the right size and name is the one it produced.
+		#[cfg(not(unix))]
+		{
+			let _ = metadata;
+			None
+		}
+	}
+
+	/// Whether a path still carries this identity. Used by resume to skip an output
+	/// that is already what the job produced.
+	pub fn matches(&self, other: &Self) -> bool {
+		match (self, other) {
+			(
+				Self::Unix { dev, ino, .. },
+				Self::Unix {
+					dev: other_dev,
+					ino: other_ino,
+					..
+				},
+			) => dev == other_dev && ino == other_ino,
+			(
+				Self::Windows { volume, file },
+				Self::Windows {
+					volume: other_volume,
+					file: other_file,
+				},
+			) => volume == other_volume && file == other_file,
+			_ => false,
+		}
+	}
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobError {

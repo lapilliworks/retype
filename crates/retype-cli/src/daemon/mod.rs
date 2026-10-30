@@ -9,6 +9,7 @@ pub mod machine;
 #[cfg(windows)]
 mod pipe;
 pub mod queue;
+pub mod resume;
 mod server;
 pub mod watcher;
 

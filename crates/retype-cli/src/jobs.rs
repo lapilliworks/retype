@@ -62,6 +62,41 @@ pub fn list(
 	Ok(ExitCode::SUCCESS)
 }
 
+pub fn resume(state_dir: &Path, prefix: &str, force: bool, json: bool, allow_spawn: bool) -> Result<ExitCode> {
+	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
+
+	let candidates = matching(&mut client, prefix)?;
+	let id = match candidates.len() {
+		1 => candidates[0].clone(),
+		0 => {
+			eprintln!("retype: E_JOB_STATE: no job matches '{prefix}'");
+			return Ok(ExitCode::from(7));
+		}
+		_ => {
+			eprintln!("retype: E_IPC_AMBIGUOUS: '{prefix}' matches {} jobs", candidates.len());
+
+			for candidate in &candidates {
+				eprintln!("  {candidate}");
+			}
+
+			return Ok(ExitCode::from(7));
+		}
+	};
+
+	let answer = client.call("jobs.resume", serde_json::json!({"id": id.as_str(), "force": force}))?;
+
+	match json {
+		true => println!("{answer}"),
+		false => println!(
+			"{}  {}",
+			id.as_str(),
+			answer.get("state").and_then(Value::as_str).unwrap_or("resumed")
+		),
+	}
+
+	Ok(ExitCode::SUCCESS)
+}
+
 pub fn cancel(state_dir: &Path, prefix: &str, json: bool, allow_spawn: bool) -> Result<ExitCode> {
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 

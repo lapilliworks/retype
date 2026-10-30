@@ -135,6 +135,16 @@ enum JobsAction {
 		/// A job id, or a prefix unique among the jobs
 		job: String,
 	},
+
+	/// Continue a partial job, running the outputs that did not succeed
+	Resume {
+		/// A job id, or a prefix unique among the jobs
+		job: String,
+
+		/// Run every output again instead of skipping the ones that are still there
+		#[arg(long)]
+		force: bool,
+	},
 }
 
 #[derive(Subcommand)]
@@ -169,6 +179,9 @@ fn main() -> ExitCode {
 				retype_cli::jobs::list(&state_dir, state.as_deref(), *limit, cli.json, !cli.no_spawn)
 			}
 			JobsAction::Cancel { job } => retype_cli::jobs::cancel(&state_dir, job, cli.json, !cli.no_spawn),
+			JobsAction::Resume { job, force } => {
+				retype_cli::jobs::resume(&state_dir, job, *force, cli.json, !cli.no_spawn)
+			}
 		});
 
 		return match code {
