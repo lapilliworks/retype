@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use retype_cli::error::Result;
-use retype_cli::{bench, client, config, daemon, doctor, explain, init, list, state, verbose, why};
+use retype_cli::{bench, client, config, daemon, doctor, explain, fidelity, init, list, state, verbose, why};
 use serde_json::Value;
 
 /// Automatic file format conversion on rename.
@@ -122,6 +122,29 @@ enum Command {
 		/// Measure every pair of this family; repeatable
 		#[arg(long = "family", value_name = "FAMILY")]
 		families: Vec<String>,
+	},
+
+	/// Earn the fidelity claims for this machine, and record the build that did
+	Fidelity {
+		/// Check this pair, written source:target; repeatable
+		#[arg(long = "pair", value_name = "SOURCE:TARGET")]
+		pairs: Vec<String>,
+
+		/// Check every pair of this family; repeatable
+		#[arg(long = "family", value_name = "FAMILY")]
+		families: Vec<String>,
+
+		/// Read the manifest and write it back with what this machine earned
+		#[arg(long, value_name = "PATH")]
+		write: Option<std::path::PathBuf>,
+
+		/// Compare against this manifest without writing it
+		#[arg(long, value_name = "PATH")]
+		manifest: Option<std::path::PathBuf>,
+
+		/// Rewrite the claim table between the markers in this document
+		#[arg(long, value_name = "PATH")]
+		render: Option<std::path::PathBuf>,
 	},
 
 	/// Show the configured formats, operations and backends
@@ -390,6 +413,43 @@ fn main() -> ExitCode {
 		};
 	}
 
+	if let Command::Fidelity {
+		pairs,
+		families,
+		write,
+		manifest,
+		render,
+	} = &cli.command
+	{
+		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
+			config::load().and_then(|registry| {
+				config::report_warnings(&registry);
+
+				fidelity::run(
+					&registry,
+					&state_dir,
+					&fidelity::Request {
+						pairs,
+						families,
+						write: write.as_deref(),
+						manifest: manifest.as_deref(),
+						render: render.as_deref(),
+						json: cli.json,
+						quiet: cli.quiet,
+					},
+				)
+			})
+		});
+
+		return match code {
+			Ok(code) => code,
+			Err(error) => {
+				eprintln!("retype: {error}");
+				ExitCode::from(error.exit_code())
+			}
+		};
+	}
+
 	if let Command::List { tiers } = &cli.command {
 		let code = config::load().and_then(|registry| {
 			config::report_warnings(&registry);
@@ -471,6 +531,7 @@ fn main() -> ExitCode {
 		| Command::Explain { .. }
 		| Command::Why { .. }
 		| Command::Bench { .. }
+		| Command::Fidelity { .. }
 		| Command::List { .. }
 		| Command::Init { .. }
 		| Command::Doctor { .. } => unreachable!("these are dispatched before the outcome is built"),

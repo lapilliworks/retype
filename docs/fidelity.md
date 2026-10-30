@@ -43,6 +43,8 @@ A claim is earned by running the conversion.
 
 A fixture run converts a fixture per pair with the real tool, records the resolved engine, its reported version and its build fingerprint, and verifies the output is readable and of the target format. The result is a manifest, one record per claim, checked in and shipped with the release. `docs/tools.md` §5.1 records the same engine, version and fingerprint with every job, so a claim made two years ago can be compared against what is installed now.
 
+`retype fidelity` is that run, `docs/cli.md` §10. A pair is checked by converting the sample `[bench.sample]` declares for its source family, so a claim records what it was earned on rather than naming a fixture that may not exist yet. Checked-in fixtures per format, with alpha, ICC, bit depth, EXIF orientation, animation and palettes, are what turn "the tool produced a file" into "the tool preserved these properties", and they land with the fidelity axes. Until then a claim says the conversion succeeds and what it costs, which is the weaker half of the evidence and is labelled as such.
+
 Size and duration are separate: they come from `retype bench`, not from the manifest, because they depend on the machine and the claim does not, `docs/state.md` §4.
 
 A pair the user declares in their own `[conversions.*]` table cannot have evidence, so it is `unclaimed` by construction and reported as `delegated` with a diagnostic saying so. That sentence is the whole reason `delegated` is a tier rather than an escape hatch.
@@ -77,7 +79,7 @@ Three things wear the same vocabulary and are not fidelity.
 
 ## 8. Claims for this release
 
-Generated between the markers by the fixture run, one line per claim, sorted by source then target then engine. Empty in the source tree until the first release run.
+Generated between the markers by `retype fidelity --render`, one line per claim, sorted by source, target and backend. Empty in the source tree until the first release run. The fingerprint is shortened here and kept whole in the manifest.
 
 <!-- claims:start -->
 <!-- claims:end -->

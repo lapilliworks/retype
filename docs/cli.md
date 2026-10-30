@@ -22,6 +22,7 @@ retype <command> [arguments] [flags]
 | `tools list\|install\|update\|verify` | Managed toolchain inspection, acquisition and verification |
 | `doctor [--emit\|--write\|--report]` | Tool probing, availability, support bundle |
 | `bench [--pair <from>:<to>] [--family <name>]` | Measure this machine, so estimates are about it |
+| `fidelity [--pair <from>:<to>] [--family <name>] [--write <path>] [--render <path>]` | Earn the fidelity claims for this machine and record the build that earned them |
 | `init [--output <path>]` | Write the example configuration |
 | `version`, `completions <shell>` | |
 
@@ -231,3 +232,15 @@ retype doctor --emit
 retype tools list --installed
 retype tools install ffmpeg@gpl
 ```
+
+## 10. Fidelity claims
+
+```
+retype fidelity [--pair <from>:<to>] [--family <name>] [--write <path>] [--manifest <path>] [--render <path>]
+```
+
+The command runs the conversion each pair declares, records the tier, the backend, the resolved engine, the tool version and the build fingerprint, and reports the state of every claim: `new` when no manifest had one, `earned` when the installed build is the one it was earned with, `unverified` when it is not, `docs/fidelity.md` §6.
+
+`--write` reads that manifest, records what this run earned and writes it back; the file is a release artifact, not state, so the path is the caller's. `--manifest` compares against one without rewriting it. `--render` replaces the table between the `claims` markers in a document, which is how `docs/fidelity.md` §8 is filled.
+
+A claim that declares `exact` and is `unverified` exits 4 rather than silently downgrading a promise of no loss. Nothing earned at all exits 4 for the same reason.

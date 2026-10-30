@@ -125,6 +125,9 @@ pub struct ToolStatus<'a> {
 	pub version: Option<Version>,
 	/// Components named by the declaration that the probe output did not mention.
 	pub missing_components: Vec<String>,
+	/// The probe's own text, kept so a build can be told from another build of the
+	/// same version, `docs/tools.md` §2.3.
+	pub output: String,
 	pub error: Option<String>,
 }
 
@@ -150,6 +153,16 @@ impl ToolStatus<'_> {
 	/// The executable a usable tool answers to, or `None` when it is unusable.
 	pub fn executable(&self) -> Option<&str> {
 		self.is_usable().then_some(self.command.as_str())
+	}
+
+	/// What this build is, as far as its own probe can say: a hash of the probe
+	/// output, which carries the version, the configure line and the delegate list.
+	///
+	/// Not a security hash. It answers "is this the build a claim was earned with",
+	/// and a tool that lies about its own version can lie about this too; the
+	/// managed toolchain replaces it with an artifact hash, `docs/tools.md` §2.3.
+	pub fn fingerprint(&self) -> Option<String> {
+		(!self.output.is_empty()).then(|| fnv1a_128(&self.output))
 	}
 
 	pub fn meets_minimum(&self) -> bool {
@@ -207,6 +220,7 @@ fn probe_command<'a>(tool: &'a Tool, command: &str, path_env: &OsStr) -> ToolSta
 			path: None,
 			version: None,
 			missing_components: tool.components.clone(),
+			output: String::new(),
 			error: None,
 		};
 	};
@@ -224,6 +238,7 @@ fn probe_command<'a>(tool: &'a Tool, command: &str, path_env: &OsStr) -> ToolSta
 			// A component claim needs output to check it against, so a tool that
 			// makes one without a probe stays unusable until it declares one.
 			missing_components: tool.components.clone(),
+			output: String::new(),
 			error: None,
 		};
 	}
@@ -251,6 +266,7 @@ fn probe_command<'a>(tool: &'a Tool, command: &str, path_env: &OsStr) -> ToolSta
 				path: Some(path),
 				version,
 				missing_components,
+				output: keep_output(&text),
 				error: None,
 			}
 		}
@@ -260,6 +276,7 @@ fn probe_command<'a>(tool: &'a Tool, command: &str, path_env: &OsStr) -> ToolSta
 			path: Some(path),
 			version: None,
 			missing_components: tool.components.clone(),
+			output: String::new(),
 			error: Some(error.to_string()),
 		},
 	}
@@ -272,8 +289,35 @@ fn not_found(tool: &Tool) -> ToolStatus<'_> {
 		path: None,
 		version: None,
 		missing_components: tool.components.clone(),
+		output: String::new(),
 		error: None,
 	}
+}
+
+/// How much probe output is kept. A delegate list is a few kilobytes; a tool that
+/// prints more than this is not describing itself and is not worth remembering
+/// past the version line.
+const OUTPUT_KEEP: usize = 16 * 1024;
+
+fn keep_output(text: &str) -> String {
+	match text.len() > OUTPUT_KEEP {
+		true => text.chars().take(OUTPUT_KEEP).collect(),
+		false => text.to_string(),
+	}
+}
+
+/// FNV-1a, 128 bits: the build identity a probe can report, `docs/tools.md` §2.3.
+fn fnv1a_128(text: &str) -> String {
+	const OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+	const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+
+	let mut hash = OFFSET;
+	for byte in text.as_bytes() {
+		hash ^= u128::from(*byte);
+		hash = hash.wrapping_mul(PRIME);
+	}
+
+	format!("{hash:032x}")
 }
 
 /// This machine, as the planner sees it: presence and engine resolution through
@@ -430,6 +474,7 @@ mod tests {
 			path: Some(PathBuf::from("/usr/bin/magick")),
 			version: Some(Version::parse("7.1.2").unwrap()),
 			missing_components: Vec::new(),
+			output: "ImageMagick 7.1.2-34 Q16 x86_64".to_string(),
 			error: None,
 		};
 		assert!(status.is_usable());
@@ -444,6 +489,28 @@ mod tests {
 	}
 
 	#[test]
+	fn the_fingerprint_follows_the_probe_output_and_not_the_path() {
+		let tool = tool("magick", Some("7.1"));
+		let status = |output: &str, path: &str| ToolStatus {
+			tool: &tool,
+			command: tool.command.clone(),
+			path: Some(PathBuf::from(path)),
+			version: Version::parse("7.1.2"),
+			missing_components: Vec::new(),
+			output: output.to_string(),
+			error: None,
+		};
+
+		let first = status("Delegates: heic webp", "/usr/bin/magick").fingerprint();
+		let elsewhere = status("Delegates: heic webp", "/opt/magick").fingerprint();
+		let rebuilt = status("Delegates: heic", "/usr/bin/magick").fingerprint();
+
+		assert_eq!(first, elsewhere, "the same build at another path is the same");
+		assert_ne!(first, rebuilt, "a build without a delegate is another build");
+		assert_eq!(first.as_deref().map(str::len), Some(32));
+	}
+
+	#[test]
 	fn a_tool_without_a_floor_accepts_what_it_finds() {
 		let tool = tool("pandoc", None);
 		let status = ToolStatus {
@@ -452,6 +519,7 @@ mod tests {
 			path: Some(PathBuf::from("/usr/bin/pandoc")),
 			version: Some(Version::parse("3.11").unwrap()),
 			missing_components: Vec::new(),
+			output: "pandoc 3.11".to_string(),
 			error: None,
 		};
 

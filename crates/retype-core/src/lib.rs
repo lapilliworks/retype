@@ -10,6 +10,7 @@ pub mod correlate;
 pub mod error;
 pub mod estimate;
 pub mod execute;
+pub mod fidelity;
 pub mod fsx;
 pub mod intent;
 pub mod job;
