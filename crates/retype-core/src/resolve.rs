@@ -23,6 +23,8 @@ pub struct Source<'a> {
 pub struct Resolved {
 	pub meta: Meta,
 	pub groups: Vec<Group>,
+	/// Conditions resolved in the user's favour rather than refused.
+	pub warnings: Vec<crate::error::Diagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +65,8 @@ pub struct Argument {
 pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Result<Resolved, Diagnoses> {
 	let mut problems = Vec::new();
 	let mut groups = Vec::new();
+	let mut meta = intent.meta;
+	let mut warnings = intent.warnings.clone();
 
 	for group in &intent.groups {
 		let known_format = if group.format == "folder" {
@@ -151,6 +155,20 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 				}),
 			};
 
+			// `ask` and `now` are the words for the shorthand the scanner strips
+			// from the end of an intent, so they set the flags rather than
+			// becoming operations of their own. That is what lets the printer
+			// write them in the canonical form and still round trip.
+			if found.op.key == "ask" || found.op.key == "now" {
+				let flag = found.op.key == "ask";
+				if flag {
+					meta.ask = true;
+				} else {
+					meta.now = true;
+				}
+				continue;
+			}
+
 			let value = match (&found.op.param, written) {
 				(Some(param), Some(written)) => match value::interpret(param, &written.text) {
 					Ok(parsed) => Some(Argument { written, parsed }),
@@ -209,6 +227,14 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 		});
 	}
 
+	if meta.ask && meta.now {
+		meta.now = false;
+		warnings.push(crate::error::Diagnostic::global(
+			Code::MetaConflict,
+			"ignored 'now' because the intent also asks, and asking wins",
+		));
+	}
+
 	if groups.len() == 1 && groups[0].keep_source {
 		problems.push(error(
 			Code::Noop,
@@ -224,10 +250,7 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 		return Err(Diagnoses::new(problems));
 	}
 
-	Ok(Resolved {
-		meta: intent.meta,
-		groups,
-	})
+	Ok(Resolved { meta, groups, warnings })
 }
 
 /// The intent a rename carries, or none if it carries nothing, `docs/grammar.md`
