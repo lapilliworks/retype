@@ -12,6 +12,7 @@ pub mod doctor;
 pub mod error;
 pub mod explain;
 pub mod jobs;
+pub mod list;
 pub mod state;
 pub mod undo;
 pub mod watch;

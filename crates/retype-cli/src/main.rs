@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use retype_cli::error::Result;
-use retype_cli::{client, config, daemon, doctor, explain, state, why};
+use retype_cli::{client, config, daemon, doctor, explain, list, state, why};
 use serde_json::Value;
 
 /// Automatic file format conversion on rename.
@@ -105,6 +105,13 @@ enum Command {
 		intent: String,
 	},
 
+	/// Show the configured formats, operations and backends
+	List {
+		/// Add one line per pair, with the tier it claims and the backend that carries it
+		#[arg(long)]
+		tiers: bool,
+	},
+
 	/// Explain a file's conversion
 	Why {
 		/// The file to ask about
@@ -170,6 +177,13 @@ enum DaemonAction {
 }
 
 fn main() -> ExitCode {
+	// A pipe that closes early is how `list | head` is meant to behave. Rust
+	// ignores SIGPIPE, which turns that into a panic and a backtrace.
+	#[cfg(unix)]
+	unsafe {
+		libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+	}
+
 	let cli = Cli::parse();
 
 	if let Command::Undo { job, last } = &cli.command {
@@ -298,6 +312,21 @@ fn main() -> ExitCode {
 		};
 	}
 
+	if let Command::List { tiers } = &cli.command {
+		let code = config::load().and_then(|registry| {
+			config::report_warnings(&registry);
+			list::run(&registry, *tiers, cli.json)
+		});
+
+		return match code {
+			Ok(code) => code,
+			Err(error) => {
+				eprintln!("retype: {error}");
+				ExitCode::from(error.exit_code())
+			}
+		};
+	}
+
 	if let Command::Why { path } = &cli.command {
 		let code = state::resolve(cli.state_dir.clone())
 			.and_then(|state_dir| why::run(path, cli.json, cli.quiet, &state_dir, !cli.no_spawn));
@@ -339,6 +368,7 @@ fn main() -> ExitCode {
 		| Command::Convert { .. }
 		| Command::Explain { .. }
 		| Command::Why { .. }
+		| Command::List { .. }
 		| Command::Doctor { .. } => unreachable!("these are dispatched before the outcome is built"),
 	};
 

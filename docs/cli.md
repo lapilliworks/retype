@@ -113,9 +113,16 @@ A backend that the plan needs and the machine lacks is reported in the plan and 
 ## 4. Registry
 
 ```
+retype list [--tiers]
 retype watch [<dir>...]
 retype unwatch <dir>...
 ```
+
+`list` prints what the configuration declares: every format with its family, whether it is lossy and carries alpha, and the tier a pair targeting it claims; every operation by slot with its parameter class and the formats it applies to; every preset with its tokens; and the backend order with the installed version of each. It reads configuration and the filesystem only, so it never starts a daemon.
+
+`--tiers` prints one line per pair instead: the tier the pair claims and the backend that would carry it, with that backend's installed version. A pair nothing can carry prints the diagnostic code where a backend would go, in brackets, because a blank column would read as "not declared" rather than "not possible here". A tier here is a declaration, not evidence: a claim is earned by a fixture run, `docs/fidelity.md` §4, and until a run has happened the version beside it is what is installed now rather than what the claim was earned with.
+
+`--json` writes one object per line with a `kind` of `format`, `operation`, `preset`, `backend` or `pair`.
 
 `watch` with no arguments lists registrations as `<path>  <recursive>  <conversions summary>`. With arguments it registers each directory; registration is idempotent, and the daemon re-reads the file so a running one picks the directory up within a second. `watch` starts nothing itself, so it can be scripted.
 
