@@ -135,3 +135,55 @@ fn json_writes_one_object_per_line() {
 	let pairs = kinds(&run(&config, &["list", "--tiers", "--json"]));
 	assert_eq!(pairs, ["pair".to_string()].into_iter().collect(), "{pairs:?}");
 }
+
+#[test]
+fn verbose_says_which_configuration_was_read() {
+	let dir = tempfile::tempdir().unwrap();
+	let config = config(dir.path());
+
+	let output = retype()
+		.args(["list", "-v"])
+		.env("RETYPE_CONFIG", &config)
+		.output()
+		.unwrap();
+	let stderr = String::from_utf8_lossy(&output.stderr);
+
+	assert!(output.status.success(), "{stderr}");
+	assert!(stderr.contains("configuration"), "{stderr}");
+	assert!(stderr.contains("retype.toml"), "{stderr}");
+
+	// The listing itself is unchanged, so a pipeline reads the same bytes.
+	assert!(
+		String::from_utf8_lossy(&output.stdout).starts_with("FORMAT"),
+		"verbose must not touch stdout"
+	);
+}
+
+#[test]
+fn quiet_wins_over_verbose() {
+	let dir = tempfile::tempdir().unwrap();
+	let config = config(dir.path());
+
+	let output = retype()
+		.args(["list", "-v", "--quiet"])
+		.env("RETYPE_CONFIG", &config)
+		.output()
+		.unwrap();
+
+	assert!(String::from_utf8_lossy(&output.stderr).is_empty());
+}
+
+#[test]
+fn retype_log_sets_the_same_level() {
+	let dir = tempfile::tempdir().unwrap();
+	let config = config(dir.path());
+
+	let output = retype()
+		.args(["list"])
+		.env("RETYPE_CONFIG", &config)
+		.env("RETYPE_LOG", "debug")
+		.output()
+		.unwrap();
+
+	assert!(String::from_utf8_lossy(&output.stderr).contains("configuration"));
+}

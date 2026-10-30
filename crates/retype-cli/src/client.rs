@@ -24,6 +24,7 @@ const CLIENT_NAME: &str = concat!("retype-cli/", env!("CARGO_PKG_VERSION"));
 /// Connect to a running daemon. Never starts one.
 pub fn connect(state_dir: &Path) -> Result<Client> {
 	let endpoint = state::read_endpoint(state_dir)?;
+	crate::verbose::detail(format!("daemon at {endpoint}"));
 	let mut client = Client::connect(Path::new(&endpoint))?;
 	client.hello(CLIENT_NAME)?;
 	Ok(client)
@@ -39,6 +40,7 @@ pub fn connect_or_spawn(state_dir: &Path, allow_spawn: bool) -> Result<Client> {
 		return Err(Error::DaemonUnavailable);
 	}
 
+	crate::verbose::note(format!("no daemon for {}, starting one", state_dir.display()));
 	let log = spawn_detached(state_dir)?;
 	wait_for(state_dir, &log)
 }

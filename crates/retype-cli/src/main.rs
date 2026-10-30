@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use retype_cli::error::Result;
-use retype_cli::{client, config, daemon, doctor, explain, init, list, state, why};
+use retype_cli::{client, config, daemon, doctor, explain, init, list, state, verbose, why};
 use serde_json::Value;
 
 /// Automatic file format conversion on rename.
@@ -29,6 +29,10 @@ struct Cli {
 	/// Suppress everything below errors
 	#[arg(long, global = true)]
 	quiet: bool,
+
+	/// Say what the command is doing, repeatable
+	#[arg(short = 'v', long = "verbose", global = true, action = clap::ArgAction::Count)]
+	verbose: u8,
 
 	#[command(subcommand)]
 	command: Command,
@@ -215,6 +219,8 @@ fn main() -> ExitCode {
 
 	let cli = Cli::parse();
 	config::use_path(cli.config.clone());
+	verbose::start(cli.verbose, cli.quiet);
+	announce(cli.config.as_deref());
 
 	if let Command::Undo { job, last } = &cli.command {
 		let code = retype_cli::state::resolve(cli.state_dir.clone())
@@ -434,6 +440,15 @@ fn main() -> ExitCode {
 			eprintln!("retype: {error}");
 			ExitCode::from(error.exit_code())
 		}
+	}
+}
+
+/// Say which files a command is about to read, which is the first question when
+/// output looks wrong.
+fn announce(config: Option<&std::path::Path>) {
+	match config.or(config::user_path().as_deref()) {
+		Some(path) => verbose::note(format!("configuration {}", path.display())),
+		None => verbose::note("configuration: the built-in table"),
 	}
 }
 

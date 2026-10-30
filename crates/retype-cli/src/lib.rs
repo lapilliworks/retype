@@ -16,5 +16,6 @@ pub mod jobs;
 pub mod list;
 pub mod state;
 pub mod undo;
+pub mod verbose;
 pub mod watch;
 pub mod why;

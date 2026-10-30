@@ -79,6 +79,12 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	// `docs/ipc.md` §5.
 	drop(client);
 
+	crate::verbose::note(format!(
+		"submitted {} for {input}",
+		submitted.get("id").and_then(Value::as_str).unwrap_or_default(),
+		input = request.input
+	));
+
 	let id = submitted
 		.get("id")
 		.and_then(Value::as_str)

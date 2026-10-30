@@ -25,7 +25,7 @@ retype <command> [arguments] [flags]
 | `init [--output <path>]` | Write the example configuration |
 | `version`, `completions <shell>` | |
 
-Global flags, valid on every command: `--config <path>`, `--state-dir <path>`, `--json`, `--quiet`, `--verbose`, `--no-color`, `--no-spawn`, `--help`, `--version`.
+Global flags, valid on every command: `--config <path>`, `--state-dir <path>`, `--json`, `--quiet`, `--verbose`, `--no-spawn`, `--help`, `--version`.
 
 `--` terminates flag parsing, for files whose names begin with a dash.
 
@@ -201,11 +201,11 @@ Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the ca
 ## 8. Output
 
 - Results go to stdout, diagnostics and progress to stderr, so a successful conversion in a pipeline emits one line and nothing else
-- Human output is column-aligned and colourised when stdout is a terminal
+- Human output is column-aligned. Nothing colours it yet: `NO_COLOR`, `CLICOLOR` and `--no-color` arrive with the first coloured output, and are not accepted as flags until then, so a script cannot pass one that does nothing
 - `--json` writes one object per result to stdout; list commands write one object per line
 - Envelope responses carry `"v": "retype-cli-json-1"`. Individual list items do not
-- `--quiet` suppresses everything below errors. `--verbose` sets the log filter, repeatable
-- Colour respects `NO_COLOR`, `CLICOLOR` and TTY detection; `--no-color` always wins
+- `--quiet` suppresses everything below errors
+- `--verbose` is a count, not a filter language: `-v` reports what the command decided, such as which configuration file it read and which daemon it reached; `-vv` adds what it asked and got. `RETYPE_LOG` sets the same number, as a digit or as `error`, `warn`, `info`, `debug`, `trace`, so a wrapper can turn it on without rewriting arguments
 
 ## 9. Examples
 
