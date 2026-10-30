@@ -148,6 +148,8 @@ retype undo <id|prefix|--last>
 retype why <path>
 ```
 
+`jobs list` and `jobs cancel` exist today; the rest arrive with the undo store and the event stream. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled.
+
 `jobs resume` continues a `partial` job: outputs that still match their recorded identity are skipped, the rest are run again, and `--force` re-runs all of them. Resume is available only while the source bytes are still reachable, which means the source path or the job's undo record. `jobs list --state partial` finds the candidates.
 
 Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the candidates printed. `jobs logs --follow` streams from the daemon until interrupted.

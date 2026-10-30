@@ -11,14 +11,17 @@
 //! number is reported so a notification can say conversion paused instead of
 //! pretending a file is on its way.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use retype_core::job::JobId;
+
 use crate::daemon::watcher::{Shared, convert};
+use retype_core::execute::Cancellation;
 
 /// How many automatic jobs may wait. Fixed rather than derived from the machine,
 /// because a different number of cores must not change how much a directory may
@@ -37,12 +40,25 @@ pub fn runners() -> usize {
 /// Wait this long for work before checking whether to stop.
 const IDLE: Duration = Duration::from_millis(200);
 
-/// One conversion, named by the rename that asked for it.
+/// One conversion, named by the rename that asked for it and identified before it
+/// starts, `docs/state.md` §2: a deferred job is addressable immediately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Work {
+	pub id: JobId,
 	pub root: PathBuf,
 	pub source: PathBuf,
 	pub target: PathBuf,
+}
+
+/// What a cancel request found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cancelled {
+	/// Removed from the queue before it started.
+	Queued,
+	/// Running, and asked to stop.
+	Running,
+	/// Neither: it finished, or it was never here.
+	Unknown,
 }
 
 #[derive(Default)]
@@ -106,6 +122,22 @@ impl Queue {
 		}
 	}
 
+	/// Remove a job that has not started. `None` when it is not waiting.
+	pub fn take_back(&self, id: &JobId) -> Option<Work> {
+		let mut inner = self.inner.lock().ok()?;
+		let index = inner.waiting.iter().position(|work| work.id == *id)?;
+
+		inner.waiting.remove(index)
+	}
+
+	/// The ids waiting to start, for prefix resolution.
+	pub fn ids(&self) -> Vec<JobId> {
+		self.inner
+			.lock()
+			.map(|inner| inner.waiting.iter().map(|work| work.id.clone()).collect())
+			.unwrap_or_default()
+	}
+
 	fn close(&self) {
 		if let Ok(mut inner) = self.inner.lock() {
 			inner.closed = true;
@@ -119,8 +151,41 @@ impl Queue {
 	}
 }
 
+/// The cancellations of jobs that are running, so a client can reach a job that
+/// has left the queue.
+#[derive(Default)]
+pub struct Inflight {
+	tokens: Mutex<BTreeMap<JobId, Cancellation>>,
+}
+
+impl Inflight {
+	fn begin(&self, id: &JobId) -> Cancellation {
+		let token = Cancellation::default();
+
+		if let Ok(mut tokens) = self.tokens.lock() {
+			tokens.insert(id.clone(), token.clone());
+		}
+
+		token
+	}
+
+	fn end(&self, id: &JobId) {
+		if let Ok(mut tokens) = self.tokens.lock() {
+			tokens.remove(id);
+		}
+	}
+
+	fn ids(&self) -> Vec<JobId> {
+		self.tokens
+			.lock()
+			.map(|tokens| tokens.keys().cloned().collect())
+			.unwrap_or_default()
+	}
+}
+
 pub struct Pool {
 	queue: Arc<Queue>,
+	inflight: Arc<Inflight>,
 	workers: Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -128,17 +193,20 @@ impl Pool {
 	/// Start `size` runners, each of which takes one job at a time.
 	pub fn start(shared: Arc<Shared>, size: usize) -> Arc<Self> {
 		let queue = Arc::new(Queue::default());
+		let inflight = Arc::new(Inflight::default());
 		let mut workers = Vec::with_capacity(size);
 
 		for _ in 0..size {
 			let queue = Arc::clone(&queue);
+			let inflight = Arc::clone(&inflight);
 			let shared = Arc::clone(&shared);
 
-			workers.push(thread::spawn(move || serve(&shared, &queue)));
+			workers.push(thread::spawn(move || serve(&shared, &queue, &inflight)));
 		}
 
 		Arc::new(Self {
 			queue,
+			inflight,
 			workers: Mutex::new(workers),
 		})
 	}
@@ -149,6 +217,32 @@ impl Pool {
 
 	pub fn dropped(&self) -> u64 {
 		self.queue.dropped()
+	}
+
+	/// Stop a job, whether it is waiting or running. The work a queued job stood
+	/// for is returned so the caller can record it as cancelled.
+	pub fn cancel(&self, id: &JobId) -> (Cancelled, Option<Work>) {
+		if let Some(work) = self.queue.take_back(id) {
+			return (Cancelled::Queued, Some(work));
+		}
+
+		match self.inflight.tokens.lock() {
+			Ok(tokens) => match tokens.get(id) {
+				Some(token) => {
+					token.cancel();
+					(Cancelled::Running, None)
+				}
+				None => (Cancelled::Unknown, None),
+			},
+			Err(_) => (Cancelled::Unknown, None),
+		}
+	}
+
+	/// Every job that is waiting or running.
+	pub fn ids(&self) -> Vec<JobId> {
+		let mut ids = self.queue.ids();
+		ids.extend(self.inflight.ids());
+		ids
 	}
 
 	/// Stop taking work and wait for the runners to finish what they took.
@@ -176,12 +270,16 @@ enum Take {
 	Closed,
 }
 
-fn serve(shared: &Shared, queue: &Queue) {
+fn serve(shared: &Shared, queue: &Queue, inflight: &Inflight) {
 	// One job per turn: the loop dequeues only after the previous job is done, so
 	// a runner never holds work it is not executing.
 	loop {
 		match queue.take(IDLE) {
-			Take::Work(work) => convert(shared, &work.root, &work.source, &work.target),
+			Take::Work(work) => {
+				let cancellation = inflight.begin(&work.id);
+				convert(shared, &work, &cancellation);
+				inflight.end(&work.id);
+			}
 			Take::Idle => continue,
 			Take::Closed => break,
 		}
@@ -211,6 +309,11 @@ mod tests {
 	use crate::daemon::watcher::Recent;
 	use retype_core::journal::Journal;
 	use retype_core::registry::Registry;
+
+	/// A job id, distinct per call, for tests that submit several.
+	fn id(index: usize) -> JobId {
+		JobId::parse(&format!("01J{:023}", index)).expect("a valid id")
+	}
 
 	fn shared(state: &std::path::Path) -> Arc<Shared> {
 		let registry = Registry::load(
@@ -265,6 +368,7 @@ tier = 'converted'
 			fs::write(&source, b"pixels").unwrap();
 
 			assert!(pool.submit(Work {
+				id: id(index),
 				root: photos.clone(),
 				source,
 				target,
@@ -301,6 +405,7 @@ tier = 'converted'
 		let target = photos.join("late.webp");
 		fs::write(&source, b"pixels").unwrap();
 		assert!(pool.submit(Work {
+			id: id(0),
 			root: photos.clone(),
 			source,
 			target,
@@ -326,6 +431,7 @@ tier = 'converted'
 		let accepted = (0..CAPACITY + 5)
 			.filter(|index| {
 				pool.submit(Work {
+					id: id(*index),
 					root: photos.clone(),
 					source: photos.join(format!("{index}.png")),
 					target: photos.join(format!("{index}.webp")),

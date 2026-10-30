@@ -6,12 +6,36 @@
 //! because nothing was moved: the source is still where it was, which is why
 //! `convert` needs none of the restoration a rename does.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use crate::convert::StagedOutput;
 use crate::error::{Code, Diagnostic, Error, Result};
 use crate::plan::{Backend, Plan};
+
+/// How often a running tool is asked whether it is finished, so a cancel lands
+/// within a poll interval rather than when the tool feels like exiting.
+const POLL: Duration = Duration::from_millis(50);
+
+/// A job's cancel flag, shared between the runner that owns the child process and
+/// whoever asks for it to stop, `docs/ipc.md` §6.
+#[derive(Debug, Clone, Default)]
+pub struct Cancellation(Arc<AtomicBool>);
+
+impl Cancellation {
+	pub fn cancel(&self) {
+		self.0.store(true, Ordering::Relaxed);
+	}
+
+	pub fn is_cancelled(&self) -> bool {
+		self.0.load(Ordering::Relaxed)
+	}
+}
 
 /// How much of a tool's stderr is kept. Enough for the warning a tool prints
 /// while succeeding, small enough to sit in a journal record.
@@ -29,6 +53,13 @@ pub struct Report {
 
 /// Run one plan, staging the output and committing it on success.
 pub fn run(plan: &Plan<'_>, input: &Path, output: &Path) -> Result<Report> {
+	run_cancellable(plan, input, output, &Cancellation::default())
+}
+
+/// The same, with a way to stop it. A cancelled run kills the tool's whole process
+/// group, so an encoder that forked a helper does not outlive the job, and leaves
+/// the output absent: the staged file is discarded rather than committed.
+pub fn run_cancellable(plan: &Plan<'_>, input: &Path, output: &Path, cancellation: &Cancellation) -> Result<Report> {
 	let Backend::Tool(tool) = plan.backend;
 
 	// The plan resolved this name at plan time, so running it is the same choice
@@ -44,21 +75,84 @@ pub fn run(plan: &Plan<'_>, input: &Path, output: &Path) -> Result<Report> {
 	let staged = StagedOutput::new(output)?;
 	let argv = plan.argv(input, staged.temp());
 
-	let finished = Command::new(&path).args(&argv).output().map_err(|error| {
-		Error::Diagnostic(Diagnostic::global(
-			Code::ToolFailed,
-			format!("{command} could not run: {error}"),
-		))
-	})?;
+	let mut child = {
+		let mut command_line = Command::new(&path);
+		command_line
+			.args(&argv)
+			.stdin(Stdio::null())
+			.stdout(Stdio::null())
+			.stderr(Stdio::piped());
 
-	let stderr = tail(&finished.stderr);
+		// A tool that forks a helper is the normal case, so the group is what gets
+		// killed rather than the process we happen to know about.
+		#[cfg(unix)]
+		{
+			use std::os::unix::process::CommandExt;
+			command_line.process_group(0);
+		}
 
-	if !finished.status.success() {
+		command_line.spawn().map_err(|error| {
+			Error::Diagnostic(Diagnostic::global(
+				Code::ToolFailed,
+				format!("{command} could not run: {error}"),
+			))
+		})?
+	};
+
+	// Drain stderr while the tool runs: a chatty tool would otherwise block on a
+	// full pipe, and we would be waiting for it to exit.
+	let stderr_pipe = child.stderr.take();
+	let reader = thread::spawn(move || {
+		let mut kept = Vec::new();
+		if let Some(mut pipe) = stderr_pipe {
+			let mut buffer = [0u8; 8 * 1024];
+			while let Ok(read) = pipe.read(&mut buffer) {
+				if read == 0 {
+					break;
+				}
+				kept.extend_from_slice(&buffer[..read]);
+				if kept.len() > STDERR_TAIL * 4 {
+					let excess = kept.len() - STDERR_TAIL * 4;
+					kept.drain(..excess);
+				}
+			}
+		}
+		kept
+	});
+
+	let status = loop {
+		if cancellation.is_cancelled() {
+			kill(&mut child);
+			let _ = reader.join();
+			return Err(Error::Diagnostic(Diagnostic::global(
+				Code::JobCancelled,
+				format!("{command} was cancelled"),
+			)));
+		}
+
+		match child.try_wait() {
+			Ok(Some(status)) => break status,
+			Ok(None) => thread::sleep(POLL),
+			Err(error) => {
+				kill(&mut child);
+				let _ = reader.join();
+
+				return Err(Error::Diagnostic(Diagnostic::global(
+					Code::ToolFailed,
+					format!("{command} could not be waited for: {error}"),
+				)));
+			}
+		}
+	};
+
+	let stderr = tail(&reader.join().unwrap_or_default());
+
+	if !status.success() {
 		return Err(Error::Diagnostic(Diagnostic::global(
 			Code::ToolFailed,
 			match stderr.is_empty() {
-				true => format!("{command} exited {}", finished.status),
-				false => format!("{command} exited {}: {stderr}", finished.status),
+				true => format!("{command} exited {status}"),
+				false => format!("{command} exited {status}: {stderr}"),
 			},
 		)));
 	}
@@ -93,9 +187,10 @@ pub fn convert_rename(
 	stem: &str,
 	source_format: &str,
 	output: &Path,
+	cancellation: &Cancellation,
 ) -> Result<Report> {
 	let prepared = crate::convert::prepare_input(renamed, stem, source_format)?;
-	let result = run(plan, prepared.input(), output);
+	let result = run_cancellable(plan, prepared.input(), output, cancellation);
 
 	if result.is_ok() && !prepared.is_temporary() {
 		// The rename meant this file to become the target, so once the target
@@ -110,6 +205,26 @@ pub fn convert_rename(
 	}
 
 	result
+}
+
+/// Kill a child and everything it started, then reap it.
+fn kill(child: &mut std::process::Child) {
+	#[cfg(unix)]
+	{
+		// The child leads its own group, so the group id is its pid.
+		if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+			unsafe {
+				libc::kill(-pid, libc::SIGKILL);
+			}
+		}
+	}
+
+	#[cfg(not(unix))]
+	{
+		let _ = child.kill();
+	}
+
+	let _ = child.wait();
 }
 
 /// Where a resolved command name actually lives. An absolute path was pinned by
@@ -269,7 +384,8 @@ tier = 'converted'
 		let target = dir.path().join("photo.webp");
 		fs::write(&target, b"pixels").unwrap();
 
-		let report = convert_rename(&plans[0], &target, "photo", "png", &target).expect("converts");
+		let report =
+			convert_rename(&plans[0], &target, "photo", "png", &target, &Cancellation::default()).expect("converts");
 
 		assert_eq!(report.bytes, 6);
 		assert_eq!(fs::read(&target).unwrap(), b"pixels");
@@ -305,7 +421,7 @@ tier = 'converted'
 		let target = dir.path().join("photo.webp");
 		fs::write(&target, b"pixels").unwrap();
 
-		let error = convert_rename(&plans[0], &target, "photo", "png", &target).unwrap_err();
+		let error = convert_rename(&plans[0], &target, "photo", "png", &target, &Cancellation::default()).unwrap_err();
 
 		assert_eq!(error.code(), Code::ToolFailed);
 		assert!(!target.exists(), "a webp path does not keep png bytes");
@@ -314,6 +430,75 @@ tier = 'converted'
 			b"pixels",
 			"the file says what it contains"
 		);
+	}
+
+	/// A fixture whose tool sleeps, so a cancel has something to interrupt.
+	#[cfg(unix)]
+	fn sleeping_fixture() -> Registry {
+		Registry::load(
+			"\
+version = 'retype-config-1'
+
+[backends]
+prefer = ['sleeper']
+
+[tools.sleeper]
+command = 'sh'
+layout = ['-c', 'sleep 30', '{input}', '{ops}', '{output}']
+
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+",
+		)
+		.expect("the fixture loads")
+	}
+
+	#[test]
+	#[cfg(unix)]
+	fn a_cancelled_run_stops_the_tool_and_leaves_no_output() {
+		let registry = sleeping_fixture();
+		let plans = plans(&registry, "webp");
+		let dir = tempfile::tempdir().unwrap();
+		let input = dir.path().join("a.png");
+		let output = dir.path().join("a.webp");
+		fs::write(&input, b"pixels").unwrap();
+
+		let cancellation = Cancellation::default();
+		let started = std::time::Instant::now();
+
+		// The cancel arrives from elsewhere, the way a client would send it.
+		let canceller = cancellation.clone();
+		std::thread::spawn(move || {
+			std::thread::sleep(std::time::Duration::from_millis(300));
+			canceller.cancel();
+		});
+
+		let error = run_cancellable(&plans[0], &input, &output, &cancellation).unwrap_err();
+
+		assert_eq!(error.code(), Code::JobCancelled);
+		assert!(
+			started.elapsed() < std::time::Duration::from_secs(10),
+			"the tool was not killed"
+		);
+		assert!(!output.exists(), "a cancelled job commits nothing");
+	}
+
+	#[test]
+	fn a_run_that_is_not_cancelled_finishes_normally() {
+		let registry = copy_fixture();
+		let plans = plans(&registry, "webp");
+		let dir = tempfile::tempdir().unwrap();
+		let input = dir.path().join("a.png");
+		let output = dir.path().join("a.webp");
+		fs::write(&input, b"pixels").unwrap();
+
+		let report = run_cancellable(&plans[0], &input, &output, &Cancellation::default()).expect("runs");
+
+		assert_eq!(report.bytes, 6);
+		assert_eq!(fs::read(&output).unwrap(), b"pixels");
 	}
 
 	#[test]

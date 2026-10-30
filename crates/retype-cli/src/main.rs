@@ -42,6 +42,12 @@ enum Command {
 		detached: bool,
 	},
 
+	/// Inspect and control jobs
+	Jobs {
+		#[command(subcommand)]
+		action: JobsAction,
+	},
+
 	/// Register directories, or list what is registered
 	Watch {
 		/// Directories to watch. With none, the registrations are listed
@@ -102,6 +108,26 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum JobsAction {
+	/// List jobs, newest first
+	List {
+		/// Only jobs in this state
+		#[arg(long)]
+		state: Option<String>,
+
+		/// Show at most this many
+		#[arg(long)]
+		limit: Option<usize>,
+	},
+
+	/// Stop a job that is waiting or running
+	Cancel {
+		/// A job id, or a prefix unique among the jobs
+		job: String,
+	},
+}
+
+#[derive(Subcommand)]
 enum DaemonAction {
 	/// Start a daemon in the background and wait until it answers
 	Start,
@@ -113,6 +139,23 @@ enum DaemonAction {
 
 fn main() -> ExitCode {
 	let cli = Cli::parse();
+
+	if let Command::Jobs { action } = &cli.command {
+		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| match action {
+			JobsAction::List { state, limit } => {
+				retype_cli::jobs::list(&state_dir, state.as_deref(), *limit, cli.json, !cli.no_spawn)
+			}
+			JobsAction::Cancel { job } => retype_cli::jobs::cancel(&state_dir, job, cli.json, !cli.no_spawn),
+		});
+
+		return match code {
+			Ok(code) => code,
+			Err(error) => {
+				eprintln!("retype: {error}");
+				ExitCode::from(error.exit_code())
+			}
+		};
+	}
 
 	if let Command::Watch {
 		directories,
@@ -225,7 +268,8 @@ fn main() -> ExitCode {
 			None => daemon::run(cli.state_dir.clone(), !detached),
 			Some(action) => control(&cli, action),
 		},
-		Command::Watch { .. }
+		Command::Jobs { .. }
+		| Command::Watch { .. }
 		| Command::Unwatch { .. }
 		| Command::Convert { .. }
 		| Command::Explain { .. }

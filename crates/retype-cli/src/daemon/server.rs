@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use retype_core::error::Code;
+use retype_core::job::{Job, JobError, JobState, Output, OutputState, Source, Tier};
 use retype_core::journal::Journal;
 use retype_ipc::{Hello, HelloResult, IPC_VERSION, Request, Response, WireError, read_frame, same_major};
 use serde_json::json;
@@ -18,6 +19,7 @@ use crate::error::Result;
 pub struct Server {
 	endpoint: Option<String>,
 	shared: Arc<Shared>,
+	pool: Arc<crate::daemon::queue::Pool>,
 	machine: String,
 	started: Instant,
 	stopped: bool,
@@ -36,15 +38,20 @@ impl Server {
 			);
 		}
 
+		let shared = Arc::new(Shared {
+			registry: crate::config::load()?,
+			journal: Mutex::new(journal),
+			jobs: Mutex::new(replay.jobs),
+			recent: Default::default(),
+			dropped: AtomicU64::new(0),
+		});
+
+		let pool = crate::daemon::queue::Pool::start(Arc::clone(&shared), crate::daemon::queue::runners());
+
 		Ok(Self {
 			endpoint: None,
-			shared: Arc::new(Shared {
-				registry: crate::config::load()?,
-				journal: Mutex::new(journal),
-				jobs: Mutex::new(replay.jobs),
-				recent: Default::default(),
-				dropped: AtomicU64::new(0),
-			}),
+			shared,
+			pool,
 			machine: machine::load_or_create(state_dir)?,
 			started: Instant::now(),
 			stopped: false,
@@ -54,6 +61,11 @@ impl Server {
 	/// What the watcher threads need, so one registry and one journal serve both.
 	pub fn shared(&self) -> Arc<Shared> {
 		Arc::clone(&self.shared)
+	}
+
+	/// The runners, which the daemon stops with everything else.
+	pub fn pool(&self) -> Arc<crate::daemon::queue::Pool> {
+		Arc::clone(&self.pool)
 	}
 
 	pub fn journal_path(&self) -> PathBuf {
@@ -153,6 +165,87 @@ impl Server {
 		}
 	}
 
+	/// Stop a job that is waiting or running, `docs/ipc.md` §6. A job that has
+	/// finished is not cancellable, which is a state error rather than a silent
+	/// success.
+	fn cancel(&self, request: &Request) -> Result<Response> {
+		let Some(written) = request.params.get("id").and_then(|id| id.as_str()) else {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::IpcMethod, "jobs.cancel needs an id"),
+			));
+		};
+
+		let Ok(id) = retype_core::job::JobId::parse(written) else {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::JobState, format!("'{written}' is not a job id")),
+			));
+		};
+
+		let (found, queued) = self.pool.cancel(&id);
+
+		let response = match found {
+			crate::daemon::queue::Cancelled::Queued => {
+				if let Some(work) = queued {
+					self.record_cancelled(&id, &work);
+				}
+
+				Response::ok(request.id, json!({"id": id, "cancelled": true, "state": "cancelled"}))?
+			}
+			crate::daemon::queue::Cancelled::Running => {
+				Response::ok(request.id, json!({"id": id, "cancelled": true, "state": "cancelling"}))?
+			}
+			crate::daemon::queue::Cancelled::Unknown => Response::error(
+				request.id,
+				WireError::new(Code::JobState, format!("{id} is not waiting or running")),
+			),
+		};
+
+		Ok(response)
+	}
+
+	/// A queued job that never started still gets a record, so its id is answerable
+	/// afterwards.
+	fn record_cancelled(&self, id: &retype_core::job::JobId, work: &crate::daemon::queue::Work) {
+		let job = Job {
+			id: id.clone(),
+			created: retype_core::job::now_ms(),
+			updated: retype_core::job::now_ms(),
+			source: Source {
+				path: work.source.clone(),
+				format: String::new(),
+				size: 0,
+				mtime_ns: 0,
+			},
+			intent: None,
+			outputs: vec![Output {
+				path: work.target.clone(),
+				format: String::new(),
+				state: OutputState::Failed,
+				bytes: None,
+				tier: Tier::Converted,
+				identity: None,
+				error: Some(JobError {
+					code: Code::JobCancelled.to_string(),
+					message: "cancelled before it started".to_string(),
+				}),
+			}],
+			state: JobState::Cancelled,
+			backend: None,
+			machine: self.machine.clone(),
+			error: None,
+		};
+
+		if let Ok(mut journal) = self.shared.journal.lock() {
+			let _ = journal.append(&job);
+		}
+
+		if let Ok(mut jobs) = self.shared.jobs.lock() {
+			jobs.push(job);
+		}
+	}
+
 	fn hello(&self) -> HelloResult {
 		HelloResult {
 			ipc: IPC_VERSION.to_string(),
@@ -186,6 +279,7 @@ impl Server {
 					}).collect::<Vec<_>>()).unwrap_or_default(),
 				}),
 			)?,
+			"jobs.cancel" => self.cancel(request)?,
 			"shutdown" => {
 				self.stopped = true;
 				Response::ok(request.id, json!({"stopping": true}))?

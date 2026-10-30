@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use retype_core::correlate::Correlator;
 use retype_core::error::Code;
+use retype_core::execute::Cancellation;
 use retype_core::job::{Job, JobError, JobState, Output, OutputState, Source, now_ms};
 use retype_core::journal::Journal;
 use retype_core::plan::{self, Plan};
@@ -214,7 +215,12 @@ fn spawn_worker(
 					continue;
 				}
 
+				let Ok(id) = retype_core::job::JobId::now() else {
+					continue;
+				};
+
 				let work = crate::daemon::queue::Work {
+					id,
 					root: watched_root.clone(),
 					source: fact.source,
 					target: fact.target,
@@ -236,7 +242,9 @@ fn spawn_worker(
 }
 
 /// Turn one rename into jobs, or explain in the log why it is not one.
-pub fn convert(shared: &Shared, root: &Path, source: &Path, target: &Path) {
+pub fn convert(shared: &Shared, work: &crate::daemon::queue::Work, cancellation: &Cancellation) {
+	let (root, source, target) = (&work.root, &work.source, &work.target);
+
 	let (Some(source_name), Some(target_name)) = (
 		source.file_name().and_then(|name| name.to_str()),
 		target.file_name().and_then(|name| name.to_str()),
@@ -281,15 +289,10 @@ pub fn convert(shared: &Shared, root: &Path, source: &Path, target: &Path) {
 		}
 	};
 
-	let id = match retype_core::job::JobId::now() {
-		Ok(id) => id,
-		Err(error) => {
-			eprintln!("retype: {error}");
-			return;
-		}
-	};
+	let id = work.id.clone();
 	let now = now_ms();
 	let mut outputs = Vec::new();
+	running(shared, &id, root, source, source_format, target, &resolved);
 
 	// The rename names the request; the file is called what the tokens say, the
 	// same way `convert` derives its paths.
@@ -300,7 +303,7 @@ pub fn convert(shared: &Shared, root: &Path, source: &Path, target: &Path) {
 
 		shared.recent.note(source, &output);
 
-		match execute::convert_rename(plan, target, stem, source_format, &output) {
+		match execute::convert_rename(plan, target, stem, source_format, &output, cancellation) {
 			Ok(report) => outputs.push(record(&output, plan, OutputState::Done, Some(report.bytes), None)),
 			Err(error) => {
 				eprintln!("retype: {}: {error}", output.display());
@@ -315,10 +318,24 @@ pub fn convert(shared: &Shared, root: &Path, source: &Path, target: &Path) {
 		}
 	}
 
-	let state = match outputs.iter().all(|output| output.state == OutputState::Done) {
-		true => JobState::Done,
-		false if outputs.iter().any(|output| output.state == OutputState::Done) => JobState::Partial,
-		false => JobState::Failed,
+	// A cancelled job is its own outcome: nothing was converted and nothing is
+	// wrong with the file, `docs/state.md` §4.
+	let cancelled = cancellation.is_cancelled()
+		|| outputs.iter().any(|output| {
+			output
+				.error
+				.as_ref()
+				.is_some_and(|error| error.code == Code::JobCancelled.to_string())
+		});
+
+	let state = match (
+		cancelled,
+		outputs.iter().all(|output| output.state == OutputState::Done),
+	) {
+		(true, _) => JobState::Cancelled,
+		(false, true) => JobState::Done,
+		(false, false) if outputs.iter().any(|output| output.state == OutputState::Done) => JobState::Partial,
+		(false, false) => JobState::Failed,
 	};
 
 	let job = Job {
@@ -347,6 +364,62 @@ pub fn convert(shared: &Shared, root: &Path, source: &Path, target: &Path) {
 		}
 	}
 
+	if let Ok(mut jobs) = shared.jobs.lock() {
+		// The terminal record replaces the `running` one for the same id.
+		match jobs.iter_mut().find(|existing| existing.id == job.id) {
+			Some(existing) => *existing = job,
+			None => jobs.push(job),
+		}
+	}
+}
+
+/// The record a job writes before it starts, so a client can see a job that is
+/// running rather than only one that finished, `docs/state.md` §3.
+fn running(
+	shared: &Shared,
+	id: &retype_core::job::JobId,
+	root: &Path,
+	source: &Path,
+	source_format: &str,
+	target: &Path,
+	resolved: &resolve::Resolved,
+) {
+	let name = source.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+
+	let job = Job {
+		id: id.clone(),
+		created: now_ms(),
+		updated: now_ms(),
+		source: Source {
+			path: root.join(name),
+			format: source_format.to_string(),
+			size: 0,
+			mtime_ns: 0,
+		},
+		intent: Some(print::intent(resolved, &shared.registry)),
+		outputs: vec![Output {
+			path: target.to_path_buf(),
+			format: String::new(),
+			state: OutputState::Running,
+			bytes: None,
+			tier: retype_core::job::Tier::Converted,
+			identity: None,
+			error: None,
+		}],
+		state: JobState::Running,
+		backend: None,
+		machine: String::new(),
+		error: None,
+	};
+
+	if let Ok(mut journal) = shared.journal.lock() {
+		if let Err(error) = journal.append(&job) {
+			eprintln!("retype: cannot journal {}: {error}", target.display());
+		}
+	}
+
+	// Visible while it runs, which is what makes it cancellable by a client that
+	// has to find its id first.
 	if let Ok(mut jobs) = shared.jobs.lock() {
 		jobs.push(job);
 	}

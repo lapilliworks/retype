@@ -42,7 +42,7 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 
 	let mut server = Server::open(&state_dir)?;
 	let shared = server.shared();
-	let pool = queue::Pool::start(std::sync::Arc::clone(&shared), queue::runners());
+	let pool = server.pool();
 	let watcher = watcher::start(shared, std::sync::Arc::clone(&pool), &state_dir)?;
 	let listener = UnixListener::bind(&socket)?;
 	set_socket_private(&socket)?;
@@ -84,7 +84,7 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	let _lock = Lock::acquire(&state_dir.join("lock"), &state_dir)?;
 	let mut server = Server::open(&state_dir)?;
 	let shared = server.shared();
-	let pool = queue::Pool::start(std::sync::Arc::clone(&shared), queue::runners());
+	let pool = server.pool();
 	let watcher = watcher::start(shared, std::sync::Arc::clone(&pool), &state_dir)?;
 	let name = pipe::name(server.machine());
 
