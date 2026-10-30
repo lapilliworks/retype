@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use retype_cli::error::Result;
 use retype_cli::{bench, client, config, daemon, doctor, explain, fidelity, init, list, state, verbose, why};
 use serde_json::Value;
@@ -145,6 +145,16 @@ enum Command {
 		/// Rewrite the claim table between the markers in this document
 		#[arg(long, value_name = "PATH")]
 		render: Option<std::path::PathBuf>,
+	},
+
+	/// Print the version, and the schemas this build reads
+	Version,
+
+	/// Print a shell completion script
+	Completions {
+		/// The shell to write a script for
+		#[arg(value_enum)]
+		shell: clap_complete::Shell,
 	},
 
 	/// Show the configured formats, operations and backends
@@ -450,6 +460,19 @@ fn main() -> ExitCode {
 		};
 	}
 
+	if matches!(cli.command, Command::Version) {
+		print_version(cli.json);
+		return ExitCode::SUCCESS;
+	}
+
+	if let Command::Completions { shell } = &cli.command {
+		// The script is written for the name the binary was installed as, which is
+		// `retype` and never the `c` alias: an alias is a command, not a program.
+		let mut command = Cli::command();
+		clap_complete::generate(*shell, &mut command, "retype", &mut std::io::stdout());
+		return ExitCode::SUCCESS;
+	}
+
 	if let Command::List { tiers } = &cli.command {
 		let code = config::load().and_then(|registry| {
 			config::report_warnings(&registry);
@@ -532,6 +555,8 @@ fn main() -> ExitCode {
 		| Command::Why { .. }
 		| Command::Bench { .. }
 		| Command::Fidelity { .. }
+		| Command::Version
+		| Command::Completions { .. }
 		| Command::List { .. }
 		| Command::Init { .. }
 		| Command::Doctor { .. } => unreachable!("these are dispatched before the outcome is built"),
@@ -543,6 +568,47 @@ fn main() -> ExitCode {
 			eprintln!("retype: {error}");
 			ExitCode::from(error.exit_code())
 		}
+	}
+}
+
+/// `retype version`, `docs/cli.md` §1.
+///
+/// The schema identifiers are part of the answer: a bug report that names them can
+/// be matched to a build without guessing which grammar or journal a file came
+/// from.
+fn print_version(json: bool) {
+	const SCHEMAS: &[(&str, &str)] = &[
+		("config", retype_core::registry::CONFIG_VERSION),
+		("ipc", retype_ipc::IPC_VERSION),
+		("journal", retype_core::job::JOURNAL_VERSION),
+		("undo", retype_core::undo::UNDO_VERSION),
+		("watches", retype_core::watches::WATCHES_VERSION),
+		("bench", retype_core::estimate::BENCH_VERSION),
+		("fidelity", retype_core::fidelity::FIDELITY_VERSION),
+	];
+
+	if json {
+		let schemas: serde_json::Map<String, Value> = SCHEMAS
+			.iter()
+			.map(|(name, version)| (name.to_string(), Value::String(version.to_string())))
+			.collect();
+
+		println!(
+			"{}",
+			serde_json::json!({
+				"v": "retype-cli-json-1",
+				"name": "retype",
+				"version": env!("CARGO_PKG_VERSION"),
+				"schemas": schemas,
+			})
+		);
+		return;
+	}
+
+	println!("retype {}", env!("CARGO_PKG_VERSION"));
+
+	for (name, version) in SCHEMAS {
+		println!("  {name:<10}{version}");
 	}
 }
 

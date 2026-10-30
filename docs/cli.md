@@ -24,7 +24,8 @@ retype <command> [arguments] [flags]
 | `bench [--pair <from>:<to>] [--family <name>]` | Measure this machine, so estimates are about it |
 | `fidelity [--pair <from>:<to>] [--family <name>] [--write <path>] [--render <path>]` | Earn the fidelity claims for this machine and record the build that earned them |
 | `init [--output <path>]` | Write the example configuration |
-| `version`, `completions <shell>` | |
+| `version` | The build and every schema identifier it reads |
+| `completions <shell>` | A completion script for bash, zsh, fish, elvish or PowerShell |
 
 Global flags, valid on every command: `--config <path>`, `--state-dir <path>`, `--json`, `--quiet`, `--verbose`, `--no-spawn`, `--help`, `--version`.
 
