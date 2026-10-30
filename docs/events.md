@@ -12,6 +12,8 @@ Raw transcripts are kept in `docs/probe/`, named `<platform>-<date>.txt`, so eve
 
 Each run creates a temporary directory, watches it, and replays a scenario suite. Scenarios are split into a setup and an action so the correlation starts from a primed state, the way it does in the daemon when a file has existed for a while. For each action it prints the raw events, then what the name-pair strategy concluded, then what the identity strategy concluded.
 
+A conclusion is a fact, which says only that this name became that name in the same directory, and the intent the grammar reads from it. `intent=none` is therefore the answer for a rename that means nothing, such as a change of case: correlation does not know formats, and deciding where a stem ends needs the registry. The macOS and Windows transcripts predate that split; their raw events are unchanged and a re-run replaces them.
+
 ## 1. Linux (inotify, notify 8)
 
 Measured 2026-10-29, transcript `docs/probe/linux-2026-10-29.txt`.
@@ -33,7 +35,7 @@ Alongside them, ordinary noise: `Create(File)`, `Access(Open(Any))`, `Modify(Dat
 | Scenario | Pair strategy | Identity strategy |
 |---|---|---|
 | Rename in place | `a.heic -> a.jpg`, intent `jpg` | Same |
-| Rename case only | none | none |
+| Rename case only | fact, no intent | fact, no intent |
 | Rename stem and extension | none | none |
 | Rename across directories | none | none |
 | Two renames in one window | two facts: `e.heic -> e.jpg`, `e.jpg -> e.webp` | one fact: `e.heic -> e.webp`, intent `webp` |
@@ -84,7 +86,7 @@ No `Both` event exists on this platform. A rename is always two events, each car
 | Scenario | Pair | Identity | Raw events of note |
 |---|---|---|---|
 | Rename in place | `a.heic -> a.jpg` | none | `From`, `To` |
-| Rename case only | none | none | `Remove(Any)` first |
+| Rename case only | fact, no intent | fact, no intent | `Remove(Any)` first |
 | Rename stem and extension | none | none | `From`, `To` |
 | Rename across directories | none | none | `Remove(Any)`, `Create(Any)`, `Modify(Any)` on the parent |
 | Two renames in one window | `e.heic -> e.webp` | none | four events; coalesced to one fact |
@@ -126,7 +128,7 @@ One event per path, never two, and no `From`, `To` or `Both`. A rename is indist
 | Scenario | Pair | Identity |
 |---|---|---|
 | Rename in place | none | `a.heic -> a.jpg` |
-| Rename case only | none | none |
+| Rename case only | fact, no intent | fact, no intent |
 | Rename stem and extension | none | none |
 | Rename across directories | none | none |
 | Two renames in one window | none | `e.heic -> e.webp` |

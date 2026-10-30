@@ -255,10 +255,10 @@ mod tests {
 		Correlator::new(1024)
 	}
 
-	fn sources(facts: &[RenameFact]) -> Vec<(PathBuf, String, PathBuf)> {
+	fn sources(facts: &[RenameFact]) -> Vec<(PathBuf, PathBuf)> {
 		facts
 			.iter()
-			.map(|fact| (fact.source.clone(), fact.intent.clone(), fact.target.clone()))
+			.map(|fact| (fact.source.clone(), fact.target.clone()))
 			.collect()
 	}
 
@@ -275,7 +275,7 @@ mod tests {
 			&batch(vec![rename(RenameMode::Both, &[&source, &target])]),
 		);
 
-		assert_eq!(sources(&facts), vec![(source.clone(), "jpg".to_string(), target)]);
+		assert_eq!(sources(&facts), vec![(source.clone(), target)]);
 	}
 
 	#[test]
@@ -375,7 +375,7 @@ mod tests {
 			]),
 		);
 
-		assert_eq!(sources(&facts), vec![(source, "jpg".to_string(), target)]);
+		assert_eq!(sources(&facts), vec![(source, target)]);
 	}
 
 	#[cfg(unix)]

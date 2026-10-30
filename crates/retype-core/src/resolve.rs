@@ -215,11 +215,22 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 /// `archive`, because `tar.gz` is one declared format. A source whose format is
 /// not declared has no stem we can trust, and nothing to convert from.
 pub fn intent_of(registry: &Registry, source_name: &str, target_name: &str) -> Result<Option<Intent>, Diagnoses> {
-	let Some((stem, _format)) = registry.split(source_name) else {
+	let Some((stem, source_format)) = registry.split(source_name) else {
 		return Ok(None);
 	};
 
-	intent::parse_rename(target_name, stem)
+	let Some(intent) = intent::parse_rename(target_name, stem)? else {
+		return Ok(None);
+	};
+
+	// A rename that asks for the format the file already has is a rename, not a
+	// request: `photo.heic` to `photo.HEIC` should not raise `E_NOOP` at someone
+	// who only changed the case.
+	if intent.groups.len() == 1 && intent.groups[0].tokens.is_empty() && intent.groups[0].format == source_format {
+		return Ok(None);
+	}
+
+	Ok(Some(intent))
 }
 
 /// Alias desugaring, `docs/grammar.md` §9: a whole token before name resolution,
@@ -378,6 +389,16 @@ aliases = ['tar.gz']
 		let intent = intent_of(&registry, "archive.tar.gz", "archive.zip").unwrap();
 		assert!(intent.is_some(), "the stem is 'archive', so 'zip' is an intent");
 		assert_eq!(intent.unwrap().text, "zip");
+	}
+
+	#[test]
+	fn a_rename_that_only_changes_the_case_carries_nothing() {
+		assert!(intent_of(&registry(), "photo.heic", "photo.HEIC").unwrap().is_none());
+	}
+
+	#[test]
+	fn a_rename_that_asks_for_the_same_format_carries_nothing() {
+		assert!(intent_of(&registry(), "photo.jpeg", "photo.jpg").unwrap().is_none());
 	}
 
 	#[test]

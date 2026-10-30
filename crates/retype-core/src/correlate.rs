@@ -18,8 +18,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
-use crate::ext::split_extension;
-
 /// Filesystem identity of a file: device and inode, or volume and file id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Identity {
@@ -27,14 +25,16 @@ pub struct Identity {
 	pub inode: u64,
 }
 
-/// What a rename fact says: this path became that path, and the new name asked
-/// for this intent.
+/// What a rename fact says: this path became that path, in one directory.
+///
+/// Nothing about formats, because deciding where a stem ends needs the registry:
+/// `archive.tar.gz` has one format and the stem `archive`. What the new name
+/// asked for is `resolve::intent_of`'s question, and this layer only pairs
+/// names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenameFact {
 	pub source: PathBuf,
-	pub source_ext: String,
 	pub target: PathBuf,
-	pub intent: String,
 }
 
 /// One observation of a path that exists.
@@ -94,7 +94,7 @@ impl Correlator {
 		}
 
 		let fact = match self.by_identity.get(&sighting.identity) {
-			Some(previous) if previous != &sighting.path => rename_between(previous, &sighting.path),
+			Some(previous) if previous != &sighting.path => renamed(previous, &sighting.path),
 			_ => None,
 		};
 
@@ -133,7 +133,7 @@ impl Correlator {
 
 	/// Report a rename when the event source supplies both names.
 	pub fn pair(&mut self, source: &Path, target: &Path) -> Option<RenameFact> {
-		let fact = rename_between(source, target);
+		let fact = renamed(source, target);
 		if let Some(identity) = self.by_path.remove(source) {
 			self.remember(target.to_path_buf(), identity);
 		}
@@ -216,7 +216,6 @@ pub fn coalesce(facts: Vec<RenameFact>) -> Vec<RenameFact> {
 				let earlier = &mut collapsed[index];
 				let target = fact.target.clone();
 				earlier.target = target.clone();
-				earlier.intent = fact.intent;
 				produced.insert(target, index);
 			}
 			None => {
@@ -229,35 +228,38 @@ pub fn coalesce(facts: Vec<RenameFact>) -> Vec<RenameFact> {
 	collapsed
 }
 
-/// Whether two names describe an in-place rename with an intent.
-fn rename_between(source: &Path, target: &Path) -> Option<RenameFact> {
-	if source.parent() != target.parent() {
+/// Whether two names are a rename in place.
+///
+/// A move is not a rename so the directory must match. The names must
+/// also share what a stem can plausibly be: pairing by directory alone would let
+/// two renames in one batch cross over, and pairing needs no format knowledge if
+/// the comparison stops at the first dot. `archive.tar.gz` and `archive.zip`
+/// therefore agree, and `a.heic` and `b.webp` do not.
+///
+/// Whether the new name asked for anything is the grammar's question, and only
+/// the registry can answer it.
+fn renamed(source: &Path, target: &Path) -> Option<RenameFact> {
+	if source == target || source.parent() != target.parent() {
 		return None;
 	}
 
-	let (source_stem, source_ext) = split_extension(source)?;
-	let target_name = target.file_name()?.to_str()?;
+	let source_prefix = stem_prefix(source.file_name()?.to_str()?);
+	let target_prefix = stem_prefix(target.file_name()?.to_str()?);
 
-	if !source_stem.is_empty() && source_stem.starts_with('.') {
-		return None;
-	}
-
-	let intent = target_name.strip_prefix(source_stem)?.strip_prefix('.')?;
-	if intent.is_empty() {
-		return None;
-	}
-
-	// Same extension, case included, is a plain rename: nothing to convert.
-	if intent.eq_ignore_ascii_case(source_ext) {
+	if source_prefix.is_empty() || source_prefix != target_prefix {
 		return None;
 	}
 
 	Some(RenameFact {
 		source: source.to_path_buf(),
-		source_ext: source_ext.to_owned(),
 		target: target.to_path_buf(),
-		intent: intent.to_owned(),
 	})
+}
+
+/// The text before the first dot, which is the longest a stem can be for any
+/// format spelling. A name with no dot is its own prefix.
+fn stem_prefix(name: &str) -> &str {
+	name.split_once('.').map(|(prefix, _)| prefix).unwrap_or(name)
 }
 
 #[cfg(test)]
@@ -291,9 +293,7 @@ mod tests {
 		let rename = correlator.observe(sighting("/dir/photo.webp+q80", 1)).unwrap();
 
 		assert_eq!(rename.source, PathBuf::from("/dir/photo.heic"));
-		assert_eq!(rename.source_ext, "heic");
 		assert_eq!(rename.target, PathBuf::from("/dir/photo.webp+q80"));
-		assert_eq!(rename.intent, "webp+q80");
 	}
 
 	#[test]
@@ -306,22 +306,28 @@ mod tests {
 		}
 
 		let rename = correlator.observe(sighting("/dir/b.webp", 2)).unwrap();
-		assert_eq!(rename.intent, "webp");
 		assert_eq!(rename.source, PathBuf::from("/dir/b.jpg"));
 	}
 
 	#[test]
-	fn same_extension_is_not_a_rename() {
+	fn a_case_only_rename_is_a_fact_even_though_it_means_nothing() {
+		// Whether a name asked for anything is the grammar's question, and it
+		// needs the registry to answer it. The fact says only that the name
+		// changed.
 		let mut correlator = Correlator::new(16);
 		correlator.observe(sighting("/dir/photo.heic", 1));
-		assert!(correlator.observe(sighting("/dir/photo.HEIC", 1)).is_none());
-		assert!(correlator.observe(sighting("/dir/photo.heic", 1)).is_none());
+
+		let fact = correlator.observe(sighting("/dir/photo.HEIC", 1)).unwrap();
+
+		assert_eq!(fact.source, PathBuf::from("/dir/photo.heic"));
+		assert_eq!(fact.target, PathBuf::from("/dir/photo.HEIC"));
 	}
 
 	#[test]
-	fn stem_change_carries_no_intent() {
+	fn a_stem_change_is_not_paired() {
 		let mut correlator = Correlator::new(16);
 		correlator.observe(sighting("/dir/photo.heic", 1));
+
 		assert!(correlator.observe(sighting("/dir/holiday.jpg", 1)).is_none());
 	}
 
@@ -362,8 +368,8 @@ mod tests {
 			.pair(Path::new("/dir/clip.mov"), Path::new("/dir/clip.mp4+mute"))
 			.unwrap();
 
-		assert_eq!(rename.intent, "mp4+mute");
-		assert_eq!(rename.source_ext, "mov");
+		assert_eq!(rename.source, PathBuf::from("/dir/clip.mov"));
+		assert_eq!(rename.target, PathBuf::from("/dir/clip.mp4+mute"));
 	}
 
 	#[test]
@@ -373,7 +379,6 @@ mod tests {
 		let rename = correlator.rename_to(Path::new("/dir/a.jpg")).unwrap();
 
 		assert_eq!(rename.source, PathBuf::from("/dir/a.heic"));
-		assert_eq!(rename.intent, "jpg");
 	}
 
 	#[test]
@@ -389,7 +394,6 @@ mod tests {
 
 		assert_eq!(first.source, PathBuf::from("/dir/a.heic"));
 		assert_eq!(second.source, PathBuf::from("/dir/b.heic"));
-		assert_eq!(second.intent, "webp");
 	}
 
 	#[test]
@@ -437,7 +441,6 @@ mod tests {
 
 		correlator.observe(sighting("/dir/clip.mp4", 7));
 		let rename = correlator.observe(sighting("/dir/clip.webm", 7)).unwrap();
-		assert_eq!(rename.intent, "webm");
 		assert_eq!(rename.source, PathBuf::from("/dir/clip.mp4"));
 	}
 
@@ -484,9 +487,7 @@ mod tests {
 	fn duplicates_are_removed() {
 		let fact = RenameFact {
 			source: PathBuf::from("/dir/a.heic"),
-			source_ext: "heic".into(),
 			target: PathBuf::from("/dir/a.jpg"),
-			intent: "jpg".into(),
 		};
 		let unique = dedupe(vec![fact.clone(), fact.clone()]);
 		assert_eq!(unique.len(), 1);
@@ -497,15 +498,11 @@ mod tests {
 		let facts = vec![
 			RenameFact {
 				source: PathBuf::from("/dir/e.heic"),
-				source_ext: "heic".into(),
 				target: PathBuf::from("/dir/e.jpg"),
-				intent: "jpg".into(),
 			},
 			RenameFact {
 				source: PathBuf::from("/dir/e.jpg"),
-				source_ext: "jpg".into(),
 				target: PathBuf::from("/dir/e.webp"),
-				intent: "webp".into(),
 			},
 		];
 
@@ -514,7 +511,6 @@ mod tests {
 		assert_eq!(collapsed.len(), 1);
 		assert_eq!(collapsed[0].source, PathBuf::from("/dir/e.heic"));
 		assert_eq!(collapsed[0].target, PathBuf::from("/dir/e.webp"));
-		assert_eq!(collapsed[0].intent, "webp");
 	}
 
 	#[test]
@@ -522,21 +518,15 @@ mod tests {
 		let facts = vec![
 			RenameFact {
 				source: PathBuf::from("/dir/a.heic"),
-				source_ext: "heic".into(),
 				target: PathBuf::from("/dir/a.jpg"),
-				intent: "jpg".into(),
 			},
 			RenameFact {
 				source: PathBuf::from("/dir/a.jpg"),
-				source_ext: "jpg".into(),
 				target: PathBuf::from("/dir/a.png"),
-				intent: "png".into(),
 			},
 			RenameFact {
 				source: PathBuf::from("/dir/a.png"),
-				source_ext: "png".into(),
 				target: PathBuf::from("/dir/a.webp"),
-				intent: "webp".into(),
 			},
 		];
 
@@ -545,7 +535,6 @@ mod tests {
 		assert_eq!(collapsed.len(), 1);
 		assert_eq!(collapsed[0].source, PathBuf::from("/dir/a.heic"));
 		assert_eq!(collapsed[0].target, PathBuf::from("/dir/a.webp"));
-		assert_eq!(collapsed[0].intent, "webp");
 	}
 
 	#[test]
@@ -553,15 +542,11 @@ mod tests {
 		let facts = vec![
 			RenameFact {
 				source: PathBuf::from("/dir/a.heic"),
-				source_ext: "heic".into(),
 				target: PathBuf::from("/dir/a.jpg"),
-				intent: "jpg".into(),
 			},
 			RenameFact {
 				source: PathBuf::from("/dir/b.heic"),
-				source_ext: "heic".into(),
 				target: PathBuf::from("/dir/b.webp"),
-				intent: "webp".into(),
 			},
 		];
 
@@ -569,11 +554,16 @@ mod tests {
 	}
 
 	#[test]
-	fn compound_target_extension_is_an_intent() {
+	fn a_compound_format_is_paired_like_any_other() {
+		// The correlator compares what a stem can be, which is the text before
+		// the first dot, so a format with two parts needs no special case here.
 		let mut correlator = Correlator::new(16);
 		correlator.observe(sighting("/dir/data.zip", 1));
+
 		let rename = correlator.observe(sighting("/dir/data.tar.gz", 1)).unwrap();
-		assert_eq!(rename.intent, "tar.gz");
+
+		assert_eq!(rename.source, PathBuf::from("/dir/data.zip"));
+		assert_eq!(rename.target, PathBuf::from("/dir/data.tar.gz"));
 	}
 
 	/// Deterministic pseudo random numbers, so the model test is reproducible
@@ -595,7 +585,7 @@ mod tests {
 
 	#[test]
 	fn model_agrees_on_random_rename_sequences() {
-		const FORMATS: [&str; 4] = ["heic", "jpg", "webp", "png"];
+		const FORMATS: [&str; 5] = ["heic", "jpg", "webp", "png", "tar.gz"];
 
 		for seed in 1..=8u64 {
 			let mut rng = XorShift(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
@@ -620,11 +610,15 @@ mod tests {
 					inodes.sort_unstable();
 					let inode = inodes[rng.below(inodes.len() as u64) as usize];
 					let current = live[&inode].clone();
-					let stem = split_extension(&current).unwrap().0.to_string();
+					let name = current.file_name().unwrap().to_str().unwrap();
+					let stem = name.split_once('.').map(|(stem, _)| stem).unwrap();
 					let ext = FORMATS[rng.below(FORMATS.len() as u64) as usize];
 					let target = PathBuf::from(format!("/dir/{stem}.{ext}"));
 
-					let expected = !ext.eq_ignore_ascii_case(split_extension(&current).unwrap().1);
+					// The correlator pairs names that share a stem prefix, so a
+					// target that differs from the current path is a fact and a
+					// target that repeats it is not.
+					let expected = target != current;
 					let rename = correlator.observe(sighting(target.to_str().unwrap(), inode));
 
 					assert_eq!(

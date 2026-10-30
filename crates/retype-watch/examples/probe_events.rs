@@ -16,6 +16,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use retype_core::correlate::{Correlator, RenameFact};
+use retype_core::registry::Registry;
+use retype_core::resolve::intent_of;
 use retype_watch::{Window, collect, feed_identity, feed_names, watch};
 
 type Step = Box<dyn Fn(&Path) -> Result<(), Box<dyn Error>>>;
@@ -120,6 +122,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 	let (_watcher, receiver) = watch(&root)?;
 	let window = Window::default();
+	let registry = Registry::builtin().expect("the built-in registry");
 
 	let mut names = Correlator::new(4096);
 	let mut identity = Correlator::new(4096);
@@ -148,8 +151,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 			println!("raw: error: {error}");
 		}
 
-		report(&root, "pair", &feed_names(&mut names, &batch));
-		report(&root, "identity", &feed_identity(&mut identity, &batch));
+		report(&root, &registry, "pair", &feed_names(&mut names, &batch));
+		report(&root, &registry, "identity", &feed_identity(&mut identity, &batch));
 		println!();
 	}
 
@@ -163,19 +166,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 	Ok(())
 }
 
-fn report(root: &Path, strategy: &str, facts: &[RenameFact]) {
+fn report(root: &Path, registry: &Registry, strategy: &str, facts: &[RenameFact]) {
 	if facts.is_empty() {
 		println!("{strategy}: no rename facts");
 		return;
 	}
 	for fact in facts {
-		println!(
-			"{strategy}: {} ({}) -> {} intent={}",
-			relative(root, &fact.source),
-			fact.source_ext,
-			relative(root, &fact.target),
-			fact.intent
-		);
+		let source = relative(root, &fact.source);
+		let target = relative(root, &fact.target);
+		let intent = match intent_of(registry, &source, &target) {
+			Ok(Some(intent)) => intent.text,
+			Ok(None) => "none".to_string(),
+			Err(diagnoses) => format!("{diagnoses}"),
+		};
+
+		println!("{strategy}: {source} -> {target} intent={intent}");
 	}
 }
 

@@ -6,15 +6,15 @@ platform: linux
 raw: Modify(Name(From)) a.heic
 raw: Modify(Name(To)) a.jpg
 raw: Modify(Name(Both)) a.heic -> a.jpg
-pair: a.heic (heic) -> a.jpg intent=jpg
-identity: a.heic (heic) -> a.jpg intent=jpg
+pair: a.heic -> a.jpg intent=jpg
+identity: a.heic -> a.jpg intent=jpg
 
 ## rename case only
 raw: Modify(Name(From)) b.heic
 raw: Modify(Name(To)) b.HEIC
 raw: Modify(Name(Both)) b.heic -> b.HEIC
-pair: no rename facts
-identity: no rename facts
+pair: b.heic -> b.HEIC intent=none
+identity: b.heic -> b.HEIC intent=none
 
 ## rename stem and extension
 raw: Modify(Name(From)) c.heic
@@ -37,15 +37,15 @@ raw: Modify(Name(Both)) e.heic -> e.jpg
 raw: Modify(Name(From)) e.jpg
 raw: Modify(Name(To)) e.webp
 raw: Modify(Name(Both)) e.jpg -> e.webp
-pair: e.heic (heic) -> e.webp intent=webp
-identity: e.heic (heic) -> e.webp intent=webp
+pair: e.heic -> e.webp intent=webp
+identity: e.heic -> e.webp intent=webp
 
 ## rename over an existing file
 raw: Modify(Name(From)) f.heic
 raw: Modify(Name(To)) f.jpg
 raw: Modify(Name(Both)) f.heic -> f.jpg
-pair: f.heic (heic) -> f.jpg intent=jpg
-identity: f.heic (heic) -> f.jpg intent=jpg
+pair: f.heic -> f.jpg intent=jpg
+identity: f.heic -> f.jpg intent=jpg
 
 ## twenty renames in one gesture
 raw: Modify(Name(From)) g0.heic
@@ -108,46 +108,46 @@ raw: Modify(Name(Both)) g18.heic -> g18.jpg
 raw: Modify(Name(From)) g19.heic
 raw: Modify(Name(To)) g19.jpg
 raw: Modify(Name(Both)) g19.heic -> g19.jpg
-pair: g0.heic (heic) -> g0.jpg intent=jpg
-pair: g1.heic (heic) -> g1.jpg intent=jpg
-pair: g2.heic (heic) -> g2.jpg intent=jpg
-pair: g3.heic (heic) -> g3.jpg intent=jpg
-pair: g4.heic (heic) -> g4.jpg intent=jpg
-pair: g5.heic (heic) -> g5.jpg intent=jpg
-pair: g6.heic (heic) -> g6.jpg intent=jpg
-pair: g7.heic (heic) -> g7.jpg intent=jpg
-pair: g8.heic (heic) -> g8.jpg intent=jpg
-pair: g9.heic (heic) -> g9.jpg intent=jpg
-pair: g10.heic (heic) -> g10.jpg intent=jpg
-pair: g11.heic (heic) -> g11.jpg intent=jpg
-pair: g12.heic (heic) -> g12.jpg intent=jpg
-pair: g13.heic (heic) -> g13.jpg intent=jpg
-pair: g14.heic (heic) -> g14.jpg intent=jpg
-pair: g15.heic (heic) -> g15.jpg intent=jpg
-pair: g16.heic (heic) -> g16.jpg intent=jpg
-pair: g17.heic (heic) -> g17.jpg intent=jpg
-pair: g18.heic (heic) -> g18.jpg intent=jpg
-pair: g19.heic (heic) -> g19.jpg intent=jpg
-identity: g0.heic (heic) -> g0.jpg intent=jpg
-identity: g1.heic (heic) -> g1.jpg intent=jpg
-identity: g2.heic (heic) -> g2.jpg intent=jpg
-identity: g3.heic (heic) -> g3.jpg intent=jpg
-identity: g4.heic (heic) -> g4.jpg intent=jpg
-identity: g5.heic (heic) -> g5.jpg intent=jpg
-identity: g6.heic (heic) -> g6.jpg intent=jpg
-identity: g7.heic (heic) -> g7.jpg intent=jpg
-identity: g8.heic (heic) -> g8.jpg intent=jpg
-identity: g9.heic (heic) -> g9.jpg intent=jpg
-identity: g10.heic (heic) -> g10.jpg intent=jpg
-identity: g11.heic (heic) -> g11.jpg intent=jpg
-identity: g12.heic (heic) -> g12.jpg intent=jpg
-identity: g13.heic (heic) -> g13.jpg intent=jpg
-identity: g14.heic (heic) -> g14.jpg intent=jpg
-identity: g15.heic (heic) -> g15.jpg intent=jpg
-identity: g16.heic (heic) -> g16.jpg intent=jpg
-identity: g17.heic (heic) -> g17.jpg intent=jpg
-identity: g18.heic (heic) -> g18.jpg intent=jpg
-identity: g19.heic (heic) -> g19.jpg intent=jpg
+pair: g0.heic -> g0.jpg intent=jpg
+pair: g1.heic -> g1.jpg intent=jpg
+pair: g2.heic -> g2.jpg intent=jpg
+pair: g3.heic -> g3.jpg intent=jpg
+pair: g4.heic -> g4.jpg intent=jpg
+pair: g5.heic -> g5.jpg intent=jpg
+pair: g6.heic -> g6.jpg intent=jpg
+pair: g7.heic -> g7.jpg intent=jpg
+pair: g8.heic -> g8.jpg intent=jpg
+pair: g9.heic -> g9.jpg intent=jpg
+pair: g10.heic -> g10.jpg intent=jpg
+pair: g11.heic -> g11.jpg intent=jpg
+pair: g12.heic -> g12.jpg intent=jpg
+pair: g13.heic -> g13.jpg intent=jpg
+pair: g14.heic -> g14.jpg intent=jpg
+pair: g15.heic -> g15.jpg intent=jpg
+pair: g16.heic -> g16.jpg intent=jpg
+pair: g17.heic -> g17.jpg intent=jpg
+pair: g18.heic -> g18.jpg intent=jpg
+pair: g19.heic -> g19.jpg intent=jpg
+identity: g0.heic -> g0.jpg intent=jpg
+identity: g1.heic -> g1.jpg intent=jpg
+identity: g2.heic -> g2.jpg intent=jpg
+identity: g3.heic -> g3.jpg intent=jpg
+identity: g4.heic -> g4.jpg intent=jpg
+identity: g5.heic -> g5.jpg intent=jpg
+identity: g6.heic -> g6.jpg intent=jpg
+identity: g7.heic -> g7.jpg intent=jpg
+identity: g8.heic -> g8.jpg intent=jpg
+identity: g9.heic -> g9.jpg intent=jpg
+identity: g10.heic -> g10.jpg intent=jpg
+identity: g11.heic -> g11.jpg intent=jpg
+identity: g12.heic -> g12.jpg intent=jpg
+identity: g13.heic -> g13.jpg intent=jpg
+identity: g14.heic -> g14.jpg intent=jpg
+identity: g15.heic -> g15.jpg intent=jpg
+identity: g16.heic -> g16.jpg intent=jpg
+identity: g17.heic -> g17.jpg intent=jpg
+identity: g18.heic -> g18.jpg intent=jpg
+identity: g19.heic -> g19.jpg intent=jpg
 
 ## rename then write
 raw: Modify(Name(From)) h.heic
@@ -156,15 +156,15 @@ raw: Modify(Name(Both)) h.heic -> h.jpg
 raw: Access(Open(Any)) h.jpg
 raw: Modify(Data(Any)) h.jpg
 raw: Access(Close(Write)) h.jpg
-pair: h.heic (heic) -> h.jpg intent=jpg
-identity: h.heic (heic) -> h.jpg intent=jpg
+pair: h.heic -> h.jpg intent=jpg
+identity: h.heic -> h.jpg intent=jpg
 
 ## rename then delete
 raw: Modify(Name(From)) i.heic
 raw: Modify(Name(To)) i.jpg
 raw: Modify(Name(Both)) i.heic -> i.jpg
 raw: Remove(File) i.jpg
-pair: i.heic (heic) -> i.jpg intent=jpg
+pair: i.heic -> i.jpg intent=jpg
 identity: no rename facts
 
 ## notes
