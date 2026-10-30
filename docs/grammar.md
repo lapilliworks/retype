@@ -50,6 +50,8 @@ Consequences of anchoring, all required:
 - A stem change cannot carry an intent. Renaming and transforming are separate gestures
 - The directory cannot change. A rename that moves the file is a move, and a move carries no intent
 
+The source stem is not what follows the last dot. It is what remains when the source *format* is removed, and the format is the longest declared format suffix of the source name, matched case insensitively, with aliases canonicalised. `archive.tar.gz` therefore has the format `tar.gz` and the stem `archive` whenever both `gz` and `tar.gz` are declared. The registry is the list that decides this boundary, the way a public suffix list decides where a domain's registrable label ends; a name whose suffix no declared format matches has no format, and there is nothing to convert from.
+
 ## 4. Character set
 
 The intent string MUST match:

@@ -7,7 +7,7 @@
 //! apply to the format, one whose vertical has not landed.
 
 use crate::error::{Code, Diagnoses, Error, Span};
-use crate::intent::{Intent, Meta, Raw, Token};
+use crate::intent::{self, Intent, Meta, Raw, Token};
 use crate::registry::Registry;
 
 /// What the source is, because some rules depend on it.
@@ -207,6 +207,21 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 	})
 }
 
+/// The intent a rename carries, or none if it carries nothing, `docs/grammar.md`
+/// §3.
+///
+/// The source stem is decided by the registry rather than by the last dot, so
+/// `archive.tar.gz` renamed to `archive.zip` carries `zip`: the stem is
+/// `archive`, because `tar.gz` is one declared format. A source whose format is
+/// not declared has no stem we can trust, and nothing to convert from.
+pub fn intent_of(registry: &Registry, source_name: &str, target_name: &str) -> Result<Option<Intent>, Diagnoses> {
+	let Some((stem, _format)) = registry.split(source_name) else {
+		return Ok(None);
+	};
+
+	intent::parse_rename(target_name, stem)
+}
+
 /// Alias desugaring, `docs/grammar.md` §9: a whole token before name resolution,
 /// never inside a value.
 fn desugar(token: &Token) -> Token {
@@ -332,6 +347,62 @@ mod tests {
 
 	fn codes(text: &str, source: Source<'_>) -> Vec<Code> {
 		resolve_text(text, source).unwrap_err().codes()
+	}
+
+	#[test]
+	fn the_source_stem_comes_from_the_registry_not_the_last_dot() {
+		let text = r#"
+version = 'retype-config-1'
+
+[formats.gz]
+family = 'archive'
+lossy = false
+alpha = false
+tier = 'exact'
+
+[formats.zip]
+family = 'archive'
+lossy = false
+alpha = false
+tier = 'exact'
+
+[formats.tar_gz]
+family = 'archive'
+lossy = false
+alpha = false
+tier = 'exact'
+aliases = ['tar.gz']
+"#;
+		let registry = Registry::load(text).unwrap();
+
+		let intent = intent_of(&registry, "archive.tar.gz", "archive.zip").unwrap();
+		assert!(intent.is_some(), "the stem is 'archive', so 'zip' is an intent");
+		assert_eq!(intent.unwrap().text, "zip");
+	}
+
+	#[test]
+	fn a_rename_that_keeps_the_stem_carries_the_new_format() {
+		assert_eq!(
+			intent_of(&registry(), "photo.heic", "photo.jpg").unwrap().unwrap().text,
+			"jpg"
+		);
+	}
+
+	#[test]
+	fn a_rename_that_changes_the_stem_carries_nothing() {
+		assert!(intent_of(&registry(), "photo.heic", "holiday.jpg").unwrap().is_none());
+	}
+
+	#[test]
+	fn a_source_with_no_declared_format_carries_nothing() {
+		assert!(intent_of(&registry(), "README", "README.md").unwrap().is_none());
+	}
+
+	#[test]
+	fn an_unanchored_name_that_looks_like_an_intent_is_a_diagnosis() {
+		let error = intent_of(&registry(), "photo.heic", "photo2+jpg").unwrap_err();
+
+		assert_eq!(error.codes(), vec![Code::Anchor]);
 	}
 
 	#[test]

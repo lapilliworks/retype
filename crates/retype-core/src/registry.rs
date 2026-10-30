@@ -96,6 +96,9 @@ pub struct Registry {
 	/// Every name and alias with the key it resolves to, longest first, so that
 	/// `quality85` resolves to `quality` and not to `q`, `docs/grammar.md` R2.
 	names: Vec<(String, String)>,
+	/// Every format name and alias with the canonical format, longest first:
+	/// the list that decides where a file name's stem ends.
+	format_names: Vec<(String, String)>,
 }
 
 impl Registry {
@@ -189,15 +192,55 @@ impl Registry {
 
 		names.sort_by(|left, right| right.0.len().cmp(&left.0.len()).then(left.0.cmp(&right.0)));
 
+		let mut format_names = collect_format_names(&formats);
+		format_names.sort_by(|left, right| right.0.len().cmp(&left.0.len()).then(left.0.cmp(&right.0)));
+
 		if !problems.is_empty() {
 			return Err(Diagnoses::new(problems));
 		}
 
-		Ok(Self { formats, ops, names })
+		Ok(Self {
+			formats,
+			ops,
+			names,
+			format_names,
+		})
 	}
 
 	pub fn format(&self, name: &str) -> Option<&Format> {
 		self.formats.get(&name.to_ascii_lowercase())
+	}
+
+	/// Split a file name into its stem and its format, `docs/grammar.md` §3.
+	///
+	/// The registry is the list that decides this, the way a public suffix list
+	/// decides where a domain's registrable label ends: `archive.tar.gz` has the
+	/// format `tar.gz` and the stem `archive` when both `gz` and `tar.gz` are
+	/// declared, and the longest declared suffix wins. A name whose suffix is not
+	/// a declared format has no format, so it is not ours to convert.
+	pub fn split<'a>(&'a self, name: &'a str) -> Option<(&'a str, &'a str)> {
+		if name.starts_with('.') {
+			return None;
+		}
+
+		let lower = name.to_ascii_lowercase();
+
+		for (spelling, canonical) in &self.format_names {
+			let Some(stem) = lower
+				.strip_suffix(spelling.as_str())
+				.and_then(|rest| rest.strip_suffix('.'))
+			else {
+				continue;
+			};
+
+			if stem.is_empty() || stem.starts_with('.') {
+				continue;
+			}
+
+			return Some((&name[..stem.len()], canonical.as_str()));
+		}
+
+		None
 	}
 
 	pub fn op(&self, name: &str) -> Option<&Op> {
@@ -247,6 +290,19 @@ impl Registry {
 	pub fn names(&self) -> impl Iterator<Item = &str> {
 		self.names.iter().map(|(name, _)| name.as_str())
 	}
+}
+
+fn collect_format_names(formats: &BTreeMap<String, Format>) -> Vec<(String, String)> {
+	let mut names = Vec::new();
+
+	for (canonical, format) in formats {
+		names.push((canonical.clone(), canonical.clone()));
+		for alias in &format.aliases {
+			names.push((alias.to_ascii_lowercase(), canonical.clone()));
+		}
+	}
+
+	names
 }
 
 fn collect_names(ops: &BTreeMap<String, Op>) -> Vec<(String, String)> {
@@ -458,6 +514,62 @@ mod tests {
 		assert!(registry.op("quality").unwrap().applies_to("jpg"));
 		assert!(!registry.op("quality").unwrap().applies_to("png"));
 		assert!(registry.op("cap").unwrap().applies_to("png"));
+	}
+
+	#[test]
+	fn a_name_splits_at_the_longest_declared_format() {
+		let registry = builtin();
+
+		assert_eq!(registry.split("photo.jpg"), Some(("photo", "jpg")));
+		assert_eq!(
+			registry.split("photo.jpeg"),
+			Some(("photo", "jpg")),
+			"an alias canonicalises"
+		);
+		assert_eq!(
+			registry.split("Photo.JPG"),
+			Some(("Photo", "jpg")),
+			"matching ignores case"
+		);
+		assert_eq!(registry.split("my.file.txt"), None, "txt is not a declared format");
+	}
+
+	#[test]
+	fn a_longer_format_wins_over_a_shorter_one_that_also_matches() {
+		let text = format!(
+			r#"{HEADER}
+[formats.gz]
+family = 'archive'
+lossy = false
+alpha = false
+tier = 'exact'
+
+[formats.twogz]
+family = 'archive'
+lossy = false
+alpha = false
+tier = 'exact'
+aliases = ['tar.gz']
+
+[ops.quality]
+slot = 50
+formats = ['gz']
+"#
+		);
+		let registry = Registry::load(&text).unwrap();
+
+		assert_eq!(registry.split("archive.tar.gz"), Some(("archive", "twogz")));
+		assert_eq!(registry.split("archive.gz"), Some(("archive", "gz")));
+	}
+
+	#[test]
+	fn a_name_without_a_declared_format_has_no_format() {
+		let registry = builtin();
+
+		assert_eq!(registry.split("README"), None);
+		assert_eq!(registry.split("photo.xyz"), None);
+		assert_eq!(registry.split(".hidden"), None);
+		assert_eq!(registry.split("jpg"), None, "a bare format is not a name");
 	}
 
 	#[test]
