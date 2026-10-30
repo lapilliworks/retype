@@ -220,6 +220,18 @@ pub fn run_logged(
 	})
 }
 
+/// What happens to the bytes a job used up.
+///
+/// A kept undo record can put the source back, so the bytes are simply removed.
+/// When no record could be kept, the source goes to the operating system's trash
+/// instead: the file leaves its directory, which is what the rename asked for, and
+/// the user can still get it back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disposal {
+	Remove,
+	Trash,
+}
+
 /// The source a rename left under the target's name, prepared once for a whole
 /// job.
 ///
@@ -255,16 +267,28 @@ impl Rename {
 
 	/// The job produced at least one output, so the renamed file has done its work
 	/// and its bytes are no longer needed under the source name.
-	pub fn consume(self) -> Result<()> {
-		match &self.prepared {
-			crate::convert::PreparedInput::Restored { input, .. } => match std::fs::remove_file(input) {
-				Ok(()) => Ok(()),
-				Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-				Err(error) => Err(Error::Io(error)),
-			},
+	pub fn consume(self, disposal: Disposal) -> Result<()> {
+		match (&self.prepared, disposal) {
+			(crate::convert::PreparedInput::Restored { input, .. }, Disposal::Remove) => {
+				match std::fs::remove_file(input) {
+					Ok(()) => Ok(()),
+					Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+					Err(error) => Err(Error::Io(error)),
+				}
+			}
+			// No record was kept, so the way back is the platform's trash rather than an
+			// undo this machine cannot offer.
+			(crate::convert::PreparedInput::Restored { input, .. }, Disposal::Trash) => {
+				trash::delete(input).map_err(|error| {
+					Error::Diagnostic(Diagnostic::global(
+						Code::IoFailed,
+						format!("{} could not be moved to the trash: {error}", input.display()),
+					))
+				})
+			}
 			// The bytes are a link to the renamed file, which the output replaced, so
 			// there is nothing else to remove; the prepared input cleans the link up.
-			crate::convert::PreparedInput::Linked { .. } => Ok(()),
+			(crate::convert::PreparedInput::Linked { .. }, _) => Ok(()),
 		}
 	}
 
@@ -458,7 +482,7 @@ tier = 'converted'
 
 		let renamed = Rename::open(&target, "photo", "png").expect("opens");
 		let report = run(&plans[0], renamed.input(), &target).expect("converts");
-		renamed.consume().expect("consumes");
+		renamed.consume(Disposal::Remove).expect("consumes");
 
 		assert_eq!(report.bytes, 6);
 		assert_eq!(fs::read(&target).unwrap(), b"pixels");
@@ -484,7 +508,7 @@ tier = 'converted'
 			let output = dir.path().join(output);
 			run(&plans[0], renamed.input(), &output).expect("converts");
 		}
-		renamed.consume().expect("consumes");
+		renamed.consume(Disposal::Remove).expect("consumes");
 
 		assert_eq!(fs::read(dir.path().join("photo.webp")).unwrap(), b"pixels");
 		assert_eq!(fs::read(dir.path().join("photo-2.webp")).unwrap(), b"pixels");

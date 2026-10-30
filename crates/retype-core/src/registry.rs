@@ -481,6 +481,26 @@ impl Registry {
 					)),
 				}
 			}
+
+			if let Some(quota) = &entry.quota {
+				match bytes(quota) {
+					Ok(read) => undo.quota = read,
+					Err(fault) => problems.push(fail(
+						fault.code,
+						format!("{label}: [undo] quota '{quota}': {}", fault.message),
+					)),
+				}
+			}
+
+			if let Some(overflow) = &entry.on_overflow {
+				match crate::undo::Overflow::parse(overflow) {
+					Some(read) => undo.on_overflow = read,
+					None => problems.push(fail(
+						Code::CfgValidation,
+						format!("{label}: [undo] on_overflow '{overflow}' is not one of ask, evict or skip"),
+					)),
+				}
+			}
 		}
 
 		let mut provenance = crate::provenance::Policy::default();
@@ -812,6 +832,27 @@ fn duration(text: &str) -> std::result::Result<std::time::Duration, crate::value
 		Ok(_) => Err(crate::value::Fault {
 			code: Code::ValueSyntax,
 			message: "is not a duration".to_string(),
+		}),
+		Err(fault) => Err(fault),
+	}
+}
+
+/// The same for a knob that counts bytes: `quota` is a size, so it is spelled
+/// the way the grammar spells one, `docs/grammar.md` §7.
+fn bytes(text: &str) -> std::result::Result<u64, crate::value::Fault> {
+	let param = Param {
+		class: Class::Size,
+		min: None,
+		max: None,
+		values: Vec::new(),
+		scalar: None,
+	};
+
+	match crate::value::interpret(&param, text) {
+		Ok(crate::value::Value::Size(bytes)) => Ok(bytes),
+		Ok(_) => Err(crate::value::Fault {
+			code: Code::ValueSyntax,
+			message: "is not a size".to_string(),
 		}),
 		Err(fault) => Err(fault),
 	}
@@ -1257,6 +1298,10 @@ struct UndoEntry {
 	enabled: Option<bool>,
 	#[serde(default)]
 	retention: Option<String>,
+	#[serde(default)]
+	quota: Option<String>,
+	#[serde(default)]
+	on_overflow: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1441,6 +1486,32 @@ mod tests {
 		let registry = Registry::load(&format!("{HEADER}\n[undo]\nenabled = false\nretention = '720h'\n")).unwrap();
 		assert!(!registry.undo().enabled);
 		assert_eq!(registry.undo().retention, std::time::Duration::from_secs(720 * 60 * 60));
+		assert_eq!(registry.undo().quota, 5_000_000_000, "five gigabytes, decimal");
+		assert_eq!(registry.undo().on_overflow, crate::undo::Overflow::Ask);
+	}
+
+	#[test]
+	fn the_quota_and_the_overflow_policy_are_read() {
+		let registry = Registry::load(&format!("{HEADER}\n[undo]\nquota = '250mb'\non_overflow = 'skip'\n")).unwrap();
+
+		assert_eq!(registry.undo().quota, 250_000_000);
+		assert_eq!(registry.undo().on_overflow, crate::undo::Overflow::Skip);
+	}
+
+	#[test]
+	fn a_quota_spelled_without_a_unit_is_refused() {
+		assert_eq!(
+			codes(&format!("{HEADER}\n[undo]\nquota = '5000'\n")),
+			vec![Code::ValueSyntax]
+		);
+	}
+
+	#[test]
+	fn an_overflow_policy_that_is_not_one_of_the_three_is_refused() {
+		assert_eq!(
+			codes(&format!("{HEADER}\n[undo]\non_overflow = 'ignore'\n")),
+			vec![Code::CfgValidation]
+		);
 	}
 
 	#[test]

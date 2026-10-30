@@ -96,10 +96,45 @@ pub struct Subject {
 	pub outputs: Vec<Output>,
 }
 
-/// How long a record is kept, and whether records are kept at all,
-/// `docs/config.md` §13.
+/// What to do when a record does not fit the quota.
 ///
-/// Retention is a host-level knob rather than a per-directory one: a
+/// `Ask` is what the product intends: keep the expired records, ask the user
+/// whether to make room, and act on the answer. Asking needs notifications, which
+/// land in, so this build reads `Ask` as `Evict` and says so once at
+/// startup rather than pretending the question was asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overflow {
+	/// Ask first; `Evict` until notifications exist.
+	Ask,
+	/// Drop the oldest records until the new one fits.
+	Evict,
+	/// Keep no record, and convert without one.
+	Skip,
+}
+
+impl Overflow {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Ask => "ask",
+			Self::Evict => "evict",
+			Self::Skip => "skip",
+		}
+	}
+
+	pub fn parse(text: &str) -> Option<Self> {
+		match text {
+			"ask" => Some(Self::Ask),
+			"evict" => Some(Self::Evict),
+			"skip" => Some(Self::Skip),
+			_ => None,
+		}
+	}
+}
+
+/// How long a record is kept, and whether records are kept at all,
+/// `docs/config.md` §9.
+///
+/// Retention and quota are host-level knobs rather than per-directory ones: a
 /// `.retype.toml` committed to a repository must not decide every contributor's
 /// disk budget.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +143,9 @@ pub struct Policy {
 	/// Age after which a record is dropped, and so after which its job can no
 	/// longer be resumed.
 	pub retention: Duration,
+	/// Upper bound for the store, counted in source bytes.
+	pub quota: u64,
+	pub on_overflow: Overflow,
 }
 
 impl Default for Policy {
@@ -115,6 +153,35 @@ impl Default for Policy {
 		Self {
 			enabled: true,
 			retention: Duration::from_secs(7 * 24 * 60 * 60),
+			quota: 5_000_000_000,
+			on_overflow: Overflow::Ask,
+		}
+	}
+}
+
+/// Whether one more record fits, and what had to go for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Room {
+	/// There is room, after dropping what had to go.
+	Kept { dropped: Vec<JobId> },
+	/// A record cannot be kept, so the conversion runs without one.
+	NoRoom(NoRoom),
+}
+
+/// Why a record cannot be kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoRoom {
+	/// The policy keeps no record when it does not fit.
+	Policy,
+	/// One record is larger than the whole quota.
+	TooLarge,
+}
+
+impl NoRoom {
+	pub fn reason(self) -> &'static str {
+		match self {
+			Self::Policy => "the undo quota is full and on_overflow = skip",
+			Self::TooLarge => "the file is larger than the undo quota",
 		}
 	}
 }
@@ -302,6 +369,61 @@ impl Store {
 		Ok(dropped)
 	}
 
+	/// Whether a record for the bytes at `path` fits, and what had to go for it,
+	///.
+	///
+	/// Expired records go first, then the oldest ones needed to make room, and
+	/// never a record younger than the new one out of order: the store drops what a
+	/// user is least likely to ask for. When the answer is that nothing fits, no
+	/// record is dropped for a job that will not have one, because a conversion must
+	/// never be blocked and the history is worth more than nothing.
+	pub fn make_room(&self, path: &Path, policy: &Policy) -> Result<Room> {
+		let wanted = fs::metadata(path)?.len();
+		let now = SystemTime::now();
+		let mut dropped = Vec::new();
+		let mut held: u64 = 0;
+		let mut kept: Vec<Record> = Vec::new();
+
+		// Expiry is retention rather than overflow, so it applies whoever is asking.
+		for record in self.list()? {
+			if age(&record, now) > policy.retention {
+				self.remove(&record.id)?;
+				dropped.push(record.id);
+			} else {
+				held += record.source_size;
+				kept.push(record);
+			}
+		}
+
+		if held.saturating_add(wanted) <= policy.quota {
+			return Ok(Room::Kept { dropped });
+		}
+
+		// One record larger than the whole quota is not a history problem, so nothing
+		// is evicted to make room for it.
+		if wanted > policy.quota {
+			return Ok(Room::NoRoom(NoRoom::TooLarge));
+		}
+
+		if policy.on_overflow == Overflow::Skip {
+			return Ok(Room::NoRoom(NoRoom::Policy));
+		}
+
+		// `list` answers newest first, and the oldest record is the one a user is
+		// least likely to undo.
+		for record in kept.iter().rev() {
+			if held.saturating_add(wanted) <= policy.quota {
+				break;
+			}
+
+			self.remove(&record.id)?;
+			held -= record.source_size.min(held);
+			dropped.push(record.id.clone());
+		}
+
+		Ok(Room::Kept { dropped })
+	}
+
 	/// The bytes held for a job, when a source has to be read again: resume needs
 	/// this after a rename has taken the original name away.
 	pub fn source(&self, id: &JobId) -> Result<Option<PathBuf>> {
@@ -425,6 +547,128 @@ mod tests {
 			toml::to_string(&record).unwrap(),
 		)
 		.unwrap();
+	}
+
+	/// A subject whose bytes are `size` long, so a quota test does not need files
+	/// of that size to be plausible about anything.
+	fn sized(index: usize, dir: &Path, size: usize) -> Subject {
+		let bytes = dir.join(format!("photo{index}.heic"));
+		fs::write(&bytes, vec![b'x'; size]).unwrap();
+
+		Subject {
+			id: id(index),
+			intent: "jpg".to_string(),
+			machine: "machine".to_string(),
+			bytes: bytes.clone(),
+			source_path: bytes,
+			source_ext: "heic".to_string(),
+			outputs: Vec::new(),
+		}
+	}
+
+	fn policy(quota: u64) -> Policy {
+		Policy {
+			quota,
+			..Policy::default()
+		}
+	}
+
+	#[test]
+	fn a_record_that_fits_is_kept() {
+		let state = state();
+		let store = Store::open(state.path());
+		let source = state.path().join("photo.heic");
+		fs::write(&source, vec![b'x'; 100]).unwrap();
+		store.save(sized(1, state.path(), 100)).unwrap();
+
+		let room = store.make_room(&source, &policy(1_000)).unwrap();
+
+		assert_eq!(room, Room::Kept { dropped: Vec::new() });
+	}
+
+	#[test]
+	fn the_oldest_records_go_until_the_new_one_fits() {
+		let state = state();
+		let store = Store::open(state.path());
+		let newest = state.path().join("photo.heic");
+		fs::write(&newest, vec![b'x'; 400]).unwrap();
+
+		let oldest = store.save(sized(1, state.path(), 400)).unwrap();
+		std::thread::sleep(Duration::from_millis(2));
+		let middle = store.save(sized(2, state.path(), 400)).unwrap();
+
+		// Two records of 400 in a quota of 900 leaves 100, and the new one needs 400,
+		// so the oldest goes and the middle stays.
+		let room = store.make_room(&newest, &policy(900)).unwrap();
+
+		assert_eq!(
+			room,
+			Room::Kept {
+				dropped: vec![oldest.id.clone()]
+			}
+		);
+		assert!(store.load(&oldest.id).unwrap().is_none());
+		assert!(store.load(&middle.id).unwrap().is_some());
+	}
+
+	#[test]
+	fn a_file_larger_than_the_whole_quota_is_not_kept_and_evicts_nothing() {
+		let state = state();
+		let store = Store::open(state.path());
+		let huge = state.path().join("huge.heic");
+		fs::write(&huge, vec![b'x'; 2_000]).unwrap();
+		let existing = store.save(sized(1, state.path(), 100)).unwrap();
+
+		let room = store.make_room(&huge, &policy(1_000)).unwrap();
+
+		assert_eq!(room, Room::NoRoom(NoRoom::TooLarge));
+		assert!(
+			store.load(&existing.id).unwrap().is_some(),
+			"nothing is evicted for a record that will not exist"
+		);
+	}
+
+	#[test]
+	fn a_skip_policy_keeps_no_record_and_evicts_nothing() {
+		let state = state();
+		let store = Store::open(state.path());
+		let source = state.path().join("photo.heic");
+		fs::write(&source, vec![b'x'; 400]).unwrap();
+		let existing = store.save(sized(1, state.path(), 400)).unwrap();
+
+		let mut policy = policy(700);
+		policy.on_overflow = Overflow::Skip;
+
+		let room = store.make_room(&source, &policy).unwrap();
+
+		assert_eq!(room, Room::NoRoom(NoRoom::Policy));
+		assert!(store.load(&existing.id).unwrap().is_some(), "nothing is evicted");
+	}
+
+	#[test]
+	fn expired_records_go_before_anything_is_evicted() {
+		let state = state();
+		let store = Store::open(state.path());
+		let source = state.path().join("photo.heic");
+		fs::write(&source, vec![b'x'; 400]).unwrap();
+
+		let mut old = store.save(sized(1, state.path(), 400)).unwrap();
+		backdate(&store, &mut old, 8);
+		let recent = store.save(sized(2, state.path(), 400)).unwrap();
+
+		let room = store.make_room(&source, &policy(900)).unwrap();
+
+		assert_eq!(
+			room,
+			Room::Kept {
+				dropped: vec![old.id.clone()]
+			}
+		);
+		assert!(store.load(&old.id).unwrap().is_none());
+		assert!(
+			store.load(&recent.id).unwrap().is_some(),
+			"a record inside retention stays"
+		);
 	}
 
 	#[test]

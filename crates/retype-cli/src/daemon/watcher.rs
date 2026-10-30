@@ -417,30 +417,56 @@ pub fn convert(
 	let derived = retype_core::output::derive(stem, source_format, &resolved.groups);
 
 	// Keep the bytes before touching them: an undo has to be possible even if this
-	// process dies mid-conversion. Retention is a policy, so a machine that does
-	// not keep records does not pay for one.
+	// process dies mid-conversion. Retention and quota are policy, so a machine that
+	// does not keep records, or has no room for this one, does not pay for it and
+	// the conversion runs anyway.
 	let store = retype_core::undo::Store::open(&shared.state_dir);
 	let policy = shared.registry.undo();
+	let mut disposal = execute::Disposal::Remove;
 	let undo = if !policy.enabled {
 		None
 	} else {
-		Some(
-			store.save(retype_core::undo::Subject {
-				id: id.clone(),
-				intent: print::intent(&resolved, &shared.registry),
-				machine: shared.machine.clone(),
-				bytes: target.to_path_buf(),
-				source_path: root.join(source_name),
-				source_ext: source_format.to_string(),
-				outputs: derived
-					.iter()
-					.map(|derived| retype_core::undo::Output {
-						path: target.parent().unwrap_or(Path::new("")).join(&derived.path),
-						ext: derived.format.clone(),
-					})
-					.collect(),
-			}),
-		)
+		match store.make_room(target, policy) {
+			Ok(retype_core::undo::Room::Kept { dropped }) => {
+				for id in &dropped {
+					eprintln!("retype: dropped undo record {id} to stay within the quota");
+				}
+
+				Some(
+					store.save(retype_core::undo::Subject {
+						id: id.clone(),
+						intent: print::intent(&resolved, &shared.registry),
+						machine: shared.machine.clone(),
+						bytes: target.to_path_buf(),
+						source_path: root.join(source_name),
+						source_ext: source_format.to_string(),
+						outputs: derived
+							.iter()
+							.map(|derived| retype_core::undo::Output {
+								path: target.parent().unwrap_or(Path::new("")).join(&derived.path),
+								ext: derived.format.clone(),
+							})
+							.collect(),
+					}),
+				)
+			}
+			Ok(retype_core::undo::Room::NoRoom(reason)) => {
+				// Nothing can be kept, so the source goes where the user can still find
+				// it. A quota that is full is not a quota problem, so nothing is evicted
+				// for a record that will not exist.
+				disposal = match reason {
+					retype_core::undo::NoRoom::TooLarge => execute::Disposal::Trash,
+					retype_core::undo::NoRoom::Policy => execute::Disposal::Remove,
+				};
+
+				eprintln!("retype: {}: no undo record: {}", target.display(), reason.reason());
+				None
+			}
+			Err(error) => {
+				eprintln!("retype: cannot measure {} for undo: {error}", target.display());
+				None
+			}
+		}
 	};
 
 	// One job, one source: the bytes are relabelled and then read for every output,
@@ -521,8 +547,8 @@ pub fn convert(
 	// no path keeps bytes its name denies.
 	match state {
 		JobState::Done | JobState::Partial => {
-			if let Err(error) = renamed.consume() {
-				eprintln!("retype: cannot remove {}: {error}", target.display());
+			if let Err(error) = renamed.consume(disposal) {
+				eprintln!("retype: cannot dispose of {}: {error}", target.display());
 			}
 		}
 		_ => renamed.keep(),

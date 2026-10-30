@@ -191,7 +191,23 @@ Restore first, always. The file is renamed back to its source name before the co
 
 The cost is visible and worth stating: during a long conversion the file shows its *source* name again, so a twenty minute video transcode looks like the rename was undone and then reapplied. That is honest, and it is preferable to a file that claims to be a JPEG for twenty minutes while holding HEVC.
 
-Because the file is at its source name, every rename-derived job has the same shape: read the source path, write each output, remove the source on commit. There is no in-place special case. A crash anywhere leaves either the correctly named source or a complete output, which is what reconciliation expects.
+Because the file is at its source name, every rename-derived job has the same shape: read the source path, write each output, remove the source on commit. The source is opened once per job and read by every output, because a job with two outputs must not lose its input to the first one. There is no in-place special case. A crash anywhere leaves either the correctly named source or a complete output, which is what reconciliation expects.
+
+## 5.5 Quota and overflow
+
+The store is bounded by age first and by size second. A record is kept only when it fits, and a conversion is never blocked or delayed by the bookkeeping: the answer can be "no record", and the conversion proceeds.
+
+Order of decisions, for a record that costs `s` bytes:
+
+1. Drop records past retention. This is policy rather than overflow, so it happens whatever the answer below
+2. If the records kept plus `s` fit within `quota`, keep the record
+3. If `s` alone is larger than `quota`, nothing is evicted, because evicting the whole store would still not make room. The source goes to the operating system's trash instead, so the user can still get the file back
+4. Otherwise `on_overflow` decides:
+   - `evict` drops the oldest records until the new one fits
+   - `skip` keeps no record and the source is removed, because a quota that is full is a choice about the machine rather than a shortage
+   - `ask` asks; until notifications exist this build reads it as `evict` and says so once at startup
+
+Accounting is source bytes, which is what a hard link actually costs, `docs/config.md` §9. Nothing is dropped for a record that will not exist, and no record is dropped while a conversion is waiting for it.
 
 ## 6. Startup reconciliation
 

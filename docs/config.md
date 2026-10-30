@@ -262,7 +262,7 @@ The first backend in `prefer` that implements every operation in the plan and is
 
 Availability is a plan-time question with a fixed answer at that moment: the tool is in the managed directory or on `PATH`, above its version floor, and carrying its components. A managed tool is also checked against its manifest. The chosen backend, its resolved engine and its build fingerprint are recorded with the job, because a later machine that has since gained ImageMagick must not silently produce a different file.
 
-## 9. Undo retention
+## 9. Undo retention, quota and overflow
 
 Host-level, never per-directory: a `.retype.toml` committed to a repository must not decide every contributor's disk budget.
 
@@ -270,16 +270,22 @@ Host-level, never per-directory: a `.retype.toml` committed to a repository must
 [undo]
 enabled = true
 retention = '1w'
+quota = '5gb'
+on_overflow = 'ask'
 ```
 
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `true` | Keep records at all. Taking effect for future jobs, because a record has to exist at conversion time |
 | `retention` | `1w` | Age after which a record is dropped |
+| `quota` | `5gb` | Upper bound for the store, counted in source bytes |
+| `on_overflow` | `ask` | `ask`, `evict` or `skip`, `docs/state.md` §5.5 |
 
-`retention` is read as the grammar's duration class, so it is spelled the way an intent spells one: `w`, `d`, `h`, `m` and `s`, in that order, and a unit may be skipped. Months are not a unit, because a month is not a fixed number of seconds.
+`retention` is read as the grammar's duration class, so it is spelled the way an intent spells one: `w`, `d`, `h`, `m` and `s`, in that order, and a unit may be skipped. Months are not a unit, because a month is not a fixed number of seconds. `quota` is read as the size class, so `gb` is decimal and `gib` binary, `docs/grammar.md` §7.
 
 Retention decides two things at once, deliberately rather than incidentally: how long an undo record survives, and therefore how long the job it describes can be resumed, `docs/state.md` §5.2. Records are dropped at startup and never during a conversion.
+
+The quota is a second, independent bound: retention bounds records by age and the quota bounds them by size. `ask` is the intended answer and behaves as `evict` until notifications exist to ask with.
 
 The journal outlives them. It is compacted at startup when it earns it, dropping records past twice the retention with a floor of thirty days, `docs/state.md` §4.
 
