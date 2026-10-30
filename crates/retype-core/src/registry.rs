@@ -193,9 +193,11 @@ pub struct Registry {
 	/// Every format name and alias with the canonical format, longest first:
 	/// the list that decides where a file name's stem ends.
 	format_names: Vec<(String, String)>,
-	/// How long bytes are kept for undo, `docs/config.md` §13. Host-level, so
+	/// How long bytes are kept for undo, `docs/config.md` §9. Host-level, so
 	/// there is one answer per machine rather than one per directory.
 	undo: crate::undo::Policy,
+	/// Whether the record is also written onto the file, `docs/config.md` §10.
+	provenance: crate::provenance::Policy,
 }
 
 impl Registry {
@@ -481,6 +483,14 @@ impl Registry {
 			}
 		}
 
+		let mut provenance = crate::provenance::Policy::default();
+
+		if let Some(entry) = &document.provenance {
+			if let Some(xattr) = entry.xattr {
+				provenance.xattr = xattr;
+			}
+		}
+
 		let registry = Self {
 			tools,
 			presets,
@@ -490,6 +500,7 @@ impl Registry {
 			names,
 			format_names,
 			undo,
+			provenance,
 			warnings: Vec::new(),
 		};
 
@@ -515,9 +526,14 @@ impl Registry {
 		&self.backends
 	}
 
-	/// Undo retention, `docs/config.md` §13.
+	/// Undo retention, `docs/config.md` §9.
 	pub fn undo(&self) -> &crate::undo::Policy {
 		&self.undo
+	}
+
+	/// Whether provenance is written onto the file, `docs/config.md` §10.
+	pub fn provenance(&self) -> crate::provenance::Policy {
+		self.provenance
 	}
 
 	pub fn preset(&self, name: &str) -> Option<&Preset> {
@@ -1201,6 +1217,14 @@ struct Document {
 	ops: BTreeMap<String, OpEntry>,
 	#[serde(default)]
 	undo: Option<UndoEntry>,
+	#[serde(default)]
+	provenance: Option<ProvenanceEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProvenanceEntry {
+	#[serde(default)]
+	xattr: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1390,6 +1414,17 @@ mod tests {
 		let registry = Registry::load(&format!("{HEADER}\n[undo]\nenabled = false\nretention = '720h'\n")).unwrap();
 		assert!(!registry.undo().enabled);
 		assert_eq!(registry.undo().retention, std::time::Duration::from_secs(720 * 60 * 60));
+	}
+
+	#[test]
+	fn provenance_defaults_on_and_can_be_turned_off() {
+		assert!(Registry::load(HEADER).unwrap().provenance().xattr);
+		assert!(
+			!Registry::load(&format!("{HEADER}\n[provenance]\nxattr = false\n"))
+				.unwrap()
+				.provenance()
+				.xattr
+		);
 	}
 
 	#[test]

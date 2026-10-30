@@ -158,3 +158,72 @@ fn a_file_no_job_produced_is_said_so() {
 		"{stderr}"
 	);
 }
+
+/// The attribute is the only provenance that travels with the file, so it answers
+/// once the journal has forgotten, which is when a user asks.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn without_the_journal_the_file_still_says_what_made_it() {
+	let fixture = Fixture::new();
+	let produced = fixture.converted();
+
+	let recorded = retype_core::xattr::read_intent(&produced).expect("readable");
+	assert_eq!(recorded.as_deref(), Some("webp"), "the conversion recorded the intent");
+
+	// Stop the daemon, then take its journal: what is left is the file.
+	fixture.run(&["daemon", "stop"]);
+	fs::remove_file(fixture.state.join("jobs.jsonl")).unwrap();
+
+	let asked = fixture.run(&["why", produced.to_str().unwrap(), "--json"]);
+	let answer: serde_json::Value = serde_json::from_slice(&asked.stdout).expect("an object");
+
+	assert_eq!(answer["store"], "xattr", "{answer}");
+	assert_eq!(answer["intent"], "webp");
+	assert_eq!(answer["confidence"], "exact");
+	assert!(answer.get("job").is_none(), "no job is claimed: the journal is gone");
+}
+
+/// A record that names the path has the last word, `docs/provenance.md` §7.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn the_journal_outranks_the_attribute_for_the_same_path() {
+	let fixture = Fixture::new();
+	let produced = fixture.converted();
+
+	let asked = fixture.run(&["why", produced.to_str().unwrap(), "--json"]);
+	let answer: serde_json::Value = serde_json::from_slice(&asked.stdout).expect("an object");
+
+	assert_eq!(answer["store"], "journal-identity");
+	assert!(answer["job"].is_string());
+}
+
+/// Turning attributes off affects future conversions only, and says so in the
+/// answer rather than pretending the record exists.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn attributes_can_be_turned_off() {
+	let fixture = Fixture::new();
+	let quiet = fixture.dir.path().join("quiet.toml");
+	let text = fs::read_to_string(&fixture.config).unwrap();
+	fs::write(&quiet, format!("{text}\n[provenance]\nxattr = false\n")).unwrap();
+
+	let input = fixture.dir.path().join("quiet.png");
+	fs::write(&input, b"pixels").unwrap();
+
+	let converted = retype()
+		.args(["convert", input.to_str().unwrap(), "webp"])
+		.arg("--state-dir")
+		.arg(&fixture.state)
+		.env("RETYPE_CONFIG", &quiet)
+		.output()
+		.unwrap();
+	assert_eq!(
+		converted.status.code(),
+		Some(0),
+		"{}",
+		String::from_utf8_lossy(&converted.stderr)
+	);
+
+	let produced = fixture.dir.path().join("quiet.webp");
+	assert_eq!(retype_core::xattr::read_intent(&produced).unwrap(), None);
+}

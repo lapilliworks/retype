@@ -17,7 +17,7 @@ use retype_core::registry::Registry;
 use retype_core::resolve::Source as Origin;
 use retype_core::{execute, intent, output, plan, print, resolve, tools};
 
-use crate::daemon::watcher::{Shared, publish};
+use crate::daemon::watcher::{Shared, mark, publish};
 
 /// What a client asked for, as it arrived.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,6 +200,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 	job.state = state;
 	job.updated = now_ms();
 	publish(shared, &job);
+	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
 }
 
 fn source(prepared: &Prepared<'_>) -> Source {

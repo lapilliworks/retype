@@ -273,7 +273,24 @@ Retention decides two things at once, deliberately rather than incidentally: how
 
 The journal outlives them. It is compacted at startup when it earns it, dropping records past twice the retention with a floor of thirty days, `docs/state.md` §4.
 
-## 10. Per-directory policy
+## 10. Provenance
+
+Host-level, like retention.
+
+```toml
+[provenance]
+xattr = true
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `xattr` | `true` | Record the intent on the file as an extended attribute, where the platform has them |
+
+The attribute is `user.retype.intent` on Linux and `com.retype.intent` on macOS. It is written after an output is produced and never read as a precondition: a filesystem that refuses attributes, or a policy that strips them, changes what `retype why` can answer later and nothing else. Windows streams are not written until that question is settled, `docs/provenance.md` §5.
+
+Turning it off affects future conversions. An attribute already on a file is still read, because it is evidence about that file rather than a setting of this one.
+
+## 11. Per-directory policy
 
 `.retype.toml` in a watched directory may change behaviour but MUST NOT define tools, formats, operations or presets. A directory can arrive from an untrusted source, so it cannot introduce a command.
 
@@ -297,7 +314,7 @@ preset = 'headshot'
 
 `paused = true` makes the directory unwatched by policy, and policy beats state: a later `retype watch --resume <dir>` is refused with `E_WATCH_PAUSED_BY_POLICY` naming the file, rather than being accepted and then quietly undone the next time the file is read.
 
-## 11. Validation
+## 12. Validation
 
 Loading fails, naming the file and key, on any of:
 
@@ -323,7 +340,7 @@ V12 named an in-process backend and was retired with it. The number is not reuse
 
 Warnings, not errors: a name that is a prefix of another name; a tool that fails its probe; a managed tool whose fingerprint differs from its manifest; a pair whose tier is `delegated` but has no `argv` fragment.
 
-## 12. Probing
+## 13. Probing
 
 Probing is an authoring aid, never a runtime decision.
 
@@ -334,6 +351,6 @@ retype doctor --emit      # a [tools] snippet reflecting what is installed
 
 `--emit` writes nothing unless asked to with `--write`. The emitted snippet is ordinary configuration and is validated like any other.
 
-## 13. Versioning
+## 14. Versioning
 
 Version identifier: `retype-config-1`, declared at file top level. The key is mandatory in user and directory files and implicit in `builtin.toml`. A file with an unknown major fails to load; a file with a lower major is upgraded through a declared migration when one exists. Keys are never reused for different meanings, and a renamed key stays accepted as an alias for at least one major version.

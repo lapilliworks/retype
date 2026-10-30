@@ -23,3 +23,4 @@ pub mod tools;
 pub mod undo;
 pub mod value;
 pub mod watches;
+pub mod xattr;

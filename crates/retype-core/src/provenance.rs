@@ -40,6 +40,7 @@ impl Confidence {
 pub enum Store {
 	JournalIdentity,
 	JournalPath,
+	Xattr,
 	Unknown,
 }
 
@@ -48,16 +49,32 @@ impl Store {
 		match self {
 			Self::JournalIdentity => "journal-identity",
 			Self::JournalPath => "journal-path",
+			Self::Xattr => "xattr",
 			Self::Unknown => "unknown",
 		}
 	}
 }
 
+/// Whether the record is also written onto the file, as an extended attribute
+/// where the platform has them, `docs/provenance.md` §6.2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Policy {
+	pub xattr: bool,
+}
+
+impl Default for Policy {
+	fn default() -> Self {
+		Self { xattr: true }
+	}
+}
+
 /// A job and the output that answers for a path.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Answer<'a> {
 	pub job: Option<&'a Job>,
 	pub output: Option<&'a Output>,
+	/// The intent, when the answer came from the file rather than the journal.
+	pub intent: Option<String>,
 	pub store: Store,
 	pub confidence: Confidence,
 }
@@ -80,6 +97,7 @@ pub fn answer<'a>(jobs: &'a [Job], path: &Path) -> Answer<'a> {
 				return Answer {
 					job: Some(job),
 					output: Some(output),
+					intent: None,
 					store: Store::JournalIdentity,
 					confidence: Confidence::Exact,
 				};
@@ -91,16 +109,31 @@ pub fn answer<'a>(jobs: &'a [Job], path: &Path) -> Answer<'a> {
 		}
 	}
 
-	match by_path {
-		Some((job, output)) => Answer {
+	if let Some((job, output)) = by_path {
+		return Answer {
 			job: Some(job),
 			output: Some(output),
+			intent: None,
 			store: Store::JournalPath,
 			confidence: Confidence::PathOnly,
-		},
-		None => Answer {
+		};
+	}
+
+	// The journal says nothing, so the file is asked. The attribute outlives the
+	// journal because it is on the file, and it is not consulted when a record
+	// names that path, because then the record has the last word, §7.
+	match crate::xattr::read_intent(path) {
+		Ok(Some(intent)) => Answer {
 			job: None,
 			output: None,
+			intent: Some(intent),
+			store: Store::Xattr,
+			confidence: Confidence::Exact,
+		},
+		_ => Answer {
+			job: None,
+			output: None,
+			intent: None,
 			store: Store::Unknown,
 			confidence: Confidence::None,
 		},
@@ -250,6 +283,42 @@ mod tests {
 		assert_eq!(answer.confidence, Confidence::None);
 		assert_eq!(answer.store, Store::Unknown);
 		assert!(answer.job.is_none());
+	}
+
+	#[test]
+	fn a_file_the_journal_forgot_still_says_what_made_it() {
+		let dir = tempfile::tempdir().unwrap();
+		let file = dir.path().join("holiday.webp");
+		std::fs::write(&file, b"pixels").unwrap();
+
+		if !crate::xattr::write_intent(&file, "webp+quality60").unwrap_or(false) {
+			return;
+		}
+
+		let answer = answer(&[], &file);
+
+		assert_eq!(answer.store, Store::Xattr);
+		assert_eq!(answer.confidence, Confidence::Exact);
+		assert_eq!(answer.intent.as_deref(), Some("webp+quality60"));
+	}
+
+	#[test]
+	fn a_record_about_the_path_has_the_last_word_over_the_file() {
+		let dir = tempfile::tempdir().unwrap();
+		let file = dir.path().join("holiday.webp");
+		std::fs::write(&file, b"pixels").unwrap();
+
+		if !crate::xattr::write_intent(&file, "webp+quality60").unwrap_or(false) {
+			return;
+		}
+
+		// A record for the same name with another size: the file is not the one the
+		// record produced, and the record still answers for the path.
+		let jobs = [job(&file, None, Some(99))];
+		let answer = answer(&jobs, &file);
+
+		assert_eq!(answer.store, Store::JournalPath);
+		assert!(answer.intent.is_none(), "the file's own claim was not used");
 	}
 
 	#[test]

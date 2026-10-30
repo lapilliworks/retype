@@ -403,11 +403,28 @@ pub fn convert(
 	};
 
 	publish(shared, &job);
+	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
 
 	// Nothing was produced, so there is nothing to undo: the source is where it
 	// always was and the record would only describe a file that never changed.
 	if state != JobState::Done && state != JobState::Partial {
 		let _ = store.remove(&id);
+	}
+}
+
+/// Write the intent onto each output that was produced, `docs/provenance.md` §6.2.
+///
+/// Best effort: a filesystem that refuses attributes, or a policy that turns them
+/// off, leaves the journal as the only record and changes nothing else.
+pub fn mark(shared: &Shared, outputs: &[Output], intent: &str) {
+	if !shared.registry.provenance().xattr {
+		return;
+	}
+
+	for output in outputs.iter().filter(|output| output.state == OutputState::Done) {
+		if let Err(error) = retype_core::xattr::write_intent(&output.path, intent) {
+			eprintln!("retype: cannot record provenance on {}: {error}", output.path.display());
+		}
 	}
 }
 

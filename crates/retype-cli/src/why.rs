@@ -33,32 +33,44 @@ pub fn run(path: &str, json: bool, quiet: bool, state_dir: &Path, allow_spawn: b
 		return Ok(ExitCode::SUCCESS);
 	}
 
-	let field = |name: &str| answer.get(name).and_then(Value::as_str).unwrap_or("-");
+	// What the answer does not know is left out rather than printed as a dash: a
+	// record read from the file carries the intent and nothing else.
+	let line = |name: &str, value: &str| println!("{name:<11}{value}");
+	let field = |name: &str| answer.get(name).and_then(Value::as_str).map(str::to_string);
 
-	println!("{:<11}{}", "path", path);
-	println!("{:<11}{}", "store", field("store"));
-	println!("{:<11}{}", "confidence", field("confidence"));
-	println!("{:<11}{}", "intent", field("intent"));
-	println!("{:<11}{}", "backend", field("backend"));
+	line("path", path);
+	line("store", field("store").unwrap_or_default().as_str());
+	line("confidence", field("confidence").unwrap_or_default().as_str());
+
+	if let Some(intent) = field("intent") {
+		line("intent", &intent);
+	}
+
+	if let Some(backend) = field("backend") {
+		line("backend", &backend);
+	}
 
 	if let Some(engine) = answer.get("engine").and_then(Value::as_object) {
-		println!(
-			"{:<11}{} via {}",
+		line(
 			"engine",
-			engine.get("name").and_then(Value::as_str).unwrap_or("-"),
-			engine.get("candidate").and_then(Value::as_str).unwrap_or("-")
+			&format!(
+				"{} via {}",
+				engine.get("name").and_then(Value::as_str).unwrap_or_default(),
+				engine.get("candidate").and_then(Value::as_str).unwrap_or_default()
+			),
 		);
 	}
 
-	println!("{:<11}{}", "tier", field("tier"));
-	println!(
-		"{:<11}{}",
-		"bytes",
-		answer.get("bytes").and_then(Value::as_u64).unwrap_or_default()
-	);
+	if let Some(tier) = field("tier") {
+		line("tier", &tier);
+	}
+
+	if let Some(bytes) = answer.get("bytes").and_then(Value::as_u64) {
+		line("bytes", &bytes.to_string());
+	}
 
 	if let Some(created) = answer.get("created").and_then(Value::as_i64) {
-		println!("{:<11}{}", "converted", ago(created));
+		line("converted", &ago(created));
 	}
 
 	Ok(ExitCode::SUCCESS)

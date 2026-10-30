@@ -256,6 +256,10 @@ impl Server {
 			"confidence": answer.confidence.as_str(),
 		});
 
+		if let Some(intent) = &answer.intent {
+			fields["intent"] = json!(intent);
+		}
+
 		if let Some(job) = answer.job {
 			fields["job"] = json!(job.id);
 			fields["intent"] = json!(job.intent);
