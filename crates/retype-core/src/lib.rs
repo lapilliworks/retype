@@ -8,6 +8,7 @@
 pub mod convert;
 pub mod correlate;
 pub mod error;
+pub mod estimate;
 pub mod execute;
 pub mod fsx;
 pub mod intent;

@@ -229,13 +229,26 @@ version = 'retype-bench-1'
 machine = '7f3c1a2b'
 
 [[throughput]]
-family = 'image'
-format = 'jpg'
+source = 'heic'
+target = 'jpg'
 backend = 'magick'
-megapixels_per_second = 12.4
+family = 'image'
+bytes_per_second = 2400000.0
+size_ratio = 0.28
+sample_bytes = 4800000
+tool_version = 'ImageMagick 7.1.2-34'
+measured = 1793380889377
 ```
 
-Estimates use measured throughput when present and family constants otherwise. Every constant carries its provenance in code, with a source URL when it comes from outside this repository, and the measurement method recorded next to it.
+A measurement is keyed by the pair it was taken on, not by one format: HEIC decodes slowly and JPEG encodes quickly, so `heic` to `jpg` and `png` to `jpg` are different jobs and no per-format figure describes both. `family` is kept beside the pair because it is what an unmeasured pair falls back to.
+
+The two numbers are the source bytes the machine converts per second, and the output bytes per source byte. Time follows from the first and size from the second, and both are per pair because a ratio is a property of the pair: the same photograph is 291 KB as WebP and 807 KB as AVIF.
+
+`sample_bytes` records what the rate was measured on, since a rate taken on a 240 KB file and one taken on a 2 MB file are not the same evidence. `tool_version` is the version string of the backend that ran, because a rate is evidence about a build, `docs/tools.md` §5.1.
+
+`retype bench` writes this file. It generates one sample per family in the format `[bench.seed]` names, using an argv `[bench.sample]` declares, and then measures every target that compiles from that source. `--pair` and `--family` narrow it. Measuring the same pair twice replaces the earlier answer rather than leaving two for one question.
+
+Estimates use a measurement when the pair, backend and machine match, and a family constant otherwise. Every constant carries its provenance, with the measurement it came from.
 
 ## 8. Provenance
 
