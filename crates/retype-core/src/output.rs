@@ -86,7 +86,7 @@ pub fn token_text(op: &crate::resolve::Op) -> String {
 	let mut text = op.name.clone();
 
 	if let Some(value) = &op.value {
-		for character in value.text.chars() {
+		for character in value.written.text.chars() {
 			text.push(if character == '.' { '_' } else { character });
 		}
 	}
@@ -104,8 +104,8 @@ mod tests {
 	use super::*;
 	use crate::intent::{self, Raw};
 	use crate::registry::Registry;
-	use crate::resolve::Resolved;
 	use crate::resolve::{self, Op, Source};
+	use crate::resolve::{Argument, Resolved};
 
 	fn resolved(text: &str, source_format: &'static str) -> Resolved {
 		let registry = Registry::builtin().expect("built-in registry");
@@ -191,9 +191,12 @@ mod tests {
 				key: "thumb".to_string(),
 				name: "thumb".to_string(),
 				slot: 60,
-				value: Some(Raw {
-					text: "1.5x".to_string(),
-					span: crate::error::Span::new(0, 4),
+				value: Some(Argument {
+					written: Raw {
+						text: "1.5x".to_string(),
+						span: crate::error::Span::new(0, 4),
+					},
+					parsed: crate::value::Value::Text("1.5x".to_string()),
 				}),
 				span: crate::error::Span::new(0, 4),
 			}],

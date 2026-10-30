@@ -183,7 +183,7 @@ args = ['-resize', '{value}']
 |---|---|---|
 | `slot` | yes | Ordering category, `temporal`, `geometry`, `colour`, `audio`, `encoder`, `metadata`, `control` |
 | `exclusive` | no | Group names; two members of one group conflict |
-| `param` | when it takes a value | `class`, plus `min`, `max`, `values` for `enum` |
+| `param` | when it takes a value | `class`, plus `min` and `max` for the numeric classes, `values` for `enum`, and `scalar` for `range`, which is `int` unless it says `time` |
 | `formats` | yes | Formats the operation applies to, or `['*']` |
 | `argv.<tool>` | unless `native` | Fragment contributed to that tool's `{ops}` |
 | `native` | unless `argv` | Name of a compiled implementation |

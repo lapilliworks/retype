@@ -16,3 +16,4 @@ pub mod output;
 pub mod registry;
 pub mod resolve;
 pub mod tools;
+pub mod value;

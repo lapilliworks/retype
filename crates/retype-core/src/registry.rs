@@ -42,6 +42,14 @@ pub enum Class {
 	Text,
 }
 
+/// What a `range` counts, `docs/grammar.md` §7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Scalar {
+	Int,
+	Time,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Param {
 	pub class: Class,
@@ -51,6 +59,9 @@ pub struct Param {
 	pub max: Option<u64>,
 	#[serde(default)]
 	pub values: Vec<String>,
+	/// Only meaningful for a `range`: what its ends count.
+	#[serde(default)]
+	pub scalar: Option<Scalar>,
 }
 
 /// An operation, which is what a token name resolves to.

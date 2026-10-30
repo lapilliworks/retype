@@ -181,7 +181,7 @@ formats = ['*']
 [ops.trim]
 slot = 10
 formats = []
-param = { class = 'range' }
+param = { class = 'range', scalar = 'time' }
 
 [ops.at]
 slot = 10

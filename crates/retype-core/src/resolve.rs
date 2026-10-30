@@ -9,6 +9,7 @@
 use crate::error::{Code, Diagnoses, Error, Span};
 use crate::intent::{self, Intent, Meta, Raw, Token};
 use crate::registry::Registry;
+use crate::value::{self, Value};
 
 /// What the source is, because some rules depend on it.
 #[derive(Debug, Clone, Copy)]
@@ -47,8 +48,16 @@ pub struct Op {
 	/// Primary spelling, which is what canonical printing uses.
 	pub name: String,
 	pub slot: u16,
-	pub value: Option<Raw>,
+	pub value: Option<Argument>,
 	pub span: Span,
+}
+
+/// A value as written and as read: the written form keeps the user's spelling
+/// for the derived name, and the parsed form is what later stages act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Argument {
+	pub written: Raw,
+	pub parsed: Value,
 }
 
 pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Result<Resolved, Diagnoses> {
@@ -119,7 +128,7 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 				.map(str::to_string)
 				.or_else(|| token.value.as_ref().map(|raw| raw.text.clone()));
 
-			let value = match (found.op.param.is_some(), written) {
+			let written = match (found.op.param.is_some(), written) {
 				(true, None) => {
 					problems.push(error(
 						Code::ValueMissing,
@@ -136,7 +145,21 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 					));
 					continue;
 				}
-				(_, value) => value.map(|text| Raw { text, span: token.span }),
+				(_, written) => written.map(|text| Raw {
+					text,
+					span: token.value.as_ref().map(|value| value.span).unwrap_or(token.span),
+				}),
+			};
+
+			let value = match (&found.op.param, written) {
+				(Some(param), Some(written)) => match value::interpret(param, &written.text) {
+					Ok(parsed) => Some(Argument { written, parsed }),
+					Err(fault) => {
+						problems.push(error(fault.code, fault.message, written.span));
+						continue;
+					}
+				},
+				_ => None,
 			};
 
 			if keys.contains(&found.op.key) {
@@ -433,7 +456,7 @@ aliases = ['tar.gz']
 
 		assert_eq!(op.key, "quality");
 		assert_eq!(op.name, "quality");
-		assert_eq!(op.value.as_ref().unwrap().text, "85");
+		assert_eq!(op.value.as_ref().unwrap().written.text, "85");
 		assert_eq!(op.slot, 50);
 	}
 
@@ -448,14 +471,14 @@ aliases = ['tar.gz']
 	fn aliases_desugar_whole_tokens() {
 		let resized = resolve_text("webp+1080p", image("heic")).unwrap();
 		assert_eq!(resized.groups[0].ops[0].key, "cap");
-		assert_eq!(resized.groups[0].ops[0].value.as_ref().unwrap().text, "1080");
+		assert_eq!(resized.groups[0].ops[0].value.as_ref().unwrap().written.text, "1080");
 
 		let four_k = resolve_text("webp+4k", image("heic")).unwrap();
-		assert_eq!(four_k.groups[0].ops[0].value.as_ref().unwrap().text, "2160");
+		assert_eq!(four_k.groups[0].ops[0].value.as_ref().unwrap().written.text, "2160");
 
 		let size = resolve_text("webp+5mb", image("heic")).unwrap();
 		assert_eq!(size.groups[0].ops[0].key, "size");
-		assert_eq!(size.groups[0].ops[0].value.as_ref().unwrap().text, "5mb");
+		assert_eq!(size.groups[0].ops[0].value.as_ref().unwrap().written.text, "5mb");
 	}
 
 	#[test]
@@ -490,6 +513,37 @@ aliases = ['tar.gz']
 	#[test]
 	fn a_value_on_an_operation_that_takes_none_is_a_diagnosis() {
 		assert_eq!(codes("webp+nometa80", image("heic")), vec![Code::ValueUnexpected]);
+	}
+
+	#[test]
+	fn a_value_is_read_as_its_class_requires() {
+		assert_eq!(codes("webp+quality1e2", image("heic")), vec![Code::ValueSyntax]);
+		assert_eq!(codes("webp+qualityabc", image("heic")), vec![Code::ValueSyntax]);
+		assert_eq!(codes("webp+rotate45", image("heic")), vec![Code::ValueSyntax]);
+		assert_eq!(codes("webp+resize0x0", image("heic")), vec![Code::ValueSyntax]);
+		assert_eq!(codes("webp+size5", image("heic")), vec![Code::ValueSyntax]);
+	}
+
+	#[test]
+	fn a_value_outside_the_declared_bounds_is_out_of_range() {
+		assert_eq!(codes("webp+quality101", image("heic")), vec![Code::ValueRange]);
+		assert_eq!(codes("webp+quality0", image("heic")), vec![Code::ValueRange]);
+		assert_eq!(codes("webp+cap8", image("heic")), vec![Code::ValueRange]);
+	}
+
+	#[test]
+	fn a_value_inside_its_bounds_is_accepted_and_parsed() {
+		let resolved = resolve_text("webp+quality85+cap1000+rotate90", image("heic")).unwrap();
+		let values: Vec<&Value> = resolved.groups[0]
+			.ordered()
+			.iter()
+			.filter_map(|op| op.value.as_ref().map(|argument| &argument.parsed))
+			.collect();
+
+		assert_eq!(
+			values,
+			vec![&Value::Int(1000), &Value::Enum("90".to_string()), &Value::Int(85)]
+		);
 	}
 
 	#[test]
