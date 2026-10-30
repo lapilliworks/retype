@@ -84,39 +84,51 @@ pub fn value(value: &Value) -> String {
 	}
 }
 
-/// The largest unit that expresses the byte count exactly, and failing that the
-/// largest that needs at most three decimal places. `kb` always suffices, so
-/// every byte count has a spelling.
+/// The largest unit that reads as at least one and needs at most three decimal
+/// places, so `1_500_000` prints `1.5mb` rather than `0.0015gb`, and 1024 bytes
+/// prints `1kib` rather than `1.024kb`.
+///
+/// Decimal and binary units both get a turn, because the byte count alone does
+/// not say which one the user had in mind, and the larger unit that fits exactly
+/// is the one they would have written.
 fn size(bytes: u64) -> String {
-	const UNITS: [(&str, u64); 3] = [("gb", 1_000_000_000), ("mb", 1_000_000), ("kb", 1_000)];
+	let bytes = u128::from(bytes);
 
-	for (unit, scale) in UNITS {
-		if bytes % scale == 0 {
-			return format!("{}{unit}", bytes / scale);
+	for floor in [1_000u128, 0] {
+		for (unit, scale) in UNITS {
+			let scale = u128::from(scale);
+
+			// Thousandths of this unit, if the count lands on one exactly.
+			let thousandths = bytes * 1_000;
+			if thousandths % scale != 0 || thousandths / scale < floor {
+				continue;
+			}
+
+			let thousandths = thousandths / scale;
+			let mut text = format!("{}.{:03}", thousandths / 1_000, thousandths % 1_000);
+			while text.ends_with('0') {
+				text.pop();
+			}
+			if text.ends_with('.') {
+				text.pop();
+			}
+
+			return format!("{text}{unit}");
 		}
-	}
-
-	for (unit, scale) in UNITS {
-		let step = scale / 1_000;
-
-		// Three decimal places of this unit, if the byte count fills them evenly.
-		if bytes % step != 0 {
-			continue;
-		}
-
-		let mut text = format!("{}.{:03}", bytes / scale, (bytes % scale) / step);
-		while text.ends_with('0') {
-			text.pop();
-		}
-		if text.ends_with('.') {
-			text.pop();
-		}
-
-		return format!("{text}{unit}");
 	}
 
 	unreachable!("a kb is a thousand bytes, so three decimal places always suffice")
 }
+
+/// The same order the parser accepts, largest unit first.
+const UNITS: [(&str, u64); 6] = [
+	("gib", 1024 * 1024 * 1024),
+	("gb", 1_000_000_000),
+	("mib", 1024 * 1024),
+	("mb", 1_000_000),
+	("kib", 1024),
+	("kb", 1_000),
+];
 
 /// The tagged form with zero units left out, so `1:00:30` prints `1h30s`.
 fn duration(seconds: u64) -> String {
@@ -215,10 +227,27 @@ mod tests {
 	}
 
 	#[test]
-	fn a_size_prints_in_its_largest_exact_unit() {
+	fn a_size_prints_in_the_largest_unit_that_reads_naturally() {
 		assert_eq!(size(5_000_000), "5mb");
 		assert_eq!(size(2_000_000_000), "2gb");
-		assert_eq!(size(1_500_000), "1500kb");
+		assert_eq!(size(1_500_000), "1.5mb");
+		assert_eq!(size(1_234), "1.234kb");
+		assert_eq!(size(1_234_500), "1234.5kb");
+		assert_eq!(size(500_000), "500kb");
+		assert_eq!(size(500), "0.5kb");
+	}
+
+	#[test]
+	fn a_binary_count_prints_in_binary_units() {
+		assert_eq!(size(1_024), "1kib");
+		assert_eq!(size(1_536), "1.5kib");
+		assert_eq!(size(1_048_576), "1mib");
+		assert_eq!(size(1_073_741_824), "1gib");
+	}
+
+	#[test]
+	fn a_count_that_reads_naturally_in_neither_keeps_the_larger_unit() {
+		assert_eq!(size(1_024_000), "1.024mb");
 	}
 
 	#[test]

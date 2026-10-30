@@ -181,35 +181,36 @@ fn database_side(part: &str, _name: &str) -> Option<u32> {
 	part.parse().ok()
 }
 
-/// `decimal ( "kb" / "mb" / "gb" )`, decimal rather than binary.
+/// `decimal ( "kb" / "mib" / "gb" )` and friends: decimal and binary units are
+/// different quantities, `docs/grammar.md` §7.
+///
+/// `mb` is a thousand kilobytes and `mib` is a thousand and twenty-four kibibytes,
+/// which is four and a half percent more. The two spellings are separate on
+/// purpose: a byte budget of 1 MiB is not a budget of 1 MB, and a user who writes
+/// one means it.
 ///
 /// A fraction is allowed here and nowhere else, because there is no byte unit to
-/// fall back on: without decimals, 1234 bytes has no spelling at all. The units
-/// are powers of a thousand, so a decimal is exact; what a literal cannot be is
-/// a fraction of a byte, and `1.2345kb` is one.
+/// fall back on: without decimals, 1234 bytes has no spelling at all. What a
+/// literal cannot be is a fraction of a byte, and `1.2345kb` is one.
 fn size(text: &str) -> Result<u64, Fault> {
 	let lower = text.to_ascii_lowercase();
 
-	for (unit, scale) in [("gb", 1_000_000_000u128), ("mb", 1_000_000u128), ("kb", 1_000u128)] {
+	for (unit, scale) in UNITS {
 		let Some(number) = lower.strip_suffix(unit) else {
 			continue;
 		};
 
 		let (whole, fraction) = match number.split_once('.') {
-			Some((_whole, "")) => {
-				return Err(syntax(format!("'{text}' ends at the decimal point")));
-			}
+			Some((_, "")) => return Err(syntax(format!("'{text}' ends at the decimal point"))),
 			Some((whole, fraction)) => (whole, fraction),
 			None => (number, ""),
 		};
 
-		let whole = if whole.is_empty() {
-			return Err(syntax(format!("'{text}' has no whole part")));
-		} else {
-			number_of(whole).ok_or_else(|| syntax(format!("'{text}' is not a number")))?
+		let Some(whole) = number_of(whole) else {
+			return Err(syntax(format!("'{text}' is not a number")));
 		};
 
-		let mut bytes = (whole as u128)
+		let mut bytes = u128::from(whole)
 			.checked_mul(scale)
 			.ok_or_else(|| out_of_range(format!("'{text}' is larger than a byte count can hold")))?;
 
@@ -225,7 +226,7 @@ fn size(text: &str) -> Result<u64, Fault> {
 			};
 
 			let denominator = 10u128.pow(fraction.len() as u32);
-			let scaled = (digits as u128) * scale;
+			let scaled = u128::from(digits) * scale;
 
 			if scaled % denominator != 0 {
 				return Err(syntax(format!("'{text}' is a fraction of a byte")));
@@ -238,8 +239,21 @@ fn size(text: &str) -> Result<u64, Fault> {
 			.map_err(|_| out_of_range(format!("'{text}' is larger than a byte count can hold")));
 	}
 
-	Err(syntax(format!("'{text}' has no kb, mb or gb unit")))
+	Err(syntax(format!(
+		"'{text}' has no unit: use kb, mb or gb, or kib, mib or gib"
+	)))
 }
+
+/// Decimal and binary units, longest spelling first so that `mib` is never read
+/// as `ib` beside `mb`.
+const UNITS: [(&str, u128); 6] = [
+	("gib", 1024 * 1024 * 1024),
+	("mib", 1024 * 1024),
+	("kib", 1024),
+	("gb", 1_000_000_000),
+	("mb", 1_000_000),
+	("kb", 1_000),
+];
 
 fn number_of(text: &str) -> Option<u64> {
 	if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -495,6 +509,25 @@ mod tests {
 		assert_eq!(interpret(&class, "1500kb"), Ok(Value::Size(1_500_000)));
 		assert_eq!(interpret(&class, "5").unwrap_err().code, Code::ValueSyntax);
 		assert_eq!(interpret(&class, "5tb").unwrap_err().code, Code::ValueSyntax);
+	}
+
+	#[test]
+	fn binary_and_decimal_units_are_different_quantities() {
+		let class = param(Class::Size);
+
+		assert_eq!(interpret(&class, "1kb"), Ok(Value::Size(1_000)));
+		assert_eq!(interpret(&class, "1kib"), Ok(Value::Size(1_024)));
+		assert_eq!(interpret(&class, "1mb"), Ok(Value::Size(1_000_000)));
+		assert_eq!(interpret(&class, "1mib"), Ok(Value::Size(1_048_576)));
+		assert_eq!(interpret(&class, "1gib"), Ok(Value::Size(1_073_741_824)));
+		assert_eq!(interpret(&class, "1.5kib"), Ok(Value::Size(1_536)));
+	}
+
+	#[test]
+	fn a_binary_fraction_must_still_be_a_whole_byte() {
+		let class = param(Class::Size);
+
+		assert_eq!(interpret(&class, "0.1kib").unwrap_err().code, Code::ValueSyntax);
 	}
 
 	#[test]

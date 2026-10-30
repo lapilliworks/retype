@@ -123,7 +123,7 @@ A class is declared per operation parameter. Bounds come from the operation.
 | `int` | `1*DIGIT` | Leading zeros accepted, not printed |
 | `dim` | `int "x" int` | Pixels. `0` means auto on one side |
 | `ratio` | `int "x" int` | Aspect only. Both sides non-zero |
-| `size` | `decimal ( "kb" / "mb" / "gb" )` | Decimal arithmetic: 1 kb = 1000 bytes, 1 mb = 10^6, 1 gb = 10^9. A fraction is allowed here and nowhere else, because there is no byte unit to fall back on |
+| `size` | `decimal ( decimal-unit / binary-unit )` | `kb`, `mb`, `gb` are powers of a thousand; `kib`, `mib`, `gib` are powers of a thousand and twenty-four. A fraction is allowed here and nowhere else, because there is no byte unit to fall back on |
 | `time` | see below | Seconds unless a unit is present |
 | `range` | `scalar`, `scalar-scalar`, `scalar-`, `-scalar` | Scalar is declared per parameter as `int` or `time` |
 | `enum` | one of a declared list | Matched case-insensitively |
@@ -134,7 +134,9 @@ A class is declared per operation parameter. Bounds come from the operation.
 int    = 1*DIGIT
 dim    = int "x" int
 ratio  = int "x" int
-size   = decimal ( "kb" / "mb" / "gb" )
+size   = decimal ( decimal-unit / binary-unit )
+decimal-unit = "kb" / "mb" / "gb"      ; 1000, 1000^2, 1000^3 bytes
+binary-unit  = "kib" / "mib" / "gib"   ; 1024, 1024^2, 1024^3 bytes
 decimal = int [ "." 1*DIGIT ]
 time   = tagged / clock
 tagged = 1*DIGIT / 1*DIGIT "s" / 1*DIGIT "m" [ 1*DIGIT "s" ]
@@ -164,6 +166,7 @@ Rules:
 - In the clock form every place down to seconds is present, and minutes and seconds are exactly two digits below 60. `1:30` is therefore ninety seconds, and an hour and a half is written `1:30:00`
 - A number without a unit MUST be the whole value, so `1h30` is `E_VALUE_SYNTAX`
 - A fraction is permitted only in `size`, and only down to a whole byte: `1.5mb` and `1.234kb` are exact, `1.2345kb` is half a byte and is `E_VALUE_SYNTAX`
+- Decimal and binary units are different quantities, and neither is a synonym for the other: `1mb` is a thousand kilobytes and `1mib` is a thousand and twenty-four kibibytes, which is 4.9 percent more. A budget written as `1mib` means 1048576 bytes
 
 ## 8. Names, keys and exclusivity
 
