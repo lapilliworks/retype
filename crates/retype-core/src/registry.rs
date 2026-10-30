@@ -923,7 +923,7 @@ mod tests {
 		let registry = builtin();
 		let names: Vec<&str> = registry.tools().map(|tool| tool.name.as_str()).collect();
 
-		assert_eq!(names, ["7z", "ffmpeg", "magick", "pandoc"]);
+		assert_eq!(names, ["7zz", "ffmpeg", "magick", "pandoc"]);
 
 		let pandoc = registry.tool("pandoc").expect("pandoc is declared");
 		assert_eq!(pandoc.candidates("pdf").first().map(String::as_str), Some("typst"));
@@ -1100,7 +1100,7 @@ tier = 'converted'
 	fn the_builtin_states_its_preference() {
 		let registry = builtin();
 
-		assert_eq!(registry.backends(), ["magick", "ffmpeg", "pandoc", "7z"]);
+		assert_eq!(registry.backends(), ["magick", "ffmpeg", "pandoc", "7zz"]);
 	}
 
 	#[test]

@@ -30,7 +30,7 @@ pub struct Tool {
 	pub components: Vec<String>,
 	/// Argv template with `{input}`, `{ops}` and `{output}`.
 	pub layout: Vec<String>,
-	/// Named alternatives resolved first-present, `docs/tools.md` §4.1.
+	/// Named alternatives resolved first-present, `docs/tools.md` §5.1.
 	pub engines: BTreeMap<String, Vec<String>>,
 }
 
@@ -134,7 +134,7 @@ pub fn probe(tool: &Tool) -> ToolStatus<'_> {
 			let stderr = String::from_utf8_lossy(&output.stderr);
 			let text = format!("{stdout}{stderr}");
 
-			// The version line is not always first: `7z` prints a blank line
+			// The version line is not always first: `7zz` prints a blank line
 			// and a banner before it.
 			let version = text.lines().find_map(Version::parse);
 			let lowered = text.to_lowercase();
@@ -171,7 +171,7 @@ pub fn probe_all(tools: &[Tool]) -> Vec<ToolStatus<'_>> {
 	tools.iter().map(probe).collect()
 }
 
-/// First candidate of a named engine that is on `PATH`, `docs/tools.md` §4.1.
+/// First candidate of a named engine that is on `PATH`, `docs/tools.md` §5.1.
 pub fn resolve_engine<'a>(tool: &'a Tool, engine: &str) -> Option<&'a str> {
 	let path_env = std::env::var_os("PATH").unwrap_or_default();
 	tool.candidates(engine)
