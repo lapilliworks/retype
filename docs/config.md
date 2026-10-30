@@ -88,13 +88,15 @@ layout = ['{input}', '{ops}', '{output}']
 | `layout` | yes | Argv template. Names `{input}`, `{ops}` and `{output}` once each, in any order |
 | `engines` | no | Named alternatives resolved at plan time, see 3.1 |
 
-The layout is the whole reason a tool is configuration: `7z` takes its output before its input and `ffmpeg` needs `-i` in front of its input, and neither fact belongs in code.
+The layout is the whole reason a tool is configuration: `7zz` takes its output before its input and `ffmpeg` needs `-i` in front of its input, and neither fact belongs in code.
+
+A bare `command` resolves in the managed toolchain first, then in `PATH`; an absolute path is used as written and pins the user's choice. The managed directory is `<state>/tools/bin` and is populated only from a signed distribution list, `docs/tools.md` §2. There is no per-tool source switch: pinning is expressed by an absolute path, and the fixed order keeps.
 
 ### 3.2 Components
 
 A tool can be installed, new enough, and still lack the delegate that makes a format work: ImageMagick without libheif opens a HEIC file and fails at the codec. `components` names the substrings that have to appear in the probe output, so the answer to "why can't I convert this" is *this build has no libheif* rather than *magick failed*.
 
-The declaration is per tool because that is what the probe can observe. Of the capability tuple in `docs/tools.md` §1, the format and the direction belong to the operation, the version floor and the components belong to the tool.
+The declaration is per tool because that is what the probe can observe. Of the capability tuple in `docs/tools.md` §1, the format and the direction belong to the operation; the build variant, version floor and components belong to the tool and its manifest.
 
 ### 3.1 Engines
 
@@ -233,14 +235,14 @@ Backend selection:
 
 ```toml
 [backends]
-prefer = ['magick', 'ffmpeg', 'pandoc', '7z']
+prefer = ['magick', 'ffmpeg', 'pandoc', '7zz']
 ```
 
-`prefer` names tools and nothing else. A file that omits the table gets every declared tool in name order, which is deterministic but rarely what a user wants, so the shipped file states an order.
+`prefer` names tools and nothing else. A file that omits the table gets every declared tool in name order, which is deterministic but rarely what a user wants, so the shipped file states an order. Archive formats are not one backend: `zip` and `tar` are native, and `7zz` carries `.7z` only, `docs/tools.md` §7.
 
 The first backend in `prefer` that implements every operation in the plan and is available wins. Determinism is required: a plan never depends on discovery order, so a missing earlier backend moves the plan down the list rather than shuffling it.
 
-Availability is a plan-time question with a fixed answer at that moment: the tool is on `PATH`, above its version floor, and carrying its components. The chosen backend and its resolved engine are recorded with the job, because a later machine that has since gained ImageMagick must not silently produce a different file.
+Availability is a plan-time question with a fixed answer at that moment: the tool is in the managed directory or on `PATH`, above its version floor, and carrying its components. A managed tool is also checked against its manifest. The chosen backend, its resolved engine and its build fingerprint are recorded with the job, because a later machine that has since gained ImageMagick must not silently produce a different file.
 
 ## 9. Per-directory policy
 
@@ -287,7 +289,7 @@ Loading fails, naming the file and key, on any of:
 
 V12 named an in-process backend and was retired with it. The number is not reused, so that a configuration error reported against an older build stays identifiable.
 
-Warnings, not errors: a name that is a prefix of another name; a tool that fails its probe; a pair whose tier is `delegated` but has no `argv` fragment.
+Warnings, not errors: a name that is a prefix of another name; a tool that fails its probe; a managed tool whose fingerprint differs from its manifest; a pair whose tier is `delegated` but has no `argv` fragment.
 
 ## 11. Probing
 

@@ -137,7 +137,7 @@ pub enum Category {
 }
 
 impl Category {
-	/// The exit code for the category, `docs/cli.md` §6. A caller may narrow
+	/// The exit code for the category, `docs/cli.md` §7. A caller may narrow
 	/// this further, for instance to separate a filesystem failure from an
 	/// unreachable daemon, but it may not widen it.
 	pub fn exit_code(self) -> u8 {

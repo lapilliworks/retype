@@ -48,7 +48,7 @@ pub enum Error {
 }
 
 impl Error {
-	/// Exit codes are contract, `docs/cli.md` §6. The category decides, and this
+	/// Exit codes are contract, `docs/cli.md` §7. The category decides, and this
 	/// layer narrows it where it knows more: a transport failure is a daemon
 	/// problem rather than a filesystem one, and a held lock is a state conflict.
 	pub fn exit_code(&self) -> u8 {

@@ -56,7 +56,7 @@ Two tiers, and the difference matters enough to be explicit in the documentation
 | Tier | How | Contains | Supported |
 |---|---|---|---|
 | Source | `cargo install`, or a Homebrew source formula | The CLI binary only | As a workaround, for people who build their own |
-| Installed | Platform installer, signed | CLI, daemon, notifier bundle, URI scheme registration, service definition | Yes |
+| Installed | Platform installer, signed | CLI, daemon, notifier bundle, URI scheme registration, service definition. No external tool binaries | Yes |
 
 `cargo install` is **CLI only and a workaround**. It gives conversion, explanation and in-process running with no daemon and no watched directories that survive a reboot, because a bare binary cannot register a URI scheme on macOS or a Start-menu shortcut on Windows, and cannot install a user service. The documentation states this rather than implying feature parity.
 
@@ -70,6 +70,20 @@ What the installer does, per platform:
 
 None of these actions is performed implicitly by running the binary.
 
+### 5.1 Tool acquisition
+
+External tools are not part of the installer. They come from the system or from the managed toolchain, and the platform default differs:
+
+| Platform | Default acquisition | Managed toolchain |
+|---|---|---|
+| Linux | Distribution packages, then `PATH` | Only when the user asks for it |
+| macOS | Homebrew or the system, then `PATH` | Fallback when neither has the tool |
+| Windows | Managed toolchain | Offered during installer setup or first use, with an explicit prompt |
+
+The managed set is a per-user directory described by a signed distribution list, `docs/tools.md` §2. An offline pack is the same artifacts and manifest on disk, for machines with no network or a controlled one. No conversion downloads anything; acquisition is an explicit command or an installer prompt.
+
+A system tool is supported but not pinned. Its version and build fingerprint are recorded, and a fidelity claim that was earned against a different build is reported as `unverified`, `docs/fidelity.md`.
+
 ## 6. Signing
 
 | Platform | Requirement | When |
@@ -77,8 +91,13 @@ None of these actions is performed implicitly by running the binary.
 | macOS | Developer ID, hardened runtime, notarisation for every distributed binary | Before the first published binary |
 | Windows | Azure Trusted Signing or an equivalent certificate; SmartScreen reputation accrues to the publisher identity | Before the first published binary |
 | Linux | Detached signatures and checksums; no central authority | With the first release artifact |
+| Toolchain, Windows | Authenticode with a secure timestamp on every artifact | With the first managed artifact |
+| Toolchain, macOS | Developer ID, hardened runtime, and a notarised archive containing the signed Mach-O files | With the first managed artifact |
+| Toolchain, Linux | Detached minisign or Sigstore signature, beside the checksum | With the first managed artifact |
 
 Publisher identity is fixed: Lapilli Works LLC, `com.lapilliworks.retype`. Reputation is bound to that identity, so it is never changed casually.
+
+The distribution manifest has its own Ed25519 key, kept offline and separate from the platform code-signing certificate. Its public key is embedded in `retype` and printed by `retype doctor`. Rotation dual-signs one release, so an old client accepts the new key before it is the only key.
 
 ## 7. Notifications and scheme registration
 

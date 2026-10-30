@@ -7,10 +7,10 @@ What a conversion may be claimed to preserve, and how that claim is earned.
 A fidelity claim is evidence about one source format becoming one target format through one backend. It is never a property of a format, and never a count: "supports forty formats" is not a statement this product makes, because it says nothing about what any of those forty lose.
 
 ```
-(source, target, backend, tier, engine, engine version)
+(source, target, backend, tier, engine, engine version, engine fingerprint)
 ```
 
-The engine is part of the key because two backends implementing the same pair are not interchangeable. A PDF from `typst` and a PDF from `weasyprint` are both `pdf` and both `converted`, and no user would accept one as a substitute for the other without being told. `docs/tools.md` §4.1 records the resolved engine with the job for the same reason.
+The engine is part of the key because two backends implementing the same pair are not interchangeable. A PDF from `typst` and a PDF from `weasyprint` are both `pdf` and both `converted`, and no user would accept one as a substitute for the other without being told. The fingerprint is part of it because one version can be built with different codecs; `docs/tools.md` §5.1 records both with the job for the same reason.
 
 ## 2. Tiers
 
@@ -32,7 +32,7 @@ Three tiers, and two states that are not tiers and never appear in configuration
 | Value | Valid in config | Meaning |
 |---|---|---|
 | `exact`, `converted`, `delegated` | yes | A claim, as defined above |
-| `unverified` | no | A claim exists, but the installed engine reports a version other than the one it was earned with |
+| `unverified` | no | A claim exists, but the installed engine reports a version or build fingerprint other than the one it was earned with |
 | `unclaimed` | no | No claim exists for the pair, because the user declared the conversion themselves |
 
 `unverified` and `unclaimed` are reported in `plan`, `why` and the journal. They are never written to a configuration file and never accepted from one.
@@ -41,7 +41,7 @@ Three tiers, and two states that are not tiers and never appear in configuration
 
 A claim is earned by running the conversion.
 
-A fixture run converts a fixture per pair with the real tool, records the resolved engine and its reported version, and verifies the output is readable and of the target format. The result is a manifest, one record per claim, checked in and shipped with the release. `docs/tools.md` §4.1 records the same engine and version with every job, so a claim made two years ago can be compared against what is installed now.
+A fixture run converts a fixture per pair with the real tool, records the resolved engine, its reported version and its build fingerprint, and verifies the output is readable and of the target format. The result is a manifest, one record per claim, checked in and shipped with the release. `docs/tools.md` §5.1 records the same engine, version and fingerprint with every job, so a claim made two years ago can be compared against what is installed now.
 
 Size and duration are separate: they come from `retype bench`, not from the manifest, because they depend on the machine and the claim does not, `docs/state.md` §4.
 
@@ -51,19 +51,19 @@ A pair the user declares in their own `[conversions.*]` table cannot have eviden
 
 | Surface | Use |
 |---|---|
-| `retype list --tiers` | Prints the claims, per pair, with engine and version |
+| `retype list --tiers` | Prints the claims, per pair, with engine, version and fingerprint |
 | Plan compilation | A backend is chosen only if its claim meets the tier the pair declares, `docs/config.md` §4 |
 | `retype why` | Prints the claim, the engine, and whether it is current |
-| `retype doctor` | Reports the manifest version and how many installed engines differ from the versions their claims were earned with |
+| `retype doctor` | Reports the manifest version, each tool source, and how many installed engines differ from the versions and fingerprints their claims were earned with |
 | Editor badge | The tier, with `unverified` shown as such rather than hidden |
 
 ## 6. Staleness
 
-Evidence is about a version. When the installed engine reports a different version from the one recorded:
+Evidence is about a version and a build. When the installed engine reports a different version or fingerprint from the one recorded:
 
 - The pair still converts. A distro's older ImageMagick must not turn an install into a product that refuses to work
-- The tier is reported `unverified`, and `why` names both versions
-- A pair that declares `exact` fails with `E_UNSUPPORTED` and a hint naming the version and the declaration to relax. A promise of no loss cannot rest on evidence about a different encoder, and silently downgrading a promise is worse than refusing it
+- The tier is reported `unverified`, and `why` names both versions and both fingerprints
+- A pair that declares `exact` fails with `E_UNSUPPORTED` and a hint naming the version, the fingerprint and the declaration to relax. A promise of no loss cannot rest on evidence about a different encoder, and silently downgrading a promise is worse than refusing it
 
 Staleness never silently upgrades either. An engine newer than the recorded one is still unverified, because a new version changing encoder defaults is exactly how a fidelity claim goes stale.
 

@@ -16,6 +16,11 @@ retype/
   daemon.sock                 IPC endpoint on Unix; a named pipe on Windows
   watches.toml                registered directories
   bench.toml                  estimator calibration
+  tools/
+    manifest.toml             signed distribution list, as accepted
+    manifest.toml.sig         detached signature over the manifest bytes
+    bin/                      managed commands, first on the tool search path
+    <artifact>/               unpacked tool, named by tool, variant, version and target
   undo/
     <id>/
       meta.toml               record description
@@ -25,6 +30,8 @@ retype/
 `endpoint` exists so that a client never derives the endpoint itself. On Unix the socket path is predictable, but on Windows it is a pipe name that includes the machine identity, and two places computing that name from a file that either of them may create is a race with a silent failure mode: the client waits three seconds for a name nobody listens on. The daemon publishes where it listens after it binds and removes the file when it stops, so a missing file means no daemon rather than an unknown one.
 
 Directory mode is `0700`, files `0600`. The store holds user data in plain form, so nothing here is world-readable.
+
+The toolchain directory holds executables, so its mode is `0700` on Unix. `tools/bin` is searched before `PATH`, `docs/tools.md` §2. An artifact is unpacked into its own directory and only then linked into `bin`, so an interrupted install cannot replace a working tool with a partial one.
 
 ## 2. Identifiers
 

@@ -62,7 +62,7 @@ cargo check --workspace --all-targets --target x86_64-unknown-freebsd
 Two tiers exist, and the difference is deliberate.
 
 - **Installed**: platform installer, signed. Command line, daemon, notifier,
-  URI scheme, user service. Supported
+  URI scheme, user service. External tools are acquired separately. Supported
 - **Source**: `cargo install`. Command line only, no daemon, no watched
   directories that survive a reboot. A workaround, not the supported path
 

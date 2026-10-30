@@ -19,6 +19,7 @@ retype <command> [arguments] [flags]
 | `why <path>` | Explain a file's conversion |
 | `explain <intent>` | Parse, plan, backend, estimate and diagnostics without a file |
 | `list [--tiers]` | Configured pairs. `--tiers` adds one line per claim with its engine and version, `docs/fidelity.md` |
+| `tools list\|install\|update\|verify` | Managed toolchain inspection, acquisition and verification |
 | `doctor [--emit\|--write\|--report]` | Tool probing, availability, support bundle |
 | `bench` | Calibrate the estimator |
 | `init [--output <path>]` | Write the example configuration |
@@ -92,7 +93,24 @@ retype unwatch <dir>...
 
 `unwatch` removes registrations by canonical path. Removing something absent succeeds.
 
-## 5. Jobs and history
+## 5. Toolchain
+
+```
+retype tools list [--installed|--available]
+retype tools install <tool>[@variant> [--offline <dir>]
+retype tools update [<tool>]
+retype tools verify [<tool>]
+```
+
+`tools list` shows each declared tool, its source, its resolved command, its version and its build fingerprint. `--installed` limits the output to the managed set; `--available` shows what the signed manifest offers for this platform and architecture.
+
+`tools install` and `tools update` are the only commands that download. They verify the manifest signature, the generation counter, the artifact hash and the artifact signature before unpacking into `<state>/tools`. `--offline` takes a directory or archive containing the same manifest and artifacts for a machine with no network.
+
+`tools verify` rechecks what is installed against the cached manifest and reports every artifact whose hash, signature or fingerprint no longer matches. It does not check system tools, because there is no manifest for them.
+
+A bare tool command resolves in the managed directory before `PATH`; an absolute `command` in configuration bypasses it, `docs/config.md` §3. A failed verification is an environment failure and exits 4; it never falls through to a different tool silently.
+
+## 6. Jobs and history
 
 ```
 retype jobs list [--state <state>] [--limit <n>] [--since <id>]
@@ -110,7 +128,7 @@ Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the ca
 
 `undo --last` reverses the most recent completed job, which is the gesture a notification button performs.
 
-## 6. Exit codes
+## 7. Exit codes
 
 | Code | Meaning |
 |---|---|
@@ -125,7 +143,7 @@ Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the ca
 
 3 means the request cannot be satisfied. 4 means the machine cannot satisfy it. 6 means try again.
 
-## 7. Output
+## 8. Output
 
 - Results go to stdout, diagnostics and progress to stderr, so a successful conversion in a pipeline emits one line and nothing else
 - Human output is column-aligned and colourised when stdout is a terminal
@@ -134,7 +152,7 @@ Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the ca
 - `--quiet` suppresses everything below errors. `--verbose` sets the log filter, repeatable
 - Colour respects `NO_COLOR`, `CLICOLOR` and TTY detection; `--no-color` always wins
 
-## 8. Examples
+## 9. Examples
 
 ```
 retype c photo.heic webp+quality80+nometa
@@ -148,4 +166,6 @@ retype undo --last
 retype why photo.webp
 retype explain clip.mov 'mp4+cap1080+trim10s-30s+mute+now'
 retype doctor --emit
+retype tools list --installed
+retype tools install ffmpeg@gpl
 ```

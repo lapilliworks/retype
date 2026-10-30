@@ -4,7 +4,7 @@ What `retype` records about a completed conversion, where it keeps it, and what 
 
 ## 1. Definition
 
-Provenance is the record of *what was done to a file*: the canonical intent string, the backend that ran it, the tier of the conversion, and when.
+Provenance is the record of *what was done to a file*: the canonical intent string, the backend that ran it, the backend's version and build fingerprint, the tier of the conversion, and when.
 
 It is not:
 
