@@ -213,14 +213,14 @@ Desugaring MUST NOT be applied inside a value.
 Rules:
 
 - C1 Formats and names are printed in lowercase, using primary names only
-- C2 Tokens are sorted by `slot` rank, then by key
+- C2 Tokens retain written order. Reordering is never applied, because the registry has no table of which operations commute: `quality` and `cap` do, `resize` and `rotate` do not, so any fixed sequence would be right for some strings and silently wrong for others. The string is the pipeline
 - C3 Groups retain written order
 - C4 Values are printed in the form produced by their class, without leading zeros. A duration prints in the tagged form with zero units omitted, so `1:00:30` prints as `1h30s` and 3600 s prints as `1h`
 - C5 A token is printed without `=` when reparsing the compact form yields an identical token, and with `=` otherwise
 - C6 `ask` and `now` print as `ask` and `now`, never as `+` or `!`
 - C7 Nothing is printed for the implicit conversion of a group
 
-Slot ranks:
+The `slot` an operation declares is a presentation category: it orders controls in the editor and rows in `retype list`, and it decides nothing about a conversion. Two operations that interact may not share one, so that a generated interface still presents them in a workable order.
 
 | Rank | Slot | Member examples |
 |---|---|---|
@@ -231,6 +231,8 @@ Slot ranks:
 | 50 | encoder | `quality`, `lossless`, `size`, `effort`, `compress`, `colors` |
 | 60 | metadata | `nometa` |
 | 90 | control | `ask`, `now` |
+
+Because order is the user's, two spellings that differ only in the order of commuting operations are two canonical strings: `webp+q80+cap1080` and `webp+cap1080+q80` produce the same file and are printed as written. Normalising them would require knowing which pairs commute, and claiming a pair commutes when it does not is the worse error.
 
 ## 11. Output groups
 

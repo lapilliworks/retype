@@ -43,7 +43,7 @@ Reserved keys, all phases. Keys are permanent; a key is never reused for a diffe
 | `ask` | `ask` | 90 | `confirm` | none | 1 |
 | `now` | `now` | 90 | `confirm` | none | 1 |
 
-Slots are integers, and the canonical order is by slot then key, so a sequence that must run in order is encoded in the numbers. The geometry numbers are `§2`'s sequence: `rotate` 21, `fliph` 22, `flipv` 23, `crop` 24, `resize` 25, `width` 26, `height` 27, `cap` 28. Two operations in one slot are printed in key order, which is why no two operations that interact share one.
+Slots are integers used for presentation: they order a generated editor's controls and the rows of `retype list`, and they never reorder an intent string. Two operations that interact do not share a slot, so a generated interface does not present them as interchangeable. The geometry numbers run `rotate` 21, `fliph` 22, `flipv` 23, `crop` 24, `resize` 25, `width` 26, `height` 27, `cap` 28, which is a workable order to show them in and nothing more.
 
 Aliases:
 
@@ -57,7 +57,7 @@ Aliases:
 
 ## 2. Geometry semantics
 
-All geometry runs in slot order: `rotate`, `fliph`, `flipv`, `crop`, `resize`, `width`, `height`, `cap`.
+Geometry runs in the order written, and the order changes the result: `rotate90+cap1080` rotates and then caps, while `cap1080+rotate90` caps and then rotates, and the two are not the same image. Nothing reorders a string, `docs/grammar.md` C2.
 
 | Operation | Rule |
 |---|---|

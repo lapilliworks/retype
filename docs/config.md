@@ -195,7 +195,7 @@ args = ['-resize', '{value}']
 
 | Key | Required | Meaning |
 |---|---|---|
-| `slot` | yes | Integer position in the canonical order; equal slots are printed in key order. `docs/operations.md` fixes the numbers |
+| `slot` | yes | Integer presentation rank, which orders editor controls and `retype list` rows. It never reorders an intent: the string is the pipeline, `docs/grammar.md` C2 |
 | `exclusive` | no | Group names; two members of one group conflict |
 | `param` | when it takes a value | `class`, plus `min` and `max` for the numeric classes, `values` for `enum`, and `scalar` for `range`, which is `int` unless it says `time` |
 | `formats` | yes | Formats the operation applies to, or `['*']` |

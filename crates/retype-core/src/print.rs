@@ -16,7 +16,7 @@ pub fn intent(resolved: &Resolved, registry: &Registry) -> String {
 	for (index, group) in resolved.groups.iter().enumerate() {
 		let mut text = group.format.clone();
 
-		for op in group.ordered() {
+		for op in group.pipeline() {
 			text.push('+');
 			text.push_str(&token(op, registry));
 		}
@@ -195,8 +195,9 @@ mod tests {
 	}
 
 	#[test]
-	fn tokens_print_in_slot_order() {
-		assert_eq!(canonical("webp+nometa+q80+cap1000"), "webp+cap1000+quality80+nometa");
+	fn tokens_keep_the_order_they_were_written_in() {
+		assert_eq!(canonical("webp+nometa+q80+cap1000"), "webp+nometa+quality80+cap1000");
+		assert_eq!(canonical("webp+cap1000+q80"), "webp+cap1000+quality80");
 	}
 
 	#[test]

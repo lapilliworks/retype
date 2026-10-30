@@ -36,11 +36,14 @@ pub struct Group {
 }
 
 impl Group {
-	/// Canonical order: by slot, then by key, `docs/grammar.md` C2.
-	pub fn ordered(&self) -> Vec<&Op> {
-		let mut ordered: Vec<&Op> = self.ops.iter().collect();
-		ordered.sort_by(|left, right| (left.slot, &left.key).cmp(&(right.slot, &right.key)));
-		ordered
+	/// The pipeline, in the order the user wrote it.
+	///
+	/// Reordering would be a guess: `quality` and `cap` commute, `resize` and
+	/// `rotate` do not, and the registry has no table of which pairs do. A fixed
+	/// sequence would therefore be right for some combinations and silently wrong
+	/// for others, so the string is the sequence, `docs/grammar.md` C2.
+	pub fn pipeline(&self) -> &[Op] {
+		&self.ops
 	}
 }
 
@@ -557,15 +560,15 @@ aliases = ['tar.gz']
 	fn a_value_inside_its_bounds_is_accepted_and_parsed() {
 		let resolved = resolve_text("webp+quality85+cap1000+rotate90", image("heic")).unwrap();
 		let values: Vec<&Value> = resolved.groups[0]
-			.ordered()
+			.pipeline()
 			.iter()
 			.filter_map(|op| op.value.as_ref().map(|argument| &argument.parsed))
 			.collect();
 
-		// `docs/operations.md` §2: rotate, then cap, then the encoder dial.
 		assert_eq!(
 			values,
-			vec![&Value::Enum("90".to_string()), &Value::Int(1000), &Value::Int(85)]
+			vec![&Value::Int(85), &Value::Int(1000), &Value::Enum("90".to_string())],
+			"the written order, end to end"
 		);
 	}
 
@@ -614,11 +617,11 @@ aliases = ['tar.gz']
 	}
 
 	#[test]
-	fn canonical_order_is_by_slot_then_key() {
+	fn the_pipeline_is_the_order_written() {
 		let resolved = resolve_text("webp+nometa+quality80+cap1000", image("heic")).unwrap();
-		let ordered: Vec<&str> = resolved.groups[0].ordered().iter().map(|op| op.key.as_str()).collect();
+		let pipeline: Vec<&str> = resolved.groups[0].pipeline().iter().map(|op| op.key.as_str()).collect();
 
-		assert_eq!(ordered, vec!["cap", "quality", "nometa"]);
+		assert_eq!(pipeline, vec!["nometa", "quality", "cap"]);
 	}
 
 	#[test]

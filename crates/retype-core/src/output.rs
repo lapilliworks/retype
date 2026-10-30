@@ -41,11 +41,11 @@ pub fn derive(stem: &str, source_format: &str, groups: &[Group]) -> Vec<Derived>
 			continue;
 		}
 
-		let base = match group.ordered().is_empty() {
+		let base = match group.pipeline().is_empty() {
 			true => stem.to_string(),
 			false => {
 				let mut base = stem.to_string();
-				for op in group.ordered() {
+				for op in group.pipeline() {
 					base.push('-');
 					base.push_str(&token_text(op));
 				}
@@ -149,10 +149,10 @@ mod tests {
 	}
 
 	#[test]
-	fn tokens_appear_in_canonical_order_with_their_values() {
+	fn tokens_appear_in_the_order_written_with_their_values() {
 		assert_eq!(
 			names("photo", "heic", "webp+nometa+q80+cap1000"),
-			vec!["photo-cap1000-quality80-nometa.webp"]
+			vec!["photo-nometa-quality80-cap1000.webp"]
 		);
 	}
 

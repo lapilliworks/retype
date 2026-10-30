@@ -130,7 +130,7 @@ fn plan_group<'a>(
 	presence: &dyn Presence,
 	group: &resolve::Group,
 ) -> Result<Plan<'a>, Vec<Error>> {
-	let ordered = group.ordered();
+	let pipeline = group.pipeline();
 	let mut unavailable: Vec<&Tool> = Vec::new();
 
 	for candidate in registry.backends() {
@@ -138,7 +138,7 @@ fn plan_group<'a>(
 			continue;
 		};
 
-		let carries = ordered.iter().all(|op| {
+		let carries = pipeline.iter().all(|op| {
 			registry
 				.op(&op.key)
 				.is_some_and(|declared| declared.fragment(&tool.name).is_some())
@@ -153,24 +153,24 @@ fn plan_group<'a>(
 			continue;
 		}
 
-		return assemble(registry, presence, tool, group, &ordered);
+		return assemble(registry, presence, tool, group, pipeline);
 	}
 
-	Err(vec![unsatisfiable(registry, group, &ordered, &unavailable)])
+	Err(vec![unsatisfiable(registry, group, pipeline, &unavailable)])
 }
 
 /// Why no backend could carry this group, said in terms the user can act on.
 fn unsatisfiable(
 	registry: &Registry,
 	group: &resolve::Group,
-	ordered: &[&resolve::Op],
+	pipeline: &[resolve::Op],
 	unavailable: &[&Tool],
 ) -> Error {
 	let format = &group.format;
 
 	// `docs/tools.md` §1: no tool could ever provide it, as distinct from a tool
 	// that could and is not installed.
-	if let Some(op) = ordered
+	if let Some(op) = pipeline
 		.iter()
 		.find(|op| registry.op(&op.key).is_none_or(|declared| declared.argv.is_empty()))
 	{
@@ -212,7 +212,7 @@ fn assemble<'a>(
 	presence: &dyn Presence,
 	tool: &'a Tool,
 	group: &resolve::Group,
-	ordered: &[&resolve::Op],
+	pipeline: &[resolve::Op],
 ) -> Result<Plan<'a>, Vec<Error>> {
 	let mut pieces: Vec<(&Fragment, Option<&resolve::Op>)> = Vec::new();
 
@@ -223,7 +223,7 @@ fn assemble<'a>(
 		pieces.push((fragment, None));
 	}
 
-	for op in ordered {
+	for op in pipeline {
 		if let Some(fragment) = registry.op(&op.key).and_then(|declared| declared.fragment(&tool.name)) {
 			pieces.push((fragment, Some(op)));
 		}
@@ -460,13 +460,13 @@ args = ['--pdf-engine', '{engine.pdf}']
 	}
 
 	#[test]
-	fn operations_are_spliced_in_slot_order() {
+	fn operations_are_spliced_in_the_order_written() {
 		let plan = plan_one("webp+quality85+cap640x480", &Machine::with(&["magick"]));
 
 		assert_eq!(
 			literals(&plan),
-			["-define", "webp:method=6", "-resize", "640x480>", "-quality", "85"],
-			"cap precedes quality whatever the written order"
+			["-define", "webp:method=6", "-quality", "85", "-resize", "640x480>"],
+			"the fragments follow the string, not a slot table"
 		);
 	}
 
@@ -587,7 +587,7 @@ formats = ['webp']
 	#[test]
 	fn the_shipped_table_plans_an_image_conversion_through_magick() {
 		let registry = Registry::builtin().expect("the built-in table loads");
-		let intent = intent::parse("jpg+quality80+cap1080+rotate90").expect("scans");
+		let intent = intent::parse("jpg+rotate90+cap1080+quality80").expect("scans");
 		let resolved = resolve::resolve(
 			&intent,
 			resolve::Source {
