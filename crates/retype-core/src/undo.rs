@@ -241,7 +241,7 @@ impl Store {
 
 		// A rename is enough when the store shares a filesystem; otherwise the copy
 		// is carried back and the original removed.
-		if fs::rename(&held, &record.source_path).is_err() {
+		if crate::fsx::rename(&held, &record.source_path).is_err() {
 			fs::copy(&held, &record.source_path)?;
 			fs::remove_file(&held)?;
 		}

@@ -98,17 +98,34 @@ impl Server {
 	/// Unix socket and a Windows pipe, and so that it can be tested without a
 	/// socket at all.
 	pub fn serve_connection(&mut self, reader: &mut impl BufRead, writer: &mut impl Write) -> Result<()> {
+		self.serve_connection_from(reader, writer, None)
+	}
+
+	/// The same, with a frame that was already read. A Windows pipe can only be
+	/// impersonated after its client has written, so the first frame is read
+	/// before authentication and handed over rather than read twice,
+	/// `docs/ipc.md` §4.
+	pub fn serve_connection_from(
+		&mut self,
+		reader: &mut impl BufRead,
+		writer: &mut impl Write,
+		first: Option<serde_json::Value>,
+	) -> Result<()> {
 		let mut greeted = false;
+		let mut pending = first;
 
 		loop {
-			let frame = match read_frame(reader) {
-				Ok(Some(frame)) => frame,
-				Ok(None) => return Ok(()),
-				Err(error) => {
-					let response = Response::error(0, WireError::new(Code::IpcFrame, error.to_string()));
-					let _ = retype_ipc::write_frame(writer, &response);
-					return Ok(());
-				}
+			let frame = match pending.take() {
+				Some(frame) => frame,
+				None => match read_frame(reader) {
+					Ok(Some(frame)) => frame,
+					Ok(None) => return Ok(()),
+					Err(error) => {
+						let response = Response::error(0, WireError::new(Code::IpcFrame, error.to_string()));
+						let _ = retype_ipc::write_frame(writer, &response);
+						return Ok(());
+					}
+				},
 			};
 
 			let request: Request = match serde_json::from_value(frame) {

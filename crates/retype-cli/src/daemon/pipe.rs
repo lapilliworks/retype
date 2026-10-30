@@ -85,8 +85,33 @@ pub fn serve(name: &str, server: &mut Server) -> Result<()> {
 }
 
 fn serve_client(handle: HANDLE, server: &mut Server) -> Result<()> {
-	// Impersonation is the authentication: a client that cannot be impersonated
-	// is not the user this daemon belongs to, `docs/ipc.md` §4.
+	let file = unsafe { File::from_raw_handle(handle) };
+	let mut reader = BufReader::new(file.try_clone()?);
+	let mut writer = &file;
+
+	// Impersonation is the authentication, and a pipe can only be impersonated
+	// once its client has written, `docs/ipc.md` §4. So the first frame is read
+	// first: a client that will not send one is not a client, and a client that
+	// sends one has given us something to impersonate.
+	let first = match retype_ipc::read_frame(&mut reader) {
+		Ok(Some(frame)) => frame,
+		Ok(None) => {
+			unsafe {
+				flush_and_disconnect(handle);
+			}
+			drop(file);
+			return Ok(());
+		}
+		Err(error) => {
+			eprintln!("retype: refused a pipe client that sent no readable frame: {error}");
+			unsafe {
+				flush_and_disconnect(handle);
+			}
+			drop(file);
+			return Ok(());
+		}
+	};
+
 	if unsafe { ImpersonateNamedPipeClient(handle) } == 0 {
 		eprintln!(
 			"retype: refused a pipe client that could not be impersonated: {}",
@@ -94,17 +119,13 @@ fn serve_client(handle: HANDLE, server: &mut Server) -> Result<()> {
 		);
 		unsafe {
 			flush_and_disconnect(handle);
-			close(handle);
 		}
+		drop(file);
 		return Ok(());
 	}
 	unsafe { RevertToSelf() };
 
-	let file = unsafe { File::from_raw_handle(handle) };
-	let mut reader = BufReader::new(file.try_clone()?);
-	let mut writer = &file;
-
-	let result = server.serve_connection(&mut reader, &mut writer);
+	let result = server.serve_connection_from(&mut reader, &mut writer, Some(first));
 
 	unsafe { flush_and_disconnect(handle) };
 	drop(file);

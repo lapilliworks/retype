@@ -68,7 +68,7 @@ impl StagedOutput {
 
 	/// Rename the temporary file onto the target.
 	pub fn commit(mut self) -> Result<()> {
-		fs::rename(&self.temp, &self.target)?;
+		crate::fsx::rename(&self.temp, &self.target)?;
 		self.committed = true;
 		Ok(())
 	}
@@ -168,7 +168,7 @@ pub fn restore_source_name(path: &Path, stem: &str, source_format: &str) -> Resu
 	if restored.exists() {
 		return Err(Error::Exists(restored));
 	}
-	fs::rename(path, &restored)?;
+	crate::fsx::rename(path, &restored)?;
 	Ok(restored)
 }
 
