@@ -315,4 +315,19 @@ fn a_submitted_job_can_be_cancelled_while_it_runs() {
 		!dir.path().join("photo.webp").exists(),
 		"a cancelled job leaves no output"
 	);
+
+	// This test does not use the fixture, so it stops the daemon it caused.
+	let stopped = retype()
+		.args(["daemon", "stop"])
+		.arg("--state-dir")
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config)
+		.output()
+		.unwrap();
+
+	assert!(
+		stopped.status.success(),
+		"the daemon this test started was not stopped: {}",
+		String::from_utf8_lossy(&stopped.stderr)
+	);
 }

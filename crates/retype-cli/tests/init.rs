@@ -122,3 +122,98 @@ fn doctor_write_creates_a_configuration_where_there_is_none() {
 	let listed = retype().args(["list"]).env("RETYPE_CONFIG", path).output().unwrap();
 	assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
 }
+
+#[test]
+fn config_names_the_file_for_one_invocation() {
+	let dir = tempfile::tempdir().unwrap();
+	let named = dir.path().join("named.toml");
+	fs::write(
+		&named,
+		"version = 'retype-config-1'\n\n[formats.png]\nfamily = 'image'\nlossy = false\nalpha = true\ntier = 'exact'\n",
+	)
+	.unwrap();
+
+	let listed = retype()
+		.args(["list", "--config", named.to_str().unwrap()])
+		.output()
+		.unwrap();
+	assert!(listed.status.success(), "{}", String::from_utf8_lossy(&listed.stderr));
+
+	// A named file has to be there; the built-in table is a different answer.
+	let missing = retype()
+		.args(["list", "--config", dir.path().join("absent.toml").to_str().unwrap()])
+		.output()
+		.unwrap();
+
+	assert_eq!(missing.status.code(), Some(3));
+	assert!(String::from_utf8_lossy(&missing.stderr).contains("E_CFG_MISSING"));
+}
+
+#[test]
+fn a_daemon_started_by_a_client_reads_the_same_file() {
+	let dir = tempfile::tempdir().unwrap();
+	let config = dir.path().join("named.toml");
+	let state = dir.path().join("state");
+	let input = dir.path().join("photo.png");
+	fs::write(&input, b"pixels").unwrap();
+
+	// The built-in table has no such backend, so a conversion can only happen if
+	// the daemon reads the file the client named.
+	let (command, layout) = match cfg!(windows) {
+		true => ("cmd", "layout = ['/c', 'copy', '{input}', '{ops}', '{output}']"),
+		false => ("cp", "layout = ['{input}', '{ops}', '{output}']"),
+	};
+
+	fs::write(
+		&config,
+		format!(
+			"\
+version = 'retype-config-1'
+
+[backends]
+prefer = ['copy']
+
+[tools.copy]
+command = '{command}'
+{layout}
+
+[formats.png]
+family = 'image'
+lossy = false
+alpha = true
+tier = 'exact'
+
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+"
+		),
+	)
+	.unwrap();
+
+	let converted = retype()
+		.args(["convert", input.to_str().unwrap(), "webp"])
+		.arg("--config")
+		.arg(&config)
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+
+	assert_eq!(
+		converted.status.code(),
+		Some(0),
+		"{}\n{}",
+		String::from_utf8_lossy(&converted.stderr),
+		fs::read_to_string(state.join("daemon.log")).unwrap_or_default()
+	);
+	assert_eq!(fs::read(dir.path().join("photo.webp")).unwrap(), b"pixels");
+
+	let _ = retype()
+		.args(["daemon", "stop"])
+		.arg("--state-dir")
+		.arg(&state)
+		.output();
+}

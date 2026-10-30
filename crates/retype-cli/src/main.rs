@@ -14,6 +14,10 @@ struct Cli {
 	#[arg(long, global = true, value_name = "PATH")]
 	state_dir: Option<PathBuf>,
 
+	/// The configuration file, instead of the environment and the default
+	#[arg(long, global = true, value_name = "PATH")]
+	config: Option<PathBuf>,
+
 	/// Fail instead of starting a daemon
 	#[arg(long = "no-spawn", global = true)]
 	no_spawn: bool,
@@ -210,6 +214,7 @@ fn main() -> ExitCode {
 	}
 
 	let cli = Cli::parse();
+	config::use_path(cli.config.clone());
 
 	if let Command::Undo { job, last } = &cli.command {
 		let code = retype_cli::state::resolve(cli.state_dir.clone())

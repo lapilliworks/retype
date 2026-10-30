@@ -33,7 +33,9 @@ Environment variables, all optional:
 | Variable | Effect |
 |---|---|
 | `RETYPE_STATE_DIR` | State directory, overriding platform defaults |
-| `RETYPE_CONFIG` | User configuration path, instead of the platform default |
+| `RETYPE_CONFIG` | User configuration path, instead of the platform default. A daemon started by a client inherits the path the client used, so both read the same file |
+
+`--config <path>` names the user file for one invocation and wins over `RETYPE_CONFIG`. A file named that way has to exist: falling back to the built-in table would answer a different question than the one asked, so a missing one is `E_CFG_MISSING` rather than silence.
 | `RETYPE_NO_AUTOSTART` | Clients never start the daemon |
 | `RETYPE_LOG` | Log filter, same syntax as the `--verbose` counters |
 | `NO_COLOR`, `CLICOLOR` | Colour handling, per their respective conventions |

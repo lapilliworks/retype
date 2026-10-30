@@ -62,6 +62,12 @@ pub fn spawn_detached(state_dir: &Path) -> Result<PathBuf> {
 		.stdout(stdout)
 		.stderr(stderr);
 
+	// The daemon reads configuration too, and it has to read the same file the
+	// client did rather than guess at one.
+	if let Some(config) = crate::config::user_path() {
+		command.env("RETYPE_CONFIG", config);
+	}
+
 	// Without this the child inherits the console and dies with it.
 	#[cfg(windows)]
 	{

@@ -6,14 +6,32 @@
 //! is the built-in table as it stands.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use retype_core::error::Diagnoses;
 use retype_core::registry::Registry;
 
 use crate::error::Error;
 
-/// `RETYPE_CONFIG` wins, then the platform's configuration directory.
+/// The path `--config` named, if any. It is one fact about the process, like the
+/// state directory, so it is set once at startup rather than threaded through
+/// every call that may need to read configuration.
+static EXPLICIT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Record what `--config` said. A second call is a bug in the caller, not a
+/// reason to panic: the first answer is the one the process ran with.
+pub fn use_path(path: Option<PathBuf>) {
+	if let Some(path) = path {
+		let _ = EXPLICIT.set(path);
+	}
+}
+
+/// `--config` wins, then `RETYPE_CONFIG`, then the platform's directory.
 pub fn user_path() -> Option<PathBuf> {
+	if let Some(explicit) = EXPLICIT.get() {
+		return Some(explicit.clone());
+	}
+
 	if let Some(configured) = std::env::var_os("RETYPE_CONFIG") {
 		if !configured.is_empty() {
 			return Some(PathBuf::from(configured));
@@ -28,6 +46,23 @@ pub fn load() -> std::result::Result<Registry, Error> {
 	let Some(path) = user_path() else {
 		return Registry::builtin().map_err(Error::Config);
 	};
+
+	// A file the caller named has to be there. Falling back to the built-in table
+	// would answer a different question than the one that was asked.
+	if EXPLICIT.get().is_some() {
+		match std::fs::metadata(&path) {
+			Ok(_) => {}
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+				return Err(Error::Config(Diagnoses::one(retype_core::error::Error::Diagnostic(
+					retype_core::error::Diagnostic::global(
+						retype_core::error::Code::CfgMissing,
+						format!("{} does not exist", path.display()),
+					),
+				))));
+			}
+			Err(error) => return Err(Error::Io(error)),
+		}
+	}
 
 	load_from(&path)
 }
