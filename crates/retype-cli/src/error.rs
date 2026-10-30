@@ -10,6 +10,10 @@ pub enum Error {
 	#[error(transparent)]
 	Core(#[from] retype_core::error::Error),
 
+	/// Every diagnostic about a configuration file, printed in order.
+	#[error("{0}")]
+	Config(retype_core::error::Diagnoses),
+
 	#[error(transparent)]
 	Io(#[from] std::io::Error),
 
@@ -50,6 +54,7 @@ impl Error {
 	pub fn exit_code(&self) -> u8 {
 		match self {
 			Self::Core(error) => error.exit_code(),
+			Self::Config(_) => retype_core::error::Category::Diagnosis.exit_code(),
 			Self::Io(error) => retype_core::error::category_for_io(error).exit_code(),
 			Self::Frame(_) | Self::Client(_) | Self::UnsupportedTransport => 6,
 			Self::DaemonUnavailable | Self::DaemonStartFailed(..) => 6,

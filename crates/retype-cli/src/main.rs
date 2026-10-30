@@ -2,8 +2,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use retype_cli::error::Result;
+use retype_cli::error::{Error, Result};
 use retype_cli::{client, daemon, doctor};
+use retype_core::registry::Registry;
 use serde_json::Value;
 
 /// Automatic file format conversion on rename.
@@ -63,12 +64,26 @@ enum DaemonAction {
 fn main() -> ExitCode {
 	let cli = Cli::parse();
 
+	if let Command::Doctor { check, require } = &cli.command {
+		let code = Registry::builtin()
+			.map_err(Error::Config)
+			.and_then(|registry| doctor::run(&registry, *check || !require.is_empty(), require));
+
+		return match code {
+			Ok(code) => code,
+			Err(error) => {
+				eprintln!("retype: {error}");
+				ExitCode::from(error.exit_code())
+			}
+		};
+	}
+
 	let outcome = match &cli.command {
 		Command::Daemon { action, detached } => match action {
 			None => daemon::run(cli.state_dir.clone(), !detached),
 			Some(action) => control(&cli, action),
 		},
-		Command::Doctor { check, require } => return doctor::run(*check || !require.is_empty(), require),
+		Command::Doctor { .. } => unreachable!("doctor is dispatched before the outcome is built"),
 	};
 
 	match outcome {

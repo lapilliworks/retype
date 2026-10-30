@@ -1,66 +1,45 @@
-//! External tool detection.
+//! External tool declarations and detection.
 //!
 //! Mirrors the support matrix in `docs/tools.md`: a capability belongs to a
-//! tool version with the right components present. Detection is a preflight,
-//! never a runtime decision about what a plan may do; the planner reads the
-//! configuration, and this reports what the configuration will find.
+//! tool version with the right components present. The declarations live in
+//! `builtin.toml` beside the formats and operations, because a tool is
+//! configuration like any other and a user may add or override one. Only the
+//! probing stays here, since it is the one part that needs a process.
+//!
+//! Detection is a preflight, never a runtime decision about what a plan may do:
+//! the planner reads the configuration, and this reports what the configuration
+//! will find.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// A tool the product can use, with the floor version and the components that
-/// have to be present for the claimed formats to actually work.
-#[derive(Debug)]
-pub struct ToolSpec {
-	pub name: &'static str,
-	pub command: &'static str,
-	pub probe: &'static [&'static str],
-	pub min_version: &'static str,
-	/// Substrings that must appear in the probe output, e.g. `heic` for the
-	/// ImageMagick HEIC delegate.
-	pub components: &'static [&'static str],
-	pub purpose: &'static str,
+/// A tool as declared under `[tools]`, `docs/config.md` §3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tool {
+	pub name: String,
+	pub command: String,
+	pub probe: Vec<String>,
+	pub version_min: Option<Version>,
+	/// Why the product wants it, shown by `retype doctor`.
+	pub purpose: String,
+	/// Substrings the probe output has to mention for the claimed formats to
+	/// work, e.g. `heic` for a build of ImageMagick without libheif.
+	pub components: Vec<String>,
+	/// Argv template with `{input}`, `{ops}` and `{output}`.
+	pub layout: Vec<String>,
+	/// Named alternatives resolved first-present, `docs/tools.md` §4.1.
+	pub engines: BTreeMap<String, Vec<String>>,
 }
 
-pub const TOOLS: &[ToolSpec] = &[
-	ToolSpec {
-		name: "magick",
-		command: "magick",
-		probe: &["-version"],
-		min_version: "7.1",
-		components: &["heic", "webp"],
-		purpose: "image conversion",
-	},
-	ToolSpec {
-		name: "ffmpeg",
-		command: "ffmpeg",
-		probe: &["-version"],
-		min_version: "6.0",
-		components: &[],
-		purpose: "audio and video conversion",
-	},
-	ToolSpec {
-		name: "pandoc",
-		command: "pandoc",
-		probe: &["--version"],
-		min_version: "3.0",
-		components: &[],
-		purpose: "document conversion",
-	},
-	ToolSpec {
-		name: "7z",
-		command: "7z",
-		probe: &[],
-		min_version: "23.0",
-		components: &[],
-		purpose: "archive conversion",
-	},
-];
-
-/// PDF engines in preference order, per `docs/tools.md` §4.1.
-pub const PDF_ENGINES: &[&str] = &["typst", "xelatex", "lualatex", "pdflatex", "weasyprint", "wkhtmltopdf"];
+impl Tool {
+	/// Candidates for an engine, empty when the tool declares no such engine.
+	pub fn candidates(&self, engine: &str) -> &[String] {
+		self.engines.get(engine).map(Vec::as_slice).unwrap_or_default()
+	}
+}
 
 /// A dotted numeric version, comparable in the obvious way.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -91,19 +70,33 @@ impl fmt::Display for Version {
 
 /// Outcome of probing one tool.
 #[derive(Debug)]
-pub struct ToolStatus {
-	pub spec: &'static ToolSpec,
+pub struct ToolStatus<'a> {
+	pub tool: &'a Tool,
 	pub path: Option<PathBuf>,
 	pub version: Option<Version>,
-	/// Components named by the spec that the probe output did not mention.
-	pub missing_components: Vec<&'static str>,
+	/// Components named by the declaration that the probe output did not mention.
+	pub missing_components: Vec<String>,
 	pub error: Option<String>,
 }
 
-impl ToolStatus {
-	/// Present, new enough, and carrying every component the spec requires.
+impl ToolStatus<'_> {
+	/// Present, new enough, and carrying every component the declaration
+	/// requires. The version floor is part of usability rather than a separate
+	/// question, since a tool below it behaves like a missing one.
 	pub fn is_usable(&self) -> bool {
-		self.path.is_some() && self.version.is_some() && self.missing_components.is_empty() && self.error.is_none()
+		self.path.is_some()
+			&& self.version.is_some()
+			&& self.missing_components.is_empty()
+			&& self.error.is_none()
+			&& self.meets_minimum()
+	}
+
+	pub fn meets_minimum(&self) -> bool {
+		match (&self.version, &self.tool.version_min) {
+			(Some(version), Some(minimum)) => version >= minimum,
+			(Some(_), None) => true,
+			(None, _) => false,
+		}
 	}
 
 	pub fn summary(&self) -> String {
@@ -122,20 +115,20 @@ impl ToolStatus {
 }
 
 /// Probe one tool.
-pub fn probe(spec: &'static ToolSpec) -> ToolStatus {
-	let path = find_in_path(&std::env::var_os("PATH").unwrap_or_default(), spec.command);
+pub fn probe(tool: &Tool) -> ToolStatus<'_> {
+	let path = find_in_path(&std::env::var_os("PATH").unwrap_or_default(), &tool.command);
 
 	let Some(path) = path else {
 		return ToolStatus {
-			spec,
+			tool,
 			path: None,
 			version: None,
-			missing_components: spec.components.to_vec(),
+			missing_components: tool.components.clone(),
 			error: None,
 		};
 	};
 
-	match Command::new(&path).args(spec.probe).output() {
+	match Command::new(&path).args(&tool.probe).output() {
 		Ok(output) => {
 			let stdout = String::from_utf8_lossy(&output.stdout);
 			let stderr = String::from_utf8_lossy(&output.stderr);
@@ -145,15 +138,15 @@ pub fn probe(spec: &'static ToolSpec) -> ToolStatus {
 			// and a banner before it.
 			let version = text.lines().find_map(Version::parse);
 			let lowered = text.to_lowercase();
-			let missing_components = spec
+			let missing_components = tool
 				.components
 				.iter()
-				.copied()
 				.filter(|component| !lowered.contains(&component.to_lowercase()))
+				.cloned()
 				.collect();
 
 			ToolStatus {
-				spec,
+				tool,
 				path: Some(path),
 				version,
 				missing_components,
@@ -161,35 +154,26 @@ pub fn probe(spec: &'static ToolSpec) -> ToolStatus {
 			}
 		}
 		Err(error) => ToolStatus {
-			spec,
+			tool,
 			path: Some(path),
 			version: None,
-			missing_components: spec.components.to_vec(),
+			missing_components: tool.components.clone(),
 			error: Some(error.to_string()),
 		},
 	}
 }
 
-/// Probe every known tool.
-pub fn probe_all() -> Vec<ToolStatus> {
-	TOOLS.iter().map(probe).collect()
+pub fn probe_all(tools: &[Tool]) -> Vec<ToolStatus<'_>> {
+	tools.iter().map(probe).collect()
 }
 
-/// First PDF engine present, per the preference order.
-pub fn resolve_pdf_engine() -> Option<&'static str> {
+/// First candidate of a named engine that is on `PATH`, `docs/tools.md` §4.1.
+pub fn resolve_engine<'a>(tool: &'a Tool, engine: &str) -> Option<&'a str> {
 	let path_env = std::env::var_os("PATH").unwrap_or_default();
-	PDF_ENGINES
+	tool.candidates(engine)
 		.iter()
-		.copied()
+		.map(String::as_str)
 		.find(|candidate| find_in_path(&path_env, candidate).is_some())
-}
-
-/// Whether a tool is new enough, when a version was parsed at all.
-pub fn meets_minimum(status: &ToolStatus) -> bool {
-	match &status.version {
-		Some(version) => Version::parse(status.spec.min_version).is_none_or(|minimum| *version >= minimum),
-		None => false,
-	}
 }
 
 /// Look a command up in a `PATH` value. Split out so it is testable without
@@ -227,6 +211,19 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	fn tool(command: &str, version_min: Option<&str>) -> Tool {
+		Tool {
+			name: command.to_string(),
+			command: command.to_string(),
+			probe: vec!["-version".to_string()],
+			version_min: version_min.map(|version| Version::parse(version).expect("a parsable floor")),
+			purpose: "testing".to_string(),
+			components: Vec::new(),
+			layout: vec!["{input}".to_string(), "{ops}".to_string(), "{output}".to_string()],
+			engines: BTreeMap::new(),
+		}
+	}
 
 	#[test]
 	fn version_from_imagemagick() {
@@ -272,24 +269,39 @@ mod tests {
 	}
 
 	#[test]
-	fn minimum_satisfied() {
-		let spec = &TOOLS[0];
+	fn a_floor_is_part_of_usability() {
+		let tool = tool("magick", Some("7.1"));
 		let mut status = ToolStatus {
-			spec,
+			tool: &tool,
 			path: Some(PathBuf::from("/usr/bin/magick")),
 			version: Some(Version::parse("7.1.2").unwrap()),
 			missing_components: Vec::new(),
 			error: None,
 		};
-		assert!(meets_minimum(&status));
 		assert!(status.is_usable());
 
 		status.version = Some(Version::parse("6.9.11").unwrap());
-		assert!(!meets_minimum(&status));
+		assert!(!status.meets_minimum());
+		assert!(!status.is_usable());
 
 		status.version = Some(Version::parse("7.1.2").unwrap());
-		status.missing_components = vec!["heic"];
+		status.missing_components = vec!["heic".to_string()];
 		assert!(!status.is_usable());
+	}
+
+	#[test]
+	fn a_tool_without_a_floor_accepts_what_it_finds() {
+		let tool = tool("pandoc", None);
+		let status = ToolStatus {
+			tool: &tool,
+			path: Some(PathBuf::from("/usr/bin/pandoc")),
+			version: Some(Version::parse("3.11").unwrap()),
+			missing_components: Vec::new(),
+			error: None,
+		};
+
+		assert!(status.meets_minimum());
+		assert!(status.is_usable());
 	}
 
 	#[test]
@@ -331,21 +343,4 @@ mod tests {
 
 	#[cfg(not(unix))]
 	fn make_executable(_path: &Path) {}
-
-	#[test]
-	fn tool_table_is_consistent() {
-		let names: Vec<&str> = TOOLS.iter().map(|spec| spec.name).collect();
-		let mut unique = names.clone();
-		unique.sort_unstable();
-		unique.dedup();
-		assert_eq!(names.len(), unique.len(), "tool names must be unique");
-
-		for spec in TOOLS {
-			assert!(
-				Version::parse(spec.min_version).is_some(),
-				"minimum version for {} must parse",
-				spec.name
-			);
-		}
-	}
 }

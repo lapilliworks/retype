@@ -71,9 +71,11 @@ version = 'retype-config-1'
 
 [tools.magick]
 command = 'magick'                     # absolute path, or a bare name resolved on PATH
-probe = ['-version']                   # argv, first line reports the version
+probe = ['-version']                   # argv whose output reports the version
 version_min = '7.1'
-layout = ['convert', '{input}', '{ops}', '{output}']
+purpose = 'image conversion'           # shown by retype doctor
+components = ['heic', 'webp']          # substrings the probe output must mention
+layout = ['{input}', '{ops}', '{output}']
 ```
 
 | Key | Required | Meaning |
@@ -81,8 +83,18 @@ layout = ['convert', '{input}', '{ops}', '{output}']
 | `command` | yes | Executable, absolute or bare name. No shell metacharacters, no spaces |
 | `probe` | no | Argv run by `retype doctor` to report a version |
 | `version_min` | no | Minimum accepted version, compared against the probe output |
-| `layout` | yes | Argv template. Contains `{input}`, `{ops}`, `{output}` |
+| `purpose` | no | One line, printed by `retype doctor` |
+| `components` | no | Substrings the probe output has to mention, see 3.2 |
+| `layout` | yes | Argv template. Names `{input}`, `{ops}` and `{output}` once each, in any order |
 | `engines` | no | Named alternatives resolved at plan time, see 3.1 |
+
+The layout is the whole reason a tool is configuration: `7z` takes its output before its input and `ffmpeg` needs `-i` in front of its input, and neither fact belongs in code.
+
+### 3.2 Components
+
+A tool can be installed, new enough, and still lack the delegate that makes a format work: ImageMagick without libheif opens a HEIC file and fails at the codec. `components` names the substrings that have to appear in the probe output, so the answer to "why can't I convert this" is *this build has no libheif* rather than *magick failed*.
+
+The declaration is per tool because that is what the probe can observe. Of the capability tuple in `docs/tools.md` §1, the format and the direction belong to the operation, the version floor and the components belong to the tool.
 
 ### 3.1 Engines
 
@@ -256,7 +268,7 @@ Loading fails, naming the file and key, on any of:
 | Rule | Condition |
 |---|---|
 | V1 | A placeholder outside `{input}`, `{ops}`, `{output}`, `{value}`, `{engine.<name>}`, or in the wrong position |
-| V2 | A `layout` without exactly one `{ops}` |
+| V2 | A `layout` that does not name `{input}`, `{ops}` and `{output}` exactly once each |
 | V3 | `{value}` in an entity that declares no `param`, or a declared `param` never used |
 | V4 | `{engine.<name>}` without a matching `engines` list, or an `engines` list that nothing uses |
 | V5 | A command containing a shell metacharacter or a space |

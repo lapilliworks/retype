@@ -15,6 +15,41 @@
 
 version = 'retype-config-1'
 
+# External tools, `docs/tools.md`. The layout is the argv template: `{input}`
+# and `{output}` are paths and `{ops}` is where a format's fragment expands, so
+# a tool that wants its output before its input says so here rather than in
+# code. `components` are the substrings the probe output has to mention, because
+# a tool can be installed and still be built without the delegate it needs.
+
+[tools.magick]
+command = 'magick'
+probe = ['-version']
+version_min = '7.1'
+purpose = 'image conversion'
+components = ['heic', 'webp']
+layout = ['{input}', '{ops}', '{output}']
+
+[tools.ffmpeg]
+command = 'ffmpeg'
+probe = ['-version']
+version_min = '6.0'
+purpose = 'audio and video conversion'
+layout = ['-y', '-i', '{input}', '{ops}', '{output}']
+
+[tools.pandoc]
+command = 'pandoc'
+probe = ['--version']
+version_min = '3.0'
+purpose = 'document conversion'
+layout = ['{input}', '{ops}', '-o', '{output}']
+engines = { pdf = ['typst', 'xelatex', 'lualatex', 'pdflatex', 'weasyprint', 'wkhtmltopdf'] }
+
+[tools.7z]
+command = '7z'
+version_min = '23.0'
+purpose = 'archive conversion'
+layout = ['a', '-y', '{ops}', '{output}', '{input}']
+
 [formats.jpg]
 family = 'image'
 lossy = true

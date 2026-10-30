@@ -1,9 +1,10 @@
-//! The operation registry, `docs/config.md` and `docs/operations.md`.
+//! The declarative registry, `docs/config.md` and `docs/operations.md`.
 //!
-//! A declarative table of formats and operations, loaded from the built-in
+//! One table of tools, formats and operations, loaded from the built-in
 //! `builtin.toml` and, later, overridden by user configuration. Nothing here
 //! knows how to convert anything: it knows what the product is willing to
-//! accept, which is what the parser needs to resolve a name and a value.
+//! accept, which is what the parser needs to resolve a name and a value, and
+//! what the planner needs to know which tool can honour it.
 
 use std::collections::BTreeMap;
 
@@ -11,6 +12,7 @@ use serde::Deserialize;
 
 use crate::error::{Code, Diagnoses, Diagnostic, Error};
 use crate::job::Tier;
+use crate::tools::{Tool, Version};
 
 /// Schema identifier, `docs/config.md` §1.
 pub const CONFIG_VERSION: &str = "retype-config-1";
@@ -102,6 +104,7 @@ pub struct Resolved<'a> {
 
 #[derive(Debug, Clone)]
 pub struct Registry {
+	tools: BTreeMap<String, Tool>,
 	formats: BTreeMap<String, Format>,
 	ops: BTreeMap<String, Op>,
 	/// Every name and alias with the key it resolves to, longest first, so that
@@ -140,6 +143,17 @@ impl Registry {
 					document.version
 				),
 			));
+		}
+
+		let mut tools = BTreeMap::new();
+		for (name, entry) in &document.tools {
+			match entry.view(name) {
+				Ok(tool) => {
+					problems.extend(validate_tool(&tool, label));
+					tools.insert(tool.name.clone(), tool);
+				}
+				Err(problem) => problems.push(problem),
+			}
 		}
 
 		let formats: BTreeMap<String, Format> = document
@@ -211,11 +225,21 @@ impl Registry {
 		}
 
 		Ok(Self {
+			tools,
 			formats,
 			ops,
 			names,
 			format_names,
 		})
+	}
+
+	pub fn tool(&self, name: &str) -> Option<&Tool> {
+		self.tools.get(name)
+	}
+
+	/// Every tool, in name order.
+	pub fn tools(&self) -> impl Iterator<Item = &Tool> {
+		self.tools.values()
 	}
 
 	pub fn format(&self, name: &str) -> Option<&Format> {
@@ -302,6 +326,86 @@ impl Registry {
 		self.names.iter().map(|(name, _)| name.as_str())
 	}
 }
+
+/// Placeholders a layout may contain, `docs/config.md` V1. `{value}` and
+/// `{engine.<name>}` belong to an `argv` fragment, which is applied where an
+/// argument list is built rather than where a path goes.
+const LAYOUT_PLACEHOLDERS: &[&str] = &["{input}", "{ops}", "{output}"];
+
+fn validate_tool(tool: &Tool, label: &str) -> Vec<Error> {
+	let mut problems = Vec::new();
+	let name = &tool.name;
+
+	// V5: the command is exec'd, never handed to a shell.
+	if tool.command.is_empty() || tool.command.contains(char::is_whitespace) {
+		problems.push(fail(
+			Code::CfgValidation,
+			format!(
+				"{label}: tool '{name}' has command '{}', which is empty or contains whitespace",
+				tool.command
+			),
+		));
+	} else if let Some(byte) = tool.command.chars().find(|c| SHELL_METACHARACTERS.contains(c)) {
+		problems.push(fail(
+			Code::CfgValidation,
+			format!(
+				"{label}: tool '{name}' has command '{}', which contains the shell metacharacter '{byte}'",
+				tool.command
+			),
+		));
+	}
+
+	// V1 and V2: the layout is a template with three holes, and `{ops}` is one
+	// argument because the fragment expands into that position.
+	let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+	for argument in &tool.layout {
+		if LAYOUT_PLACEHOLDERS.contains(&argument.as_str()) {
+			*counts.entry(argument.as_str()).or_default() += 1;
+		} else if argument.contains('{') || argument.contains('}') {
+			problems.push(fail(
+				Code::CfgValidation,
+				format!(
+					"{label}: tool '{name}' has placeholder '{argument}' in its layout, which takes only {LAYOUT_PLACEHOLDERS:?}"
+				),
+			));
+		}
+	}
+
+	for placeholder in ["{input}", "{output}"] {
+		if counts.get(placeholder).copied() != Some(1) {
+			problems.push(fail(
+				Code::CfgValidation,
+				format!("{label}: tool '{name}' must name {placeholder} exactly once in its layout"),
+			));
+		}
+	}
+
+	if counts.get("{ops}").copied() != Some(1) {
+		problems.push(fail(
+			Code::CfgValidation,
+			format!("{label}: tool '{name}' must name {{ops}} exactly once in its layout"),
+		));
+	}
+
+	// V4, the half a declaration alone can violate: an engine with no candidate
+	// can never resolve. Whether something uses it needs the argv fragments.
+	for (engine, candidates) in &tool.engines {
+		if candidates.is_empty() {
+			problems.push(fail(
+				Code::CfgValidation,
+				format!("{label}: tool '{name}' declares engine '{engine}' with no candidates"),
+			));
+		}
+	}
+
+	problems
+}
+
+/// V5: characters that only mean something to a shell, which would make the
+/// command a program rather than a name.
+const SHELL_METACHARACTERS: &[char] = &[
+	';', '|', '&', '$', '<', '>', '`', '(', ')', '\\', '\'', '"', '*', '?', '[', ']', '#', '~',
+];
 
 fn collect_format_names(formats: &BTreeMap<String, Format>) -> Vec<(String, String)> {
 	let mut names = Vec::new();
@@ -390,9 +494,54 @@ fn is_name(text: &str) -> bool {
 struct Document {
 	version: String,
 	#[serde(default)]
+	tools: BTreeMap<String, ToolEntry>,
+	#[serde(default)]
 	formats: BTreeMap<String, FormatEntry>,
 	#[serde(default)]
 	ops: BTreeMap<String, OpEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ToolEntry {
+	command: String,
+	#[serde(default)]
+	probe: Vec<String>,
+	#[serde(default)]
+	version_min: Option<String>,
+	#[serde(default)]
+	purpose: String,
+	#[serde(default)]
+	components: Vec<String>,
+	layout: Vec<String>,
+	#[serde(default)]
+	engines: BTreeMap<String, Vec<String>>,
+}
+
+impl ToolEntry {
+	/// V11: a floor that does not parse would be compared as text, where `9`
+	/// sorts above `10`.
+	fn view(&self, name: &str) -> Result<Tool, Error> {
+		let version_min = match &self.version_min {
+			Some(text) => Some(Version::parse(text).ok_or_else(|| {
+				fail(
+					Code::CfgValidation,
+					format!("tool '{name}' declares version_min '{text}', which is not a version"),
+				)
+			})?),
+			None => None,
+		};
+
+		Ok(Tool {
+			name: name.to_string(),
+			command: self.command.clone(),
+			probe: self.probe.clone(),
+			version_min,
+			purpose: self.purpose.clone(),
+			components: self.components.clone(),
+			layout: self.layout.clone(),
+			engines: self.engines.clone(),
+		})
+	}
 }
 
 #[derive(Debug, Deserialize)]
@@ -543,6 +692,83 @@ mod tests {
 			"matching ignores case"
 		);
 		assert_eq!(registry.split("my.file.txt"), None, "txt is not a declared format");
+	}
+
+	#[test]
+	fn the_builtin_declares_the_tools_the_matrix_names() {
+		let registry = builtin();
+		let names: Vec<&str> = registry.tools().map(|tool| tool.name.as_str()).collect();
+
+		assert_eq!(names, ["7z", "ffmpeg", "magick", "pandoc"]);
+
+		let pandoc = registry.tool("pandoc").expect("pandoc is declared");
+		assert_eq!(pandoc.candidates("pdf").first().map(String::as_str), Some("typst"));
+		assert!(pandoc.candidates("absent").is_empty());
+	}
+
+	#[test]
+	fn a_layout_without_the_three_holes_is_refused() {
+		let missing_ops = with_tool("command = 'probe'\nlayout = ['{input}', '{output}']");
+		let repeated_ops = with_tool("command = 'probe'\nlayout = ['{input}', '{ops}', '{ops}', '{output}']");
+		let wrong_hole = with_tool("command = 'probe'\nlayout = ['{input}', '{ops}', '{output}', '{value}']");
+
+		assert_eq!(codes(&missing_ops), [Code::CfgValidation]);
+		assert_eq!(codes(&repeated_ops), [Code::CfgValidation]);
+		assert_eq!(codes(&wrong_hole), [Code::CfgValidation]);
+	}
+
+	#[test]
+	fn a_command_with_a_shell_metacharacter_is_refused() {
+		assert_eq!(
+			codes(&with_tool(&command_tool("magick; rm -rf /"))),
+			[Code::CfgValidation]
+		);
+		assert_eq!(codes(&with_tool(&command_tool("magick $(id)"))), [Code::CfgValidation]);
+		assert_eq!(codes(&with_tool(&command_tool(""))), [Code::CfgValidation]);
+		assert_eq!(
+			codes(&with_tool(&command_tool("magick -density 300"))),
+			[Code::CfgValidation]
+		);
+	}
+
+	#[test]
+	fn a_version_floor_that_does_not_parse_is_refused() {
+		assert_eq!(
+			codes(&with_tool(&format!("{STANDARD_TOOL}\nversion_min = 'newest'"))),
+			[Code::CfgValidation]
+		);
+	}
+
+	#[test]
+	fn an_engine_with_no_candidate_is_refused() {
+		assert_eq!(
+			codes(&with_tool(&format!("{STANDARD_TOOL}\nengines = {{ pdf = [] }}"))),
+			[Code::CfgValidation],
+			"an engine that can never resolve is a declaration error"
+		);
+	}
+
+	#[test]
+	fn a_declared_engine_keeps_its_order() {
+		let text = with_tool(&format!(
+			"{STANDARD_TOOL}\nengines = {{ pdf = ['typst', 'weasyprint'] }}"
+		));
+		let registry = Registry::load(&text).expect("loads");
+		let tool = registry.tool("probe").expect("declared");
+
+		assert_eq!(tool.candidates("pdf"), ["typst", "weasyprint"]);
+	}
+
+	/// A configuration with one tool, so that a single declaration rule can be
+	/// violated on its own.
+	fn with_tool(body: &str) -> String {
+		format!("version = 'retype-config-1'\n[tools.probe]\n{body}\n")
+	}
+
+	const STANDARD_TOOL: &str = "command = 'probe'\nlayout = ['{input}', '{ops}', '{output}']";
+
+	fn command_tool(command: &str) -> String {
+		format!("command = '{command}'\nlayout = ['{{input}}', '{{ops}}', '{{output}}']")
 	}
 
 	#[test]
