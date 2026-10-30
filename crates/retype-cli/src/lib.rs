@@ -12,3 +12,4 @@ pub mod doctor;
 pub mod error;
 pub mod explain;
 pub mod state;
+pub mod watch;

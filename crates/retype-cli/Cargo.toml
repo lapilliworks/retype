@@ -22,6 +22,7 @@ getrandom.workspace = true
 retype-core = { path = "../retype-core" }
 retype-ipc = { path = "../retype-ipc" }
 serde_json.workspace = true
+toml.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(unix)'.dependencies]

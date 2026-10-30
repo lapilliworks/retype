@@ -42,6 +42,22 @@ enum Command {
 		detached: bool,
 	},
 
+	/// Register directories, or list what is registered
+	Watch {
+		/// Directories to watch. With none, the registrations are listed
+		directories: Vec<String>,
+
+		/// Watch this directory only, not its subdirectories
+		#[arg(long = "non-recursive")]
+		non_recursive: bool,
+	},
+
+	/// Deregister directories
+	Unwatch {
+		/// Directories to stop watching
+		directories: Vec<String>,
+	},
+
 	/// Convert one file, as a rename would
 	#[command(alias = "c")]
 	Convert {
@@ -97,6 +113,36 @@ enum DaemonAction {
 
 fn main() -> ExitCode {
 	let cli = Cli::parse();
+
+	if let Command::Watch {
+		directories,
+		non_recursive,
+	} = &cli.command
+	{
+		let code = retype_cli::state::resolve(cli.state_dir.clone())
+			.and_then(|state_dir| retype_cli::watch::run(&state_dir, directories, !non_recursive, cli.json));
+
+		return match code {
+			Ok(code) => code,
+			Err(error) => {
+				eprintln!("retype: {error}");
+				ExitCode::from(error.exit_code())
+			}
+		};
+	}
+
+	if let Command::Unwatch { directories } = &cli.command {
+		let code = retype_cli::state::resolve(cli.state_dir.clone())
+			.and_then(|state_dir| retype_cli::watch::unwatch(&state_dir, directories, cli.json));
+
+		return match code {
+			Ok(code) => code,
+			Err(error) => {
+				eprintln!("retype: {error}");
+				ExitCode::from(error.exit_code())
+			}
+		};
+	}
 
 	if let Command::Convert {
 		input,
@@ -179,9 +225,11 @@ fn main() -> ExitCode {
 			None => daemon::run(cli.state_dir.clone(), !detached),
 			Some(action) => control(&cli, action),
 		},
-		Command::Convert { .. } | Command::Explain { .. } | Command::Doctor { .. } => {
-			unreachable!("convert, explain and doctor are dispatched before the outcome is built")
-		}
+		Command::Watch { .. }
+		| Command::Unwatch { .. }
+		| Command::Convert { .. }
+		| Command::Explain { .. }
+		| Command::Doctor { .. } => unreachable!("these are dispatched before the outcome is built"),
 	};
 
 	match outcome {

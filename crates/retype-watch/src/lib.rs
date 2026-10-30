@@ -58,11 +58,25 @@ impl Batch {
 
 /// Watch a directory and its subtree, sending events to the returned receiver.
 pub fn watch(root: &Path) -> notify::Result<(RecommendedWatcher, mpsc::Receiver<notify::Result<Event>>)> {
+	watch_mode(root, true)
+}
+
+/// Watch one root, recursively or not, `docs/config.md` §9.
+pub fn watch_mode(
+	root: &Path,
+	recursive: bool,
+) -> notify::Result<(RecommendedWatcher, mpsc::Receiver<notify::Result<Event>>)> {
 	let (sender, receiver) = mpsc::channel();
 	let mut watcher = notify::recommended_watcher(move |event| {
 		let _ = sender.send(event);
 	})?;
-	watcher.watch(root, RecursiveMode::Recursive)?;
+	watcher.watch(
+		root,
+		match recursive {
+			true => RecursiveMode::Recursive,
+			false => RecursiveMode::NonRecursive,
+		},
+	)?;
 	Ok((watcher, receiver))
 }
 
