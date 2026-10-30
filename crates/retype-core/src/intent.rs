@@ -6,16 +6,14 @@
 //! registry, which arrives with configuration, so tokens carry their value as
 //! written and nothing here guesses what it means.
 
+pub use crate::error::Diagnoses;
+
 use crate::error::{Code, Diagnostic, Error, Span};
 
 /// Limits from `docs/grammar.md` §5.
 pub const MAX_LENGTH: usize = 255;
 pub const MAX_GROUPS: usize = 8;
 pub const MAX_TOKENS: usize = 32;
-
-/// How many independent diagnoses are collected before the rest are dropped,
-/// `docs/grammar.md` §6.
-pub const MAX_DIAGNOSTICS: usize = 8;
 
 /// The characters an intent may contain, `docs/grammar.md` §4.
 const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,+!=_-";
@@ -60,55 +58,6 @@ pub struct Intent {
 	/// refusing. They are not failures, and they are not silent either.
 	pub warnings: Vec<Diagnostic>,
 }
-
-/// Everything wrong with one intent string, ordered by offset and capped.
-#[derive(Debug)]
-pub struct Diagnoses(Vec<Error>);
-
-impl Diagnoses {
-	fn one(error: Error) -> Self {
-		Self(vec![error])
-	}
-
-	fn new(mut errors: Vec<Error>) -> Self {
-		errors.sort_by_key(|error| error.span().map(|span| span.start).unwrap_or_default());
-		errors.truncate(MAX_DIAGNOSTICS);
-		Self(errors)
-	}
-
-	pub fn iter(&self) -> impl Iterator<Item = &Error> {
-		self.0.iter()
-	}
-
-	pub fn first(&self) -> Option<&Error> {
-		self.0.first()
-	}
-
-	pub fn len(&self) -> usize {
-		self.0.len()
-	}
-
-	pub fn is_empty(&self) -> bool {
-		self.0.is_empty()
-	}
-}
-
-impl std::fmt::Display for Diagnoses {
-	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		for (index, error) in self.0.iter().enumerate() {
-			if index > 0 {
-				formatter.write_str("; ")?;
-			}
-			match error.span() {
-				Some(span) => write!(formatter, "{} at {}..{}: {error}", error.code(), span.start, span.end)?,
-				None => write!(formatter, "{}: {error}", error.code())?,
-			}
-		}
-		Ok(())
-	}
-}
-
-impl std::error::Error for Diagnoses {}
 
 /// The intent string a new name carries, if any, `docs/grammar.md` §3.
 ///
@@ -494,7 +443,7 @@ mod tests {
 		assert_eq!(intent.meta, Meta { ask: true, now: false });
 		assert_eq!(intent.warnings.len(), 1);
 		assert_eq!(intent.warnings[0].code, Code::MetaConflict);
-		assert_eq!(intent.warnings[0].span, Span::new(3, 5));
+		assert_eq!(intent.warnings[0].span, Some(Span::new(3, 5)));
 		assert!(intent.warnings[0].message.contains("ignored 'now'"));
 	}
 
@@ -567,7 +516,7 @@ mod tests {
 		let result = parse("jpg+80,png+90,webp+70,gif+60,ico+50,bmp+40,tiff+30,tga+20,jp2+10");
 		let diagnoses = result.unwrap_err();
 
-		assert_eq!(diagnoses.len(), MAX_DIAGNOSTICS);
+		assert_eq!(diagnoses.len(), Diagnoses::LIMIT);
 		let starts: Vec<usize> = diagnoses
 			.iter()
 			.filter_map(|error| error.span())

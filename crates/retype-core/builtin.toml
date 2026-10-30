@@ -1,0 +1,232 @@
+# The registry the product ships, `docs/operations.md` and `docs/config.md`.
+#
+# Keys are permanent: a key is never reused for a different meaning, so renaming
+# a key is a breaking change and removing one leaves a hole that cannot be
+# filled. Names and aliases occupy one name space with presets, and a name that
+# is a prefix of another is resolved by the longer match, which is why `q` and
+# `quality` can coexist.
+#
+# An operation with an empty `formats` list is one whose vertical has not landed
+# yet: it is named so that using it is `E_UNSUPPORTED` rather than
+# `E_NAME_UNKNOWN`, `docs/operations.md` §6.
+#
+# An exclusive group with a single member is not declared, because a group of one
+# cannot conflict; `docs/config.md` V8 makes that an error for the same reason.
+
+version = 'retype-config-1'
+
+[formats.jpg]
+family = 'image'
+lossy = true
+alpha = false
+tier = 'converted'
+aliases = ['jpeg', 'jpe']
+
+[formats.png]
+family = 'image'
+lossy = false
+alpha = true
+tier = 'converted'
+aliases = []
+
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+aliases = []
+
+[formats.avif]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+aliases = []
+
+[formats.heic]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+aliases = ['heif']
+
+[formats.gif]
+family = 'image'
+lossy = false
+alpha = true
+tier = 'converted'
+aliases = []
+
+[formats.tiff]
+family = 'image'
+lossy = false
+alpha = true
+tier = 'converted'
+aliases = ['tif']
+
+[formats.bmp]
+family = 'image'
+lossy = false
+alpha = false
+tier = 'converted'
+aliases = []
+
+[formats.ico]
+family = 'image'
+lossy = false
+alpha = true
+tier = 'converted'
+aliases = []
+
+[ops.quality]
+aliases = ['q']
+slot = 50
+exclusive = ['encode-target']
+formats = ['jpg', 'webp', 'avif', 'heic']
+param = { class = 'int', min = 1, max = 100 }
+
+[ops.lossless]
+slot = 50
+exclusive = ['encode-target']
+formats = ['webp', 'avif', 'heic']
+
+[ops.size]
+slot = 50
+exclusive = ['encode-target']
+formats = ['jpg', 'png', 'webp', 'avif', 'heic']
+param = { class = 'size', min = 1 }
+
+[ops.effort]
+slot = 50
+formats = ['webp', 'avif']
+param = { class = 'int', min = 0, max = 10 }
+
+[ops.compress]
+slot = 50
+formats = ['png', 'tiff']
+param = { class = 'int', min = 0, max = 9 }
+
+[ops.colors]
+slot = 50
+formats = ['png', 'gif']
+param = { class = 'int', min = 2, max = 256 }
+
+[ops.cap]
+slot = 20
+exclusive = ['scale']
+formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
+param = { class = 'int', min = 16, max = 16384 }
+
+[ops.resize]
+slot = 20
+exclusive = ['scale']
+formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
+param = { class = 'dim', min = 1, max = 16384 }
+
+[ops.width]
+aliases = ['w']
+slot = 20
+exclusive = ['scale']
+formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
+param = { class = 'int', min = 16, max = 16384 }
+
+[ops.height]
+aliases = ['h']
+slot = 20
+exclusive = ['scale']
+formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
+param = { class = 'int', min = 16, max = 16384 }
+
+[ops.crop]
+slot = 20
+formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
+param = { class = 'ratio', min = 1, max = 1000 }
+
+[ops.rotate]
+slot = 20
+formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
+param = { class = 'enum', values = ['90', '180', '270'] }
+
+[ops.fliph]
+slot = 20
+formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
+
+[ops.flipv]
+slot = 20
+formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
+
+[ops.gray]
+aliases = ['grey', 'grayscale']
+slot = 30
+formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'bmp', 'ico']
+
+[ops.nometa]
+slot = 60
+formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'ico']
+
+[ops.noprofile]
+slot = 60
+formats = ['jpg', 'png', 'webp', 'avif', 'heic', 'gif', 'tiff', 'ico']
+
+[ops.ask]
+slot = 90
+exclusive = ['confirm']
+formats = ['*']
+
+[ops.now]
+slot = 90
+exclusive = ['confirm']
+formats = ['*']
+
+[ops.trim]
+slot = 10
+formats = []
+param = { class = 'range' }
+
+[ops.at]
+slot = 10
+formats = []
+param = { class = 'time' }
+
+[ops.speed]
+slot = 10
+formats = []
+param = { class = 'int', min = 1, max = 400 }
+
+[ops.fps]
+slot = 10
+formats = []
+param = { class = 'int', min = 1, max = 240 }
+
+[ops.mute]
+slot = 40
+formats = []
+
+[ops.normalize]
+slot = 40
+formats = []
+
+[ops.mono]
+slot = 40
+formats = []
+
+[ops.bitrate]
+slot = 40
+formats = []
+param = { class = 'int', min = 1 }
+
+[ops.codec]
+slot = 40
+formats = []
+param = { class = 'enum', values = [] }
+
+[ops.page]
+slot = 10
+formats = []
+param = { class = 'range' }
+
+[ops.dpi]
+aliases = ['d']
+slot = 10
+formats = []
+param = { class = 'int', min = 36, max = 1200 }

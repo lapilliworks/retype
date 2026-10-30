@@ -4,6 +4,8 @@ Registry reference. Syntax is defined in `docs/grammar.md`; this document define
 
 An operation is identified by an immutable `key`. Aliases are accepted and never printed. A `slot` places it in the canonical order. An `exclusive` set makes members of the same set conflict.
 
+A group with one member is not declared: repeating one operation is `E_DUPLICATE`, so a group whose only member is `rotate` would add nothing and `docs/config.md` V8 refuses it as a probable mistake.
+
 ## 1. Name space
 
 Reserved keys, all phases. Keys are permanent; a key is never reused for a different meaning.
@@ -20,11 +22,11 @@ Reserved keys, all phases. Keys are permanent; a key is never reused for a diffe
 | `resize` | `resize` | 20 | `scale` | `dim`, 1 to 16384 per side | 3 |
 | `width` | `width` | 20 | `scale` | `int`, 16 to 16384 | 3 |
 | `height` | `height` | 20 | `scale` | `int`, 16 to 16384 | 3 |
-| `crop` | `crop` | 20 | `frame` | `ratio`, 1 to 1000 per side | 3 |
-| `rotate` | `rotate` | 20 | `orient` | `enum`: 90, 180, 270 | 3 |
-| `fliph` | `fliph` | 20 | `flip-h` | none | 3 |
-| `flipv` | `flipv` | 20 | `flip-v` | none | 3 |
-| `gray` | `gray` | 30 | `colour` | none | 3 |
+| `crop` | `crop` | 20 | none | `ratio`, 1 to 1000 per side | 3 |
+| `rotate` | `rotate` | 20 | none | `enum`: 90, 180, 270 | 3 |
+| `fliph` | `fliph` | 20 | none | none | 3 |
+| `flipv` | `flipv` | 20 | none | none | 3 |
+| `gray` | `gray` | 30 | none | none | 3 |
 | `nometa` | `nometa` | 60 | none | none | 3 |
 | `noprofile` | `noprofile` | 60 | none | none | 3 |
 | `trim` | `trim` | 10 | `time-slice` | `range` of `time` | 4 |

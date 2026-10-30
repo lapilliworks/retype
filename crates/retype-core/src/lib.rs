@@ -12,4 +12,5 @@ pub mod ext;
 pub mod intent;
 pub mod job;
 pub mod journal;
+pub mod registry;
 pub mod tools;

@@ -173,7 +173,9 @@ impl Span {
 pub struct Diagnostic {
 	pub code: Code,
 	pub message: String,
-	pub span: Span,
+	/// Present for a grammar diagnostic, absent for anything that is not one
+	/// string's fault, such as a configuration file that fails to load.
+	pub span: Option<Span>,
 	pub hint: Option<String>,
 }
 
@@ -182,7 +184,16 @@ impl Diagnostic {
 		Self {
 			code,
 			message: message.into(),
-			span,
+			span: Some(span),
+			hint: None,
+		}
+	}
+
+	pub fn global(code: Code, message: impl Into<String>) -> Self {
+		Self {
+			code,
+			message: message.into(),
+			span: None,
 			hint: None,
 		}
 	}
@@ -231,6 +242,66 @@ impl From<Diagnostic> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Several diagnostics about one input, ordered by offset and capped.
+///
+/// Grammar parsing and configuration loading both report everything wrong at
+/// once rather than the first thing, because a user who has to fix one mistake
+/// per attempt learns the rules one at a time.
+#[derive(Debug)]
+pub struct Diagnoses(Vec<Error>);
+
+impl Diagnoses {
+	/// How many are kept before the rest are dropped, `docs/grammar.md` §6.
+	pub const LIMIT: usize = 8;
+
+	pub fn new(mut errors: Vec<Error>) -> Self {
+		errors.sort_by_key(|error| error.span().map(|span| span.start).unwrap_or_default());
+		errors.truncate(Self::LIMIT);
+		Self(errors)
+	}
+
+	pub fn one(error: Error) -> Self {
+		Self(vec![error])
+	}
+
+	pub fn iter(&self) -> impl Iterator<Item = &Error> {
+		self.0.iter()
+	}
+
+	pub fn first(&self) -> Option<&Error> {
+		self.0.first()
+	}
+
+	pub fn len(&self) -> usize {
+		self.0.len()
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.0.is_empty()
+	}
+
+	pub fn codes(&self) -> Vec<Code> {
+		self.0.iter().map(Error::code).collect()
+	}
+}
+
+impl std::fmt::Display for Diagnoses {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		for (index, error) in self.0.iter().enumerate() {
+			if index > 0 {
+				formatter.write_str("; ")?;
+			}
+			match error.span() {
+				Some(span) => write!(formatter, "{} at {}..{}: {error}", error.code(), span.start, span.end)?,
+				None => write!(formatter, "{}: {error}", error.code())?,
+			}
+		}
+		Ok(())
+	}
+}
+
+impl std::error::Error for Diagnoses {}
+
 /// The code for an operating system failure, so that a layer holding a bare
 /// `io::Error` does not invent its own mapping.
 pub fn code_for_io(error: &std::io::Error) -> Code {
@@ -278,7 +349,7 @@ impl Error {
 
 	pub fn span(&self) -> Option<Span> {
 		match self {
-			Self::Diagnostic(diagnostic) => Some(diagnostic.span),
+			Self::Diagnostic(diagnostic) => diagnostic.span,
 			_ => None,
 		}
 	}
