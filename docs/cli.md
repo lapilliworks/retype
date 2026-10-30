@@ -61,17 +61,21 @@ The command runs through the daemon as an immediate job when one is reachable, a
 ## 3. Explanation
 
 ```
-retype explain <intent> [--from <ext>] [--name <stem>]
+retype explain <name> <intent>
 ```
+
+Two positionals, the same two `convert` takes, so `convert --dry-run` and `explain` print the same thing for the same arguments. There is no flag that decomposes the intent into parts, and no flag that supplies a stem or a format: the name carries both, exactly as a rename does.
+
+| Argument | Purpose |
+|---|---|
+| `<name>` | The path being replaced. It need not exist, because only its stem and suffix are read |
+| `<intent>` | The intent string, `docs/grammar.md` |
 
 Prints the canonical intent, the derived output names, the resolved plan in pipeline order, the chosen backend, the argv it would run, the tier and every diagnostic.
 
-| Flag | Purpose |
-|---|---|
-| `--from <ext>` | Source format, needed for applicability, for the tier and for recognising a kept source. An unknown or absent one is a diagnosis |
-| `--name <stem>` | Source stem, for the derived names. Defaults to `input` |
+A name whose suffix is a declared format is a file of that format; a name with no dot is a directory, which is what makes `explain Photos zip` work; a name whose suffix is undeclared is a diagnosis, because retype does not convert what it does not know.
 
-The estimate needs an estimator calibrated against real files, which is `retype bench`'s job; until then `explain` prints no number rather than a guess, and takes no `--size`.
+The estimate needs an estimator calibrated against real files, which is `retype bench`'s job; until then `explain` prints no number rather than a guess.
 
 A backend that the plan needs and the machine lacks is reported in the plan and exits 4, rather than failing without an explanation: the string was understood, the machine cannot carry it out.
 
@@ -142,6 +146,6 @@ retype jobs list --state needs-attention
 retype jobs get 01J8Z
 retype undo --last
 retype why photo.webp
-retype explain 'mp4+cap1080+trim10s-30s+mute+now' --from mov
+retype explain clip.mov 'mp4+cap1080+trim10s-30s+mute+now'
 retype doctor --emit
 ```

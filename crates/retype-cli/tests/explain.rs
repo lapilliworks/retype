@@ -6,10 +6,7 @@ fn retype() -> Command {
 
 #[test]
 fn explains_an_intent_without_a_file() {
-	let output = retype()
-		.args(["explain", "webp", "--from", "heic", "--name", "holiday"])
-		.output()
-		.unwrap();
+	let output = retype().args(["explain", "holiday.heic", "webp"]).output().unwrap();
 	let stdout = String::from_utf8_lossy(&output.stdout);
 
 	assert!(stdout.contains("holiday.webp"), "{stdout}");
@@ -27,7 +24,10 @@ fn explains_an_intent_without_a_file() {
 
 #[test]
 fn a_conflicting_intent_is_a_diagnosis() {
-	let output = retype().args(["explain", "webp+q80+size5mb"]).output().unwrap();
+	let output = retype()
+		.args(["explain", "holiday.heic", "webp+q80+size5mb"])
+		.output()
+		.unwrap();
 
 	assert_eq!(output.status.code(), Some(3));
 	assert!(String::from_utf8_lossy(&output.stderr).contains("E_EXCLUSIVE"));
@@ -35,16 +35,16 @@ fn a_conflicting_intent_is_a_diagnosis() {
 
 #[test]
 fn an_alias_prints_as_the_format_it_names() {
-	let output = retype().args(["explain", "JPEG"]).output().unwrap();
+	let output = retype().args(["explain", "photo.jpeg", "png"]).output().unwrap();
 	let stdout = String::from_utf8_lossy(&output.stdout);
 
-	assert!(stdout.contains("jpg"), "{stdout}");
+	assert!(stdout.contains("photo.jpg"), "{stdout}");
 	assert!(!stdout.contains("jpeg"), "{stdout}");
 }
 
 #[test]
 fn an_unknown_source_format_is_refused() {
-	let output = retype().args(["explain", "webp", "--from", "mov"]).output().unwrap();
+	let output = retype().args(["explain", "clip.mov", "webp"]).output().unwrap();
 
 	assert_eq!(output.status.code(), Some(3));
 	assert!(String::from_utf8_lossy(&output.stderr).contains("E_FORMAT_UNKNOWN"));
@@ -53,7 +53,7 @@ fn an_unknown_source_format_is_refused() {
 #[test]
 fn json_carries_the_envelope_version() {
 	let output = retype()
-		.args(["--json", "explain", "webp", "--from", "heic"])
+		.args(["--json", "explain", "holiday.heic", "webp"])
 		.output()
 		.unwrap();
 	let stdout = String::from_utf8_lossy(&output.stdout);
@@ -63,9 +63,17 @@ fn json_carries_the_envelope_version() {
 }
 
 #[test]
+fn a_name_with_no_declared_suffix_is_not_ours() {
+	let output = retype().args(["explain", "notes.txt", "png"]).output().unwrap();
+
+	assert_eq!(output.status.code(), Some(3));
+	assert!(String::from_utf8_lossy(&output.stderr).contains("E_FORMAT_UNKNOWN"));
+}
+
+#[test]
 fn quiet_still_reports_diagnostics() {
 	let output = retype()
-		.args(["--quiet", "explain", "webp+q80+size5mb"])
+		.args(["--quiet", "explain", "holiday.heic", "webp+q80+size5mb"])
 		.output()
 		.unwrap();
 

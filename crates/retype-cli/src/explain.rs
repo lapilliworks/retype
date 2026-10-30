@@ -20,24 +20,23 @@ use serde_json::json;
 
 use crate::error::Result;
 
-/// What the user asked for, in the order the flags were given.
+/// What the user asked for: a source name and the intent string, the same two
+/// arguments `convert` takes, `docs/cli.md` §2 and §3.
 pub struct Request<'a> {
+	pub source: &'a str,
 	pub intent: &'a str,
-	/// Source format, `--from`. Absent means "the string alone", which is
-	/// enough for everything except recognising a kept source.
-	pub from: Option<&'a str>,
-	pub name: &'a str,
 	pub json: bool,
 	pub quiet: bool,
 }
 
 pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
-	let (source_format, source_problem) = source_format(request.from, registry);
-
-	if let Some(problem) = &source_problem {
-		eprintln!("retype: {}: {}", problem.code, problem.message);
-		return Ok(ExitCode::from(3));
-	}
+	let source = match source_of(registry, request.source) {
+		Ok(source) => source,
+		Err(problem) => {
+			eprintln!("retype: {}: {}", problem.code, problem.message);
+			return Ok(ExitCode::from(3));
+		}
+	};
 
 	let parsed = match intent::parse(request.intent) {
 		Ok(parsed) => parsed,
@@ -50,8 +49,8 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	let resolved = match resolve::resolve(
 		&parsed,
 		Source {
-			format: &source_format,
-			is_directory: request.from == Some("folder"),
+			format: &source.format,
+			is_directory: source.is_directory,
 		},
 		registry,
 	) {
@@ -82,12 +81,12 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	}
 
 	let canonical = print::intent(&resolved, registry);
-	let derived = output::derive(request.name, &source_format, &resolved.groups);
+	let derived = output::derive(&source.stem, &source.format, &resolved.groups);
 
 	if request.json {
-		print_json(&canonical, &source_format, &derived, &plans, installed);
+		print_json(&canonical, &source.display(), &derived, &plans, installed);
 	} else if !request.quiet {
-		print_human(&canonical, &source_format, &derived, &plans, installed);
+		print_human(&canonical, &source.display(), &derived, &plans, installed);
 	}
 
 	Ok(if installed {
@@ -98,25 +97,48 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	})
 }
 
-/// `--from`, which decides applicability, the kept-source case and the names.
-fn source_format(from: Option<&str>, registry: &Registry) -> (String, Option<Diagnostic>) {
-	let Some(written) = from else {
-		return (String::new(), None);
-	};
+/// What the source name says about itself: its stem, its format and whether the
+/// suffix claims it is a directory.
+struct Named {
+	stem: String,
+	format: String,
+	is_directory: bool,
+}
 
-	let lowered = written.to_ascii_lowercase();
-	if lowered == "folder" || registry.format(&lowered).is_some() {
-		return (lowered, None);
+impl Named {
+	fn display(&self) -> String {
+		match self.is_directory {
+			true => self.stem.clone(),
+			false => format!("{}.{}", self.stem, self.format),
+		}
+	}
+}
+
+/// Read a name the way the grammar reads a rename: the longest declared format
+/// suffix ends the stem, and a name with no dot names a directory.
+fn source_of(registry: &Registry, name: &str) -> std::result::Result<Named, Diagnostic> {
+	let file = name.rsplit(['/', '\\']).next().unwrap_or(name);
+
+	if let Some((stem, format)) = registry.split(file) {
+		return Ok(Named {
+			stem: stem.to_string(),
+			format: format.to_string(),
+			is_directory: false,
+		});
 	}
 
-	let hint = format!("known formats: {}", registry.formats().count());
-	(
-		lowered.clone(),
-		Some(Diagnostic::global(
-			Code::FormatUnknown,
-			format!("--from '{written}' is not a format this build knows, {hint}"),
-		)),
-	)
+	if !file.contains('.') {
+		return Ok(Named {
+			stem: name.to_string(),
+			format: "folder".to_string(),
+			is_directory: true,
+		});
+	}
+
+	Err(Diagnostic::global(
+		Code::FormatUnknown,
+		format!("'{name}' ends in a suffix this build has no format for, so it is not ours to convert"),
+	))
 }
 
 fn print_human(canonical: &str, source: &str, derived: &[Derived], plans: &[Plan<'_>], installed: bool) {
@@ -134,7 +156,7 @@ fn print_human(canonical: &str, source: &str, derived: &[Derived], plans: &[Plan
 			.map(|derived| derived.path.display().to_string())
 			.unwrap_or_default();
 
-		println!("{:<10}{name}", if index == 0 { "output" } else { "" });
+		println!("{:<10}{name}", "output");
 
 		let Backend::Tool(tool) = plan.backend;
 

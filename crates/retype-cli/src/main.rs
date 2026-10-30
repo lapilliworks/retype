@@ -45,16 +45,11 @@ enum Command {
 
 	/// Parse, plan, and explain an intent without touching a file
 	Explain {
-		/// The intent, as it would be written in a rename
+		/// The name being replaced; it need not exist
+		source: String,
+
+		/// The intent string, as it would be written in a rename
 		intent: String,
-
-		/// Source format, for applicability and for the kept-source case
-		#[arg(long)]
-		from: Option<String>,
-
-		/// Source stem, for the names the intent derives
-		#[arg(long, default_value = "input")]
-		name: String,
 	},
 
 	/// Report external tool availability
@@ -82,14 +77,13 @@ enum DaemonAction {
 fn main() -> ExitCode {
 	let cli = Cli::parse();
 
-	if let Command::Explain { intent, from, name } = &cli.command {
+	if let Command::Explain { source, intent } = &cli.command {
 		let code = Registry::builtin().map_err(Error::Config).and_then(|registry| {
 			explain::run(
 				&registry,
 				&explain::Request {
+					source,
 					intent,
-					from: from.as_deref(),
-					name,
 					json: cli.json,
 					quiet: cli.quiet,
 				},
