@@ -21,9 +21,18 @@ pub fn run(registry: &Registry, check: bool, require: &[String]) -> Result<ExitC
 		);
 	}
 
-	if let Some(pandoc) = registry.tool("pandoc") {
-		let engine = tools::resolve_engine(pandoc, "pdf");
-		println!("{:<10}{:<24}document to PDF", "pdf", engine.unwrap_or("no engine"));
+	// Every declared engine, since naming `pandoc` and `pdf` here would put the
+	// support matrix back into the code.
+	for tool in registry.tools() {
+		for engine in tool.engines.keys() {
+			let resolved = tools::resolve_engine(tool, engine).unwrap_or("no engine");
+			println!(
+				"{:<14}{:<24}{}: {engine} engine",
+				format!("{} {engine}", tool.name),
+				resolved,
+				tool.purpose
+			);
+		}
 	}
 
 	if !check {

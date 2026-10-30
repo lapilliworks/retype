@@ -212,9 +212,6 @@ pub enum Error {
 	#[error("{} already exists", .0.display())]
 	Exists(PathBuf),
 
-	#[error("{} has no extension", .0.display())]
-	NoExtension(PathBuf),
-
 	#[error("{} has no parent directory", .0.display())]
 	NoParent(PathBuf),
 
@@ -327,7 +324,7 @@ impl Error {
 		match self {
 			Self::Io(error) => code_for_io(error),
 			Self::Exists(_) => Code::IoExists,
-			Self::NoExtension(_) | Self::NoParent(_) | Self::NoFileName(_) => Code::UsageArgs,
+			Self::NoParent(_) | Self::NoFileName(_) => Code::UsageArgs,
 			Self::JobId(_) => Code::UsageArgs,
 			Self::Random(_) | Self::Json(_) => Code::InternalUnexpected,
 			Self::Diagnostic(diagnostic) => diagnostic.code.clone(),
@@ -337,7 +334,7 @@ impl Error {
 	pub fn category(&self) -> Category {
 		match self {
 			Self::Io(_) | Self::Exists(_) => Category::Transient,
-			Self::NoExtension(_) | Self::NoParent(_) | Self::NoFileName(_) | Self::JobId(_) => Category::Diagnosis,
+			Self::NoParent(_) | Self::NoFileName(_) | Self::JobId(_) => Category::Diagnosis,
 			Self::Random(_) | Self::Json(_) => Category::Internal,
 			Self::Diagnostic(_) => Category::Diagnosis,
 		}
@@ -370,7 +367,6 @@ mod tests {
 	fn every_variant_has_a_code_and_a_category() {
 		let errors = [
 			Error::Exists(PathBuf::from("/a")),
-			Error::NoExtension(PathBuf::from("/a")),
 			Error::NoParent(PathBuf::from("/a")),
 			Error::NoFileName(PathBuf::from("/a")),
 			Error::JobId("01".to_string()),

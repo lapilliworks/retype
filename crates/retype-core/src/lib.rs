@@ -8,7 +8,6 @@
 pub mod convert;
 pub mod correlate;
 pub mod error;
-pub mod ext;
 pub mod intent;
 pub mod job;
 pub mod journal;

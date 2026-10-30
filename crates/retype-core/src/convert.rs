@@ -14,7 +14,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use crate::ext::split_extension;
 
 /// Prefix for temporary output files. Never a valid intent, never a user name.
 pub const TEMP_PREFIX: &str = ".retype-tmp.";
@@ -132,14 +131,14 @@ impl Drop for PreparedInput {
 
 /// Prepare the input for a conversion whose target already holds the source
 /// bytes, which is what a rename produces.
-pub fn prepare_input(target: &Path, source_ext: &str) -> Result<PreparedInput> {
-	match restore_source_name(target, source_ext) {
+pub fn prepare_input(target: &Path, stem: &str, source_format: &str) -> Result<PreparedInput> {
+	match restore_source_name(target, stem, source_format) {
 		Ok(restored) => Ok(PreparedInput::Restored {
 			input: restored,
 			target: target.to_path_buf(),
 		}),
 		Err(Error::Exists(_)) => {
-			let input = temporary_input_path(target, source_ext)?;
+			let input = temporary_input_path(target, stem, source_format)?;
 			if fs::hard_link(target, &input).is_err() {
 				// Filesystems without hard links, such as exFAT camera media.
 				fs::copy(target, &input)?;
@@ -153,21 +152,19 @@ pub fn prepare_input(target: &Path, source_ext: &str) -> Result<PreparedInput> {
 	}
 }
 
-fn temporary_input_path(target: &Path, source_ext: &str) -> Result<PathBuf> {
+fn temporary_input_path(target: &Path, stem: &str, source_format: &str) -> Result<PathBuf> {
 	let parent = target.parent().ok_or_else(|| Error::NoParent(target.to_path_buf()))?;
-	let (stem, _) = split_extension(target).ok_or_else(|| Error::NoExtension(target.to_path_buf()))?;
-	Ok(parent.join(format!("{TEMP_IN_PREFIX}{stem}.{source_ext}")))
+	Ok(parent.join(format!("{TEMP_IN_PREFIX}{stem}.{source_format}")))
 }
 
 /// Restore a path to the source extension after a failed conversion.
 ///
 /// Returns the restored path. Refuses to overwrite an existing file rather than
 /// losing whichever bytes are already there.
-pub fn restore_source_name(path: &Path, source_ext: &str) -> Result<PathBuf> {
-	let (stem, _) = split_extension(path).ok_or_else(|| Error::NoExtension(path.to_path_buf()))?;
+pub fn restore_source_name(path: &Path, stem: &str, source_format: &str) -> Result<PathBuf> {
 	let parent = path.parent().ok_or_else(|| Error::NoParent(path.to_path_buf()))?;
 
-	let restored = parent.join(format!("{stem}.{source_ext}"));
+	let restored = parent.join(format!("{stem}.{source_format}"));
 	if restored.exists() {
 		return Err(Error::Exists(restored));
 	}
@@ -270,7 +267,7 @@ mod tests {
 		let renamed = dir.path().join("photo.jpg");
 		fs::write(&renamed, b"heic bytes").unwrap();
 
-		let restored = restore_source_name(&renamed, "heic").unwrap();
+		let restored = restore_source_name(&renamed, "photo", "heic").unwrap();
 
 		assert_eq!(restored, dir.path().join("photo.heic"));
 		assert_eq!(fs::read(&restored).unwrap(), b"heic bytes");
@@ -285,7 +282,7 @@ mod tests {
 		fs::write(&renamed, b"new").unwrap();
 		fs::write(&occupied, b"existing").unwrap();
 
-		let error = restore_source_name(&renamed, "heic").unwrap_err();
+		let error = restore_source_name(&renamed, "photo", "heic").unwrap_err();
 
 		assert!(matches!(error, Error::Exists(_)));
 		assert_eq!(fs::read(&occupied).unwrap(), b"existing");
@@ -298,7 +295,7 @@ mod tests {
 		let target = dir.path().join("photo.jpg");
 		fs::write(&target, b"heic bytes").unwrap();
 
-		let prepared = prepare_input(&target, "heic").unwrap();
+		let prepared = prepare_input(&target, "photo", "heic").unwrap();
 
 		assert_eq!(prepared.input(), dir.path().join("photo.heic"));
 		assert_eq!(prepared.target(), target);
@@ -317,7 +314,7 @@ mod tests {
 		fs::write(&target, b"heic bytes").unwrap();
 		fs::write(&occupied, b"someone else").unwrap();
 
-		let prepared = prepare_input(&target, "heic").unwrap();
+		let prepared = prepare_input(&target, "photo", "heic").unwrap();
 
 		assert!(prepared.is_temporary());
 		assert_eq!(prepared.input(), dir.path().join(".retype-in.photo.heic"));
@@ -338,7 +335,7 @@ mod tests {
 		fs::write(dir.path().join("photo.heic"), b"occupied").unwrap();
 		fs::write(&target, b"heic bytes").unwrap();
 
-		let prepared = prepare_input(&target, "heic").unwrap();
+		let prepared = prepare_input(&target, "photo", "heic").unwrap();
 		let input_meta = fs::metadata(prepared.input()).unwrap();
 		let target_meta = fs::metadata(&target).unwrap();
 
@@ -353,7 +350,7 @@ mod tests {
 		fs::write(&target, b"heic bytes").unwrap();
 
 		let input = {
-			let prepared = prepare_input(&target, "heic").unwrap();
+			let prepared = prepare_input(&target, "photo", "heic").unwrap();
 			prepared.input().to_path_buf()
 		};
 
@@ -362,12 +359,14 @@ mod tests {
 	}
 
 	#[test]
-	fn restores_compound_extension() {
+	fn restores_a_compound_source_format() {
+		// The stem comes from the caller, which took it from the registry, so a
+		// format with a dot in it needs no list of known compounds here.
 		let dir = tempdir();
 		let renamed = dir.path().join("backup.zip");
 		fs::write(&renamed, b"tar bytes").unwrap();
 
-		let restored = restore_source_name(&renamed, "tar.gz").unwrap();
+		let restored = restore_source_name(&renamed, "backup", "tar.gz").unwrap();
 
 		assert_eq!(restored, dir.path().join("backup.tar.gz"));
 	}
@@ -386,7 +385,7 @@ mod tests {
 		});
 		assert!(conversion.is_err());
 
-		let restored = restore_source_name(&renamed, "heic").unwrap();
+		let restored = restore_source_name(&renamed, "photo", "heic").unwrap();
 
 		assert_eq!(restored, dir.path().join("photo.heic"));
 		assert_eq!(fs::read(&restored).unwrap(), b"heic bytes");
