@@ -220,39 +220,63 @@ pub fn run_logged(
 	})
 }
 
-/// Convert a rename that has already happened.
+/// The source a rename left under the target's name, prepared once for a whole
+/// job.
 ///
 /// The target path holds the source bytes under the new name, so the bytes are
-/// relabelled first: the input name carries the format its content actually has
-/// while the conversion runs, and no observer sees a WebP path holding HEIC
-/// bytes. A failure puts the source name back, so the file is left saying what it
-/// contains.
-#[allow(clippy::too_many_arguments)]
-pub fn convert_rename(
-	plan: &Plan<'_>,
-	renamed: &Path,
-	stem: &str,
-	source_format: &str,
-	output: &Path,
-	cancellation: &Cancellation,
-	log: Option<&Path>,
-) -> Result<Report> {
-	let prepared = crate::convert::prepare_input(renamed, stem, source_format)?;
-	let result = run_logged(plan, prepared.input(), output, cancellation, log);
+/// relabelled on open: the input name carries the format its content actually has
+/// while the job runs, and no observer sees a WebP path holding HEIC bytes.
+///
+/// One rename is one job, and a job may produce several outputs. Preparing
+/// per output would move the bytes for the first one and leave the rest with
+/// nothing to read, so the job opens the bytes once and closes them once:
+/// `consume` when anything was produced, `keep` when nothing was.
+pub struct Rename {
+	prepared: crate::convert::PreparedInput,
+	stem: String,
+	source_format: String,
+}
 
-	if result.is_ok() && !prepared.is_temporary() {
-		// The rename meant this file to become the target, so once the target
-		// exists the source-named copy is the leftover of the relabelling.
-		let _ = std::fs::remove_file(prepared.input());
+impl Rename {
+	/// Take the bytes at `target` and give them back under a name their content
+	/// fits.
+	pub fn open(target: &Path, stem: &str, source_format: &str) -> Result<Self> {
+		Ok(Self {
+			prepared: crate::convert::prepare_input(target, stem, source_format)?,
+			stem: stem.to_string(),
+			source_format: source_format.to_string(),
+		})
 	}
 
-	if result.is_err() && prepared.is_temporary() {
-		// The source name was occupied, so the bytes sit at the renamed path under a
-		// name that lies about them. Nothing is deleted: the record names the path.
-		let _ = crate::convert::restore_source_name(renamed, stem, source_format);
+	/// Where every output of the job reads from.
+	pub fn input(&self) -> &Path {
+		self.prepared.input()
 	}
 
-	result
+	/// The job produced at least one output, so the renamed file has done its work
+	/// and its bytes are no longer needed under the source name.
+	pub fn consume(self) -> Result<()> {
+		match &self.prepared {
+			crate::convert::PreparedInput::Restored { input, .. } => match std::fs::remove_file(input) {
+				Ok(()) => Ok(()),
+				Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+				Err(error) => Err(Error::Io(error)),
+			},
+			// The bytes are a link to the renamed file, which the output replaced, so
+			// there is nothing else to remove; the prepared input cleans the link up.
+			crate::convert::PreparedInput::Linked { .. } => Ok(()),
+		}
+	}
+
+	/// Nothing was produced, so the file goes back to a name its bytes fit.
+	///
+	/// The only case where that is impossible is the source name being occupied, and
+	/// nothing is deleted for it: the record names both paths instead.
+	pub fn keep(self) {
+		if let crate::convert::PreparedInput::Linked { target, .. } = &self.prepared {
+			let _ = crate::convert::restore_source_name(target, &self.stem, &self.source_format);
+		}
+	}
 }
 
 /// Kill a child and everything it started, then reap it.
@@ -432,16 +456,9 @@ tier = 'converted'
 		let target = dir.path().join("photo.webp");
 		fs::write(&target, b"pixels").unwrap();
 
-		let report = convert_rename(
-			&plans[0],
-			&target,
-			"photo",
-			"png",
-			&target,
-			&Cancellation::default(),
-			None,
-		)
-		.expect("converts");
+		let renamed = Rename::open(&target, "photo", "png").expect("opens");
+		let report = run(&plans[0], renamed.input(), &target).expect("converts");
+		renamed.consume().expect("consumes");
 
 		assert_eq!(report.bytes, 6);
 		assert_eq!(fs::read(&target).unwrap(), b"pixels");
@@ -449,6 +466,29 @@ tier = 'converted'
 			!dir.path().join("photo.png").exists(),
 			"the source name is not left behind"
 		);
+	}
+
+	#[test]
+	fn one_rename_feeds_every_output_of_its_job() {
+		// A job with two outputs reads one file twice and consumes it once. Preparing
+		// the input per output moved the bytes for the first and left the second with
+		// nothing to read.
+		let registry = copy_fixture();
+		let plans = plans(&registry, "webp");
+		let dir = tempfile::tempdir().unwrap();
+		let target = dir.path().join("photo.webp");
+		fs::write(&target, b"pixels").unwrap();
+
+		let renamed = Rename::open(&target, "photo", "png").expect("opens");
+		for output in ["photo.webp", "photo-2.webp"] {
+			let output = dir.path().join(output);
+			run(&plans[0], renamed.input(), &output).expect("converts");
+		}
+		renamed.consume().expect("consumes");
+
+		assert_eq!(fs::read(dir.path().join("photo.webp")).unwrap(), b"pixels");
+		assert_eq!(fs::read(dir.path().join("photo-2.webp")).unwrap(), b"pixels");
+		assert!(!dir.path().join("photo.png").exists());
 	}
 
 	#[test]
@@ -477,16 +517,9 @@ tier = 'converted'
 		let target = dir.path().join("photo.webp");
 		fs::write(&target, b"pixels").unwrap();
 
-		let error = convert_rename(
-			&plans[0],
-			&target,
-			"photo",
-			"png",
-			&target,
-			&Cancellation::default(),
-			None,
-		)
-		.unwrap_err();
+		let renamed = Rename::open(&target, "photo", "png").expect("opens");
+		let error = run(&plans[0], renamed.input(), &target).unwrap_err();
+		renamed.keep();
 
 		assert_eq!(error.code(), Code::ToolFailed);
 		assert!(!target.exists(), "a webp path does not keep png bytes");

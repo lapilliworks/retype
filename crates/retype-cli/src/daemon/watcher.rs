@@ -443,6 +443,18 @@ pub fn convert(
 		)
 	};
 
+	// One job, one source: the bytes are relabelled and then read for every output,
+	//. Opening the source per output moved the bytes for the first one and
+	// left the rest with nothing to read.
+	let renamed = match execute::Rename::open(bytes, stem, source_format) {
+		Ok(renamed) => renamed,
+		Err(error) => {
+			eprintln!("retype: {}: {error}", target.display());
+			store.remove(&id).ok();
+			return;
+		}
+	};
+
 	for (plan, derived) in plans.iter().zip(&derived) {
 		let output = target.parent().unwrap_or(Path::new("")).join(&derived.path);
 
@@ -450,7 +462,7 @@ pub fn convert(
 
 		let log = crate::state::log_path(&shared.state_dir, &id);
 
-		match execute::convert_rename(plan, bytes, stem, source_format, &output, cancellation, Some(&log)) {
+		match execute::run_logged(plan, renamed.input(), &output, cancellation, Some(&log)) {
 			Ok(report) => outputs.push(record(
 				&output,
 				plan,
@@ -502,6 +514,18 @@ pub fn convert(
 
 	if let Some(Err(error)) = &undo {
 		eprintln!("retype: cannot keep {} for undo: {error}", target.display());
+	}
+
+	// The job either used the renamed file up or left it alone: a job with any output
+	// consumed its source, and one that produced nothing puts the source name back so
+	// no path keeps bytes its name denies.
+	match state {
+		JobState::Done | JobState::Partial => {
+			if let Err(error) = renamed.consume() {
+				eprintln!("retype: cannot remove {}: {error}", target.display());
+			}
+		}
+		_ => renamed.keep(),
 	}
 
 	let job = Job {
