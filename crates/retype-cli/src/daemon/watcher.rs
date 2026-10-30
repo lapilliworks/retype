@@ -341,14 +341,27 @@ pub fn convert(
 
 		shared.recent.note(source, &output);
 
-		match execute::convert_rename(plan, target, stem, source_format, &output, cancellation) {
-			Ok(report) => outputs.push(record(&output, plan, OutputState::Done, Some(report.bytes), None)),
+		let log = crate::state::log_path(&shared.state_dir, &id);
+
+		match execute::convert_rename(plan, target, stem, source_format, &output, cancellation, Some(&log)) {
+			Ok(report) => outputs.push(record(
+				&output,
+				plan,
+				OutputState::Done,
+				Some(report.bytes),
+				match report.stderr.trim().is_empty() {
+					true => None,
+					false => Some(report.stderr.clone()),
+				},
+				None,
+			)),
 			Err(error) => {
 				eprintln!("retype: {}: {error}", output.display());
 				outputs.push(record(
 					&output,
 					plan,
 					OutputState::Failed,
+					None,
 					None,
 					Some(error.to_string()),
 				));
@@ -479,6 +492,7 @@ fn running(
 			bytes: None,
 			tier: retype_core::job::Tier::Converted,
 			identity: None,
+			stderr: None,
 			error: None,
 		}],
 		state: JobState::Running,
@@ -501,7 +515,14 @@ fn running(
 	}
 }
 
-fn record(path: &Path, plan: &Plan<'_>, state: OutputState, bytes: Option<u64>, error: Option<String>) -> Output {
+fn record(
+	path: &Path,
+	plan: &Plan<'_>,
+	state: OutputState,
+	bytes: Option<u64>,
+	stderr: Option<String>,
+	error: Option<String>,
+) -> Output {
 	Output {
 		path: path.to_path_buf(),
 		format: plan.format.clone(),
@@ -514,6 +535,7 @@ fn record(path: &Path, plan: &Plan<'_>, state: OutputState, bytes: Option<u64>, 
 			OutputState::Done => retype_core::job::FileIdentity::of(path),
 			_ => None,
 		},
+		stderr,
 		error: error.map(|message| JobError {
 			code: Code::ToolFailed.to_string(),
 			message,

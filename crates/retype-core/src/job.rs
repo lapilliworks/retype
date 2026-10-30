@@ -174,6 +174,10 @@ pub struct Output {
 	pub tier: Tier,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub identity: Option<FileIdentity>,
+	/// The tail of what the tool printed. The full output is in
+	/// `<state>/logs/<id>.log`, which is where a long failure gets read.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub stderr: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub error: Option<JobError>,
 }
@@ -187,6 +191,7 @@ impl Output {
 			bytes: None,
 			tier,
 			identity: None,
+			stderr: None,
 			error: None,
 		}
 	}

@@ -60,6 +60,22 @@ pub fn run(plan: &Plan<'_>, input: &Path, output: &Path) -> Result<Report> {
 /// group, so an encoder that forked a helper does not outlive the job, and leaves
 /// the output absent: the staged file is discarded rather than committed.
 pub fn run_cancellable(plan: &Plan<'_>, input: &Path, output: &Path, cancellation: &Cancellation) -> Result<Report> {
+	run_logged(plan, input, output, cancellation, None)
+}
+
+/// The same, with the tool's stderr also written to `log` as it arrives.
+///
+/// The journal keeps a tail and the log keeps everything: a chatty
+/// converter can print megabytes while a failure needs the last ten lines. Writing
+/// as it arrives is what makes `jobs logs --follow` worth the flag, because a job
+/// that runs for twenty minutes has something to watch before it ends.
+pub fn run_logged(
+	plan: &Plan<'_>,
+	input: &Path,
+	output: &Path,
+	cancellation: &Cancellation,
+	log: Option<&Path>,
+) -> Result<Report> {
 	let Backend::Tool(tool) = plan.backend;
 
 	// The plan resolved this name at plan time, so running it is the same choice
@@ -102,21 +118,35 @@ pub fn run_cancellable(plan: &Plan<'_>, input: &Path, output: &Path, cancellatio
 	// Drain stderr while the tool runs: a chatty tool would otherwise block on a
 	// full pipe, and we would be waiting for it to exit.
 	let stderr_pipe = child.stderr.take();
+	let journal = log.map(Path::to_path_buf);
 	let reader = thread::spawn(move || {
 		let mut kept = Vec::new();
+
+		// A log that cannot be opened is not a reason to fail a conversion; the tail
+		// in the journal is what a report depends on.
+		let mut file = journal.and_then(|path| std::fs::OpenOptions::new().create(true).append(true).open(path).ok());
+
 		if let Some(mut pipe) = stderr_pipe {
 			let mut buffer = [0u8; 8 * 1024];
 			while let Ok(read) = pipe.read(&mut buffer) {
 				if read == 0 {
 					break;
 				}
+
 				kept.extend_from_slice(&buffer[..read]);
 				if kept.len() > STDERR_TAIL * 4 {
 					let excess = kept.len() - STDERR_TAIL * 4;
 					kept.drain(..excess);
 				}
+
+				if let Some(file) = file.as_mut() {
+					use std::io::Write;
+					let _ = file.write_all(&buffer[..read]);
+					let _ = file.flush();
+				}
 			}
 		}
+
 		kept
 	});
 
@@ -181,6 +211,7 @@ pub fn run_cancellable(plan: &Plan<'_>, input: &Path, output: &Path, cancellatio
 /// while the conversion runs, and no observer sees a WebP path holding HEIC
 /// bytes. A failure puts the source name back, so the file is left saying what it
 /// contains.
+#[allow(clippy::too_many_arguments)]
 pub fn convert_rename(
 	plan: &Plan<'_>,
 	renamed: &Path,
@@ -188,9 +219,10 @@ pub fn convert_rename(
 	source_format: &str,
 	output: &Path,
 	cancellation: &Cancellation,
+	log: Option<&Path>,
 ) -> Result<Report> {
 	let prepared = crate::convert::prepare_input(renamed, stem, source_format)?;
-	let result = run_cancellable(plan, prepared.input(), output, cancellation);
+	let result = run_logged(plan, prepared.input(), output, cancellation, log);
 
 	if result.is_ok() && !prepared.is_temporary() {
 		// The rename meant this file to become the target, so once the target
@@ -384,8 +416,16 @@ tier = 'converted'
 		let target = dir.path().join("photo.webp");
 		fs::write(&target, b"pixels").unwrap();
 
-		let report =
-			convert_rename(&plans[0], &target, "photo", "png", &target, &Cancellation::default()).expect("converts");
+		let report = convert_rename(
+			&plans[0],
+			&target,
+			"photo",
+			"png",
+			&target,
+			&Cancellation::default(),
+			None,
+		)
+		.expect("converts");
 
 		assert_eq!(report.bytes, 6);
 		assert_eq!(fs::read(&target).unwrap(), b"pixels");
@@ -421,7 +461,16 @@ tier = 'converted'
 		let target = dir.path().join("photo.webp");
 		fs::write(&target, b"pixels").unwrap();
 
-		let error = convert_rename(&plans[0], &target, "photo", "png", &target, &Cancellation::default()).unwrap_err();
+		let error = convert_rename(
+			&plans[0],
+			&target,
+			"photo",
+			"png",
+			&target,
+			&Cancellation::default(),
+			None,
+		)
+		.unwrap_err();
 
 		assert_eq!(error.code(), Code::ToolFailed);
 		assert!(!target.exists(), "a webp path does not keep png bytes");

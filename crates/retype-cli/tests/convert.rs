@@ -55,6 +55,19 @@ struct Fixture {
 	state: PathBuf,
 }
 
+impl Drop for Fixture {
+	/// An autostarted daemon outlives its client, so the test stops the one it
+	/// caused rather than leaving a process per fixture behind.
+	fn drop(&mut self) {
+		let _ = retype()
+			.args(["daemon", "stop"])
+			.arg("--state-dir")
+			.arg(&self.state)
+			.env("RETYPE_CONFIG", &self.config)
+			.output();
+	}
+}
+
 impl Fixture {
 	fn new() -> Self {
 		let dir = tempfile::tempdir().unwrap();

@@ -160,13 +160,23 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 				plan,
 				OutputState::Failed,
 				None,
+				None,
 				Some((Code::IoExists, format!("{} already exists", path.display()))),
 			));
 			continue;
 		}
 
-		match execute::run_cancellable(plan, &prepared.input, path, cancellation) {
-			Ok(report) => outputs.push(record(path, plan, OutputState::Done, Some(report.bytes), None)),
+		let log = crate::state::log_path(&shared.state_dir, id);
+
+		match execute::run_logged(plan, &prepared.input, path, cancellation, Some(&log)) {
+			Ok(report) => outputs.push(record(
+				path,
+				plan,
+				OutputState::Done,
+				Some(report.bytes),
+				tail(&report),
+				None,
+			)),
 			Err(error) => {
 				let code = match cancellation.is_cancelled() {
 					true => Code::JobCancelled,
@@ -177,6 +187,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 					path,
 					plan,
 					OutputState::Failed,
+					None,
 					None,
 					Some((code, error.to_string())),
 				));
@@ -203,6 +214,14 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
 }
 
+/// The stderr tail, when the tool said anything worth keeping.
+fn tail(report: &execute::Report) -> Option<String> {
+	match report.stderr.trim().is_empty() {
+		true => None,
+		false => Some(report.stderr.clone()),
+	}
+}
+
 fn source(prepared: &Prepared<'_>) -> Source {
 	Source {
 		path: prepared.input.clone(),
@@ -219,6 +238,7 @@ fn record(
 	plan: &plan::Plan<'_>,
 	state: OutputState,
 	bytes: Option<u64>,
+	stderr: Option<String>,
 	error: Option<(Code, String)>,
 ) -> Output {
 	Output {
@@ -233,6 +253,7 @@ fn record(
 			OutputState::Done => FileIdentity::of(path),
 			_ => None,
 		},
+		stderr,
 		error: error.map(|(code, message)| JobError {
 			code: code.to_string(),
 			message,

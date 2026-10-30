@@ -167,7 +167,7 @@ retype undo <id|prefix|--last>
 retype why <path>
 ```
 
-`jobs list`, `jobs get`, `jobs cancel`, `jobs resume`, `undo` and `why` exist today; `jobs logs` arrives with the event stream. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled.
+`jobs list`, `jobs get`, `jobs cancel`, `jobs resume`, `jobs logs`, `undo` and `why` exist today. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled.
 
 `jobs get` answers with the whole record: the outputs, their bytes, their tier and their errors. It is the form a bug report or a script wants, so it prints JSON rather than a rendering of it.
 
@@ -177,7 +177,9 @@ retype why <path>
 
 `jobs resume` continues a `partial` job: an output that still carries the identity and size the job recorded is skipped, and the rest are run again from the source bytes, which come from the source path or from the undo record when a rename consumed the name. `--force` re-runs all of them, `jobs list --state partial` finds the candidates, and a job with neither source nor record is `E_JOB_RESUME_UNAVAILABLE`.
 
-Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the candidates printed. `jobs logs --follow` streams from the daemon until interrupted.
+Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the candidates printed.
+
+`jobs logs` prints what the tool printed. The full output is in `<state>/logs/<id>.log`, which is written as it arrives, and the journal keeps the last four kilobytes, because a converter can print megabytes while a failure needs the last ten lines. A job whose log file is gone answers from the record instead, and says which it used. `--follow` prints what arrives while the job runs and stops when the job reaches a terminal state, so it ends by itself rather than waiting to be interrupted.
 
 `undo --last` reverses the most recent completed job, which is the gesture a notification button performs.
 

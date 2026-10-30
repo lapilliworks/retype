@@ -55,6 +55,10 @@ impl Server {
 			eprintln!("retype: dropped {} undo record(s) past retention", swept.len());
 		}
 
+		// The log directory exists before any job runs, so a tool's output has
+		// somewhere to go without the runner having to create directories mid-flight.
+		std::fs::create_dir_all(state_dir.join("logs"))?;
+
 		let machine = machine::load_or_create(state_dir)?;
 		let shared = Arc::new(Shared {
 			registry,
@@ -482,6 +486,7 @@ impl Server {
 				bytes: None,
 				tier: Tier::Converted,
 				identity: None,
+				stderr: None,
 				error: Some(JobError {
 					code: Code::JobCancelled.to_string(),
 					message: "cancelled before it started".to_string(),

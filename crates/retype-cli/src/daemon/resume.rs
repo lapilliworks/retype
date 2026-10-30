@@ -79,7 +79,9 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 			.map(|output| output.path.clone())
 			.unwrap_or_else(|| output_path(&job.source.path, &resolved, index));
 
-		match execute::run_cancellable(plan, &input, &path, &cancellation) {
+		let log = crate::state::log_path(&shared.state_dir, &job.id);
+
+		match execute::run_logged(plan, &input, &path, &cancellation, Some(&log)) {
 			Ok(report) => outputs.push(Output {
 				path: path.clone(),
 				format: plan.format.clone(),
@@ -87,6 +89,10 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 				bytes: Some(report.bytes),
 				tier: plan.tier,
 				identity: FileIdentity::of(&path),
+				stderr: match report.stderr.trim().is_empty() {
+					true => None,
+					false => Some(report.stderr.clone()),
+				},
 				error: None,
 			}),
 			Err(error) => outputs.push(Output {
@@ -96,6 +102,7 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 				bytes: None,
 				tier: plan.tier,
 				identity: None,
+				stderr: None,
 				error: Some(JobError {
 					code: error.code().to_string(),
 					message: error.to_string(),

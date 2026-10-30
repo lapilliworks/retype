@@ -56,6 +56,13 @@ pub fn state_dir() -> Result<PathBuf> {
 	Ok(base.join("retype"))
 }
 
+/// Where a job's full tool output goes. The journal keeps a tail;
+/// this keeps everything, because a converter can print megabytes while a failure
+/// needs the last ten lines.
+pub fn log_path(state_dir: &Path, id: &retype_core::job::JobId) -> PathBuf {
+	state_dir.join("logs").join(format!("{id}.log"))
+}
+
 #[cfg(unix)]
 pub fn socket_path(state_dir: &Path) -> Result<PathBuf> {
 	let path = state_dir.join("daemon.sock");

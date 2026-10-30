@@ -164,6 +164,16 @@ enum JobsAction {
 		job: String,
 	},
 
+	/// Show what a job's tool printed
+	Logs {
+		/// A job id, or a prefix unique among the jobs
+		job: String,
+
+		/// Print what arrives while the job runs
+		#[arg(long)]
+		follow: bool,
+	},
+
 	/// Stop a job that is waiting or running
 	Cancel {
 		/// A job id, or a prefix unique among the jobs
@@ -221,6 +231,7 @@ fn main() -> ExitCode {
 			}
 			JobsAction::Cancel { job } => retype_cli::jobs::cancel(&state_dir, job, cli.json, !cli.no_spawn),
 			JobsAction::Get { job } => retype_cli::jobs::get(&state_dir, job, !cli.no_spawn),
+			JobsAction::Logs { job, follow } => retype_cli::jobs::logs(&state_dir, job, *follow, !cli.no_spawn),
 			JobsAction::Resume { job, force } => {
 				retype_cli::jobs::resume(&state_dir, job, *force, cli.json, !cli.no_spawn)
 			}
