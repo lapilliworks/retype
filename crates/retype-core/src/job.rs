@@ -17,7 +17,7 @@ use crate::error::{Error, Result};
 /// Schema identifier written on every record.
 pub const JOURNAL_VERSION: &str = "retype-journal-1";
 
-const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const CROCKFORD: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 const RANDOM_BITS: u32 = 80;
 const RANDOM_MASK: u128 = (1 << RANDOM_BITS) - 1;
 const ID_LENGTH: usize = 26;
@@ -32,7 +32,8 @@ pub fn now_ms() -> i64 {
 
 /// A ULID: 48 bits of milliseconds then 80 bits of randomness, in Crockford
 /// base32. Lexicographic order is creation order, and no registry is needed to
-/// keep ids unique, `docs/state.md` §2.
+/// keep ids unique, `docs/state.md` §2. The form is lowercase, which is what a
+/// person types and what sorting and `grep` agree on.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct JobId(String);
@@ -72,7 +73,7 @@ impl FromStr for JobId {
 			value = (value << 5) | u128::from(digit);
 		}
 
-		Ok(Self(raw.to_ascii_uppercase()))
+		Ok(Self(raw.to_ascii_lowercase()))
 	}
 }
 
@@ -139,7 +140,7 @@ fn encode(timestamp: u64, random: u128) -> String {
 }
 
 fn decode(byte: u8) -> Option<u8> {
-	let byte = byte.to_ascii_uppercase();
+	let byte = byte.to_ascii_lowercase();
 	CROCKFORD
 		.iter()
 		.position(|candidate| *candidate == byte)
@@ -439,11 +440,14 @@ mod tests {
 	}
 
 	#[test]
-	fn ids_parse_in_either_case() {
+	fn ids_are_lowercase_and_parse_in_either_case() {
 		let id = JobId::now().unwrap();
-		let lowercased = id.as_str().to_ascii_lowercase();
+		let uppercased = id.as_str().to_ascii_uppercase();
+		let lowercase = id.as_str().to_ascii_lowercase();
 
-		assert_eq!(JobId::parse(&lowercased).unwrap(), id);
+		assert_eq!(id.as_str(), lowercase, "the canonical form is lowercase");
+		assert_eq!(JobId::parse(&uppercased).unwrap(), id);
+		assert_eq!(JobId::parse(&lowercase).unwrap(), id);
 	}
 
 	#[test]

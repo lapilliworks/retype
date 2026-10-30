@@ -63,10 +63,10 @@ pub fn run(state_dir: &Path, id: Option<&str>, last: bool, json: bool) -> Result
 
 /// A full id, or a prefix unique among the records.
 fn resolve(records: &[Record], written: &str) -> std::result::Result<Record, ExitCode> {
-	let wanted = written.to_ascii_uppercase();
+	let wanted = written.to_ascii_lowercase();
 	let matches: Vec<&Record> = records
 		.iter()
-		.filter(|record| record.id.as_str().to_ascii_uppercase().starts_with(&wanted))
+		.filter(|record| record.id.as_str().to_ascii_lowercase().starts_with(&wanted))
 		.collect();
 
 	match matches.len() {

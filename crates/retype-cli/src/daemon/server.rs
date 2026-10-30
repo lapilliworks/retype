@@ -269,7 +269,7 @@ impl Server {
 
 	/// A job by full id or unique prefix.
 	fn find(&self, written: &str) -> Option<Job> {
-		let wanted = written.to_ascii_uppercase();
+		let wanted = written.to_ascii_lowercase();
 
 		self.shared
 			.jobs
@@ -277,7 +277,7 @@ impl Server {
 			.ok()?
 			.iter()
 			.rev()
-			.find(|job| job.id.as_str().to_ascii_uppercase().starts_with(&wanted))
+			.find(|job| job.id.as_str().to_ascii_lowercase().starts_with(&wanted))
 			.cloned()
 	}
 

@@ -135,7 +135,7 @@ pub fn cancel(state_dir: &Path, prefix: &str, json: bool, allow_spawn: bool) -> 
 /// Every job whose id starts with `prefix`.
 fn matching(client: &mut retype_ipc::Client, prefix: &str) -> Result<Vec<JobId>> {
 	let answer = client.call_without_params("jobs.list")?;
-	let prefix = prefix.to_ascii_uppercase();
+	let prefix = prefix.to_ascii_lowercase();
 
 	let mut found: Vec<JobId> = answer
 		.get("jobs")
@@ -143,7 +143,7 @@ fn matching(client: &mut retype_ipc::Client, prefix: &str) -> Result<Vec<JobId>>
 		.map(|jobs| {
 			jobs.iter()
 				.filter_map(|job| job.get("id").and_then(Value::as_str))
-				.filter(|id| id.to_ascii_uppercase().starts_with(&prefix))
+				.filter(|id| id.to_ascii_lowercase().starts_with(&prefix))
 				.filter_map(|id| JobId::parse(id).ok())
 				.collect()
 		})

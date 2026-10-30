@@ -35,11 +35,12 @@ The toolchain directory holds executables, so its mode is `0700` on Unix. `tools
 
 ## 2. Identifiers
 
-A job id is a ULID: 26 characters, Crockford base32, 48-bit millisecond timestamp followed by 80 random bits. Properties required:
+A job id is a ULID: 26 lowercase characters, Crockford base32, 48-bit millisecond timestamp followed by 80 random bits. Properties required:
 
 - Lexicographic order equals creation order
 - Unique without coordination, so the job feed in needs no id registry
-- Case-insensitive in practice, because base32 excludes `I`, `L`, `O` and `U`
+- Lowercase in its canonical form, so an id is typed as it is printed and sorts as it prints
+- Case-insensitive on input, because base32 excludes `I`, `L`, `O` and `U`; a handle may be typed in either case and is stored lowercase
 
 The id is generated at job creation, before execution, so a deferred job is addressable by its notification immediately.
 
