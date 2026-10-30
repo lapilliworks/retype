@@ -198,13 +198,24 @@ fn size(text: &str) -> Result<u64, Fault> {
 	Err(syntax(format!("'{text}' has no kb, mb or gb unit")))
 }
 
-/// `int`, `int "s"`, `int "m" [ int "s" ]`, `int "h" int "m" [ int "s" ]`.
+/// A duration, `docs/grammar.md` §7: units in order with the ones between them
+/// optional, or a clock.
 ///
-/// A finer unit must not appear unless every coarser unit before it did, so
-/// `1h30s` and `1h30` are both refused.
+/// `1h30s` needs no `0m`, because nobody says "one hour, zero minutes, thirty
+/// seconds". The clock form is the other way round: every place down to seconds
+/// is present, so `1:30` is ninety seconds and an hour and a half has to be
+/// written `1:30:00`.
 fn time(text: &str) -> Result<u64, Fault> {
-	let mut parts: Vec<(u64, Option<char>)> = Vec::new();
+	if text.contains(':') {
+		return clock(text);
+	}
+
+	tagged(text)
+}
+
+fn tagged(text: &str) -> Result<u64, Fault> {
 	let mut characters = text.chars().peekable();
+	let mut parts: Vec<(u64, Option<char>)> = Vec::new();
 
 	while characters.peek().is_some() {
 		let mut digits = String::new();
@@ -230,21 +241,74 @@ fn time(text: &str) -> Result<u64, Fault> {
 		parts.push((number(&digits)?, unit));
 	}
 
-	let seconds = match parts.as_slice() {
-		[(seconds, None)] => *seconds,
-		[(seconds, Some('s'))] => *seconds,
-		[(minutes, Some('m'))] => minutes * 60,
-		[(minutes, Some('m')), (seconds, Some('s'))] => minutes * 60 + seconds,
-		[(hours, Some('h')), (minutes, Some('m'))] => hours * 3600 + minutes * 60,
-		[(hours, Some('h')), (minutes, Some('m')), (seconds, Some('s'))] => hours * 3600 + minutes * 60 + seconds,
-		_ => {
-			return Err(syntax(format!(
-				"'{text}' is not a duration: units must run h, m, s and not skip one"
-			)));
+	if let [(seconds, None)] = parts.as_slice() {
+		return Ok(*seconds);
+	}
+
+	if parts.iter().any(|(_, unit)| unit.is_none()) {
+		return Err(syntax(format!("'{text}' ends with a number that has no unit")));
+	}
+
+	let mut total = 0u64;
+	let mut rank = 4;
+
+	for (number, unit) in &parts {
+		let (this, seconds) = match unit {
+			Some('h') => (3, number * 3600),
+			Some('m') => (2, number * 60),
+			Some('s') => (1, *number),
+			_ => unreachable!("units were checked above"),
+		};
+
+		if this >= rank {
+			return Err(syntax(format!("'{text}' repeats or reorders its units")));
 		}
+
+		rank = this;
+		total += seconds;
+	}
+
+	Ok(total)
+}
+
+fn clock(text: &str) -> Result<u64, Fault> {
+	let parts: Vec<&str> = text.split(':').collect();
+
+	let field = |part: &str, name: &str, two_digits: bool| -> Result<u64, Fault> {
+		if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+			return Err(syntax(format!("'{text}' has no number for its {name}")));
+		}
+		if two_digits && part.len() != 2 {
+			return Err(syntax(format!("'{text}' writes its {name} with two digits")));
+		}
+
+		part.parse()
+			.map_err(|_| out_of_range(format!("'{text}' has a {name} too large to be a number")))
 	};
 
-	Ok(seconds)
+	let below_sixty = |value: u64, name: &str| -> Result<u64, Fault> {
+		if value > 59 {
+			return Err(out_of_range(format!("'{text}' has {value} for its {name}")));
+		}
+		Ok(value)
+	};
+
+	match parts.as_slice() {
+		[minutes, seconds] => {
+			let minutes = field(minutes, "minutes", false)?;
+			let seconds = below_sixty(field(seconds, "seconds", true)?, "seconds")?;
+			Ok(minutes * 60 + seconds)
+		}
+		[hours, minutes, seconds] => {
+			let hours = field(hours, "hours", false)?;
+			let minutes = below_sixty(field(minutes, "minutes", true)?, "minutes")?;
+			let seconds = below_sixty(field(seconds, "seconds", true)?, "seconds")?;
+			Ok(hours * 3600 + minutes * 60 + seconds)
+		}
+		_ => Err(syntax(format!(
+			"'{text}' is written as M:S or H:M:S, with every place present"
+		))),
+	}
 }
 
 /// `scalar`, `scalar-scalar`, `scalar-`, `-scalar`, where a scalar is an integer
@@ -383,7 +447,7 @@ mod tests {
 	}
 
 	#[test]
-	fn a_duration_needs_its_units_in_order() {
+	fn a_duration_keeps_its_units_in_order_and_may_skip_one() {
 		let class = param(Class::Time);
 
 		assert_eq!(interpret(&class, "90"), Ok(Value::Time(90)));
@@ -391,17 +455,53 @@ mod tests {
 		assert_eq!(interpret(&class, "2m30s"), Ok(Value::Time(150)));
 		assert_eq!(interpret(&class, "1h2m3s"), Ok(Value::Time(3723)));
 		assert_eq!(interpret(&class, "1h2m"), Ok(Value::Time(3720)));
+		assert_eq!(interpret(&class, "1h"), Ok(Value::Time(3600)));
+		assert_eq!(interpret(&class, "1h30s"), Ok(Value::Time(3630)));
+		assert_eq!(interpret(&class, "1h0m30s"), Ok(Value::Time(3630)));
 	}
 
 	#[test]
-	fn a_skipped_or_trailing_unit_is_a_syntax_error() {
+	fn a_duration_may_not_reorder_its_units_or_end_without_one() {
 		let class = param(Class::Time);
 
-		for written in ["1h30s", "1h30", "1h", "1m30", "30m1h", "1s2m", "1x"] {
+		for written in ["1h30", "30m1h", "1s2m", "1h1h", "1m1m", "1x"] {
 			assert_eq!(
 				interpret(&class, written).unwrap_err().code,
 				Code::ValueSyntax,
 				"{written}"
+			);
+		}
+	}
+
+	#[test]
+	fn a_clock_has_every_place_it_needs() {
+		let class = param(Class::Time);
+
+		assert_eq!(interpret(&class, "2:30"), Ok(Value::Time(150)));
+		assert_eq!(interpret(&class, "1:30"), Ok(Value::Time(90)), "minutes and seconds");
+		assert_eq!(interpret(&class, "1:00:30"), Ok(Value::Time(3630)));
+		assert_eq!(interpret(&class, "1:30:00"), Ok(Value::Time(5400)));
+		assert_eq!(interpret(&class, "100:30"), Ok(Value::Time(6030)));
+	}
+
+	#[test]
+	fn a_clock_refuses_a_missing_place_or_a_field_out_of_its_range() {
+		let class = param(Class::Time);
+
+		for written in [
+			"1:5",
+			"1:30:5",
+			"1:2:3",
+			"1::30",
+			":30",
+			"1:60",
+			"1:60:00",
+			"1:30:00:00",
+		] {
+			let error = interpret(&class, written).unwrap_err();
+			assert!(
+				matches!(error.code, Code::ValueSyntax | Code::ValueRange),
+				"{written} was accepted"
 			);
 		}
 	}
@@ -452,7 +552,8 @@ mod tests {
 				to: Some(120)
 			})
 		);
-		assert_eq!(interpret(&class, "1h30s-2m").unwrap_err().code, Code::ValueSyntax);
+		assert_eq!(interpret(&class, "1m1h-2m").unwrap_err().code, Code::ValueSyntax);
+		assert_eq!(interpret(&class, "1h30s-2m").unwrap_err().code, Code::ValueRange);
 	}
 
 	#[test]

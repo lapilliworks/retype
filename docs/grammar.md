@@ -135,8 +135,10 @@ int    = 1*DIGIT
 dim    = int "x" int
 ratio  = int "x" int
 size   = int ( "kb" / "mb" / "gb" )
-time   = 1*DIGIT / 1*DIGIT "s" / 1*DIGIT "m" [ 1*DIGIT "s" ]
-       / 1*DIGIT "h" 1*DIGIT "m" [ 1*DIGIT "s" ]
+time   = tagged / clock
+tagged = 1*DIGIT / 1*DIGIT "s" / 1*DIGIT "m" [ 1*DIGIT "s" ]
+       / 1*DIGIT "h" [ 1*DIGIT "m" ] [ 1*DIGIT "s" ]
+clock  = 1*DIGIT ":" 2DIGIT / 1*DIGIT ":" 2DIGIT ":" 2DIGIT
 range  = scalar / scalar "-" scalar / scalar "-" / "-" scalar
 scalar = int / time
 code   = 2*3ALPHA *( "-" 1*8ALNUM )
@@ -151,9 +153,16 @@ Accepted `time` forms:
 | `int` | `90` | 90 s |
 | `int "s"` | `90s` | 90 s |
 | `int "m" [ int "s" ]` | `2m30s` | 150 s |
-| `int "h" int "m" [ int "s" ]` | `1h2m3s` | 3723 s |
+| `int "h" [ int "m" ] [ int "s" ]` | `1h30s` | 3630 s |
+| `int ":" 2DIGIT` | `1:30` | 90 s, minutes and seconds |
+| `int ":" 2DIGIT ":" 2DIGIT` | `1:00:30` | 3630 s, hours, minutes and seconds |
 
-Rule: a finer unit MUST NOT appear unless every coarser unit preceding it also appears, as encoded by the `time` production above. `1h30s` and `1h30` are `E_VALUE_SYNTAX`. Fractions are not permitted in any class.
+Rules:
+
+- In the tagged form the units MUST appear in the order h, m, s, each at most once. A unit MAY be omitted, so `1h30s` needs no `0m`: nobody says "one hour, zero minutes, thirty seconds"
+- In the clock form every place down to seconds is present, and minutes and seconds are exactly two digits below 60. `1:30` is therefore ninety seconds, and an hour and a half is written `1:30:00`
+- A number without a unit MUST be the whole value, so `1h30` is `E_VALUE_SYNTAX`
+- Fractions are not permitted in any class
 
 ## 8. Names, keys and exclusivity
 
@@ -202,7 +211,7 @@ Rules:
 - C1 Formats and names are printed in lowercase, using primary names only
 - C2 Tokens are sorted by `slot` rank, then by key
 - C3 Groups retain written order
-- C4 Values are printed in the form produced by their class, without leading zeros
+- C4 Values are printed in the form produced by their class, without leading zeros. A duration prints in the tagged form with zero units omitted, so `1:00:30` prints as `1h30s` and 3600 s prints as `1h`
 - C5 A token is printed without `=` when reparsing the compact form yields an identical token, and with `=` otherwise
 - C6 `ask` and `now` print as `ask` and `now`, never as `+` or `!`
 - C7 Nothing is printed for the implicit conversion of a group
@@ -303,6 +312,8 @@ Valid, with canonical form:
 | `clip.mp4+1080p+mute` | `clip.mp4+cap1080+mute` | Downscale only, drop audio |
 | `clip.mp4+mute!` | `clip.mp4+mute+now` | No confirmation |
 | `clip.mp4+!` | `clip.mp4+ask` | Warned and asked: a dismissed prompt beats a refused rename |
+| `clip.mp4+trim1h30s` | `clip.mp4+trim1h30s` | An hour and a half, without the zero minutes |
+| `clip.mp4+trim1:00-2:30` | `clip.mp4+trim1m-2m30s` | Clock form read, tagged form printed |
 | `photo.webp+q80+` | `photo.webp+quality80+ask` | Editor prefilled |
 | `scan.pdf` -> `scan.png+page2-5+dpi300` | unchanged | Page range rendered |
 | `Photos` -> `Photos.folder,zip` | unchanged | Keep the directory, add an archive |
@@ -320,7 +331,8 @@ Invalid:
 | `photo.png+quality80` | `E_INAPPLICABLE` |
 | `photo.jpg+quality80+quality90` | `E_DUPLICATE` |
 | `clip.mp4+cap1080+size5mb` | `E_EXCLUSIVE` |
-| `clip.mp4+trim1h30s` | `E_VALUE_SYNTAX` |
+| `clip.mp4+trim1h30` | `E_VALUE_SYNTAX` |
+| `clip.mp4+trim1:5` | `E_VALUE_SYNTAX` |
 | `photo.jpg` renamed from `photo.jpg` | `E_NOOP` |
 | `photo.jpg+5 mb` | `E_CHARSET` |
 
@@ -328,4 +340,4 @@ Invalid:
 
 Version identifier: `retype-grammar-1`.
 
-The canonical form MUST NOT change within a major version. Aliases MAY be added; aliases MUST NOT be removed or reused within a major version. Operation keys MUST NOT be reused. The identifier appears in `retype --version`, in journal records and in any file that declares a grammar version.
+The canonical form MUST NOT change within a major version, so a form may be accepted later only if the canonical form of everything that already parsed stays the same. Aliases MAY be added; aliases MUST NOT be removed or reused within a major version. Operation keys MUST NOT be reused. The identifier appears in `retype --version`, in journal records and in any file that declares a grammar version.
