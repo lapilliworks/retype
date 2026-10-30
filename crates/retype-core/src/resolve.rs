@@ -1,0 +1,461 @@
+//! Resolving a scanned intent against the registry, `docs/grammar.md` §6 steps
+//! 6 to 8 and §9.
+//!
+//! Scanning turned a string into groups, tokens and positions. This turns those
+//! into operations, and says what is wrong with them: an unknown name, a
+//! repeated operation, two operations that cannot coexist, one that does not
+//! apply to the format, one whose vertical has not landed.
+
+use crate::error::{Code, Diagnoses, Error, Span};
+use crate::intent::{Intent, Meta, Raw, Token};
+use crate::registry::Registry;
+
+/// What the source is, because some rules depend on it.
+#[derive(Debug, Clone, Copy)]
+pub struct Source<'a> {
+	pub format: &'a str,
+	pub is_directory: bool,
+}
+
+/// An intent whose tokens and formats are all real.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+	pub meta: Meta,
+	pub groups: Vec<Group>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+	pub format: String,
+	/// The source is kept rather than converted, `docs/grammar.md` §11.
+	pub keep_source: bool,
+	pub ops: Vec<Op>,
+}
+
+impl Group {
+	/// Canonical order: by slot, then by key, `docs/grammar.md` C2.
+	pub fn ordered(&self) -> Vec<&Op> {
+		let mut ordered: Vec<&Op> = self.ops.iter().collect();
+		ordered.sort_by(|left, right| (left.slot, &left.key).cmp(&(right.slot, &right.key)));
+		ordered
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Op {
+	pub key: String,
+	/// Primary spelling, which is what canonical printing uses.
+	pub name: String,
+	pub slot: u16,
+	pub value: Option<Raw>,
+	pub span: Span,
+}
+
+pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Result<Resolved, Diagnoses> {
+	let mut problems = Vec::new();
+	let mut groups = Vec::new();
+
+	for group in &intent.groups {
+		let known_format = if group.format == "folder" {
+			if source.is_directory {
+				true
+			} else {
+				problems.push(error(
+					Code::FormatFolder,
+					"'folder' names a directory, and the source is a file",
+					group.span,
+				));
+				false
+			}
+		} else if registry.format(&group.format).is_none() {
+			problems.push(error(
+				Code::FormatUnknown,
+				format!("'{}' is not a format this build knows", group.format),
+				group.span,
+			));
+			false
+		} else {
+			true
+		};
+
+		if !known_format {
+			continue;
+		}
+
+		// Duplicates and exclusivity are per group: two outputs may each ask for
+		// their own quality, and may not each ask for two.
+		let mut keys: Vec<String> = Vec::new();
+		let mut exclusive: Vec<(String, String)> = Vec::new();
+		let mut ops = Vec::new();
+
+		for token in &group.tokens {
+			let token = desugar(token);
+
+			let Some(found) = registry.resolve(&token.name) else {
+				problems.push(unknown_name(&token, registry));
+				continue;
+			};
+
+			if !found.op.is_implemented() {
+				problems.push(error(
+					Code::Unsupported,
+					format!("'{}' is reserved and its vertical has not landed", found.op.name),
+					token.span,
+				));
+				continue;
+			}
+
+			if !found.op.applies_to(&group.format) {
+				problems.push(error(
+					Code::Inapplicable,
+					format!("'{}' does not apply to {}", found.op.name, group.format),
+					token.span,
+				));
+				continue;
+			}
+
+			let written = found
+				.value
+				.map(str::to_string)
+				.or_else(|| token.value.as_ref().map(|raw| raw.text.clone()));
+
+			let value = match (found.op.param.is_some(), written) {
+				(true, None) => {
+					problems.push(error(
+						Code::ValueMissing,
+						format!("'{}' needs a value", found.op.name),
+						token.span,
+					));
+					continue;
+				}
+				(false, Some(_)) => {
+					problems.push(error(
+						Code::ValueUnexpected,
+						format!("'{}' takes no value", found.op.name),
+						token.span,
+					));
+					continue;
+				}
+				(_, value) => value.map(|text| Raw { text, span: token.span }),
+			};
+
+			if keys.contains(&found.op.key) {
+				problems.push(error(
+					Code::Duplicate,
+					format!("'{}' is given more than once", found.op.name),
+					token.span,
+				));
+				continue;
+			}
+			keys.push(found.op.key.clone());
+
+			for group_name in &found.op.exclusive {
+				let conflict = exclusive
+					.iter()
+					.find(|(name, other)| name == group_name && *other != found.op.key);
+
+				if let Some((_, other)) = conflict {
+					let other = registry
+						.op(other)
+						.map(|op| op.name.clone())
+						.unwrap_or_else(|| other.clone());
+					problems.push(error(
+						Code::Exclusive,
+						format!("'{}' and '{other}' cannot be combined", found.op.name),
+						token.span,
+					));
+					continue;
+				}
+
+				exclusive.push((group_name.clone(), found.op.key.clone()));
+			}
+
+			ops.push(Op {
+				key: found.op.key.clone(),
+				name: found.op.name.clone(),
+				slot: found.op.slot,
+				value,
+				span: token.span,
+			});
+		}
+
+		groups.push(Group {
+			format: group.format.clone(),
+			keep_source: group.format == source.format && ops.is_empty(),
+			ops,
+		});
+	}
+
+	if groups.len() == 1 && groups[0].keep_source {
+		problems.push(error(
+			Code::Noop,
+			format!(
+				"'{}' is already the source format, so nothing would happen",
+				groups[0].format
+			),
+			intent.groups[0].span,
+		));
+	}
+
+	if !problems.is_empty() {
+		return Err(Diagnoses::new(problems));
+	}
+
+	Ok(Resolved {
+		meta: intent.meta,
+		groups,
+	})
+}
+
+/// Alias desugaring, `docs/grammar.md` §9: a whole token before name resolution,
+/// never inside a value.
+fn desugar(token: &Token) -> Token {
+	if token.value.is_some() {
+		return token.clone();
+	}
+
+	let lower = token.name.to_ascii_lowercase();
+
+	if lower == "4k" {
+		return replaced(token, "cap", "2160");
+	}
+
+	if ["kb", "mb", "gb"]
+		.iter()
+		.any(|unit| lower.strip_suffix(unit).is_some_and(is_number))
+	{
+		return replaced(token, "size", &lower);
+	}
+
+	if let Some(digits) = lower.strip_suffix('p') {
+		if is_number(digits) {
+			return replaced(token, "cap", digits);
+		}
+	}
+
+	token.clone()
+}
+
+fn replaced(token: &Token, name: &str, value: &str) -> Token {
+	Token {
+		name: name.to_string(),
+		value: Some(Raw {
+			text: value.to_string(),
+			span: token.span,
+		}),
+		span: token.span,
+		name_span: token.name_span,
+	}
+}
+
+fn is_number(text: &str) -> bool {
+	!text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn unknown_name(token: &Token, registry: &Registry) -> Error {
+	let mut error = error(
+		Code::NameUnknown,
+		format!("'{}' names no operation", token.name),
+		token.name_span,
+	);
+
+	if let Error::Diagnostic(diagnostic) = &mut error {
+		if let Some(suggestion) = closest(&token.name, registry.names()) {
+			diagnostic.hint = Some(format!("did you mean '{suggestion}'?"));
+		}
+	}
+
+	error
+}
+
+/// The nearest registered name within edit distance 2, `docs/grammar.md` §12.
+fn closest<'a>(text: &str, names: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+	let mut best: Option<(usize, &str)> = None;
+
+	for name in names {
+		let distance = distance(text, name);
+		if distance <= 2 && best.is_none_or(|(nearest, _)| distance < nearest) {
+			best = Some((distance, name));
+		}
+	}
+
+	best.map(|(_, name)| name)
+}
+
+/// Levenshtein distance, only ever used to phrase a hint.
+fn distance(left: &str, right: &str) -> usize {
+	let left: Vec<char> = left.chars().collect();
+	let right: Vec<char> = right.chars().collect();
+
+	let mut previous: Vec<usize> = (0..=right.len()).collect();
+	let mut current = vec![0; right.len() + 1];
+
+	for (row, left_char) in left.iter().enumerate() {
+		current[0] = row + 1;
+		for (column, right_char) in right.iter().enumerate() {
+			let substitution = usize::from(left_char != right_char);
+			current[column + 1] = (previous[column + 1] + 1)
+				.min(current[column] + 1)
+				.min(previous[column] + substitution);
+		}
+		std::mem::swap(&mut previous, &mut current);
+	}
+
+	previous[right.len()]
+}
+
+fn error(code: Code, message: impl Into<String>, span: Span) -> Error {
+	Error::diagnostic(code, message, span)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::intent;
+	use crate::registry::Registry;
+
+	fn registry() -> Registry {
+		Registry::builtin().expect("built-in registry")
+	}
+
+	fn image(format: &'static str) -> Source<'static> {
+		Source {
+			format,
+			is_directory: false,
+		}
+	}
+
+	fn resolve_text(text: &str, source: Source<'_>) -> Result<Resolved, Diagnoses> {
+		let intent = intent::parse(text).expect("the intent should scan");
+		resolve(&intent, source, &registry())
+	}
+
+	fn codes(text: &str, source: Source<'_>) -> Vec<Code> {
+		resolve_text(text, source).unwrap_err().codes()
+	}
+
+	#[test]
+	fn a_known_token_becomes_its_operation() {
+		let resolved = resolve_text("webp+quality85", image("heic")).unwrap();
+		let op = &resolved.groups[0].ops[0];
+
+		assert_eq!(op.key, "quality");
+		assert_eq!(op.name, "quality");
+		assert_eq!(op.value.as_ref().unwrap().text, "85");
+		assert_eq!(op.slot, 50);
+	}
+
+	#[test]
+	fn an_alias_resolves_but_is_never_printed() {
+		let resolved = resolve_text("webp+q85", image("heic")).unwrap();
+
+		assert_eq!(resolved.groups[0].ops[0].name, "quality");
+	}
+
+	#[test]
+	fn aliases_desugar_whole_tokens() {
+		let resized = resolve_text("webp+1080p", image("heic")).unwrap();
+		assert_eq!(resized.groups[0].ops[0].key, "cap");
+		assert_eq!(resized.groups[0].ops[0].value.as_ref().unwrap().text, "1080");
+
+		let four_k = resolve_text("webp+4k", image("heic")).unwrap();
+		assert_eq!(four_k.groups[0].ops[0].value.as_ref().unwrap().text, "2160");
+
+		let size = resolve_text("webp+5mb", image("heic")).unwrap();
+		assert_eq!(size.groups[0].ops[0].key, "size");
+		assert_eq!(size.groups[0].ops[0].value.as_ref().unwrap().text, "5mb");
+	}
+
+	#[test]
+	fn an_unknown_name_suggests_a_near_one() {
+		let error = resolve_text("webp+gauy", image("heic")).unwrap_err();
+		let first = error.first().unwrap();
+
+		assert_eq!(first.code(), Code::NameUnknown);
+		assert!(first.hint().unwrap_or_default().contains("gray"));
+	}
+
+	#[test]
+	fn an_unknown_format_is_a_diagnosis() {
+		assert_eq!(codes("xyz+q80", image("heic")), vec![Code::FormatUnknown]);
+	}
+
+	#[test]
+	fn an_operation_that_does_not_apply_to_the_format_is_a_diagnosis() {
+		assert_eq!(codes("png+quality80", image("heic")), vec![Code::Inapplicable]);
+	}
+
+	#[test]
+	fn a_reserved_operation_is_unsupported_rather_than_unknown() {
+		assert_eq!(codes("jpg+trim1h", image("heic")), vec![Code::Unsupported]);
+	}
+
+	#[test]
+	fn a_missing_value_is_a_diagnosis() {
+		assert_eq!(codes("webp+quality", image("heic")), vec![Code::ValueMissing]);
+	}
+
+	#[test]
+	fn a_value_on_an_operation_that_takes_none_is_a_diagnosis() {
+		assert_eq!(codes("webp+nometa80", image("heic")), vec![Code::ValueUnexpected]);
+	}
+
+	#[test]
+	fn one_operation_twice_in_a_group_is_a_diagnosis() {
+		assert_eq!(codes("jpg+quality80+quality90", image("heic")), vec![Code::Duplicate]);
+	}
+
+	#[test]
+	fn the_same_operation_in_two_groups_is_not_a_duplicate() {
+		let resolved = resolve_text("webp+q60,avif+q90", image("heic")).unwrap();
+
+		assert_eq!(resolved.groups[0].ops[0].key, "quality");
+		assert_eq!(resolved.groups[1].ops[0].key, "quality");
+	}
+
+	#[test]
+	fn two_operations_in_one_exclusive_group_are_a_diagnosis() {
+		assert_eq!(codes("jpg+cap800+width100", image("heic")), vec![Code::Exclusive]);
+	}
+
+	#[test]
+	fn keeping_the_source_alone_is_a_no_op() {
+		assert_eq!(codes("jpg", image("jpg")), vec![Code::Noop]);
+	}
+
+	#[test]
+	fn keeping_the_source_beside_a_conversion_is_fine() {
+		let resolved = resolve_text("jpg,webp+q80", image("jpg")).unwrap();
+
+		assert!(resolved.groups[0].keep_source);
+		assert!(!resolved.groups[1].keep_source);
+	}
+
+	#[test]
+	fn a_group_with_tokens_re_encodes_even_the_source_format() {
+		let resolved = resolve_text("jpg+q60", image("jpg")).unwrap();
+
+		assert!(!resolved.groups[0].keep_source);
+		assert_eq!(resolved.groups[0].ops[0].key, "quality");
+	}
+
+	#[test]
+	fn folder_requires_a_directory() {
+		assert_eq!(codes("folder", image("jpg")), vec![Code::FormatFolder]);
+	}
+
+	#[test]
+	fn canonical_order_is_by_slot_then_key() {
+		let resolved = resolve_text("webp+nometa+quality80+cap1000", image("heic")).unwrap();
+		let ordered: Vec<&str> = resolved.groups[0].ordered().iter().map(|op| op.key.as_str()).collect();
+
+		assert_eq!(ordered, vec!["cap", "quality", "nometa"]);
+	}
+
+	#[test]
+	fn independent_problems_are_all_reported() {
+		let diagnoses = resolve_text("xyz+qualty80,png+quality80,png+nometa80", image("heic")).unwrap_err();
+
+		assert_eq!(diagnoses.len(), 3);
+	}
+}

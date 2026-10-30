@@ -277,7 +277,7 @@ fn scan_token(token: &str, start: usize) -> Result<Token, Error> {
 		None => (token, None),
 	};
 
-	if !is_name(name) {
+	if !is_name(name) && !is_alias_form(name) {
 		return Err(Error::diagnostic(
 			Code::NameUnknown,
 			format!("'{name}' is not a token name"),
@@ -305,6 +305,33 @@ fn is_format(text: &str) -> bool {
 		&& text
 			.split('.')
 			.all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+}
+
+/// The token shapes that alias desugaring accepts although they are not names:
+/// `1080p`, `5mb`, `4k`, `docs/grammar.md` §9. They are recognised here so that
+/// the scanner can tell a token from a mistake, and desugared in `resolve`.
+fn is_alias_form(text: &str) -> bool {
+	let lower = text.to_ascii_lowercase();
+
+	if lower == "4k" {
+		return true;
+	}
+
+	if let Some(digits) = lower.strip_suffix('p') {
+		if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+			return true;
+		}
+	}
+
+	for unit in ["kb", "mb", "gb"] {
+		if let Some(digits) = lower.strip_suffix(unit) {
+			if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+				return true;
+			}
+		}
+	}
+
+	false
 }
 
 /// A token name starts with a letter and continues with letters and digits,
@@ -504,6 +531,14 @@ mod tests {
 		assert_eq!(codes(&parse("jp g")), vec![Code::Charset]);
 		assert_eq!(codes(&parse("jpg..png")), vec![Code::FormatUnknown]);
 		assert_eq!(codes(&parse("+q80")), vec![Code::FormatUnknown]);
+	}
+
+	#[test]
+	fn an_alias_form_is_a_token_even_though_it_is_not_a_name() {
+		let intent = parse("webp+1080p+5mb+4k").unwrap();
+
+		assert_eq!(intent.groups[0].tokens.len(), 3);
+		assert_eq!(intent.groups[0].tokens[0].name, "1080p");
 	}
 
 	#[test]

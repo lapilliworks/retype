@@ -242,6 +242,11 @@ impl Registry {
 	pub fn ops(&self) -> impl Iterator<Item = (&String, &Op)> {
 		self.ops.iter()
 	}
+
+	/// Every name and alias, for suggestions when one is misspelled.
+	pub fn names(&self) -> impl Iterator<Item = &str> {
+		self.names.iter().map(|(name, _)| name.as_str())
+	}
 }
 
 fn collect_names(ops: &BTreeMap<String, Op>) -> Vec<(String, String)> {
