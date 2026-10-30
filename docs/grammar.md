@@ -157,14 +157,17 @@ Accepted `time` forms:
 | `int "s"` | `90s` | 90 s |
 | `int "m" [ int "s" ]` | `2m30s` | 150 s |
 | `int "h" [ int "m" ] [ int "s" ]` | `1h30s` | 3630 s |
+| `int "d" [ int "h" ] [ int "m" ] [ int "s" ]` | `1d12h` | 129600 s |
+| `int "w" [ int "d" ] [ int "h" ] [ int "m" ] [ int "s" ]` | `2w3d` | 1468800 s |
 | `int ":" 2DIGIT` | `1:30` | 90 s, minutes and seconds |
 | `int ":" 2DIGIT ":" 2DIGIT` | `1:00:30` | 3630 s, hours, minutes and seconds |
 
 Rules:
 
-- In the tagged form the units MUST appear in the order h, m, s, each at most once. A unit MAY be omitted, so `1h30s` needs no `0m`: nobody says "one hour, zero minutes, thirty seconds"
+- In the tagged form the units MUST appear in the order w, d, h, m, s, each at most once. A unit MAY be omitted, so `1h30s` needs no `0m`: nobody says "one hour, zero minutes, thirty seconds"
 - In the clock form every place down to seconds is present, and minutes and seconds are exactly two digits below 60. `1:30` is therefore ninety seconds, and an hour and a half is written `1:30:00`
 - A number without a unit MUST be the whole value, so `1h30` is `E_VALUE_SYNTAX`
+- There is no month unit. A month is not a fixed number of seconds, and every other unit is exact, so `1M` is `E_VALUE_SYNTAX` and a quarter year is written `13w`
 - A fraction is permitted only in `size`, and only down to a whole byte: `1.5mb` and `1.234kb` are exact, `1.2345kb` is half a byte and is `E_VALUE_SYNTAX`
 - Decimal and binary units are different quantities, and neither is a synonym for the other: `1mb` is a thousand kilobytes and `1mib` is a thousand and twenty-four kibibytes, which is 4.9 percent more. A budget written as `1mib` means 1048576 bytes
 

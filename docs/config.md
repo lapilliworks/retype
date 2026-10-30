@@ -259,15 +259,15 @@ Host-level, never per-directory: a `.retype.toml` committed to a repository must
 ```toml
 [undo]
 enabled = true
-retention = '168h'
+retention = '1w'
 ```
 
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `true` | Keep records at all. Taking effect for future jobs, because a record has to exist at conversion time |
-| `retention` | `168h` | Age after which a record is dropped |
+| `retention` | `1w` | Age after which a record is dropped |
 
-`retention` is read as the grammar's duration class, so it is spelled the way an intent spells one: `h`, `m` and `s`, in that order, and a unit may be skipped. The class has no day unit, so a week is `168h`.
+`retention` is read as the grammar's duration class, so it is spelled the way an intent spells one: `w`, `d`, `h`, `m` and `s`, in that order, and a unit may be skipped. Months are not a unit, because a month is not a fixed number of seconds.
 
 Retention decides two things at once, deliberately rather than incidentally: how long an undo record survives, and therefore how long the job it describes can be resumed, `docs/state.md` §5.2. Records are dropped at startup and never during a conversion.
 

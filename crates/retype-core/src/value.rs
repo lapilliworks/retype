@@ -270,6 +270,10 @@ fn number_of(text: &str) -> Option<u64> {
 /// seconds". The clock form is the other way round: every place down to seconds
 /// is present, so `1:30` is ninety seconds and an hour and a half has to be
 /// written `1:30:00`.
+///
+/// There is no month unit. A month is not a fixed number of seconds, and every
+/// other unit here is exact, so a `M` would be a wrong number in the one place
+/// a user cannot check it.
 fn time(text: &str) -> Result<u64, Fault> {
 	if text.contains(':') {
 		return clock(text);
@@ -298,8 +302,10 @@ fn tagged(text: &str) -> Result<u64, Fault> {
 		}
 
 		let unit = match characters.next() {
-			Some(unit @ ('h' | 'm' | 's')) => Some(unit),
-			Some(_) => return Err(syntax(format!("'{text}' has something other than h, m or s"))),
+			Some(unit @ ('w' | 'd' | 'h' | 'm' | 's')) => Some(unit),
+			Some(_) => {
+				return Err(syntax(format!("'{text}' has something other than w, d, h, m or s")));
+			}
 			None => None,
 		};
 
@@ -315,10 +321,12 @@ fn tagged(text: &str) -> Result<u64, Fault> {
 	}
 
 	let mut total = 0u64;
-	let mut rank = 4;
+	let mut rank = 6;
 
 	for (number, unit) in &parts {
 		let (this, seconds) = match unit {
+			Some('w') => (5, number * 604_800),
+			Some('d') => (4, number * 86_400),
 			Some('h') => (3, number * 3600),
 			Some('m') => (2, number * 60),
 			Some('s') => (1, *number),
@@ -562,13 +570,17 @@ mod tests {
 		assert_eq!(interpret(&class, "1h"), Ok(Value::Time(3600)));
 		assert_eq!(interpret(&class, "1h30s"), Ok(Value::Time(3630)));
 		assert_eq!(interpret(&class, "1h0m30s"), Ok(Value::Time(3630)));
+		assert_eq!(interpret(&class, "1w"), Ok(Value::Time(604_800)));
+		assert_eq!(interpret(&class, "1w2d"), Ok(Value::Time(777_600)));
+		assert_eq!(interpret(&class, "2d12h"), Ok(Value::Time(216_000)));
+		assert_eq!(interpret(&class, "1w2d3h4m5s"), Ok(Value::Time(788_645)));
 	}
 
 	#[test]
 	fn a_duration_may_not_reorder_its_units_or_end_without_one() {
 		let class = param(Class::Time);
 
-		for written in ["1h30", "30m1h", "1s2m", "1h1h", "1m1m", "1x"] {
+		for written in ["1h30", "30m1h", "1s2m", "1h1h", "1m1m", "1d1w", "1w1w", "1x", "1M"] {
 			assert_eq!(
 				interpret(&class, written).unwrap_err().code,
 				Code::ValueSyntax,

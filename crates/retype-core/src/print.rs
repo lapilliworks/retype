@@ -180,13 +180,22 @@ const UNITS: [(&str, u64); 6] = [
 	("kb", 1_000),
 ];
 
-/// The tagged form with zero units left out, so `1:00:30` prints `1h30s`.
+/// The tagged form with zero units left out, so `1:00:30` prints `1h30s`. The
+/// largest unit wins, so a week prints `1w` and not `7d`.
 fn duration(seconds: u64) -> String {
-	let hours = seconds / 3600;
+	let weeks = seconds / 604_800;
+	let days = (seconds % 604_800) / 86_400;
+	let hours = (seconds % 86_400) / 3600;
 	let minutes = (seconds % 3600) / 60;
 	let remainder = seconds % 60;
 
 	let mut text = String::new();
+	if weeks > 0 {
+		text.push_str(&format!("{weeks}w"));
+	}
+	if days > 0 {
+		text.push_str(&format!("{days}d"));
+	}
 	if hours > 0 {
 		text.push_str(&format!("{hours}h"));
 	}
@@ -349,6 +358,9 @@ param = { class = 'int', min = 1, max = 100 }
 	fn a_duration_prints_in_tagged_form() {
 		assert_eq!(duration(3630), "1h30s");
 		assert_eq!(duration(3600), "1h");
+		assert_eq!(duration(604_800), "1w");
+		assert_eq!(duration(90_000), "1d1h");
+		assert_eq!(duration(1_814_400), "3w");
 		assert_eq!(duration(150), "2m30s");
 		assert_eq!(duration(90), "1m30s");
 		assert_eq!(duration(60), "1m");
