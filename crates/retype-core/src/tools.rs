@@ -21,6 +21,9 @@ use std::process::Command;
 pub struct Tool {
 	pub name: String,
 	pub command: String,
+	/// Alternate executable names, tried in order when `command` is absent.
+	/// An absolute `command` pins the choice and ignores these.
+	pub aliases: Vec<String>,
 	pub probe: Vec<String>,
 	pub version_min: Option<Version>,
 	/// Why the product wants it, shown by `retype doctor`.
@@ -38,6 +41,18 @@ impl Tool {
 	/// Candidates for an engine, empty when the tool declares no such engine.
 	pub fn candidates(&self, engine: &str) -> &[String] {
 		self.engines.get(engine).map(Vec::as_slice).unwrap_or_default()
+	}
+
+	/// Executable names to try, preferred first, `docs/config.md` §3. An
+	/// absolute command is a pin, so it is the only candidate.
+	pub fn commands(&self) -> impl Iterator<Item = &str> {
+		let aliases: &[String] = if Path::new(&self.command).is_absolute() {
+			&[]
+		} else {
+			&self.aliases
+		};
+
+		std::iter::once(self.command.as_str()).chain(aliases.iter().map(String::as_str))
 	}
 }
 
@@ -72,6 +87,8 @@ impl fmt::Display for Version {
 #[derive(Debug)]
 pub struct ToolStatus<'a> {
 	pub tool: &'a Tool,
+	/// The candidate that answered, usable or not.
+	pub command: String,
 	pub path: Option<PathBuf>,
 	pub version: Option<Version>,
 	/// Components named by the declaration that the probe output did not mention.
@@ -91,6 +108,11 @@ impl ToolStatus<'_> {
 			&& self.meets_minimum()
 	}
 
+	/// The executable a usable tool answers to, or `None` when it is unusable.
+	pub fn executable(&self) -> Option<&str> {
+		self.is_usable().then_some(self.command.as_str())
+	}
+
 	pub fn meets_minimum(&self) -> bool {
 		match (&self.version, &self.tool.version_min) {
 			(Some(version), Some(minimum)) => version >= minimum,
@@ -103,6 +125,9 @@ impl ToolStatus<'_> {
 		match (&self.path, &self.version) {
 			(Some(_), Some(version)) => {
 				let mut line = version.to_string();
+				if self.command != self.tool.command {
+					line.push_str(&format!(" via {}", self.command));
+				}
 				if !self.missing_components.is_empty() {
 					line.push_str(&format!("  missing components: {}", self.missing_components.join(", ")));
 				}
@@ -114,13 +139,32 @@ impl ToolStatus<'_> {
 	}
 }
 
-/// Probe one tool.
+/// Probe one tool, taking the first candidate that is present and usable.
 pub fn probe(tool: &Tool) -> ToolStatus<'_> {
-	let path = find_in_path(&std::env::var_os("PATH").unwrap_or_default(), &tool.command);
+	probe_with(tool, &std::env::var_os("PATH").unwrap_or_default())
+}
 
-	let Some(path) = path else {
+fn probe_with<'a>(tool: &'a Tool, path_env: &OsStr) -> ToolStatus<'a> {
+	let mut fallback = None;
+
+	for command in tool.commands() {
+		let status = probe_command(tool, command, path_env);
+		if status.is_usable() {
+			return status;
+		}
+		if fallback.is_none() && status.path.is_some() {
+			fallback = Some(status);
+		}
+	}
+
+	fallback.unwrap_or_else(|| not_found(tool))
+}
+
+fn probe_command<'a>(tool: &'a Tool, command: &str, path_env: &OsStr) -> ToolStatus<'a> {
+	let Some(path) = find_in_path(path_env, command) else {
 		return ToolStatus {
 			tool,
+			command: command.to_string(),
 			path: None,
 			version: None,
 			missing_components: tool.components.clone(),
@@ -147,6 +191,7 @@ pub fn probe(tool: &Tool) -> ToolStatus<'_> {
 
 			ToolStatus {
 				tool,
+				command: command.to_string(),
 				path: Some(path),
 				version,
 				missing_components,
@@ -155,11 +200,23 @@ pub fn probe(tool: &Tool) -> ToolStatus<'_> {
 		}
 		Err(error) => ToolStatus {
 			tool,
+			command: command.to_string(),
 			path: Some(path),
 			version: None,
 			missing_components: tool.components.clone(),
 			error: Some(error.to_string()),
 		},
+	}
+}
+
+fn not_found(tool: &Tool) -> ToolStatus<'_> {
+	ToolStatus {
+		tool,
+		command: tool.command.clone(),
+		path: None,
+		version: None,
+		missing_components: tool.components.clone(),
+		error: None,
 	}
 }
 
@@ -220,6 +277,7 @@ mod tests {
 		Tool {
 			name: command.to_string(),
 			command: command.to_string(),
+			aliases: Vec::new(),
 			probe: vec!["-version".to_string()],
 			version_min: version_min.map(|version| Version::parse(version).expect("a parsable floor")),
 			purpose: "testing".to_string(),
@@ -277,6 +335,7 @@ mod tests {
 		let tool = tool("magick", Some("7.1"));
 		let mut status = ToolStatus {
 			tool: &tool,
+			command: tool.command.clone(),
 			path: Some(PathBuf::from("/usr/bin/magick")),
 			version: Some(Version::parse("7.1.2").unwrap()),
 			missing_components: Vec::new(),
@@ -298,6 +357,7 @@ mod tests {
 		let tool = tool("pandoc", None);
 		let status = ToolStatus {
 			tool: &tool,
+			command: tool.command.clone(),
 			path: Some(PathBuf::from("/usr/bin/pandoc")),
 			version: Some(Version::parse("3.11").unwrap()),
 			missing_components: Vec::new(),
@@ -306,6 +366,47 @@ mod tests {
 
 		assert!(status.meets_minimum());
 		assert!(status.is_usable());
+	}
+
+	#[test]
+	fn a_bare_command_tries_its_aliases_in_order() {
+		let mut declared = tool("7zz", None);
+		declared.aliases = vec!["7z".to_string(), "7za".to_string()];
+
+		assert_eq!(declared.commands().collect::<Vec<_>>(), ["7zz", "7z", "7za"]);
+	}
+
+	#[test]
+	fn an_absolute_command_pins_the_executable() {
+		let absolute = if cfg!(windows) { r"C:\tools\7zz.exe" } else { "/opt/7zz" };
+		let mut declared = tool(absolute, None);
+		declared.aliases = vec!["7z".to_string()];
+
+		assert_eq!(declared.commands().collect::<Vec<_>>(), [absolute]);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn probing_takes_the_first_usable_alias() {
+		let dir = tempfile::tempdir().unwrap();
+		let preferred = dir.path().join("probe-tool");
+		let alias = dir.path().join("probe-alias");
+		std::fs::write(&preferred, b"#!/bin/sh\necho 'probe-tool 1.0'\n").unwrap();
+		std::fs::write(&alias, b"#!/bin/sh\necho 'probe-alias 2.0'\n").unwrap();
+		make_executable(&preferred);
+		make_executable(&alias);
+
+		let mut declared = tool("probe-tool", Some("2.0"));
+		declared.aliases = vec!["probe-alias".to_string()];
+		let path_env = std::env::join_paths([dir.path()]).unwrap();
+		let status = probe_with(&declared, &path_env);
+
+		assert_eq!(status.command, "probe-alias");
+		assert_eq!(status.path.as_deref(), Some(alias.as_path()));
+		assert!(
+			status.is_usable(),
+			"the preferred candidate is too old, the alias is not"
+		);
 	}
 
 	#[test]

@@ -11,7 +11,7 @@ use retype_core::error::{Code, Diagnostic};
 use retype_core::intent;
 use retype_core::job::Tier;
 use retype_core::output::{self, Derived};
-use retype_core::plan::{self, Arg, Backend, Plan, Presence};
+use retype_core::plan::{self, Arg, Plan, Presence};
 use retype_core::print;
 use retype_core::registry::Registry;
 use retype_core::resolve::{self, Source};
@@ -98,9 +98,15 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	})
 }
 
+/// The stem a bare format implies, since `explain heic jpg` names no file.
+const DEFAULT_STEM: &str = "input";
+
 /// What the source name says about itself: its stem, its format and whether the
 /// suffix claims it is a directory.
 struct Named {
+	/// As the user wrote it, echoed rather than rewritten: `source` is what was
+	/// given, while the intent and the outputs are what it means.
+	written: String,
 	stem: String,
 	format: String,
 	is_directory: bool,
@@ -108,10 +114,7 @@ struct Named {
 
 impl Named {
 	fn display(&self) -> String {
-		match self.is_directory {
-			true => self.stem.clone(),
-			false => format!("{}.{}", self.stem, self.format),
-		}
+		self.written.clone()
 	}
 }
 
@@ -122,6 +125,7 @@ fn source_of(registry: &Registry, name: &str) -> std::result::Result<Named, Diag
 
 	if let Some((stem, format)) = registry.split(file) {
 		return Ok(Named {
+			written: name.to_string(),
 			stem: stem.to_string(),
 			format: format.to_string(),
 			is_directory: false,
@@ -129,7 +133,19 @@ fn source_of(registry: &Registry, name: &str) -> std::result::Result<Named, Diag
 	}
 
 	if !file.contains('.') {
+		// A bare format is a format, not a directory called `heic`: it is how a
+		// user names a source when no file is in hand.
+		if let Some(format) = registry.canonical_format(file) {
+			return Ok(Named {
+				written: name.to_string(),
+				stem: DEFAULT_STEM.to_string(),
+				format: format.to_string(),
+				is_directory: false,
+			});
+		}
+
 		return Ok(Named {
+			written: name.to_string(),
 			stem: name.to_string(),
 			format: "folder".to_string(),
 			is_directory: true,
@@ -167,14 +183,12 @@ fn print_human(
 
 		println!("{:<10}{name}", "output");
 
-		let Backend::Tool(tool) = plan.backend;
-
 		match installed {
 			true => println!("  {:<8}{}", "backend", plan.backend.name()),
 			false => println!("  {:<8}{} (not installed)", "backend", plan.backend.name()),
 		}
 
-		println!("  {:<8}{}", "argv", render(tool.command.as_str(), plan));
+		println!("  {:<8}{}", "argv", render(&plan.command, plan));
 		println!("  {:<8}{}", "tier", tier(plan));
 
 		if let Some((engine, candidate)) = &plan.engine {
@@ -188,15 +202,13 @@ fn print_json(canonical: &str, sentence: &str, source: &str, derived: &[Derived]
 		.iter()
 		.enumerate()
 		.map(|(index, plan)| {
-			let Backend::Tool(tool) = plan.backend;
-
 			json!({
 				"path": derived.iter().find(|derived| derived.group == index).map(|derived| derived.path.display().to_string()),
 				"format": plan.format,
 				"backend": plan.backend.name(),
 				"available": installed,
-				"command": tool.command,
-				"argv": render(tool.command.as_str(), plan),
+				"command": plan.command,
+				"argv": render(&plan.command, plan),
 				"tier": tier(plan),
 				"engine": plan.engine.as_ref().map(|(name, candidate)| json!({"name": name, "resolved": candidate})),
 			})
@@ -243,8 +255,8 @@ fn tier(plan: &Plan<'_>) -> &'static str {
 struct Declared;
 
 impl Presence for Declared {
-	fn is_available(&self, _tool: &Tool) -> bool {
-		true
+	fn command(&self, tool: &Tool) -> Option<String> {
+		Some(tool.command.clone())
 	}
 
 	fn engine(&self, tool: &Tool, name: &str) -> Option<String> {

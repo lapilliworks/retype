@@ -86,7 +86,17 @@ output    holiday-quality80-cap1080-rotate90.webp
 
 The sentence is fixed rather than generated: each operation declares how it reads, in `say`, with `{value}` where its parameter goes, so the wording is the same every time and a user-declared operation describes itself. Actions appear in the order they run, outputs are separated by a semicolon, `ask` and `now` close the sentence, and an operation without a phrase falls back to its canonical token rather than leaving a gap.
 
-A name whose suffix is a declared format is a file of that format; a name with no dot is a directory, which is what makes `explain Photos zip` work; a name whose suffix is undeclared is a diagnosis, because retype does not convert what it does not know.
+The name is read three ways, in this order:
+
+| Name | Read as |
+|---|---|
+| `holiday.heic` | A file, stem `holiday`, format `heic` |
+| `heic` | A source format with no file, stem `input`, which is how a user asks about a pair without having a file in hand |
+| `Photos` | A directory, which is what makes `explain Photos zip` work |
+
+A name that has a suffix this build has no format for is a diagnosis, because retype does not convert what it does not know. A name that is a declared format wins over the directory reading: `heic` is a format, and a directory may be spelled any other way.
+
+`source` echoes the argument as written. The sentence and the outputs use the format's canonical spelling, so `explain photo.jpeg png` says `convert from jpg to png` and writes `photo.png`.
 
 The estimate needs an estimator calibrated against real files, which is `retype bench`'s job; until then `explain` prints no number rather than a guess.
 

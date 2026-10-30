@@ -81,6 +81,7 @@ layout = ['{input}', '{ops}', '{output}']
 | Key | Required | Meaning |
 |---|---|---|
 | `command` | yes | Executable, absolute or bare name. No shell metacharacters, no spaces |
+| `aliases` | no | Alternate executable names, tried in order when `command` is absent or unusable |
 | `probe` | no | Argv run by `retype doctor` to report a version |
 | `version_min` | no | Minimum accepted version, compared against the probe output |
 | `purpose` | no | One line, printed by `retype doctor` |
@@ -91,6 +92,8 @@ layout = ['{input}', '{ops}', '{output}']
 The layout is the whole reason a tool is configuration: `7zz` takes its output before its input and `ffmpeg` needs `-i` in front of its input, and neither fact belongs in code.
 
 A bare `command` resolves in the managed toolchain first, then in `PATH`; an absolute path is used as written and pins the user's choice. The managed directory is `<state>/tools/bin` and is populated only from a signed distribution list, `docs/tools.md` §2. There is no per-tool source switch: pinning is expressed by an absolute path, and the fixed order keeps.
+
+`aliases` are other executable names for the same tool, tried in declared order after `command` when that candidate is absent or unusable. They change neither the tool's name nor its `[tools.<name>]` key, so every `argv` fragment and `backends.prefer` entry still names the declared tool. An absolute `command` is a pin and suppresses the aliases. A candidate below its version floor, or missing a required component, is skipped rather than shadowing a usable alias, and `retype doctor` reports which candidate answered.
 
 ### 3.2 Components
 
@@ -279,8 +282,9 @@ Loading fails, naming the file and key, on any of:
 | V2 | A `layout` that does not name `{input}`, `{ops}` and `{output}` exactly once each |
 | V3 | `{value}` in an entity that declares no `param`, or a declared `param` never used |
 | V14 | A `say` with a hole other than `{value}`, or whose `{value}` disagrees with whether the operation takes a parameter |
+| V15 | A command or alias named more than once on the same tool |
 | V4 | `{engine.<name>}` naming an engine the tool does not declare |
-| V5 | A command containing a shell metacharacter or a space |
+| V5 | A command or alias containing a shell metacharacter or a space |
 | V6 | A name used twice, or a preset name equal to an operation name or alias |
 | V7 | A preset whose tokens do not parse, or a reference cycle |
 | V8 | An exclusive group with a single member, or a group declared but never used |

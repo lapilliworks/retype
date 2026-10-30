@@ -18,8 +18,9 @@ use crate::tools::Tool;
 
 /// What the planner may ask about the machine.
 pub trait Presence {
-	/// Whether a tool is on the path, new enough, and carrying its components.
-	fn is_available(&self, tool: &Tool) -> bool;
+	/// The executable that will run for this tool, when it is usable. It is the
+	/// preferred command or the first alias that answered.
+	fn command(&self, tool: &Tool) -> Option<String>;
 
 	/// The first candidate of a named engine that is on the path.
 	fn engine(&self, tool: &Tool, name: &str) -> Option<String>;
@@ -30,8 +31,8 @@ pub trait Presence {
 pub struct Nothing;
 
 impl Presence for Nothing {
-	fn is_available(&self, _tool: &Tool) -> bool {
-		false
+	fn command(&self, _tool: &Tool) -> Option<String> {
+		None
 	}
 
 	fn engine(&self, _tool: &Tool, _name: &str) -> Option<String> {
@@ -40,8 +41,8 @@ impl Presence for Nothing {
 }
 
 impl Presence for crate::tools::Machine {
-	fn is_available(&self, tool: &Tool) -> bool {
-		crate::tools::probe(tool).is_usable()
+	fn command(&self, tool: &Tool) -> Option<String> {
+		crate::tools::probe(tool).executable().map(str::to_string)
 	}
 
 	fn engine(&self, tool: &Tool, name: &str) -> Option<String> {
@@ -79,6 +80,8 @@ pub struct Plan<'a> {
 	/// The format this output carries.
 	pub format: String,
 	pub backend: Backend<'a>,
+	/// The executable that resolved for the backend at plan time.
+	pub command: String,
 	/// The layout with `{ops}` expanded.
 	pub argv: Vec<Arg>,
 	pub tier: Tier,
@@ -148,12 +151,12 @@ fn plan_group<'a>(
 			continue;
 		}
 
-		if !presence.is_available(tool) {
+		let Some(command) = presence.command(tool) else {
 			unavailable.push(tool);
 			continue;
-		}
+		};
 
-		return assemble(registry, presence, tool, group, pipeline);
+		return assemble(registry, presence, tool, command, group, pipeline);
 	}
 
 	Err(vec![unsatisfiable(registry, group, pipeline, &unavailable)])
@@ -211,6 +214,7 @@ fn assemble<'a>(
 	registry: &'a Registry,
 	presence: &dyn Presence,
 	tool: &'a Tool,
+	command: String,
 	group: &resolve::Group,
 	pipeline: &[resolve::Op],
 ) -> Result<Plan<'a>, Vec<Error>> {
@@ -267,6 +271,7 @@ fn assemble<'a>(
 	Ok(Plan {
 		format: group.format.clone(),
 		backend: Backend::Tool(tool),
+		command,
 		argv,
 		tier: tier_of(registry, &group.format),
 		engine,
@@ -398,8 +403,10 @@ args = ['--pdf-engine', '{engine.pdf}']
 	}
 
 	impl Presence for Machine {
-		fn is_available(&self, tool: &Tool) -> bool {
-			self.installed.contains(&tool.name.as_str())
+		fn command(&self, tool: &Tool) -> Option<String> {
+			self.installed
+				.contains(&tool.name.as_str())
+				.then(|| tool.command.clone())
 		}
 
 		fn engine(&self, tool: &Tool, name: &str) -> Option<String> {
@@ -488,6 +495,38 @@ args = ['--pdf-engine', '{engine.pdf}']
 			"ffmpeg",
 			"the next backend that carries the group wins"
 		);
+	}
+
+	#[test]
+	fn the_plan_records_the_executable_that_resolved() {
+		struct Alias;
+
+		impl Presence for Alias {
+			fn command(&self, tool: &Tool) -> Option<String> {
+				Some(format!("{}-alt", tool.name))
+			}
+
+			fn engine(&self, _tool: &Tool, _name: &str) -> Option<String> {
+				None
+			}
+		}
+
+		let registry = config();
+		let intent = intent::parse("webp+quality85").expect("the intent scans");
+		let resolved = resolve::resolve(
+			&intent,
+			resolve::Source {
+				format: "jpg",
+				is_directory: false,
+			},
+			&registry,
+		)
+		.expect("the intent resolves");
+
+		let plans = compile(&registry, &Alias, &resolved).expect("plans");
+
+		assert_eq!(plans[0].backend.name(), "magick");
+		assert_eq!(plans[0].command, "magick-alt");
 	}
 
 	#[test]

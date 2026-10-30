@@ -48,12 +48,31 @@ fn a_conflicting_intent_is_a_diagnosis() {
 }
 
 #[test]
-fn an_alias_prints_as_the_format_it_names() {
+fn an_alias_names_the_format_it_means() {
 	let output = retype().args(["explain", "photo.jpeg", "png"]).output().unwrap();
 	let stdout = String::from_utf8_lossy(&output.stdout);
 
-	assert!(stdout.contains("photo.jpg"), "{stdout}");
-	assert!(!stdout.contains("jpeg"), "{stdout}");
+	assert!(stdout.contains("convert from jpg to png"), "{stdout}");
+	assert!(stdout.contains("photo.png"), "{stdout}");
+}
+
+#[test]
+fn a_bare_format_names_a_source_without_a_file() {
+	let output = retype().args(["explain", "heic", "jpg"]).output().unwrap();
+	let stdout = String::from_utf8_lossy(&output.stdout);
+
+	assert!(stdout.contains("convert from heic to jpg"), "{stdout}");
+	assert!(stdout.contains("input.jpg"), "{stdout}");
+	assert!(matches!(output.status.code(), Some(0) | Some(4)), "{stdout}");
+}
+
+#[test]
+fn an_alias_is_a_bare_format_too() {
+	let output = retype().args(["explain", "jpeg", "png"]).output().unwrap();
+	let stdout = String::from_utf8_lossy(&output.stdout);
+
+	assert!(stdout.contains("convert from jpg to png"), "{stdout}");
+	assert!(stdout.contains("input.png"), "{stdout}");
 }
 
 #[test]

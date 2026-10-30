@@ -553,23 +553,20 @@ fn validate_tool(tool: &Tool, label: &str) -> Vec<Error> {
 	let mut problems = Vec::new();
 	let name = &tool.name;
 
-	// V5: the command is exec'd, never handed to a shell.
-	if tool.command.is_empty() || tool.command.contains(char::is_whitespace) {
-		problems.push(fail(
-			Code::CfgValidation,
-			format!(
-				"{label}: tool '{name}' has command '{}', which is empty or contains whitespace",
-				tool.command
-			),
-		));
-	} else if let Some(byte) = tool.command.chars().find(|c| SHELL_METACHARACTERS.contains(c)) {
-		problems.push(fail(
-			Code::CfgValidation,
-			format!(
-				"{label}: tool '{name}' has command '{}', which contains the shell metacharacter '{byte}'",
-				tool.command
-			),
-		));
+	// V5: every command is exec'd, never handed to a shell, and a name may
+	// appear only once across the preferred command and its aliases.
+	let mut seen = BTreeSet::new();
+	for (kind, command) in
+		std::iter::once(("command", &tool.command)).chain(tool.aliases.iter().map(|alias| ("alias", alias)))
+	{
+		if !seen.insert(command.as_str()) {
+			problems.push(fail(
+				Code::CfgValidation,
+				format!("{label}: tool '{name}' names '{command}' more than once as command or alias"),
+			));
+		}
+
+		problems.extend(validate_command(tool, label, kind, command));
 	}
 
 	// V1 and V2: the layout is a template with three holes, and `{ops}` is one
@@ -616,6 +613,26 @@ fn validate_tool(tool: &Tool, label: &str) -> Vec<Error> {
 	}
 
 	problems
+}
+
+/// V5 for one command or alias.
+fn validate_command(tool: &Tool, label: &str, kind: &str, command: &str) -> Vec<Error> {
+	let name = &tool.name;
+
+	if command.is_empty() || command.contains(char::is_whitespace) {
+		return vec![fail(
+			Code::CfgValidation,
+			format!("{label}: tool '{name}' has {kind} '{command}', which is empty or contains whitespace"),
+		)];
+	}
+
+	match command.chars().find(|c| SHELL_METACHARACTERS.contains(c)) {
+		Some(byte) => vec![fail(
+			Code::CfgValidation,
+			format!("{label}: tool '{name}' has {kind} '{command}', which contains the shell metacharacter '{byte}'"),
+		)],
+		None => Vec::new(),
+	}
 }
 
 /// V5: characters that only mean something to a shell, which would make the
@@ -729,6 +746,8 @@ struct BackendsEntry {
 struct ToolEntry {
 	command: String,
 	#[serde(default)]
+	aliases: Vec<String>,
+	#[serde(default)]
 	probe: Vec<String>,
 	#[serde(default)]
 	version_min: Option<String>,
@@ -758,6 +777,7 @@ impl ToolEntry {
 		Ok(Tool {
 			name: name.to_string(),
 			command: self.command.clone(),
+			aliases: self.aliases.clone(),
 			probe: self.probe.clone(),
 			version_min,
 			purpose: self.purpose.clone(),
@@ -959,6 +979,13 @@ mod tests {
 		let pandoc = registry.tool("pandoc").expect("pandoc is declared");
 		assert_eq!(pandoc.candidates("pdf").first().map(String::as_str), Some("typst"));
 		assert!(pandoc.candidates("absent").is_empty());
+
+		let sevenzip = registry.tool("7zz").expect("7zz is declared");
+		assert_eq!(
+			sevenzip.aliases,
+			["7z", "7za"],
+			"the 7-Zip executables are interchangeable"
+		);
 	}
 
 	#[test]
@@ -984,6 +1011,30 @@ mod tests {
 			codes(&with_tool(&command_tool("magick -density 300"))),
 			[Code::CfgValidation]
 		);
+	}
+
+	#[test]
+	fn a_command_alias_with_a_shell_metacharacter_is_refused() {
+		let text = with_tool(&format!("{STANDARD_TOOL}\naliases = ['7z; rm -rf /']"));
+
+		assert_eq!(codes(&text), [Code::CfgValidation]);
+	}
+
+	#[test]
+	fn a_command_cannot_also_be_an_alias() {
+		let text = with_tool(&format!("{STANDARD_TOOL}\naliases = ['probe']"));
+
+		assert_eq!(codes(&text), [Code::CfgValidation]);
+	}
+
+	#[test]
+	fn tool_aliases_keep_their_order() {
+		let text = with_tool(&format!("{STANDARD_TOOL}\naliases = ['7z', '7za']"));
+		let registry = Registry::load(&text).expect("loads");
+		let tool = registry.tool("probe").expect("declared");
+
+		assert_eq!(tool.aliases, ["7z", "7za"]);
+		assert_eq!(tool.commands().collect::<Vec<_>>(), ["probe", "7z", "7za"]);
 	}
 
 	#[test]

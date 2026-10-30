@@ -64,10 +64,10 @@ Archives are not one format and are not one tool. Each format uses the backend t
 | `zip` | Native | Write and read, with explicit zip64, symlink and permission rules |
 | `tar` | Native | Write and read, with the compression layers below |
 | `gz`, `bz2`, `xz`, `zst`, `br`, `lz4` | Native | Codec crates or the system C library where the crate is a thin binding |
-| `7z` | `7zz` | The only archive format that needs an external tool |
+| `7z` | `7zz`, `7z` or `7za` | The only archive format that needs an external tool |
 | `rar` | `unrar` or a `7zz` build with the unRAR code | Read-only, user-supplied, never distributed |
 
 Native handling is not only fewer dependencies. Path traversal, symlink escape, decompression bombs, permission restoration, overwrite policy and cancellation are decisions that belong in our code, not in another tool's argv. It also removes the one tool whose layout put its output before its input.
 
-`7zz` remains declared and may be installed from the managed set. It is not used for `zip` or `tar`, where the native backend is more precise.
+`7zz` remains the declared backend and may be installed from the managed set; `7z` and `7za` are executable aliases, not separate backends. It is not used for `zip` or `tar`, where the native backend is more precise.
 

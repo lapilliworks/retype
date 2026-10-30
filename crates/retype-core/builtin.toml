@@ -61,9 +61,11 @@ layout = ['{input}', '{ops}', '-o', '{output}']
 engines = { pdf = ['typst', 'xelatex', 'lualatex', 'pdflatex', 'weasyprint', 'wkhtmltopdf'] }
 
 # Only `.7z` uses this. `zip`, `tar` and the compression codecs are native,
-# `docs/tools.md` §7.
+# `docs/tools.md` §7. The executable has three official names: `7zz` for the
+# console build we manage, and `7z` or `7za` where the platform ships those.
 [tools.7zz]
 command = '7zz'
+aliases = ['7z', '7za']
 version_min = '23.0'
 purpose = '7z archives'
 layout = ['a', '-y', '{ops}', '{output}', '{input}']
