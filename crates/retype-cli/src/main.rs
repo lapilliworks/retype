@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use retype_cli::error::Result;
-use retype_cli::{client, config, daemon, doctor, explain, list, state, why};
+use retype_cli::{client, config, daemon, doctor, explain, init, list, state, why};
 use serde_json::Value;
 
 /// Automatic file format conversion on rename.
@@ -118,11 +118,26 @@ enum Command {
 		path: String,
 	},
 
+	/// Write the example configuration
+	Init {
+		/// Write here instead of to standard output
+		#[arg(long, value_name = "PATH")]
+		output: Option<PathBuf>,
+	},
+
 	/// Report external tool availability
 	Doctor {
 		/// Exit non zero when a required tool is missing or unusable
 		#[arg(long)]
 		check: bool,
+
+		/// Print a [tools] snippet pinning what this machine resolved
+		#[arg(long)]
+		emit: bool,
+
+		/// Write that snippet to the user configuration, which must be absent or empty
+		#[arg(long)]
+		write: bool,
 
 		/// Require a specific tool, repeatable. Implies --check
 		#[arg(long = "require", value_name = "TOOL")]
@@ -340,11 +355,35 @@ fn main() -> ExitCode {
 		};
 	}
 
-	if let Command::Doctor { check, require } = &cli.command {
+	if let Command::Init { output } = &cli.command {
+		let code = init::run(output.as_deref(), cli.quiet);
+
+		return match code {
+			Ok(code) => code,
+			Err(error) => {
+				eprintln!("retype: {error}");
+				ExitCode::from(error.exit_code())
+			}
+		};
+	}
+
+	if let Command::Doctor {
+		check,
+		emit,
+		write,
+		require,
+	} = &cli.command
+	{
+		let mode = match (emit, write) {
+			(false, false) => doctor::Emit::None,
+			(true, false) => doctor::Emit::Stdout,
+			(false, true) | (true, true) => doctor::Emit::Write,
+		};
+
 		let code = config::load().and_then(|registry| {
 			config::report_warnings(&registry);
 
-			doctor::run(&registry, *check || !require.is_empty(), require)
+			doctor::run(&registry, *check || !require.is_empty(), require, mode)
 		});
 
 		return match code {
@@ -369,6 +408,7 @@ fn main() -> ExitCode {
 		| Command::Explain { .. }
 		| Command::Why { .. }
 		| Command::List { .. }
+		| Command::Init { .. }
 		| Command::Doctor { .. } => unreachable!("these are dispatched before the outcome is built"),
 	};
 

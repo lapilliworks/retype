@@ -130,6 +130,14 @@ The summary column is the directory's own `.retype.toml` policy, where it has on
 
 `unwatch` removes registrations by canonical path. Removing something absent succeeds.
 
+```
+retype init [--output <path>]
+```
+
+`init` prints a starting configuration, or writes it where `--output` says and creates the directories on the way. Every key in it is one this build reads, so the file works as it stands and can be pruned key by key; a file of commented examples for features that do not exist would be documentation pretending to be configuration. It refuses to replace a file that is already there, because a configuration may be the only record of how a machine was set up, and the way to start over is to remove it deliberately.
+
+`doctor --emit` is the other half: it prints a `[tools]` snippet pinning the tools this machine resolved, which is what makes a result reproducible across machines. Only tools that are present are pinned, and a tool whose path has a space is skipped with a note, because a command with a space cannot be named in configuration. `--write` puts the snippet in the user configuration file and refuses when that file already has content, since merging by hand is the only thing that cannot silently lose a line.
+
 ## 5. Toolchain
 
 ```

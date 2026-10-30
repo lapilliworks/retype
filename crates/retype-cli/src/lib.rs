@@ -11,6 +11,7 @@ pub mod daemon;
 pub mod doctor;
 pub mod error;
 pub mod explain;
+pub mod init;
 pub mod jobs;
 pub mod list;
 pub mod state;
