@@ -212,15 +212,17 @@ Formats, operations and presets enter one name space. Aliases are declared per o
 A preset is a named token sequence, optionally parameterised. It compiles to operations, so it composes with them and participates in the same conflict rules.
 
 ```toml
-[presets.thumb]
+[presets.thumbnail]
 param = { class = 'int', min = 16, max = 4096 }
-tokens = ['resize={value}x0', 'quality75']
+tokens = ['cap={value}', 'quality85']
 
-[presets.web-headshot]
+[presets.headshot]
 tokens = ['crop1x1', 'cap1024', 'quality80', 'nometa']
 ```
 
-`tokens` is parsed by the grammar parser with the same registry. Presets may reference other presets; cycles are load errors; `ask` and `now` are forbidden inside a preset.
+`tokens` is parsed by the grammar parser with the same registry. Presets may reference other presets; cycles are load errors; `ask` and `now` are forbidden inside a preset, because a preset is a conversion rather than a decision.
+
+A parameter and its `{value}` must agree: a preset that declares one without using it, or uses one without declaring it, is a configuration error. A preset expands where it stands, so its tokens run in its position and are subject to the same duplicate and exclusivity rules as if they had been typed there. The canonical form prints what the preset expanded to, because that is what runs.
 
 ## 8. Assembly
 
@@ -265,7 +267,7 @@ paused = false
 enabled = false
 
 [conversions.heic-to-jpg]
-preset = 'web-headshot'
+preset = 'headshot'
 ```
 
 `deny` rejects an operation in that directory with `E_INAPPLICABLE`. `limits` clamps a parameter. `confirm = false` suppresses deferral for cheap jobs.

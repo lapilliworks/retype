@@ -131,16 +131,54 @@ impl Op {
 	}
 }
 
+/// A named token sequence, `docs/config.md` §7. A preset compiles to operations,
+/// so it composes with them and joins their conflict rules; it is a macro, not a
+/// backend feature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preset {
+	pub key: String,
+	pub name: String,
+	/// One optional parameter, whose class decides how a written value is read.
+	pub param: Option<Param>,
+	/// Tokens, with `{value}` where the parameter goes.
+	pub tokens: Vec<String>,
+}
+
 /// A token resolved against the registry, before its value is interpreted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved<'a> {
-	pub op: &'a Op,
+	pub target: Target<'a>,
 	pub value: Option<&'a str>,
+}
+
+/// What a name turned out to be. Presets share the name space with operations,
+/// so one call has to answer for both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target<'a> {
+	Op(&'a Op),
+	Preset(&'a Preset),
+}
+
+impl<'a> Resolved<'a> {
+	pub fn op(&self) -> Option<&'a Op> {
+		match self.target {
+			Target::Op(op) => Some(op),
+			Target::Preset(_) => None,
+		}
+	}
+
+	pub fn preset(&self) -> Option<&'a Preset> {
+		match self.target {
+			Target::Op(_) => None,
+			Target::Preset(preset) => Some(preset),
+		}
+	}
 }
 
 #[derive(Debug, Clone)]
 pub struct Registry {
 	tools: BTreeMap<String, Tool>,
+	presets: BTreeMap<String, Preset>,
 	/// Backend preference order, `docs/config.md` §8. The first entry that
 	/// carries every operation in a plan and is present wins.
 	backends: Vec<String>,
@@ -313,7 +351,22 @@ impl Registry {
 			ops.insert(key.to_ascii_lowercase(), op);
 		}
 
+		let mut presets = BTreeMap::new();
+		for (key, entry) in &document.presets {
+			let preset = entry.view(key);
+
+			if !is_name(&preset.name) {
+				problems.push(fail(
+					Code::CfgValidation,
+					format!("{label}: preset '{key}' has a name that is not a lowercase word"),
+				));
+			}
+
+			presets.insert(preset.key.clone(), preset);
+		}
+
 		let mut names = collect_names(&ops);
+		names.extend(collect_preset_names(&presets));
 		problems.extend(uniqueness(&names, label));
 		problems.extend(singleton_groups(&ops, label));
 
@@ -322,23 +375,40 @@ impl Registry {
 		let mut format_names = collect_format_names(&formats);
 		format_names.sort_by(|left, right| right.0.len().cmp(&left.0.len()).then(left.0.cmp(&right.0)));
 
-		if !problems.is_empty() {
-			return Err(Diagnoses::new(problems));
-		}
-
-		Ok(Self {
+		let registry = Self {
 			tools,
+			presets,
 			backends,
 			formats,
 			ops,
 			names,
 			format_names,
-		})
+		};
+
+		// Presets are checked against the registry they are part of, because a
+		// preset's tokens name operations and other presets.
+		problems.extend(registry.preset_problems(label));
+
+		if !problems.is_empty() {
+			return Err(Diagnoses::new(problems));
+		}
+
+		Ok(registry)
 	}
 
 	/// Backend names in preference order, `docs/config.md` §8.
 	pub fn backends(&self) -> &[String] {
 		&self.backends
+	}
+
+	pub fn preset(&self, name: &str) -> Option<&Preset> {
+		let name = name.to_ascii_lowercase();
+		self.presets.get(&name)
+	}
+
+	/// Every preset, in name order.
+	pub fn presets(&self) -> impl Iterator<Item = &Preset> {
+		self.presets.values()
 	}
 
 	pub fn tool(&self, name: &str) -> Option<&Tool> {
@@ -411,15 +481,19 @@ impl Registry {
 	/// registered prefix, `docs/grammar.md` R2 and R6.
 	pub fn resolve<'a>(&'a self, text: &'a str) -> Option<Resolved<'a>> {
 		if let Some((name, value)) = text.split_once('=') {
-			return self.op(name).map(|op| Resolved { op, value: Some(value) });
+			let target = self.target(name)?;
+			return Some(Resolved {
+				target,
+				value: Some(value),
+			});
 		}
 
 		let lowered = text.to_ascii_lowercase();
 		for (name, key) in &self.names {
 			if let Some(rest) = lowered.strip_prefix(name.as_str()) {
-				let op = self.ops.get(key)?;
+				let target = self.target(key)?;
 				return Some(Resolved {
-					op,
+					target,
 					value: if rest.is_empty() {
 						None
 					} else {
@@ -430,6 +504,121 @@ impl Registry {
 		}
 
 		None
+	}
+
+	/// The entity a name or key stands for: a preset first, since presets and
+	/// operations cannot share a name, `docs/config.md` V6.
+	/// V7: a preset's tokens have to name something, must not smuggle a control
+	/// token, and must not form a cycle.
+	fn preset_problems(&self, label: &str) -> Vec<Error> {
+		let mut problems = Vec::new();
+
+		for preset in self.presets.values() {
+			let has_value = preset.tokens.iter().any(|token| token.contains("{value}"));
+
+			if preset.param.is_some() != has_value {
+				problems.push(fail(
+					Code::CfgValidation,
+					format!(
+						"{label}: preset '{}' declares {} parameter but its tokens {} use one",
+						preset.key,
+						match preset.param.is_some() {
+							true => "a",
+							false => "no",
+						},
+						match has_value {
+							true => "do",
+							false => "do not",
+						}
+					),
+				));
+			}
+
+			for text in &preset.tokens {
+				let token = match crate::intent::parse_token(text) {
+					Ok(token) => token,
+					Err(error) => {
+						problems.push(Error::Diagnostic(Diagnostic::global(
+							Code::CfgValidation,
+							format!(
+								"{label}: preset '{}' has a token that does not parse: {error}",
+								preset.key
+							),
+						)));
+						continue;
+					}
+				};
+
+				match self.resolve(&token.name) {
+					None => problems.push(fail(
+						Code::CfgValidation,
+						format!(
+							"{label}: preset '{}' names '{}', which is not an operation or a preset",
+							preset.key, token.name
+						),
+					)),
+					Some(found) => match found.target {
+						Target::Op(op) if op.key == "ask" || op.key == "now" => problems.push(fail(
+							Code::CfgValidation,
+							format!(
+								"{label}: preset '{}' uses '{}', which is control rather than conversion",
+								preset.key, op.name
+							),
+						)),
+						_ => {}
+					},
+				}
+			}
+		}
+
+		for preset in self.presets.values() {
+			if let Some(cycle) = self.preset_cycle(&preset.key, &mut Vec::new()) {
+				problems.push(fail(
+					Code::CfgValidation,
+					format!("{label}: presets form a cycle: {}", cycle.join(" -> ")),
+				));
+			}
+		}
+
+		problems
+	}
+
+	/// The path of presets that leads back to `start`, if there is one.
+	fn preset_cycle(&self, start: &str, path: &mut Vec<String>) -> Option<Vec<String>> {
+		if path.iter().any(|seen| seen == start) {
+			path.push(start.to_string());
+			return Some(path.clone());
+		}
+
+		path.push(start.to_string());
+
+		let Some(preset) = self.presets.get(start) else {
+			path.pop();
+			return None;
+		};
+
+		for text in &preset.tokens {
+			let Ok(token) = crate::intent::parse_token(text) else {
+				continue;
+			};
+
+			if let Some(Target::Preset(next)) = self.resolve(&token.name).map(|found| found.target) {
+				if let Some(cycle) = self.preset_cycle(&next.key, path) {
+					return Some(cycle);
+				}
+			}
+		}
+
+		path.pop();
+		None
+	}
+
+	fn target(&self, key: &str) -> Option<Target<'_>> {
+		if let Some(preset) = self.presets.get(key) {
+			return Some(Target::Preset(preset));
+		}
+
+		self.ops.get(key).map(Target::Op)
 	}
 
 	pub fn formats(&self) -> impl Iterator<Item = (&String, &Format)> {
@@ -654,6 +843,17 @@ fn collect_format_names(formats: &BTreeMap<String, Format>) -> Vec<(String, Stri
 	names
 }
 
+fn collect_preset_names(presets: &BTreeMap<String, Preset>) -> Vec<(String, String)> {
+	let mut names = Vec::new();
+
+	for (key, preset) in presets {
+		names.push((preset.name.clone(), key.clone()));
+		names.push((key.clone(), key.clone()));
+	}
+
+	names
+}
+
 fn collect_names(ops: &BTreeMap<String, Op>) -> Vec<(String, String)> {
 	let mut names = Vec::new();
 
@@ -732,9 +932,31 @@ struct Document {
 	#[serde(default)]
 	backends: Option<BackendsEntry>,
 	#[serde(default)]
+	presets: BTreeMap<String, PresetEntry>,
+	#[serde(default)]
 	formats: BTreeMap<String, FormatEntry>,
 	#[serde(default)]
 	ops: BTreeMap<String, OpEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PresetEntry {
+	#[serde(default)]
+	name: Option<String>,
+	#[serde(default)]
+	param: Option<Param>,
+	tokens: Vec<String>,
+}
+
+impl PresetEntry {
+	fn view(&self, key: &str) -> Preset {
+		Preset {
+			key: key.to_ascii_lowercase(),
+			name: self.name.clone().unwrap_or_else(|| key.to_ascii_lowercase()),
+			param: self.param.clone(),
+			tokens: self.tokens.clone(),
+		}
+	}
 }
 
 #[derive(Debug, Deserialize)]
@@ -907,11 +1129,11 @@ mod tests {
 		let registry = builtin();
 
 		let resolved = registry.resolve("quality85").unwrap();
-		assert_eq!(resolved.op.key, "quality");
+		assert_eq!(resolved.op().unwrap().key, "quality");
 		assert_eq!(resolved.value, Some("85"));
 
 		let alias = registry.resolve("q80").unwrap();
-		assert_eq!(alias.op.key, "quality");
+		assert_eq!(alias.op().unwrap().key, "quality");
 		assert_eq!(alias.value, Some("80"));
 	}
 
@@ -920,7 +1142,7 @@ mod tests {
 		let registry = builtin();
 
 		let resolved = registry.resolve("quality=85").unwrap();
-		assert_eq!(resolved.op.key, "quality");
+		assert_eq!(resolved.op().unwrap().key, "quality");
 		assert_eq!(resolved.value, Some("85"));
 	}
 
@@ -929,7 +1151,7 @@ mod tests {
 		let registry = builtin();
 
 		assert_eq!(registry.resolve("nometa").unwrap().value, None);
-		assert_eq!(registry.resolve("grey").unwrap().op.key, "gray");
+		assert_eq!(registry.resolve("grey").unwrap().op().unwrap().key, "gray");
 		assert!(registry.resolve("zzz").is_none());
 	}
 
@@ -938,8 +1160,8 @@ mod tests {
 		let registry = builtin();
 		let resolved = registry.resolve("trim1h30s").unwrap();
 
-		assert_eq!(resolved.op.key, "trim");
-		assert!(!resolved.op.is_implemented());
+		assert_eq!(resolved.op().unwrap().key, "trim");
+		assert!(!resolved.op().unwrap().is_implemented());
 	}
 
 	#[test]

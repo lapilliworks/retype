@@ -8,6 +8,7 @@
 
 use crate::error::{Code, Diagnoses, Error, Span};
 use crate::intent::{self, Intent, Meta, Raw, Token};
+use crate::print;
 use crate::registry::Registry;
 use crate::value::{self, Value};
 
@@ -103,7 +104,12 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 		let mut exclusive: Vec<(String, String)> = Vec::new();
 		let mut ops = Vec::new();
 
+		let mut tokens = Vec::new();
 		for token in &group.tokens {
+			expand(registry, token, &mut tokens, &mut problems);
+		}
+
+		for token in &tokens {
 			let token = desugar(token);
 
 			let Some(found) = registry.resolve(&token.name) else {
@@ -111,19 +117,25 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 				continue;
 			};
 
-			if !found.op.is_implemented() {
+			// A preset reaches this loop only unexpanded when it was malformed,
+			// which `expand` already reported.
+			let Some(op) = found.op() else {
+				continue;
+			};
+
+			if !op.is_implemented() {
 				problems.push(error(
 					Code::Unsupported,
-					format!("'{}' is reserved and its vertical has not landed", found.op.name),
+					format!("'{}' is reserved and its vertical has not landed", op.name),
 					token.span,
 				));
 				continue;
 			}
 
-			if !found.op.applies_to(&format) {
+			if !op.applies_to(&format) {
 				problems.push(error(
 					Code::Inapplicable,
-					format!("'{}' does not apply to {format}", found.op.name),
+					format!("'{}' does not apply to {format}", op.name),
 					token.span,
 				));
 				continue;
@@ -134,11 +146,11 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 				.map(str::to_string)
 				.or_else(|| token.value.as_ref().map(|raw| raw.text.clone()));
 
-			let written = match (found.op.param.is_some(), written) {
+			let written = match (op.param.is_some(), written) {
 				(true, None) => {
 					problems.push(error(
 						Code::ValueMissing,
-						format!("'{}' needs a value", found.op.name),
+						format!("'{}' needs a value", op.name),
 						token.span,
 					));
 					continue;
@@ -146,7 +158,7 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 				(false, Some(_)) => {
 					problems.push(error(
 						Code::ValueUnexpected,
-						format!("'{}' takes no value", found.op.name),
+						format!("'{}' takes no value", op.name),
 						token.span,
 					));
 					continue;
@@ -161,8 +173,8 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 			// from the end of an intent, so they set the flags rather than
 			// becoming operations of their own. That is what lets the printer
 			// write them in the canonical form and still round trip.
-			if found.op.key == "ask" || found.op.key == "now" {
-				let flag = found.op.key == "ask";
+			if op.key == "ask" || op.key == "now" {
+				let flag = op.key == "ask";
 				if flag {
 					meta.ask = true;
 				} else {
@@ -171,7 +183,7 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 				continue;
 			}
 
-			let value = match (&found.op.param, written) {
+			let value = match (&op.param, written) {
 				(Some(param), Some(written)) => match value::interpret(param, &written.text) {
 					Ok(parsed) => Some(Argument { written, parsed }),
 					Err(fault) => {
@@ -182,20 +194,20 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 				_ => None,
 			};
 
-			if keys.contains(&found.op.key) {
+			if keys.contains(&op.key) {
 				problems.push(error(
 					Code::Duplicate,
-					format!("'{}' is given more than once", found.op.name),
+					format!("'{}' is given more than once", op.name),
 					token.span,
 				));
 				continue;
 			}
-			keys.push(found.op.key.clone());
+			keys.push(op.key.clone());
 
-			for group_name in &found.op.exclusive {
+			for group_name in &op.exclusive {
 				let conflict = exclusive
 					.iter()
-					.find(|(name, other)| name == group_name && *other != found.op.key);
+					.find(|(name, other)| name == group_name && *other != op.key);
 
 				if let Some((_, other)) = conflict {
 					let other = registry
@@ -204,19 +216,19 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 						.unwrap_or_else(|| other.clone());
 					problems.push(error(
 						Code::Exclusive,
-						format!("'{}' and '{other}' cannot be combined", found.op.name),
+						format!("'{}' and '{other}' cannot be combined", op.name),
 						token.span,
 					));
 					continue;
 				}
 
-				exclusive.push((group_name.clone(), found.op.key.clone()));
+				exclusive.push((group_name.clone(), op.key.clone()));
 			}
 
 			ops.push(Op {
-				key: found.op.key.clone(),
-				name: found.op.name.clone(),
-				slot: found.op.slot,
+				key: op.key.clone(),
+				name: op.name.clone(),
+				slot: op.slot,
 				value,
 				span: token.span,
 			});
@@ -283,6 +295,81 @@ pub fn intent_of(registry: &Registry, source_name: &str, target_name: &str) -> R
 
 /// Alias desugaring, `docs/grammar.md` §9: a whole token before name resolution,
 /// never inside a value.
+/// Replace a preset by the tokens it stands for, `docs/config.md` §7.
+///
+/// A preset is a macro: the tokens it stands for join the group in its place, so
+/// they share the group's duplicate and exclusivity rules and its order. Cycles
+/// are refused when the configuration loads, so the recursion terminates.
+fn expand(registry: &Registry, token: &Token, out: &mut Vec<Token>, problems: &mut Vec<Error>) {
+	let Some(found) = registry.resolve(&token.name) else {
+		// Left for the main loop, which knows how to report an unknown name.
+		out.push(token.clone());
+		return;
+	};
+
+	let Some(preset) = found.preset() else {
+		out.push(token.clone());
+		return;
+	};
+
+	let written = found
+		.value
+		.map(str::to_string)
+		.or_else(|| token.value.as_ref().map(|raw| raw.text.clone()));
+
+	let value = match (&preset.param, written) {
+		(Some(param), Some(text)) => match crate::value::interpret(param, &text) {
+			Ok(parsed) => Some(print::value(&parsed)),
+			Err(fault) => {
+				problems.push(error(fault.code, fault.message, token.span));
+				return;
+			}
+		},
+		(Some(_), None) => {
+			problems.push(error(
+				Code::ValueMissing,
+				format!("'{}' needs a value", preset.name),
+				token.span,
+			));
+			return;
+		}
+		(None, Some(_)) => {
+			problems.push(error(
+				Code::ValueUnexpected,
+				format!("'{}' takes no value", preset.name),
+				token.span,
+			));
+			return;
+		}
+		(None, None) => None,
+	};
+
+	for text in &preset.tokens {
+		let text = match &value {
+			Some(value) => text.replace("{value}", value),
+			None => text.clone(),
+		};
+
+		match intent::parse_token(&text) {
+			Ok(mut inner) => {
+				// The token is the preset's, so a diagnostic points at the preset
+				// rather than at a position inside another string.
+				inner.span = token.span;
+				inner.name_span = token.span;
+				expand(registry, &inner, out, problems);
+			}
+			Err(problem) => problems.push(Error::Diagnostic(crate::error::Diagnostic::new(
+				Code::CfgValidation,
+				format!(
+					"preset '{}' expands to '{text}', which does not parse: {problem}",
+					preset.key
+				),
+				token.span,
+			))),
+		}
+	}
+}
+
 fn desugar(token: &Token) -> Token {
 	if token.value.is_some() {
 		return token.clone();
@@ -614,6 +701,219 @@ aliases = ['tar.gz']
 	#[test]
 	fn folder_requires_a_directory() {
 		assert_eq!(codes("folder", image("jpg")), vec![Code::FormatFolder]);
+	}
+
+	fn preset_text(builtin: &str) -> String {
+		format!("version = 'retype-config-1'\n\n{builtin}")
+	}
+
+	#[test]
+	fn a_preset_expands_where_it_stands() {
+		let registry = Registry::load(&preset_text(
+			"\
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+
+[ops.quality]
+slot = 50
+param = { class = 'int', min = 1, max = 100 }
+formats = ['webp']
+
+[ops.cap]
+slot = 28
+param = { class = 'int', min = 16, max = 16384 }
+formats = ['webp']
+
+[ops.nometa]
+slot = 60
+formats = ['webp']
+
+[presets.look]
+tokens = ['quality75', 'nometa']
+",
+		))
+		.expect("loads");
+
+		let intent = intent::parse("webp+cap200+look").expect("scans");
+		let resolved = resolve(
+			&intent,
+			Source {
+				format: "heic",
+				is_directory: false,
+			},
+			&registry,
+		)
+		.expect("resolves");
+		let keys: Vec<&str> = resolved.groups[0].pipeline().iter().map(|op| op.key.as_str()).collect();
+
+		assert_eq!(
+			keys,
+			["cap", "quality", "nometa"],
+			"the preset's tokens sit where it stood"
+		);
+	}
+
+	#[test]
+	fn a_preset_that_repeats_an_operation_is_a_duplicate() {
+		let registry = Registry::load(&preset_text(
+			"\
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+
+[ops.quality]
+slot = 50
+param = { class = 'int', min = 1, max = 100 }
+formats = ['webp']
+
+[presets.look]
+tokens = ['quality75']
+",
+		))
+		.expect("loads");
+
+		let intent = intent::parse("webp+quality80+look").expect("scans");
+		let problems = resolve(
+			&intent,
+			Source {
+				format: "heic",
+				is_directory: false,
+			},
+			&registry,
+		)
+		.unwrap_err()
+		.codes();
+
+		assert_eq!(problems, [Code::Duplicate]);
+	}
+
+	#[test]
+	fn a_preset_value_is_read_with_its_own_class() {
+		let registry = Registry::load(&preset_text(
+			"\
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+
+[ops.cap]
+slot = 28
+param = { class = 'int', min = 16, max = 16384 }
+formats = ['webp']
+
+[presets.thumb]
+param = { class = 'int', min = 16, max = 4096 }
+tokens = ['cap={value}']
+",
+		))
+		.expect("loads");
+
+		let intent = intent::parse("webp+thumb0200").expect("scans");
+		let resolved = resolve(
+			&intent,
+			Source {
+				format: "heic",
+				is_directory: false,
+			},
+			&registry,
+		)
+		.expect("resolves");
+		let cap = &resolved.groups[0].pipeline()[0];
+
+		assert_eq!(
+			cap.value.as_ref().map(|argument| argument.parsed.clone()),
+			Some(Value::Int(200))
+		);
+	}
+
+	#[test]
+	fn a_preset_out_of_range_is_a_value_range() {
+		let registry = Registry::load(&preset_text(
+			"\
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+
+[ops.cap]
+slot = 28
+param = { class = 'int', min = 16, max = 16384 }
+formats = ['webp']
+
+[presets.thumb]
+param = { class = 'int', min = 16, max = 4096 }
+tokens = ['cap={value}']
+",
+		))
+		.expect("loads");
+
+		let intent = intent::parse("webp+thumb8").expect("scans");
+		let problems = resolve(
+			&intent,
+			Source {
+				format: "heic",
+				is_directory: false,
+			},
+			&registry,
+		)
+		.unwrap_err()
+		.codes();
+
+		assert_eq!(problems, [Code::ValueRange]);
+	}
+
+	#[test]
+	fn a_preset_that_expands_into_a_conflict_still_conflicts() {
+		let registry = Registry::load(&preset_text(
+			"\
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+
+[ops.quality]
+slot = 50
+exclusive = ['encode-target']
+param = { class = 'int', min = 1, max = 100 }
+formats = ['webp']
+
+[ops.size]
+slot = 50
+exclusive = ['encode-target']
+formats = ['webp']
+param = { class = 'size', min = 1 }
+
+[presets.small]
+tokens = ['size5mb']
+",
+		))
+		.expect("loads");
+
+		let intent = intent::parse("webp+quality80+small").expect("scans");
+		let problems = resolve(
+			&intent,
+			Source {
+				format: "heic",
+				is_directory: false,
+			},
+			&registry,
+		)
+		.unwrap_err()
+		.codes();
+
+		assert_eq!(
+			problems,
+			[Code::Exclusive],
+			"an expansion is checked like any other token"
+		);
 	}
 
 	#[test]

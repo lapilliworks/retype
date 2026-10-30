@@ -256,6 +256,11 @@ fn scan_group(offset: usize, group: &str, errors: &mut Vec<Error>) -> (Option<Gr
 	(Some(group), count)
 }
 
+/// Parse one token on its own, which is how a preset's declared tokens are read.
+pub fn parse_token(text: &str) -> Result<Token, Error> {
+	scan_token(text, 0)
+}
+
 fn scan_token(token: &str, start: usize) -> Result<Token, Error> {
 	let equals: Vec<usize> = token
 		.bytes()

@@ -52,13 +52,13 @@ fn token(op: &Op, registry: &Registry) -> String {
 		compact.push_str(&value(&argument.parsed));
 	}
 
-	match registry.resolve(&compact) {
-		Some(resolved)
-			if resolved.op.key == op.key
-				&& resolved.value == op.value.as_ref().map(|argument| value(&argument.parsed)).as_deref() =>
-		{
-			compact
-		}
+	let reads_back = registry.resolve(&compact).is_some_and(|resolved| {
+		resolved.op().is_some_and(|found| found.key == op.key)
+			&& resolved.value == op.value.as_ref().map(|argument| value(&argument.parsed)).as_deref()
+	});
+
+	match reads_back {
+		true => compact,
 		_ => match &op.value {
 			Some(argument) => format!("{}={}", op.name, value(&argument.parsed)),
 			None => op.name.clone(),

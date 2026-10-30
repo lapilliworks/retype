@@ -139,7 +139,7 @@ A preset is a named token sequence and occupies the same name space. See `docs/c
 param = { class = 'int', min = 16, max = 4096 }
 tokens = ['resize={value}x0', 'quality75']
 
-[presets.web-headshot]
+[presets.headshot]
 tokens = ['crop1x1', 'cap1024', 'quality80', 'nometa']
 ```
 

@@ -37,6 +37,18 @@ fn explains_the_actions_in_words() {
 }
 
 #[test]
+fn a_preset_expands_into_the_operations_it_stands_for() {
+	let output = retype()
+		.args(["explain", "holiday.heic", "jpg+thumbnail512"])
+		.output()
+		.unwrap();
+	let stdout = String::from_utf8_lossy(&output.stdout);
+
+	assert!(stdout.contains("jpg+cap512+quality85"), "{stdout}");
+	assert!(stdout.contains("with cap to 512, then quality at 85"), "{stdout}");
+}
+
+#[test]
 fn a_conflicting_intent_is_a_diagnosis() {
 	let output = retype()
 		.args(["explain", "holiday.heic", "webp+q80+size5mb"])

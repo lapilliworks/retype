@@ -25,6 +25,18 @@
 
 version = 'retype-config-1'
 
+# Presets are macros over tokens, `docs/config.md` §7. They join the operation
+# name space, expand where they stand, and are checked by the same duplicate and
+# exclusivity rules, so a preset cannot smuggle in a conflict.
+#
+# Only presets whose operations all have a fragment are shipped: a shipped preset
+# that cannot run is a broken promise, unlike an operation whose vertical has not
+# landed, which `explain` reports as unsupported.
+
+[presets.thumbnail]
+param = { class = 'int', min = 16, max = 4096 }
+tokens = ['cap={value}', 'quality85']
+
 # External tools, `docs/tools.md`. The layout is the argv template: `{input}`
 # and `{output}` are paths and `{ops}` is where a format's fragment expands, so
 # a tool that wants its output before its input says so here rather than in
