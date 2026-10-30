@@ -6,10 +6,11 @@
 //! accept, which is what the parser needs to resolve a name and a value, and
 //! what the planner needs to know which tool can honour it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
+use crate::convert::NATIVE;
 use crate::error::{Code, Diagnoses, Diagnostic, Error};
 use crate::job::Tier;
 use crate::tools::{Tool, Version};
@@ -19,6 +20,21 @@ pub const CONFIG_VERSION: &str = "retype-config-1";
 
 const FAMILIES: &[&str] = &["image", "audio", "video", "document", "archive", "folder"];
 
+/// An argv fragment an entity contributes to a tool's `{ops}` position,
+/// `docs/config.md` §8.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Fragment {
+	pub args: Vec<String>,
+}
+
+impl Fragment {
+	/// Whether any argument names `value`, which is how an operation's parameter
+	/// reaches the command line.
+	pub fn uses_value(&self) -> bool {
+		self.args.iter().any(|arg| arg.contains("{value}"))
+	}
+}
+
 /// A format the product can read or write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Format {
@@ -27,6 +43,8 @@ pub struct Format {
 	pub alpha: bool,
 	pub tier: Tier,
 	pub aliases: Vec<String>,
+	/// What this format contributes to each tool's `{ops}`, by tool name.
+	pub argv: BTreeMap<String, Fragment>,
 }
 
 /// The value class of an operation parameter, `docs/grammar.md` §7.
@@ -79,6 +97,16 @@ pub struct Op {
 	/// Formats this applies to, or `*` for every format.
 	pub formats: Vec<String>,
 	pub param: Option<Param>,
+	/// What this operation contributes to each tool's `{ops}`, by tool name.
+	pub argv: BTreeMap<String, Fragment>,
+	/// Name of a compiled implementation, `docs/config.md` V12.
+	pub native: Option<String>,
+}
+
+impl Format {
+	pub fn fragment(&self, tool: &str) -> Option<&Fragment> {
+		self.argv.get(tool)
+	}
 }
 
 impl Op {
@@ -86,6 +114,13 @@ impl Op {
 	/// naming it is `E_UNSUPPORTED` rather than `E_NAME_UNKNOWN`.
 	pub fn is_implemented(&self) -> bool {
 		!self.formats.is_empty()
+	}
+
+	/// The fragment this operation contributes to a tool, if any. A tool with
+	/// no fragment cannot carry the operation, which is what backend selection
+	/// asks.
+	pub fn fragment(&self, tool: &str) -> Option<&Fragment> {
+		self.argv.get(tool)
 	}
 
 	pub fn applies_to(&self, format: &str) -> bool {
@@ -162,6 +197,19 @@ impl Registry {
 			.map(|(name, entry)| (name.to_ascii_lowercase(), entry.view()))
 			.collect();
 
+		let tool_names: BTreeSet<&str> = tools.keys().map(String::as_str).collect();
+
+		for (name, format) in &formats {
+			problems.extend(validate_fragments(
+				&format!("format '{name}'"),
+				&format.argv,
+				&tools,
+				&tool_names,
+				false,
+				label,
+			));
+		}
+
 		for (name, format) in &formats {
 			if !FAMILIES.contains(&format.family.as_str()) {
 				problems.push(fail(
@@ -206,6 +254,36 @@ impl Registry {
 						format!("{label}: operation '{key}' is an enum with no values"),
 					));
 				}
+			}
+
+			problems.extend(validate_fragments(
+				&format!("operation '{key}'"),
+				&op.argv,
+				&tools,
+				&tool_names,
+				op.param.is_some(),
+				label,
+			));
+
+			// V12: a native backend is compiled in, so a name that is not in the
+			// list can never be honoured.
+			if let Some(native) = &op.native {
+				if !NATIVE.contains(&native.as_str()) {
+					problems.push(fail(
+						Code::CfgValidation,
+						format!(
+							"{label}: operation '{key}' names native backend '{native}', which this build does not have"
+						),
+					));
+				}
+			}
+
+			// V3: a parameter no fragment interpolates never reaches a command.
+			if op.param.is_some() && !op.argv.is_empty() && !op.argv.values().any(Fragment::uses_value) {
+				problems.push(fail(
+					Code::CfgValidation,
+					format!("{label}: operation '{key}' declares a parameter that no fragment uses"),
+				));
 			}
 
 			ops.insert(key.to_ascii_lowercase(), op);
@@ -325,6 +403,79 @@ impl Registry {
 	pub fn names(&self) -> impl Iterator<Item = &str> {
 		self.names.iter().map(|(name, _)| name.as_str())
 	}
+}
+
+/// V1 and V9: a fragment may carry `{value}` and `{engine.<name>}`, both of which
+/// belong to the argument list, and must name a tool that exists.
+fn validate_fragments(
+	owner: &str,
+	argv: &BTreeMap<String, Fragment>,
+	tools: &BTreeMap<String, Tool>,
+	tool_names: &BTreeSet<&str>,
+	has_param: bool,
+	label: &str,
+) -> Vec<Error> {
+	let mut problems = Vec::new();
+
+	for (tool, fragment) in argv {
+		if !tool_names.contains(tool.as_str()) {
+			problems.push(fail(
+				Code::CfgValidation,
+				format!("{label}: {owner} declares argv for unknown tool '{tool}'"),
+			));
+			continue;
+		}
+
+		let engines = &tools[tool].engines;
+
+		for argument in &fragment.args {
+			for placeholder in placeholders(argument) {
+				match placeholder {
+					"value" if has_param => {}
+					"value" => problems.push(fail(
+						Code::CfgValidation,
+						format!("{label}: {owner} uses {{value}} but declares no parameter"),
+					)),
+					"input" | "ops" | "output" => problems.push(fail(
+						Code::CfgValidation,
+						format!("{label}: {owner} names {{{placeholder}}} in an argv fragment, which is a layout hole"),
+					)),
+					other => match other.strip_prefix("engine.") {
+						Some(engine) if engines.contains_key(engine) => {}
+						Some(engine) => problems.push(fail(
+							Code::CfgValidation,
+							format!(
+								"{label}: {owner} uses {{engine.{engine}}} but tool '{tool}' declares no such engine"
+							),
+						)),
+						None => problems.push(fail(
+							Code::CfgValidation,
+							format!("{label}: {owner} uses unknown placeholder '{{{other}}}'"),
+						)),
+					},
+				}
+			}
+		}
+	}
+
+	problems
+}
+
+/// Every `{name}` in an argument, without its braces.
+fn placeholders(argument: &str) -> Vec<&str> {
+	let mut found = Vec::new();
+	let mut rest = argument;
+
+	while let Some(open) = rest.find('{') {
+		let Some(close) = rest[open..].find('}') else {
+			break;
+		};
+
+		found.push(&rest[open + 1..open + close]);
+		rest = &rest[open + close + 1..];
+	}
+
+	found
 }
 
 /// Placeholders a layout may contain, `docs/config.md` V1. `{value}` and
@@ -552,6 +703,22 @@ struct FormatEntry {
 	tier: Tier,
 	#[serde(default)]
 	aliases: Vec<String>,
+	#[serde(default)]
+	argv: BTreeMap<String, FragmentEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FragmentEntry {
+	#[serde(default)]
+	args: Vec<String>,
+}
+
+impl FragmentEntry {
+	fn view(&self) -> Fragment {
+		Fragment {
+			args: self.args.clone(),
+		}
+	}
 }
 
 impl FormatEntry {
@@ -562,6 +729,11 @@ impl FormatEntry {
 			alpha: self.alpha,
 			tier: self.tier,
 			aliases: self.aliases.clone(),
+			argv: self
+				.argv
+				.iter()
+				.map(|(tool, entry)| (tool.clone(), entry.view()))
+				.collect(),
 		}
 	}
 }
@@ -579,6 +751,10 @@ struct OpEntry {
 	formats: Vec<String>,
 	#[serde(default)]
 	param: Option<Param>,
+	#[serde(default)]
+	argv: BTreeMap<String, FragmentEntry>,
+	#[serde(default)]
+	native: Option<String>,
 }
 
 impl OpEntry {
@@ -591,6 +767,12 @@ impl OpEntry {
 			exclusive: self.exclusive.clone(),
 			formats: self.formats.clone(),
 			param: self.param.clone(),
+			argv: self
+				.argv
+				.iter()
+				.map(|(tool, entry)| (tool.clone(), entry.view()))
+				.collect(),
+			native: self.native.clone(),
 		}
 	}
 }
@@ -769,6 +951,163 @@ mod tests {
 
 	fn command_tool(command: &str) -> String {
 		format!("command = '{command}'\nlayout = ['{{input}}', '{{ops}}', '{{output}}']")
+	}
+
+	/// Two tools, so that a fragment always has a real tool to name.
+	const TOOLS: &str = "\
+version = 'retype-config-1'
+
+[tools.magick]
+command = 'magick'
+layout = ['{input}', '{ops}', '{output}']
+
+[tools.pandoc]
+command = 'pandoc'
+layout = ['{input}', '{ops}', '{output}']
+engines = { pdf = ['weasyprint'] }
+
+";
+
+	fn config(extra: &str) -> Result<Registry, Vec<Code>> {
+		Registry::load(&[TOOLS, extra].concat()).map_err(|problems| problems.codes())
+	}
+
+	const WEBP: &str = "\
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+
+";
+
+	#[test]
+	fn a_format_fragment_is_kept_verbatim() {
+		let text = [
+			WEBP,
+			"[formats.webp.argv.magick]\nargs = ['-quality', '-define', 'webp:method=6']\n",
+		]
+		.concat();
+
+		let registry = config(&text).expect("loads");
+		let format = registry.format("webp").expect("declared");
+		let fragment = format.fragment("magick").expect("declared for magick");
+
+		assert_eq!(fragment.args, ["-quality", "-define", "webp:method=6"]);
+		assert!(!fragment.uses_value(), "a format has no parameter to interpolate");
+	}
+
+	#[test]
+	fn a_parameter_must_be_interpolated_by_some_fragment() {
+		let unused = [
+			WEBP,
+			"[ops.quality]\nslot = 5\nparam = { class = 'int' }\n",
+			"[ops.quality.argv.magick]\nargs = ['-quality']\n",
+		]
+		.concat();
+		assert_eq!(config(&unused).unwrap_err(), [Code::CfgValidation]);
+
+		let used = [
+			WEBP,
+			"[ops.quality]\nslot = 5\nparam = { class = 'int' }\n",
+			"[ops.quality.argv.magick]\nargs = ['-quality', '{value}']\n",
+		]
+		.concat();
+		assert!(config(&used).is_ok());
+	}
+
+	#[test]
+	fn a_value_needs_a_declared_parameter() {
+		let text = [
+			WEBP,
+			"[ops.quality]\nslot = 5\n",
+			"[ops.quality.argv.magick]\nargs = ['-quality', '{value}']\n",
+		]
+		.concat();
+		assert_eq!(config(&text).unwrap_err(), [Code::CfgValidation]);
+
+		let format_value = [WEBP, "[formats.webp.argv.magick]\nargs = ['{value}']\n"].concat();
+		assert_eq!(config(&format_value).unwrap_err(), [Code::CfgValidation]);
+	}
+
+	#[test]
+	fn a_layout_hole_is_not_a_fragment_placeholder() {
+		let text = [WEBP, "[formats.webp.argv.magick]\nargs = ['{input}']\n"].concat();
+		let problems = config(&text).unwrap_err();
+		assert!(!problems.is_empty(), "a layout hole in a fragment is refused");
+		assert!(problems.iter().all(|code| *code == Code::CfgValidation), "{problems:?}");
+
+		let ops = [WEBP, "[formats.webp.argv.magick]\nargs = ['{ops}']\n"].concat();
+		assert!(config(&ops).is_err(), "{{ops}} expands only in a layout");
+	}
+
+	#[test]
+	fn an_unknown_placeholder_is_refused() {
+		let text = [
+			WEBP,
+			"[formats.webp.argv.magick]\nargs = ['-size', '{width}x{height}']\n",
+		]
+		.concat();
+
+		let problems = config(&text).unwrap_err();
+		assert_eq!(problems.len(), 2, "one per placeholder");
+		assert!(problems.iter().all(|code| *code == Code::CfgValidation));
+	}
+
+	#[test]
+	fn a_native_backend_must_be_compiled_in() {
+		let text = [
+			WEBP,
+			"[ops.recode]\nslot = 0\nformats = ['webp']\nnative = 'webp-encode'\n",
+		]
+		.concat();
+		let problems = config(&text).unwrap_err();
+
+		assert_eq!(problems, [Code::CfgValidation], "no native backend exists yet");
+	}
+
+	#[test]
+	fn a_fragment_naming_an_undeclared_tool_is_refused() {
+		let text = [WEBP, "[formats.webp.argv.ffmpeg]\nargs = ['-c:v', 'libwebp']\n"].concat();
+		assert_eq!(config(&text).unwrap_err(), [Code::CfgValidation]);
+	}
+
+	#[test]
+	fn an_engine_placeholder_needs_a_declared_engine() {
+		let declared = [
+			WEBP,
+			"[ops.pdf]\nslot = 0\nformats = ['webp']\n",
+			"[ops.pdf.argv.pandoc]\nargs = ['--pdf-engine', '{engine.pdf}']\n",
+		]
+		.concat();
+		assert!(config(&declared).is_ok());
+
+		let absent = [
+			WEBP,
+			"[ops.pdf]\nslot = 0\nformats = ['webp']\n",
+			"[ops.pdf.argv.pandoc]\nargs = ['--pdf-engine', '{engine.tex}']\n",
+		]
+		.concat();
+		assert_eq!(config(&absent).unwrap_err(), [Code::CfgValidation]);
+	}
+
+	#[test]
+	fn a_placeholder_may_sit_inside_an_argument() {
+		let text = [
+			WEBP,
+			"[ops.quality]\nslot = 5\nparam = { class = 'int' }\n",
+			"[ops.quality.argv.magick]\nargs = ['-quality={value}']\n",
+		]
+		.concat();
+
+		let registry = config(&text).expect("loads");
+		let fragment = registry
+			.op("quality")
+			.and_then(|op| op.fragment("magick"))
+			.expect("declared");
+
+		assert_eq!(fragment.args, ["-quality={value}"]);
+		assert!(fragment.uses_value());
 	}
 
 	#[test]

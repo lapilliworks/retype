@@ -226,6 +226,8 @@ For an external backend, argv is the tool `layout` with substitutions:
 
 No splicing happens inside an argument; a placeholder occupying a whole argument is replaced by a list, a placeholder inside an argument is replaced by a string. Both forms are permitted and distinct.
 
+Placeholders belong to one position and not the other. `{input}`, `{ops}` and `{output}` are layout holes; `{value}` and `{engine.<name>}` are fragment holes. A fragment naming a layout hole, or a layout naming a fragment hole, is a validation error rather than a literal brace in the argv.
+
 For a native backend there is no argv: operations compile to a typed plan.
 
 Backend selection:
@@ -270,15 +272,15 @@ Loading fails, naming the file and key, on any of:
 | V1 | A placeholder outside `{input}`, `{ops}`, `{output}`, `{value}`, `{engine.<name>}`, or in the wrong position |
 | V2 | A `layout` that does not name `{input}`, `{ops}` and `{output}` exactly once each |
 | V3 | `{value}` in an entity that declares no `param`, or a declared `param` never used |
-| V4 | `{engine.<name>}` without a matching `engines` list, or an `engines` list that nothing uses |
+| V4 | `{engine.<name>}` naming an engine the tool does not declare |
 | V5 | A command containing a shell metacharacter or a space |
 | V6 | A name used twice, or a preset name equal to an operation name or alias |
 | V7 | A preset whose tokens do not parse, or a reference cycle |
 | V8 | An exclusive group with a single member, or a group declared but never used |
-| V9 | A format referenced by an operation but not declared |
+| V9 | A format or tool referenced by an operation or fragment but not declared |
 | V10 | A tier outside `exact`, `converted`, `delegated`, `docs/fidelity.md` |
 | V11 | `version_min` that does not parse as a version |
-| V12 | A `native` name not present in the compiled implementation list |
+| V12 | A `native` name not present in the compiled implementation list, which is empty until the first native backend lands |
 | V13 | A per-directory file defining `tools`, `formats`, `ops`, `presets`, or any key of the `[watch]` table |
 
 Warnings, not errors: a name that is a prefix of another name; a tool that fails its probe; a pair whose tier is `delegated` but has no `argv` fragment.
