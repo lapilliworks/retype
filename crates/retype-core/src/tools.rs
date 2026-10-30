@@ -179,6 +179,23 @@ fn probe_command<'a>(tool: &'a Tool, command: &str, path_env: &OsStr) -> ToolSta
 		};
 	};
 
+	// A tool that declares no probe is found, not run. Running a command to see
+	// whether it is usable is how a plan came to execute the very converter it
+	// was planning, and a converter is entitled to do work when started,
+	// `docs/tools.md` §3.
+	if tool.probe.is_empty() {
+		return ToolStatus {
+			tool,
+			command: command.to_string(),
+			path: Some(path),
+			version: None,
+			// A component claim needs output to check it against, so a tool that
+			// makes one without a probe stays unusable until it declares one.
+			missing_components: tool.components.clone(),
+			error: None,
+		};
+	}
+
 	match Command::new(&path).args(&tool.probe).output() {
 		Ok(output) => {
 			let stdout = String::from_utf8_lossy(&output.stdout);
@@ -292,6 +309,37 @@ mod tests {
 			layout: vec!["{input}".to_string(), "{ops}".to_string(), "{output}".to_string()],
 			engines: BTreeMap::new(),
 		}
+	}
+
+	#[test]
+	fn a_tool_without_a_probe_is_found_and_not_run() {
+		let dir = tempfile::tempdir().unwrap();
+		let marker = dir.path().join("ran");
+		let script = dir.path().join("converter");
+		std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+		}
+
+		let tool = Tool {
+			name: "converter".to_string(),
+			command: script.display().to_string(),
+			aliases: Vec::new(),
+			probe: Vec::new(),
+			version_min: None,
+			purpose: String::new(),
+			components: Vec::new(),
+			layout: vec!["{input}".to_string()],
+			engines: Default::default(),
+		};
+
+		let status = probe(&tool);
+
+		assert!(status.is_usable(), "{:?}", status.summary());
+		assert!(!marker.exists(), "a tool with no probe was executed at plan time");
 	}
 
 	#[test]

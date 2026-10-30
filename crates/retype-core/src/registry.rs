@@ -883,6 +883,15 @@ fn validate_tool(tool: &Tool, label: &str) -> Vec<Error> {
 	let mut problems = Vec::new();
 	let name = &tool.name;
 
+	// V16: a component is checked against probe output, so a tool that claims one
+	// without a probe has claimed something nothing can verify.
+	if !tool.components.is_empty() && tool.probe.is_empty() {
+		problems.push(fail(
+			Code::CfgValidation,
+			format!("{label}: tool '{name}' declares components but no probe to read them from"),
+		));
+	}
+
 	// V5: every command is exec'd, never handed to a shell, and a name may
 	// appear only once across the preferred command and its aliases.
 	let mut seen = BTreeSet::new();

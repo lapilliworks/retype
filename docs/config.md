@@ -84,7 +84,7 @@ layout = ['{input}', '{ops}', '{output}']
 |---|---|---|
 | `command` | yes | Executable, absolute or bare name. No shell metacharacters, no spaces |
 | `aliases` | no | Alternate executable names, tried in order when `command` is absent or unusable |
-| `probe` | no | Argv run by `retype doctor` to report a version. A tool that declares neither a probe nor a floor makes no version claim, so a local script is usable as it stands |
+| `probe` | no | Argv run to report a version: by `retype doctor`, and once at plan time. A tool that declares neither a probe nor a floor makes no version claim, so a local script is usable as it stands, and nothing runs it to find that out |
 | `version_min` | no | Minimum accepted version, compared against the probe output |
 | `purpose` | no | One line, printed by `retype doctor` |
 | `components` | no | Substrings the probe output has to mention, see 3.2 |
@@ -317,6 +317,7 @@ Loading fails, naming the file and key, on any of:
 | V10 | A tier outside `exact`, `converted`, `delegated`, `docs/fidelity.md` |
 | V11 | `version_min` that does not parse as a version |
 | V13 | A per-directory file defining `tools`, `formats`, `ops`, `presets`, or any key of the `[watch]` table |
+| V16 | `components` declared by a tool that declares no `probe` |
 
 V12 named an in-process backend and was retired with it. The number is not reused, so that a configuration error reported against an older build stays identifiable.
 
