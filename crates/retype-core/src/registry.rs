@@ -34,6 +34,43 @@ impl Fragment {
 	}
 }
 
+/// How `retype bench` makes its samples, `docs/config.md` §14.
+///
+/// A sample has to be produced for each family before a pair can be measured, and
+/// the argv that produces one is a property of the tool rather than of this
+/// program: `magick -size ... plasma:fractal` is ImageMagick's way of making an
+/// image, `ffmpeg -f lavfi` is FFmpeg's. Declaring it here keeps every tool name
+/// and every flag out of Rust and lets a user who knows their tools better
+/// say so.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Bench {
+	/// The format a family's sample is generated in, keyed by family.
+	seeds: BTreeMap<String, String>,
+	/// The argv that generates a sample, by family and tool name.
+	samples: BTreeMap<String, BTreeMap<String, Fragment>>,
+}
+
+impl Bench {
+	pub fn is_empty(&self) -> bool {
+		self.seeds.is_empty()
+	}
+
+	/// The format a family's sample is generated in.
+	pub fn seed(&self, family: &str) -> Option<&str> {
+		self.seeds.get(family).map(String::as_str)
+	}
+
+	/// Every family a sample can be generated for, in name order.
+	pub fn families(&self) -> impl Iterator<Item = &str> {
+		self.seeds.keys().map(String::as_str)
+	}
+
+	/// The tools that can generate a family's sample, in preference order.
+	pub fn sample(&self, family: &str) -> Option<&BTreeMap<String, Fragment>> {
+		self.samples.get(family)
+	}
+}
+
 /// A format the product can read or write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Format {
@@ -198,6 +235,8 @@ pub struct Registry {
 	undo: crate::undo::Policy,
 	/// Whether the record is also written onto the file, `docs/config.md` §10.
 	provenance: crate::provenance::Policy,
+	/// How `retype bench` makes its samples, `docs/config.md` §14.
+	bench: Bench,
 }
 
 impl Registry {
@@ -511,6 +550,28 @@ impl Registry {
 			}
 		}
 
+		let bench = match &document.bench {
+			Some(entry) => {
+				problems.extend(validate_bench(entry, &formats, &tool_names, label));
+
+				Bench {
+					seeds: entry.seed.clone(),
+					samples: entry
+						.sample
+						.iter()
+						.map(|(family, generators)| {
+							let generators = generators
+								.iter()
+								.map(|(tool, entry)| (tool.clone(), entry.view()))
+								.collect();
+							(family.clone(), generators)
+						})
+						.collect(),
+				}
+			}
+			None => Bench::default(),
+		};
+
 		let registry = Self {
 			tools,
 			presets,
@@ -521,6 +582,7 @@ impl Registry {
 			format_names,
 			undo,
 			provenance,
+			bench,
 			warnings: Vec::new(),
 		};
 
@@ -554,6 +616,11 @@ impl Registry {
 	/// Whether provenance is written onto the file, `docs/config.md` §10.
 	pub fn provenance(&self) -> crate::provenance::Policy {
 		self.provenance
+	}
+
+	/// How `retype bench` makes its samples, `docs/config.md` §14.
+	pub fn bench(&self) -> &Bench {
+		&self.bench
 	}
 
 	pub fn preset(&self, name: &str) -> Option<&Preset> {
@@ -936,6 +1003,85 @@ fn placeholders(argument: &str) -> Vec<&str> {
 /// argument list is built rather than where a path goes.
 const LAYOUT_PLACEHOLDERS: &[&str] = &["{input}", "{ops}", "{output}"];
 
+/// V19 to V21: a sample is generated once per family, from a format of that family,
+/// by a declared tool, and only `{output}` may vary.
+fn validate_bench(
+	entry: &BenchEntry,
+	formats: &BTreeMap<String, Format>,
+	tools: &BTreeSet<&str>,
+	label: &str,
+) -> Vec<Error> {
+	let mut problems = Vec::new();
+
+	for (family, seed) in &entry.seed {
+		if !FAMILIES.contains(&family.as_str()) {
+			problems.push(fail(
+				Code::CfgValidation,
+				format!("{label}: [bench.seed] names unknown family '{family}'"),
+			));
+			continue;
+		}
+
+		match formats.get(seed) {
+			None => problems.push(fail(
+				Code::CfgValidation,
+				format!("{label}: [bench.seed] {family} names undeclared format '{seed}'"),
+			)),
+			Some(format) if &format.family != family => problems.push(fail(
+				Code::CfgValidation,
+				format!(
+					"{label}: [bench.seed] {family} names '{seed}', which is a {} format",
+					format.family
+				),
+			)),
+			Some(_) => {}
+		}
+	}
+
+	for (family, generators) in &entry.sample {
+		if !entry.seed.contains_key(family) {
+			problems.push(fail(
+				Code::CfgValidation,
+				format!("{label}: [bench.sample] names '{family}', which has no [bench.seed] format"),
+			));
+		}
+
+		for (tool, fragment) in generators {
+			if !tools.contains(tool.as_str()) {
+				problems.push(fail(
+					Code::CfgValidation,
+					format!("{label}: [bench.sample.{family}] names undeclared tool '{tool}'"),
+				));
+			}
+
+			for argument in &fragment.args {
+				for hole in placeholders(argument) {
+					if hole != "output" {
+						problems.push(fail(
+							Code::CfgValidation,
+							format!(
+								"{label}: [bench.sample.{family}.{tool}] uses '{{{hole}}}', and only {{output}} may appear in a sample"
+							),
+						));
+					}
+				}
+			}
+		}
+	}
+
+	// A seed with no generator is a promise `retype bench` could never keep.
+	for family in entry.seed.keys() {
+		if entry.sample.get(family).is_none_or(|generators| generators.is_empty()) {
+			problems.push(fail(
+				Code::CfgValidation,
+				format!("{label}: [bench.seed] {family} has no sample generator"),
+			));
+		}
+	}
+
+	problems
+}
+
 fn validate_tool(tool: &Tool, label: &str) -> Vec<Error> {
 	let mut problems = Vec::new();
 	let name = &tool.name;
@@ -1284,6 +1430,16 @@ struct Document {
 	undo: Option<UndoEntry>,
 	#[serde(default)]
 	provenance: Option<ProvenanceEntry>,
+	#[serde(default)]
+	bench: Option<BenchEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BenchEntry {
+	#[serde(default)]
+	seed: BTreeMap<String, String>,
+	#[serde(default)]
+	sample: BTreeMap<String, BTreeMap<String, FragmentEntry>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1512,6 +1668,79 @@ mod tests {
 			codes(&format!("{HEADER}\n[undo]\non_overflow = 'ignore'\n")),
 			vec![Code::CfgValidation]
 		);
+	}
+
+	const BENCH_FORMATS: &str = "\
+[formats.jpg]
+family = 'image'
+lossy = true
+alpha = false
+tier = 'converted'
+
+[formats.mp3]
+family = 'audio'
+lossy = true
+alpha = false
+tier = 'converted'
+";
+
+	#[test]
+	fn a_bench_seed_must_name_a_declared_format_of_its_family() {
+		// Two problems for the first one: the format does not exist, and a seed
+		// without a generator could never run.
+		assert_eq!(
+			codes(&format!("{HEADER}\n{BENCH_FORMATS}[bench.seed]\nimage = 'png'\n")),
+			vec![Code::CfgValidation, Code::CfgValidation],
+			"an undeclared format cannot be generated"
+		);
+
+		assert_eq!(
+			codes(&format!("{HEADER}\n{BENCH_FORMATS}[bench.seed]\nimage = 'mp3'\n")),
+			vec![Code::CfgValidation, Code::CfgValidation],
+			"an audio format is not an image sample"
+		);
+	}
+
+	#[test]
+	fn a_bench_seed_without_a_generator_is_refused() {
+		assert_eq!(
+			codes(&format!("{HEADER}\n{BENCH_FORMATS}[bench.seed]\nimage = 'jpg'\n")),
+			vec![Code::CfgValidation],
+			"nothing could generate the sample"
+		);
+	}
+
+	#[test]
+	fn a_bench_generator_must_name_a_tool_and_take_only_an_output() {
+		let base = format!("{HEADER}\n{BENCH_FORMATS}[bench.seed]\nimage = 'jpg'\n");
+
+		assert_eq!(
+			codes(&format!("{base}\n[bench.sample.image.magick]\nargs = ['{{output}}']\n")),
+			vec![Code::CfgValidation],
+			"the tool is not declared"
+		);
+
+		let with_tool =
+			format!("{base}\n[tools.copy]\ncommand = 'cp'\nlayout = ['{{input}}', '{{ops}}', '{{output}}']\n");
+		assert_eq!(
+			codes(&format!(
+				"{with_tool}\n[bench.sample.image.copy]\nargs = ['{{input}}', '{{output}}']\n"
+			)),
+			vec![Code::CfgValidation],
+			"a sample has no input"
+		);
+	}
+
+	#[test]
+	fn the_builtin_bench_names_a_seed_and_a_generator_for_every_family_it_measures() {
+		let registry = builtin();
+		let bench = registry.bench();
+
+		for family in ["image", "video", "audio"] {
+			let seed = bench.seed(family).unwrap_or_else(|| panic!("{family} has a seed"));
+			assert_eq!(registry.format(seed).unwrap().family, family);
+			assert!(!bench.sample(family).unwrap().is_empty(), "{family} has a generator");
+		}
 	}
 
 	#[test]

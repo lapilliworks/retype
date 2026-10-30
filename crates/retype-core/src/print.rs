@@ -141,7 +141,7 @@ pub fn value(value: &Value) -> String {
 /// Decimal and binary units both get a turn, because the byte count alone does
 /// not say which one the user had in mind, and the larger unit that fits exactly
 /// is the one they would have written.
-fn size(bytes: u64) -> String {
+pub fn size(bytes: u64) -> String {
 	let bytes = u128::from(bytes);
 
 	for floor in [1_000u128, 0] {
@@ -168,6 +168,25 @@ fn size(bytes: u64) -> String {
 	}
 
 	unreachable!("a kb is a thousand bytes, so three decimal places always suffice")
+}
+
+/// A duration as a person reads it: tenths of a second under a minute, then
+/// minutes and seconds, then hours and minutes. An estimate is not a stopwatch, so
+/// nothing finer than a tenth is shown; the grammar's own spelling is `duration`.
+pub fn short_duration(time: std::time::Duration) -> String {
+	let seconds = time.as_secs_f64();
+
+	match seconds {
+		seconds if seconds < 60.0 => format!("{seconds:.1}s"),
+		seconds if seconds < 3_600.0 => {
+			let whole = seconds as u64;
+			format!("{}m{:02}s", whole / 60, whole % 60)
+		}
+		seconds => {
+			let whole = seconds as u64;
+			format!("{}h{:02}m", whole / 3_600, whole % 3_600 / 60)
+		}
+	}
 }
 
 /// The same order the parser accepts, largest unit first.

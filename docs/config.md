@@ -353,6 +353,9 @@ Loading fails, naming the file and key, on any of:
 | V16 | `components` declared by a tool that declares no `probe` |
 | V17 | `version_min` declared by a tool that declares no `probe`, since the floor could then never be met |
 | V18 | A `families` entry naming a family that does not exist |
+| V19 | A `[bench.seed]` naming an undeclared format, a format of another family, or a family with no sample generator |
+| V20 | A `[bench.sample]` naming a family with no `[bench.seed]`, or a tool that is not declared |
+| V21 | A sample argv naming a placeholder other than `{output}` |
 
 V12 named an in-process backend and was retired with it. The number is not reused, so that a configuration error reported against an older build stays identifiable.
 
@@ -369,6 +372,29 @@ retype doctor --emit      # a [tools] snippet reflecting what is installed
 
 `--emit` writes nothing unless asked to with `--write`. The emitted snippet is ordinary configuration and is validated like any other.
 
-## 14. Versioning
+## 14. Benchmark samples
+
+What `retype bench` converts, `docs/state.md` §7. Host-level.
+
+```toml
+[bench.seed]
+image = 'jpg'
+video = 'mp4'
+audio = 'mp3'
+
+[bench.sample.image.magick]
+args = ['-size', '2400x1600', '-seed', '0', 'plasma:fractal', '{output}']
+```
+
+| Key | Meaning |
+|---|---|
+| `[bench.seed]` | The format a family's sample is generated in, one entry per family that is measured |
+| `[bench.sample.<family>.<tool>]` | An argv that writes the sample to `{output}` |
+
+The argv is a tool's own way of drawing something, so it is declared rather than written in Rust. `{output}` is the only hole: the sample generator has no input. The first declared tool that is installed generates the sample, in `[backends]` order, so the preference the product states is the one the benchmark measures.
+
+A seed with no generator is refused at load, because `retype bench` could never keep that promise. A family may be measured without being listed here, by naming pairs with `--pair`.
+
+## 15. Versioning
 
 Version identifier: `retype-config-1`, declared at file top level. The key is mandatory in user and directory files and implicit in `builtin.toml`. A file with an unknown major fails to load; a file with a lower major is upgraded through a declared migration when one exists. Keys are never reused for different meanings, and a renamed key stays accepted as an alias for at least one major version.

@@ -44,6 +44,7 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 			&crate::explain::Request {
 				source: request.input,
 				intent: request.intent,
+				state_dir: request.state_dir,
 				json: request.json,
 				quiet: request.quiet,
 			},

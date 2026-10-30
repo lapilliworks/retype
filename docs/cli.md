@@ -21,7 +21,7 @@ retype <command> [arguments] [flags]
 | `list [--tiers]` | Configured pairs. `--tiers` adds one line per claim with its engine and version, `docs/fidelity.md` |
 | `tools list\|install\|update\|verify` | Managed toolchain inspection, acquisition and verification |
 | `doctor [--emit\|--write\|--report]` | Tool probing, availability, support bundle |
-| `bench` | Calibrate the estimator |
+| `bench [--pair <from>:<to>] [--family <name>]` | Measure this machine, so estimates are about it |
 | `init [--output <path>]` | Write the example configuration |
 | `version`, `completions <shell>` | |
 
@@ -104,7 +104,13 @@ A name that has a suffix this build has no format for is a diagnosis, because re
 
 `source` echoes the argument as written. The sentence and the outputs use the format's canonical spelling, so `explain photo.jpeg png` says `convert from jpg to png` and writes `photo.png`.
 
-The estimate needs an estimator calibrated against real files, which is `retype bench`'s job; until then `explain` prints no number rather than a guess.
+The estimate is a line per output, under the plan:
+
+```
+  estimate 0.4s  291.42kb  (measured)
+```
+
+It needs a file to size, so `explain` prints none when the name does not exist rather than guessing, and `convert --dry-run` prints one because it has the file. `measured` means this machine converted this pair when `retype bench` last ran; `family` means no measurement exists and the family constant is standing in, which is a guess with a provenance and is labelled as one, `docs/state.md` §7.
 
 A backend that the plan needs and the machine lacks is reported in the plan and exits 4, rather than failing without an explanation: the string was understood, the machine cannot carry it out.
 

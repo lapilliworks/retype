@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use retype_cli::error::Result;
-use retype_cli::{client, config, daemon, doctor, explain, init, list, state, verbose, why};
+use retype_cli::{bench, client, config, daemon, doctor, explain, init, list, state, verbose, why};
 use serde_json::Value;
 
 /// Automatic file format conversion on rename.
@@ -111,6 +111,17 @@ enum Command {
 
 		/// The intent string, as it would be written in a rename
 		intent: String,
+	},
+
+	/// Measure this machine, so estimates are about it rather than about a guess
+	Bench {
+		/// Measure this pair, written source:target; repeatable
+		#[arg(long = "pair", value_name = "SOURCE:TARGET")]
+		pairs: Vec<String>,
+
+		/// Measure every pair of this family; repeatable
+		#[arg(long = "family", value_name = "FAMILY")]
+		families: Vec<String>,
 	},
 
 	/// Show the configured formats, operations and backends
@@ -326,18 +337,48 @@ fn main() -> ExitCode {
 	}
 
 	if let Command::Explain { source, intent } = &cli.command {
-		let code = config::load().and_then(|registry| {
-			config::report_warnings(&registry);
+		let code = state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
+			config::load().and_then(|registry| {
+				config::report_warnings(&registry);
 
-			explain::run(
-				&registry,
-				&explain::Request {
-					source,
-					intent,
-					json: cli.json,
-					quiet: cli.quiet,
-				},
-			)
+				explain::run(
+					&registry,
+					&explain::Request {
+						source,
+						intent,
+						state_dir: &state_dir,
+						json: cli.json,
+						quiet: cli.quiet,
+					},
+				)
+			})
+		});
+
+		return match code {
+			Ok(code) => code,
+			Err(error) => {
+				eprintln!("retype: {error}");
+				ExitCode::from(error.exit_code())
+			}
+		};
+	}
+
+	if let Command::Bench { pairs, families } = &cli.command {
+		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
+			config::load().and_then(|registry| {
+				config::report_warnings(&registry);
+
+				bench::run(
+					&registry,
+					&state_dir,
+					&bench::Request {
+						pairs,
+						families,
+						json: cli.json,
+						quiet: cli.quiet,
+					},
+				)
+			})
 		});
 
 		return match code {
@@ -429,6 +470,7 @@ fn main() -> ExitCode {
 		| Command::Convert { .. }
 		| Command::Explain { .. }
 		| Command::Why { .. }
+		| Command::Bench { .. }
 		| Command::List { .. }
 		| Command::Init { .. }
 		| Command::Doctor { .. } => unreachable!("these are dispatched before the outcome is built"),

@@ -5,9 +5,11 @@
 //! reads nothing and writes nothing, so it is safe to run anywhere, and it is the
 //! one command that shows the whole chain from text to argv.
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use retype_core::error::{Code, Diagnostic};
+use retype_core::estimate::{Calibration, Estimate, Query};
 use retype_core::intent;
 use retype_core::job::Tier;
 use retype_core::output::{self, Derived};
@@ -25,6 +27,8 @@ use crate::error::Result;
 pub struct Request<'a> {
 	pub source: &'a str,
 	pub intent: &'a str,
+	/// Where `bench.toml` lives, so the estimate is this machine's.
+	pub state_dir: &'a Path,
 	pub json: bool,
 	pub quiet: bool,
 }
@@ -83,11 +87,28 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	let canonical = print::intent(&resolved, registry);
 	let sentence = print::sentence(&resolved, registry, &source.format);
 	let derived = output::derive(&source.stem, &source.format, &resolved.groups);
+	let estimates = estimates(registry, request.state_dir, &source, &plans);
 
 	if request.json {
-		print_json(&canonical, &sentence, &source.display(), &derived, &plans, installed);
+		print_json(
+			&canonical,
+			&sentence,
+			&source.display(),
+			&derived,
+			&plans,
+			&estimates,
+			installed,
+		);
 	} else if !request.quiet {
-		print_human(&canonical, &sentence, &source.display(), &derived, &plans, installed);
+		print_human(
+			&canonical,
+			&sentence,
+			&source.display(),
+			&derived,
+			&plans,
+			&estimates,
+			installed,
+		);
 	}
 
 	Ok(if installed {
@@ -158,12 +179,54 @@ fn source_of(registry: &Registry, name: &str) -> std::result::Result<Named, Diag
 	))
 }
 
+/// What each output is expected to cost, one entry per plan, absent when the file
+/// is not there to size.
+///
+/// `explain` asks about a name, which usually does not exist, so no estimate is
+/// printed rather than a guess: `docs/cli.md` §3. `convert --dry-run` reaches the
+/// same code with a real file and therefore gets one.
+fn estimates(registry: &Registry, state_dir: &Path, source: &Named, plans: &[Plan<'_>]) -> Vec<Option<Estimate>> {
+	let bytes = match std::fs::metadata(source.display()) {
+		Ok(metadata) if metadata.is_file() => metadata.len(),
+		_ => return vec![None; plans.len()],
+	};
+
+	let calibration = match Calibration::open(state_dir) {
+		Ok(calibration) => calibration,
+		Err(error) => {
+			// A calibration that cannot be read costs an estimate and nothing else,
+			// so it is reported and the explanation goes on.
+			eprintln!("warning: {error}");
+			Calibration::default()
+		}
+	};
+
+	plans
+		.iter()
+		.map(|plan| {
+			let family = registry
+				.format(&plan.format)
+				.map(|format| format.family.as_str())
+				.unwrap_or_default();
+
+			calibration.estimate(&Query {
+				source: &source.format,
+				target: &plan.format,
+				backend: plan.backend.name(),
+				family,
+				bytes,
+			})
+		})
+		.collect()
+}
+
 fn print_human(
 	canonical: &str,
 	sentence: &str,
 	source: &str,
 	derived: &[Derived],
 	plans: &[Plan<'_>],
+	estimates: &[Option<Estimate>],
 	installed: bool,
 ) {
 	println!("{:<10}{canonical}", "intent");
@@ -194,10 +257,28 @@ fn print_human(
 		if let Some((engine, candidate)) = &plan.engine {
 			println!("  {:<8}{engine} {candidate}", "engine");
 		}
+
+		if let Some(estimate) = estimates.get(index).copied().flatten() {
+			println!(
+				"  estimate {}  {}  ({})",
+				print::short_duration(estimate.time),
+				print::size(estimate.bytes),
+				estimate.basis.as_str()
+			);
+		}
 	}
 }
 
-fn print_json(canonical: &str, sentence: &str, source: &str, derived: &[Derived], plans: &[Plan<'_>], installed: bool) {
+#[allow(clippy::too_many_arguments)]
+fn print_json(
+	canonical: &str,
+	sentence: &str,
+	source: &str,
+	derived: &[Derived],
+	plans: &[Plan<'_>],
+	estimates: &[Option<Estimate>],
+	installed: bool,
+) {
 	let outputs: Vec<serde_json::Value> = plans
 		.iter()
 		.enumerate()
@@ -211,6 +292,11 @@ fn print_json(canonical: &str, sentence: &str, source: &str, derived: &[Derived]
 				"argv": render(&plan.command, plan),
 				"tier": tier(plan),
 				"engine": plan.engine.as_ref().map(|(name, candidate)| json!({"name": name, "resolved": candidate})),
+				"estimate": estimates.get(index).copied().flatten().map(|estimate| json!({
+					"seconds": (estimate.time.as_secs_f64() * 10.0).round() / 10.0,
+					"bytes": estimate.bytes,
+					"basis": estimate.basis.as_str(),
+				})),
 			})
 		})
 		.collect();

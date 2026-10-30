@@ -49,6 +49,30 @@ tokens = ['cap={value}', 'quality85']
 [backends]
 prefer = ['magick', 'ffmpeg', 'pandoc', '7zz']
 
+# How `retype bench` makes its samples, `docs/config.md` §14. A sample is generated
+# once per family, in the format named by `[bench.seed]`, by the first tool below
+# that is installed; the pair is then measured from that sample. The argv is a
+# tool's own way of drawing something, so it lives here rather than in Rust.
+[bench.seed]
+image = 'jpg'
+video = 'mp4'
+audio = 'mp3'
+
+# A photograph-like gradient rather than a flat colour, because a flat image
+# compresses to nothing and the size ratio a benchmark reports would be a lie.
+[bench.sample.image.magick]
+args = ['-size', '2400x1600', '-seed', '0', 'plasma:fractal', '{output}']
+
+# Five seconds of 720p at 30 fps, which is a short clip but enough for the encoder
+# to do real work and for the measurement to be about encoding rather than startup.
+# With a tone, because a video without audio cannot measure a video-to-audio pair.
+[bench.sample.video.ffmpeg]
+args = ['-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=30:duration=5', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '{output}']
+
+# A tone rather than silence, because silence compresses and a tone does not.
+[bench.sample.audio.ffmpeg]
+args = ['-f', 'lavfi', '-i', 'sine=frequency=440:duration=30', '{output}']
+
 [tools.magick]
 command = 'magick'
 probe = ['-version']
