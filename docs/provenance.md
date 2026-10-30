@@ -114,4 +114,8 @@ retype why <path>            # human readable, names the store
 retype why --json <path>     # stable fields for scripts
 ```
 
-Fields: `path`, `intent`, `backend`, `tier`, `created`, `outputs`, `store`, `confidence`, where `confidence` is `exact` when identity matches, `path-only` when only the path matched, and `none` for an unknown answer.
+Fields: `path`, `intent`, `backend`, `engine`, `tier`, `created`, `outputs`, `store`, `confidence`, where `confidence` is `exact` when identity matches, `path-only` when only the path matched, and `none` for an unknown answer. `store` is `journal-identity`, `journal-path` or `unknown`.
+
+The journal is what answers, so the horizon is the journal's: twice the undo retention with a floor of thirty days, §7. Identity matches first and the name only afterwards, because a converted file is usually renamed straight after and the recorded name is then wrong. An identity match also requires the recorded size to agree, since file ids are recycled.
+
+`engine` is the resolved candidate where a tool declares named engines, because the same intent through a different PDF engine is a different file. It is recorded with the job rather than derived at query time: the machine may have gained or lost an engine since.

@@ -125,6 +125,11 @@ pub fn pending(shared: &Shared, prepared: &Prepared<'_>, id: &JobId) -> Job {
 			.collect(),
 		state: JobState::Pending,
 		backend: prepared.plans.first().map(|plan| plan.backend.name().to_string()),
+		engine: prepared
+			.plans
+			.first()
+			.and_then(|plan| plan.engine.clone())
+			.map(|(name, candidate)| retype_core::job::Engine { name, candidate }),
 		machine: shared.machine.clone(),
 		error: None,
 	}
@@ -264,6 +269,7 @@ fn unsatisfied(shared: &Shared, request: &Request, problems: Diagnoses, id: &Job
 		outputs: Vec::new(),
 		state: JobState::Failed,
 		backend: None,
+		engine: None,
 		machine: shared.machine.clone(),
 		error: Some(JobError {
 			code: code.to_string(),

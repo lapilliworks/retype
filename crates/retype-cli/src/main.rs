@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use retype_cli::error::Result;
-use retype_cli::{client, config, daemon, doctor, explain};
+use retype_cli::{client, config, daemon, doctor, explain, state, why};
 use serde_json::Value;
 
 /// Automatic file format conversion on rename.
@@ -103,6 +103,12 @@ enum Command {
 
 		/// The intent string, as it would be written in a rename
 		intent: String,
+	},
+
+	/// Explain a file's conversion
+	Why {
+		/// The file to ask about
+		path: String,
 	},
 
 	/// Report external tool availability
@@ -292,6 +298,19 @@ fn main() -> ExitCode {
 		};
 	}
 
+	if let Command::Why { path } = &cli.command {
+		let code = state::resolve(cli.state_dir.clone())
+			.and_then(|state_dir| why::run(path, cli.json, cli.quiet, &state_dir, !cli.no_spawn));
+
+		return match code {
+			Ok(code) => code,
+			Err(error) => {
+				eprintln!("retype: {error}");
+				ExitCode::from(error.exit_code())
+			}
+		};
+	}
+
 	if let Command::Doctor { check, require } = &cli.command {
 		let code = config::load().and_then(|registry| {
 			config::report_warnings(&registry);
@@ -319,6 +338,7 @@ fn main() -> ExitCode {
 		| Command::Unwatch { .. }
 		| Command::Convert { .. }
 		| Command::Explain { .. }
+		| Command::Why { .. }
 		| Command::Doctor { .. } => unreachable!("these are dispatched before the outcome is built"),
 	};
 

@@ -152,9 +152,11 @@ retype undo <id|prefix|--last>
 retype why <path>
 ```
 
-`jobs list`, `jobs get`, `jobs cancel`, `jobs resume` and `undo` exist today; `jobs logs` and `why` arrive with the event stream. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled.
+`jobs list`, `jobs get`, `jobs cancel`, `jobs resume`, `undo` and `why` exist today; `jobs logs` arrives with the event stream. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled.
 
 `jobs get` answers with the whole record: the outputs, their bytes, their tier and their errors. It is the form a bug report or a script wants, so it prints JSON rather than a rendering of it.
+
+`why` takes a file and answers what produced it, naming the store that answered: `journal-identity` when the file is the one a record produced, which survives the rename that usually follows a conversion, `journal-path` when only the name matched, and `unknown` when nothing did. Identity alone is not trusted, because file ids are recycled, so the size has to agree as well. A file nothing produced is not an error: the command says so, and the record expires at twice the undo retention.
 
 `undo` reads the undo store rather than the journal, so it answers even when the journal is gone, and it removes the record it used: one record, one restore target.
 

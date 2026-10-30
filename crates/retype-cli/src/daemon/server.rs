@@ -231,6 +231,57 @@ impl Server {
 		}
 	}
 
+	/// What the journal says about a path, `docs/provenance.md` §8.
+	fn why(&self, request: &Request) -> Result<Response> {
+		use retype_core::provenance;
+
+		let Some(written) = request.params.get("path").and_then(|path| path.as_str()) else {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::IpcMethod, "why needs a path"),
+			));
+		};
+
+		let Ok(jobs) = self.shared.jobs.lock() else {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::IpcInternal, "the job list is poisoned"),
+			));
+		};
+
+		let answer = provenance::answer(&jobs, Path::new(written));
+		let mut fields = json!({
+			"path": written,
+			"store": answer.store.as_str(),
+			"confidence": answer.confidence.as_str(),
+		});
+
+		if let Some(job) = answer.job {
+			fields["job"] = json!(job.id);
+			fields["intent"] = json!(job.intent);
+			fields["backend"] = json!(job.backend);
+			fields["engine"] = json!(job.engine);
+			fields["created"] = json!(job.created);
+			fields["machine"] = json!(job.machine);
+			fields["outputs"] = match serde_json::to_value(&job.outputs) {
+				Ok(value) => value,
+				Err(error) => {
+					return Ok(Response::error(
+						request.id,
+						WireError::new(Code::IpcFrame, error.to_string()),
+					));
+				}
+			};
+		}
+
+		if let Some(output) = answer.output {
+			fields["tier"] = json!(output.tier);
+			fields["bytes"] = json!(output.bytes);
+		}
+
+		Ok(Response::ok(request.id, fields)?)
+	}
+
 	/// `retype convert` is a job like any other, `docs/ipc.md` §6: submitted,
 	/// journalled and run by a runner, so it shares cancellation and the queue's
 	/// accounting.
@@ -434,6 +485,7 @@ impl Server {
 			}],
 			state: JobState::Cancelled,
 			backend: None,
+			engine: None,
 			machine: self.machine.clone(),
 			error: None,
 		};
@@ -480,6 +532,7 @@ impl Server {
 					}).collect::<Vec<_>>()).unwrap_or_default(),
 				}),
 			)?,
+			"why" => self.why(request)?,
 			"jobs.get" => self.get(request)?,
 			"jobs.submit" => self.submit(request)?,
 			"jobs.cancel" => self.cancel(request)?,

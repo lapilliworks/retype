@@ -15,3 +15,4 @@ pub mod jobs;
 pub mod state;
 pub mod undo;
 pub mod watch;
+pub mod why;

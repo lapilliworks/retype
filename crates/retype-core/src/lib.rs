@@ -16,6 +16,7 @@ pub mod journal;
 pub mod output;
 pub mod plan;
 pub mod print;
+pub mod provenance;
 pub mod registry;
 pub mod resolve;
 pub mod tools;

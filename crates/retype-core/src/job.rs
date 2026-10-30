@@ -147,6 +147,13 @@ fn decode(byte: u8) -> Option<u8> {
 		.map(|index| index as u8)
 }
 
+/// A named engine and the candidate that answered for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Engine {
+	pub name: String,
+	pub candidate: String,
+}
+
 /// Where the job's input came from, as recorded at creation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
@@ -299,6 +306,11 @@ pub struct Job {
 	pub outputs: Vec<Output>,
 	pub state: JobState,
 	pub backend: Option<String>,
+	/// The engine that resolved for the backend, as `(name, candidate)`: the same
+	/// intent with a different engine produces a different file, so the record
+	/// has to say which one ran, `docs/config.md` §3.1.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub engine: Option<Engine>,
 	pub machine: String,
 	pub error: Option<JobError>,
 }
@@ -323,6 +335,7 @@ impl Job {
 			outputs,
 			state: JobState::Pending,
 			backend: None,
+			engine: None,
 			machine: machine.into(),
 			error: None,
 		})

@@ -119,6 +119,10 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 		outputs,
 		state,
 		backend: plans.first().map(|plan| plan.backend.name().to_string()),
+		engine: plans
+			.first()
+			.and_then(|plan| plan.engine.clone())
+			.map(|(name, candidate)| retype_core::job::Engine { name, candidate }),
 		machine: machine.to_string(),
 		error: None,
 	};

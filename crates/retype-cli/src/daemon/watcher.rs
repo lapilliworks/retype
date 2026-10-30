@@ -394,6 +394,10 @@ pub fn convert(
 		outputs,
 		state,
 		backend: plans.first().map(|plan| plan.backend.name().to_string()),
+		engine: plans
+			.first()
+			.and_then(|plan| plan.engine.clone())
+			.map(|(name, candidate)| retype_core::job::Engine { name, candidate }),
 		machine: shared.machine.clone(),
 		error: None,
 	};
@@ -462,6 +466,7 @@ fn running(
 		}],
 		state: JobState::Running,
 		backend: None,
+		engine: None,
 		machine: shared.machine.clone(),
 		error: None,
 	};
