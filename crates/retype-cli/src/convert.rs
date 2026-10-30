@@ -1,25 +1,25 @@
 //! `retype convert`, `docs/cli.md` §2.
 //!
-//! One input, one intent, and the outputs the intent names. The conversion runs in
-//! this process for now: the daemon path and the queue land with the job runner,
-//! and both journal the same record, so a job is undoable either way once `undo`
-//! exists.
+//! The conversion itself belongs to the daemon: a submitted job shares the
+//! journal, the runner pool and the cancellation path with the jobs a watcher
+//! creates, so `convert` cannot drift from what a rename does. This module is the
+//! client half, which submits and waits.
+//!
+//! Waiting is polling because the connection is request and answer, `docs/ipc.md`
+//! §5. One `jobs.get` per tenth of a second is nothing next to an encode, and it
+//! keeps the daemon free to answer everyone else, including a cancel.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
+use std::thread::sleep;
+use std::time::Duration;
 
-use retype_core::error::{Code, Diagnostic};
-use retype_core::job::JobId;
-use retype_core::job::{Job, JobState, Output, OutputState, Source, now_ms};
-use retype_core::journal::Journal;
-use retype_core::output;
-use retype_core::plan;
-use retype_core::print;
+use retype_core::error::Code;
 use retype_core::registry::Registry;
-use retype_core::resolve::{self, Source as Origin};
-use retype_core::{execute, intent};
+use serde_json::Value;
 
-use crate::error::Result;
+use crate::client;
+use crate::error::{Error, Result};
 
 pub struct Request<'a> {
 	pub input: &'a str,
@@ -30,148 +30,127 @@ pub struct Request<'a> {
 	pub dry_run: bool,
 	pub state_dir: &'a Path,
 	pub quiet: bool,
+	pub json: bool,
+	pub allow_spawn: bool,
 }
 
-pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
-	let input = PathBuf::from(request.input);
+/// How often a submission is asked about while it runs.
+const POLL: Duration = Duration::from_millis(100);
 
+pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	if request.dry_run {
 		return crate::explain::run(
 			registry,
 			&crate::explain::Request {
 				source: request.input,
 				intent: request.intent,
-				json: false,
+				json: request.json,
 				quiet: request.quiet,
 			},
 		);
 	}
 
-	let source = match source_of(registry, &input) {
-		Ok(source) => source,
-		Err(problem) => {
-			eprintln!("retype: {}: {}", problem.code, problem.message);
-			return Ok(ExitCode::from(3));
+	let mut client = client::connect_or_spawn(request.state_dir, request.allow_spawn)?;
+	let mut params = serde_json::json!({
+		"input": request.input,
+		"intent": request.intent,
+		"force": request.force,
+		"mode": "immediate",
+	});
+
+	if let Some(output) = request.output {
+		params["output"] = Value::String(output.to_string());
+	}
+
+	let submitted = match client.call("jobs.submit", params) {
+		Ok(answer) => answer,
+		// Everything that can fail before a byte moves fails at submission, with
+		// the code the same failure would have had locally, `docs/cli.md` §6.
+		Err(retype_ipc::ClientError::Rpc(error)) => {
+			eprintln!("retype: {}: {}", error.code, error.message);
+			return Ok(ExitCode::from(exit_code(&error.code)));
 		}
+		Err(other) => return Err(Error::Client(other)),
 	};
 
-	let parsed = match intent::parse(request.intent) {
-		Ok(parsed) => parsed,
-		Err(problems) => {
-			eprintln!("retype: {problems}");
-			return Ok(ExitCode::from(3));
-		}
-	};
+	// The submission connection ends here: a client that held it for the whole
+	// conversion would monopolise the daemon's connection slot, and then the
+	// `jobs cancel` that should be able to stop this job could not get in,
+	// `docs/ipc.md` §5.
+	drop(client);
 
-	let resolved = match resolve::resolve(
-		&parsed,
-		Origin {
-			format: &source.format,
-			is_directory: source.is_directory,
-		},
-		registry,
-	) {
-		Ok(resolved) => resolved,
-		Err(problems) => {
-			eprintln!("retype: {problems}");
-			return Ok(ExitCode::from(3));
-		}
-	};
+	let id = submitted
+		.get("id")
+		.and_then(Value::as_str)
+		.unwrap_or_default()
+		.to_string();
+	let job = wait(request.state_dir, request.allow_spawn, &id)?;
 
-	let plans = match plan::compile(registry, &retype_core::tools::Machine, &resolved) {
-		Ok(plans) => plans,
-		Err(problems) => {
-			eprintln!("retype: {problems}");
+	if request.json {
+		println!("{job}");
+	}
 
-			// "Cannot be done here" and "cannot be done" are different answers,
-			// `docs/cli.md` §6.
-			let code = match problems
-				.codes()
-				.iter()
-				.any(|code| matches!(code, Code::ToolMissing | Code::ToolVersion))
-			{
-				true => 4,
-				false => 3,
-			};
-
-			return Ok(ExitCode::from(code));
-		}
-	};
-
-	let paths = match targets(request, &plans, &source, &resolved, &input) {
-		Ok(paths) => paths,
-		Err(problem) => {
-			eprintln!("retype: {}: {}", problem.code, problem.message);
-			return Ok(ExitCode::from(3));
-		}
-	};
-
-	let (mut journal, _) = Journal::open(&request.state_dir.join("jobs.jsonl"))?;
-	let id = JobId::now()?;
-	let now = now_ms();
-
-	let mut outputs = Vec::new();
-	let mut states = Vec::new();
-	// The first thing that went wrong, as an exit code, `docs/cli.md` §6.
+	let outputs = job
+		.get("outputs")
+		.and_then(Value::as_array)
+		.cloned()
+		.unwrap_or_default();
 	let mut failure: Option<u8> = None;
 
-	for (plan, path) in plans.iter().zip(&paths) {
-		if path.exists() && !request.force {
-			eprintln!(
-				"retype: {}: {} already exists, and --force was not given",
-				Code::IoExists,
-				path.display()
-			);
-			states.push(OutputState::Failed);
-			outputs.push(record(path, plan, OutputState::Failed, None, None));
-			failure.get_or_insert(5);
-			continue;
-		}
+	for output in &outputs {
+		let path = output.get("path").and_then(Value::as_str).unwrap_or_default();
+		let state = output.get("state").and_then(Value::as_str).unwrap_or_default();
 
-		match execute::run(plan, &input, path) {
-			Ok(report) => {
-				if !request.quiet {
-					println!("{}  {}  {} bytes", path.display(), tier_name(plan), report.bytes);
+		match state {
+			"done" => {
+				if !request.quiet && !request.json {
+					println!(
+						"{path}  {}  {} bytes",
+						output.get("tier").and_then(Value::as_str).unwrap_or_default(),
+						output.get("bytes").and_then(Value::as_u64).unwrap_or_default()
+					);
+				}
+			}
+			_ => {
+				let error = output.get("error").and_then(Value::as_object);
+				let code = error
+					.and_then(|error| error.get("code"))
+					.and_then(Value::as_str)
+					.unwrap_or("E_TOOL_FAILED");
+				let message = error
+					.and_then(|error| error.get("message"))
+					.and_then(Value::as_str)
+					.unwrap_or("failed");
+
+				if !request.json {
+					eprintln!("retype: {code}: {message}");
 				}
 
-				states.push(OutputState::Done);
-				outputs.push(record(path, plan, OutputState::Done, Some(report.bytes), None));
-			}
-			Err(error) => {
-				eprintln!("retype: {error}");
-				states.push(OutputState::Failed);
-				outputs.push(record(path, plan, OutputState::Failed, None, Some(error.to_string())));
-				failure.get_or_insert(4);
+				failure.get_or_insert(exit_code_of(code));
 			}
 		}
 	}
 
-	let state = match (states.contains(&OutputState::Done), states.len()) {
-		(_, 0) => JobState::Failed,
-		(true, count) if count == states.len() => JobState::Done,
-		(true, _) => JobState::Partial,
-		(false, _) => JobState::Failed,
-	};
+	let state = job.get("state").and_then(Value::as_str).unwrap_or_default();
 
-	let job = Job {
-		id,
-		created: now,
-		updated: now_ms(),
-		source: Source {
-			path: input.clone(),
-			format: source.format.clone(),
-			size: std::fs::metadata(&input).map(|meta| meta.len()).unwrap_or_default(),
-			mtime_ns: 0,
-		},
-		intent: Some(print::intent(&resolved, registry)),
-		outputs,
-		state,
-		backend: plans.first().map(|plan| plan.backend.name().to_string()),
-		machine: crate::daemon::machine::load_or_create(request.state_dir)?,
-		error: None,
-	};
+	// `error` is present but null on a job that had none, so it has to be read as
+	// an object rather than as a key.
+	if let Some(error) = job.get("error").and_then(Value::as_object) {
+		let code = error.get("code").and_then(Value::as_str).unwrap_or("E_TOOL_FAILED");
 
-	journal.append(&job)?;
+		if !request.json {
+			eprintln!(
+				"retype: {code}: {}",
+				error.get("message").and_then(Value::as_str).unwrap_or("failed")
+			);
+		}
+
+		failure.get_or_insert(exit_code_of(code));
+	}
+
+	if state == "cancelled" {
+		failure.get_or_insert(4);
+	}
 
 	match failure {
 		Some(code) => Ok(ExitCode::from(code)),
@@ -179,89 +158,56 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	}
 }
 
-/// The paths the plans write to, in plan order, with `-o` applied.
-fn targets(
-	request: &Request<'_>,
-	plans: &[plan::Plan<'_>],
-	source: &Named,
-	resolved: &resolve::Resolved,
-	input: &Path,
-) -> std::result::Result<Vec<PathBuf>, Diagnostic> {
-	let derived = output::derive(&source.stem, &source.format, &resolved.groups);
+/// Ask until the job reaches a state that will not change, on a fresh connection
+/// each time so the daemon is never held.
+fn wait(state_dir: &Path, allow_spawn: bool, id: &str) -> Result<Value> {
+	loop {
+		let job = {
+			let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
+			client.call("jobs.get", serde_json::json!({"id": id}))?
+		};
 
-	match request.output {
-		Some(_) if plans.len() > 1 => Err(Diagnostic::global(
-			Code::UsageOutputCount,
-			format!("-o names one path and this intent produces {} outputs", plans.len()),
-		)),
-		Some(path) => Ok(vec![PathBuf::from(path)]),
-		// A derived name is a file name; the output belongs beside the input.
-		None => Ok(derived
-			.iter()
-			.map(|derived| match input.parent() {
-				Some(parent) => parent.join(&derived.path),
-				None => derived.path.clone(),
-			})
-			.collect()),
+		let state = job.get("state").and_then(Value::as_str).unwrap_or_default();
+
+		if matches!(state, "done" | "failed" | "partial" | "cancelled") {
+			return Ok(job);
+		}
+
+		sleep(POLL);
 	}
 }
 
-fn record(path: &Path, plan: &plan::Plan<'_>, state: OutputState, bytes: Option<u64>, error: Option<String>) -> Output {
-	Output {
-		path: path.to_path_buf(),
-		format: plan.format.clone(),
-		state,
-		bytes,
-		tier: plan.tier,
-		identity: None,
-		error: error.map(|message| retype_core::job::JobError {
-			code: Code::ToolFailed.to_string(),
-			message,
-		}),
+/// "Cannot be done here" and "cannot be done" are different answers,
+/// `docs/cli.md` §7. The categories are the ones `docs/errors.md` gives each
+/// code, restated here because a job carries its code as a string across the
+/// wire and the client is what turns it into a status.
+fn exit_code(code: &Code) -> u8 {
+	match code {
+		// The environment refused, not the request.
+		Code::ToolMissing
+		| Code::ToolVersion
+		| Code::ToolFailed
+		| Code::ToolTimeout
+		| Code::JobCancelled
+		| Code::JobInterrupted
+		| Code::IoLocked => 4,
+		// Something to retry: the filesystem or the moment.
+		Code::IoFailed
+		| Code::IoPermission
+		| Code::IoSpace
+		| Code::IoNotFound
+		| Code::IoExists
+		| Code::IoCorruptJournal => 5,
+		// A daemon that cannot be reached is its own code, handled before this.
+		Code::IpcUnavailable | Code::IpcVersion | Code::IpcHandshake | Code::IpcAuth => 6,
+		_ => 3,
 	}
 }
 
-struct Named {
-	stem: String,
-	format: String,
-	is_directory: bool,
-}
-
-/// The same reading of a name `explain` uses: a declared suffix makes it a file,
-/// a bare format names a format without a file, and no dot means a directory.
-fn source_of(registry: &Registry, path: &Path) -> std::result::Result<Named, Diagnostic> {
-	let name = path
-		.file_name()
-		.and_then(|name| name.to_str())
-		.ok_or_else(|| Diagnostic::global(Code::UsageArgs, format!("{} has no file name", path.display())))?;
-
-	if let Some((stem, format)) = registry.split(name) {
-		return Ok(Named {
-			stem: stem.to_string(),
-			format: format.to_string(),
-			is_directory: false,
-		});
-	}
-
-	if path.is_dir() {
-		return Ok(Named {
-			stem: name.to_string(),
-			format: "folder".to_string(),
-			is_directory: true,
-		});
-	}
-
-	Err(Diagnostic::global(
-		Code::FormatUnknown,
-		format!("'{name}' ends in a suffix this build has no format for, so it is not ours to convert"),
-	))
-}
-
-/// The tier as the command line spells it.
-fn tier_name(plan: &plan::Plan<'_>) -> &'static str {
-	match plan.tier {
-		retype_core::job::Tier::Exact => "exact",
-		retype_core::job::Tier::Converted => "converted",
-		retype_core::job::Tier::Delegated => "delegated",
+/// The same mapping, for a code that arrived as the string a job records.
+fn exit_code_of(code: &str) -> u8 {
+	match Code::parse(code) {
+		Some(code) => exit_code(&code),
+		None => 4,
 	}
 }

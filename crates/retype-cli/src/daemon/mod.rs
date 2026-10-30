@@ -4,6 +4,7 @@
 //! a request and answer. The event stream in `docs/ipc.md` §7 is what forces a
 //! connection per thread, and it arrives with the job queue.
 
+pub mod immediate;
 mod lock;
 pub mod machine;
 #[cfg(windows)]

@@ -57,7 +57,11 @@ Shell quoting is rarely needed: the intent character set excludes every shell me
 
 `--dry-run` is `explain` with a real file: same output, including the estimate from the file's actual size and the resolved backend.
 
-The command runs in this process for now, and journals the job it ran. A rename in a watched directory runs on the daemon's pool of runners, which is what bounds parallelism; `convert` does not go through it yet. Running through the daemon as an immediate job, and undo, arrive with the queue: the record written today is the one both will use, so a job converted now stays visible to `jobs list` and to `undo` once they exist.
+The command submits an `immediate` job to the daemon and waits for it, `docs/ipc.md` §6. Immediate means it does not queue behind a directory's renames: it is journalled, visible in `jobs list`, cancellable with `jobs cancel`, and shares the pool, so parallelism is bounded the same way for a person and a watcher.
+
+Everything that can fail before a byte moves fails at submission, with the code and the exit status the failure would have had locally, so a bad intent or a missing tool is reported without a job that only fails later. The client polls `jobs.get` while the job runs, which keeps the daemon free to answer anything else, including the cancel that stops it.
+
+A submitted conversion does not consume its source: `convert` was handed a path and leaves it where it is. Undo for one is therefore "remove the outputs and keep the source", which is not implemented; a rename in a watched directory is the undoable path today.
 
 A failure writes nothing and leaves nothing behind. The output is staged in its target directory and renamed into place only when the tool exits zero, so an output path is absent or complete, never empty and never half written.
 
@@ -148,13 +152,13 @@ retype undo <id|prefix|--last>
 retype why <path>
 ```
 
-`jobs list`, `jobs cancel`, `jobs resume` and `undo` exist today; `jobs get`, `jobs logs` and `why` arrive with the event stream. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled.
+`jobs list`, `jobs get`, `jobs cancel`, `jobs resume` and `undo` exist today; `jobs logs` and `why` arrive with the event stream. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled.
 
-`jobs resume` continues a `partial` job: an output that still carries the identity and size the job recorded is skipped, and the output that failed is run again from the source bytes, which come from the source path or from the undo record when a rename consumed the name.
+`jobs get` answers with the whole record: the outputs, their bytes, their tier and their errors. It is the form a bug report or a script wants, so it prints JSON rather than a rendering of it.
 
 `undo` reads the undo store rather than the journal, so it answers even when the journal is gone, and it removes the record it used: one record, one restore target.
 
-`jobs resume` continues a `partial` job: outputs that still match their recorded identity are skipped, the rest are run again, and `--force` re-runs all of them. Resume is available only while the source bytes are still reachable, which means the source path or the job's undo record. `jobs list --state partial` finds the candidates.
+`jobs resume` continues a `partial` job: an output that still carries the identity and size the job recorded is skipped, and the rest are run again from the source bytes, which come from the source path or from the undo record when a rename consumed the name. `--force` re-runs all of them, `jobs list --state partial` finds the candidates, and a job with neither source nor record is `E_JOB_RESUME_UNAVAILABLE`.
 
 Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the candidates printed. `jobs logs --follow` streams from the daemon until interrupted.
 

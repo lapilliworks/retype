@@ -165,3 +165,141 @@ fn a_name_with_no_declared_suffix_is_refused() {
 	assert_eq!(output.status.code(), Some(3));
 	assert!(String::from_utf8_lossy(&output.stderr).contains("E_FORMAT_UNKNOWN"));
 }
+
+#[test]
+fn a_submitted_job_is_visible_and_reachable_by_id() {
+	let fixture = Fixture::new();
+	let input = fixture.input();
+
+	fixture.convert(&["convert", input.to_str().unwrap(), "webp"]);
+
+	let listed = fixture.convert(&["jobs", "list"]);
+	let stdout = String::from_utf8_lossy(&listed.stdout);
+	assert!(stdout.contains("done"), "{stdout}");
+
+	let id = stdout.split_whitespace().next().expect("a job id").to_string();
+	let one = fixture.convert(&["jobs", "get", &id]);
+	let asked = String::from_utf8_lossy(&one.stdout);
+
+	assert_eq!(one.status.code(), Some(0), "{}", String::from_utf8_lossy(&one.stderr));
+	assert!(asked.contains("\"state\":\"done\""), "{asked}");
+	assert!(asked.contains("photo.webp"), "{asked}");
+}
+
+#[test]
+fn without_a_daemon_and_without_spawning_there_is_nothing_to_convert() {
+	let fixture = Fixture::new();
+	let input = fixture.input();
+
+	let output = fixture.convert(&["convert", input.to_str().unwrap(), "webp", "--no-spawn"]);
+
+	assert_eq!(output.status.code(), Some(6));
+	assert!(!fixture.dir.path().join("photo.webp").exists());
+}
+
+/// A configuration whose tool takes its time, so a job stays running long enough
+/// to be cancelled.
+#[cfg(unix)]
+fn slow_config(dir: &Path) -> PathBuf {
+	let script = dir.join("slow.sh");
+	fs::write(&script, "#!/bin/sh\nsleep 5\ncp \"$1\" \"$2\"\n").unwrap();
+
+	let mut permissions = fs::metadata(&script).unwrap().permissions();
+	std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+	fs::set_permissions(&script, permissions).unwrap();
+
+	let config = dir.join("slow.toml");
+	fs::write(
+		&config,
+		format!(
+			"\
+version = 'retype-config-1'
+
+[backends]
+prefer = ['slow']
+
+[tools.slow]
+command = '{}'
+layout = ['{{input}}', '{{ops}}', '{{output}}']
+
+[formats.png]
+family = 'image'
+lossy = false
+alpha = true
+tier = 'exact'
+
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+",
+			script.display()
+		),
+	)
+	.unwrap();
+
+	config
+}
+
+/// `jobs cancel` has to reach a submitted job while it runs, which is why the
+/// submitting client does not hold the daemon's connection while it waits.
+#[cfg(unix)]
+#[test]
+fn a_submitted_job_can_be_cancelled_while_it_runs() {
+	use std::time::{Duration, Instant};
+
+	let dir = tempfile::tempdir().unwrap();
+	let config = slow_config(dir.path());
+	let state = dir.path().join("state");
+	let input = dir.path().join("photo.png");
+	fs::write(&input, b"pixels").unwrap();
+
+	let mut convert = retype()
+		.args(["convert", input.to_str().unwrap(), "webp"])
+		.arg("--state-dir")
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config)
+		.stdout(std::process::Stdio::piped())
+		.stderr(std::process::Stdio::piped())
+		.spawn()
+		.unwrap();
+
+	let deadline = Instant::now() + Duration::from_secs(20);
+	let id = loop {
+		let listed = retype()
+			.args(["jobs", "list", "--state", "running"])
+			.arg("--state-dir")
+			.arg(&state)
+			.env("RETYPE_CONFIG", &config)
+			.output()
+			.unwrap();
+		let stdout = String::from_utf8_lossy(&listed.stdout);
+
+		if let Some(id) = stdout.split_whitespace().next().filter(|id| !id.is_empty()) {
+			break id.to_string();
+		}
+
+		assert!(Instant::now() < deadline, "the job never started running");
+		std::thread::sleep(Duration::from_millis(50));
+	};
+
+	retype()
+		.args(["jobs", "cancel", &id])
+		.arg("--state-dir")
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config)
+		.output()
+		.unwrap();
+
+	let finished = convert.wait().unwrap();
+	let mut stderr = String::new();
+	std::io::Read::read_to_string(&mut convert.stderr.unwrap(), &mut stderr).unwrap();
+
+	assert_eq!(finished.code(), Some(4), "{stderr}");
+	assert!(stderr.contains("E_JOB_CANCELLED"), "{stderr}");
+	assert!(
+		!dir.path().join("photo.webp").exists(),
+		"a cancelled job leaves no output"
+	);
+}

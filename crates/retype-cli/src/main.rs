@@ -130,6 +130,12 @@ enum JobsAction {
 		limit: Option<usize>,
 	},
 
+	/// Show one job as the daemon recorded it
+	Get {
+		/// A job id, or a prefix unique among the jobs
+		job: String,
+	},
+
 	/// Stop a job that is waiting or running
 	Cancel {
 		/// A job id, or a prefix unique among the jobs
@@ -179,6 +185,7 @@ fn main() -> ExitCode {
 				retype_cli::jobs::list(&state_dir, state.as_deref(), *limit, cli.json, !cli.no_spawn)
 			}
 			JobsAction::Cancel { job } => retype_cli::jobs::cancel(&state_dir, job, cli.json, !cli.no_spawn),
+			JobsAction::Get { job } => retype_cli::jobs::get(&state_dir, job, !cli.no_spawn),
 			JobsAction::Resume { job, force } => {
 				retype_cli::jobs::resume(&state_dir, job, *force, cli.json, !cli.no_spawn)
 			}
@@ -245,6 +252,8 @@ fn main() -> ExitCode {
 						dry_run: *dry_run,
 						state_dir: &state_dir,
 						quiet: cli.quiet,
+						json: cli.json,
+						allow_spawn: !cli.no_spawn,
 					},
 				)
 			})

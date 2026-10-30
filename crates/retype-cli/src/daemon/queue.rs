@@ -40,14 +40,27 @@ pub fn runners() -> usize {
 /// Wait this long for work before checking whether to stop.
 const IDLE: Duration = Duration::from_millis(200);
 
-/// One conversion, named by the rename that asked for it and identified before it
-/// starts, `docs/state.md` §2: a deferred job is addressable immediately.
+/// One conversion, identified before it starts, `docs/state.md` §2: a deferred job
+/// is addressable immediately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Work {
 	pub id: JobId,
-	pub root: PathBuf,
-	pub source: PathBuf,
-	pub target: PathBuf,
+	pub kind: Kind,
+}
+
+/// The two things a runner can be asked to do. They share the journal, the pool
+/// and the cancellation path, and differ in where the output name comes from: a
+/// rename names it, a submission is told it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+	/// A rename a watcher saw, `docs/watch.md`.
+	Rename {
+		root: PathBuf,
+		source: PathBuf,
+		target: PathBuf,
+	},
+	/// A conversion a client asked for, `docs/ipc.md` §6.
+	Immediate(crate::daemon::immediate::Request),
 }
 
 /// What a cancel request found.
@@ -277,7 +290,16 @@ fn serve(shared: &Shared, queue: &Queue, inflight: &Inflight) {
 		match queue.take(IDLE) {
 			Take::Work(work) => {
 				let cancellation = inflight.begin(&work.id);
-				convert(shared, &work, &cancellation);
+
+				match &work.kind {
+					Kind::Rename { root, source, target } => {
+						convert(shared, root, source, target, &work.id, &cancellation);
+					}
+					Kind::Immediate(request) => {
+						crate::daemon::immediate::run(shared, request, &work.id, &cancellation);
+					}
+				}
+
 				inflight.end(&work.id);
 			}
 			Take::Idle => continue,
@@ -371,9 +393,11 @@ tier = 'converted'
 
 			assert!(pool.submit(Work {
 				id: id(index),
-				root: photos.clone(),
-				source,
-				target,
+				kind: Kind::Rename {
+					root: photos.clone(),
+					source,
+					target,
+				},
 			}));
 		}
 
@@ -408,9 +432,11 @@ tier = 'converted'
 		fs::write(&source, b"pixels").unwrap();
 		assert!(pool.submit(Work {
 			id: id(0),
-			root: photos.clone(),
-			source,
-			target,
+			kind: Kind::Rename {
+				root: photos.clone(),
+				source,
+				target,
+			},
 		}));
 
 		let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -434,9 +460,11 @@ tier = 'converted'
 			.filter(|index| {
 				pool.submit(Work {
 					id: id(*index),
-					root: photos.clone(),
-					source: photos.join(format!("{index}.png")),
-					target: photos.join(format!("{index}.webp")),
+					kind: Kind::Rename {
+						root: photos.clone(),
+						source: photos.join(format!("{index}.png")),
+						target: photos.join(format!("{index}.webp")),
+					},
 				})
 			})
 			.count();

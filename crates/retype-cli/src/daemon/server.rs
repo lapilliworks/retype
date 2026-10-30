@@ -205,6 +205,107 @@ impl Server {
 	/// Stop a job that is waiting or running, `docs/ipc.md` §6. A job that has
 	/// finished is not cancellable, which is a state error rather than a silent
 	/// success.
+	/// One job in full, which is what a client polling a submitted conversion
+	/// needs: the terminal record carries the outputs, their bytes and their
+	/// errors.
+	fn get(&self, request: &Request) -> Result<Response> {
+		let Some(written) = request.params.get("id").and_then(|id| id.as_str()) else {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::IpcMethod, "jobs.get needs an id"),
+			));
+		};
+
+		match self.find(written) {
+			Some(job) => match serde_json::to_value(&job) {
+				Ok(value) => Ok(Response::ok(request.id, value)?),
+				Err(error) => Ok(Response::error(
+					request.id,
+					WireError::new(Code::IpcFrame, error.to_string()),
+				)),
+			},
+			None => Ok(Response::error(
+				request.id,
+				WireError::new(Code::JobState, format!("no job matches '{written}'")),
+			)),
+		}
+	}
+
+	/// `retype convert` is a job like any other, `docs/ipc.md` §6: submitted,
+	/// journalled and run by a runner, so it shares cancellation and the queue's
+	/// accounting.
+	fn submit(&self, request: &Request) -> Result<Response> {
+		use crate::daemon::immediate::{self, Request as Convert};
+
+		let Some(input) = request.params.get("input").and_then(|input| input.as_str()) else {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::IpcMethod, "jobs.submit needs an input"),
+			));
+		};
+
+		let Some(intent) = request.params.get("intent").and_then(|intent| intent.as_str()) else {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::IpcMethod, "jobs.submit needs an intent"),
+			));
+		};
+
+		// The only mode that exists so far. A rename is queued by the watcher
+		// rather than by a client, so there is nothing else to name yet.
+		if let Some(mode) = request.params.get("mode").and_then(|mode| mode.as_str()) {
+			if mode != "immediate" {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(Code::IpcMethod, format!("'{mode}' is not a mode this daemon runs")),
+				));
+			}
+		}
+
+		let asked = Convert {
+			input: PathBuf::from(input),
+			intent: intent.to_string(),
+			output: request
+				.params
+				.get("output")
+				.and_then(|output| output.as_str())
+				.map(str::to_string),
+			force: request
+				.params
+				.get("force")
+				.and_then(|force| force.as_bool())
+				.unwrap_or(false),
+		};
+
+		// Everything that can fail before a byte moves fails here, so the caller
+		// gets a diagnosis rather than a job that will only fail later.
+		let prepared = match immediate::prepare(&self.shared.registry, &asked) {
+			Ok(prepared) => prepared,
+			Err(problems) => {
+				let code = problems.codes().first().cloned().unwrap_or(Code::ToolFailed);
+
+				return Ok(Response::error(request.id, WireError::new(code, problems.to_string())));
+			}
+		};
+
+		let id = retype_core::job::JobId::now()?;
+		crate::daemon::watcher::publish(&self.shared, &immediate::pending(&self.shared, &prepared, &id));
+
+		let work = crate::daemon::queue::Work {
+			id: id.clone(),
+			kind: crate::daemon::queue::Kind::Immediate(asked),
+		};
+
+		if !self.pool.submit(work) {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::JobState, "the queue is full, so nothing was submitted"),
+			));
+		}
+
+		Ok(Response::ok(request.id, json!({"id": id, "state": "pending"}))?)
+	}
+
 	fn cancel(&self, request: &Request) -> Result<Response> {
 		let Some(written) = request.params.get("id").and_then(|id| id.as_str()) else {
 			return Ok(Response::error(
@@ -301,19 +402,26 @@ impl Server {
 	/// A queued job that never started still gets a record, so its id is answerable
 	/// afterwards.
 	fn record_cancelled(&self, id: &retype_core::job::JobId, work: &crate::daemon::queue::Work) {
+		use crate::daemon::queue::Kind;
+
+		let (source, target) = match &work.kind {
+			Kind::Rename { source, target, .. } => (source.clone(), target.clone()),
+			Kind::Immediate(request) => (request.input.clone(), request.input.clone()),
+		};
+
 		let job = Job {
 			id: id.clone(),
 			created: retype_core::job::now_ms(),
 			updated: retype_core::job::now_ms(),
 			source: Source {
-				path: work.source.clone(),
+				path: source,
 				format: String::new(),
 				size: 0,
 				mtime_ns: 0,
 			},
 			intent: None,
 			outputs: vec![Output {
-				path: work.target.clone(),
+				path: target,
 				format: String::new(),
 				state: OutputState::Failed,
 				bytes: None,
@@ -372,6 +480,8 @@ impl Server {
 					}).collect::<Vec<_>>()).unwrap_or_default(),
 				}),
 			)?,
+			"jobs.get" => self.get(request)?,
+			"jobs.submit" => self.submit(request)?,
 			"jobs.cancel" => self.cancel(request)?,
 			"jobs.resume" => self.resume(request)?,
 			"shutdown" => {

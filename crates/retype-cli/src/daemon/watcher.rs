@@ -225,9 +225,11 @@ fn spawn_worker(
 
 				let work = crate::daemon::queue::Work {
 					id,
-					root: watched_root.clone(),
-					source: fact.source,
-					target: fact.target,
+					kind: crate::daemon::queue::Kind::Rename {
+						root: watched_root.clone(),
+						source: fact.source,
+						target: fact.target,
+					},
 				};
 
 				if !pool.submit(work) {
@@ -246,9 +248,14 @@ fn spawn_worker(
 }
 
 /// Turn one rename into jobs, or explain in the log why it is not one.
-pub fn convert(shared: &Shared, work: &crate::daemon::queue::Work, cancellation: &Cancellation) {
-	let (root, source, target) = (&work.root, &work.source, &work.target);
-
+pub fn convert(
+	shared: &Shared,
+	root: &Path,
+	source: &Path,
+	target: &Path,
+	id: &retype_core::job::JobId,
+	cancellation: &Cancellation,
+) {
 	let (Some(source_name), Some(target_name)) = (
 		source.file_name().and_then(|name| name.to_str()),
 		target.file_name().and_then(|name| name.to_str()),
@@ -293,7 +300,7 @@ pub fn convert(shared: &Shared, work: &crate::daemon::queue::Work, cancellation:
 		}
 	};
 
-	let id = work.id.clone();
+	let id = id.clone();
 	let now = now_ms();
 	let mut outputs = Vec::new();
 	running(shared, &id, root, source, source_format, target, &resolved);
@@ -391,26 +398,32 @@ pub fn convert(shared: &Shared, work: &crate::daemon::queue::Work, cancellation:
 		error: None,
 	};
 
-	// The journal is the record; the in-memory list is what `jobs.list` answers
-	// from until it also reads the journal.
-	if let Ok(mut journal) = shared.journal.lock() {
-		if let Err(error) = journal.append(&job) {
-			eprintln!("retype: cannot journal {}: {error}", target.display());
-		}
-	}
-
-	if let Ok(mut jobs) = shared.jobs.lock() {
-		// The terminal record replaces the `running` one for the same id.
-		match jobs.iter_mut().find(|existing| existing.id == job.id) {
-			Some(existing) => *existing = job,
-			None => jobs.push(job),
-		}
-	}
+	publish(shared, &job);
 
 	// Nothing was produced, so there is nothing to undo: the source is where it
 	// always was and the record would only describe a file that never changed.
 	if state != JobState::Done && state != JobState::Partial {
 		let _ = store.remove(&id);
+	}
+}
+
+/// Put a snapshot in the journal and in the list `jobs.list` answers from.
+///
+/// The journal is the record; the list is the same records, kept in memory so a
+/// client does not read a file per request. A later snapshot for the same id
+/// replaces the earlier one in both.
+pub fn publish(shared: &Shared, job: &Job) {
+	if let Ok(mut journal) = shared.journal.lock() {
+		if let Err(error) = journal.append(job) {
+			eprintln!("retype: cannot journal {}: {error}", job.id);
+		}
+	}
+
+	if let Ok(mut jobs) = shared.jobs.lock() {
+		match jobs.iter_mut().find(|existing| existing.id == job.id) {
+			Some(existing) => *existing = job.clone(),
+			None => jobs.push(job.clone()),
+		}
 	}
 }
 

@@ -107,6 +107,8 @@ Request timeout defaults to 5 s. No method blocks on work that can outlive it.
 | `immediate` | `retype convert` | Bypasses the queue and starts now, still cancellable and still journalled |
 | `queued` | A rename | Normal queue admission, bounded parallelism, interactive priority |
 
+`jobs.submit` reads `input`, `intent`, an optional `output` and `force`, and answers with the job id once the job is planned and journalled. Everything that can fail before a byte moves fails here, so a caller gets a diagnosis rather than a job that will only fail later. A submission that needs its result polls `jobs.get`, which answers with the whole record: the outputs, their bytes, their tier and their errors.
+
 `jobs.resume` continues a `partial` job, skipping outputs that still match their recorded identity, and reports `E_JOB_RESUME_UNAVAILABLE` when neither the source path nor the undo record holds the source bytes.
 
 `jobs.get`, `undo` and `jobs.resume` accept a full ULID or a unique prefix. A prefix matching two jobs is `E_IPC_AMBIGUOUS` with the candidates.
