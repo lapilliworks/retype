@@ -148,7 +148,9 @@ retype undo <id|prefix|--last>
 retype why <path>
 ```
 
-`jobs list` and `jobs cancel` exist today; the rest arrive with the undo store and the event stream. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled.
+`jobs list`, `jobs cancel` and `undo` exist today; `jobs get`, `jobs resume`, `jobs logs` and `why` arrive with the recorded output identities and the event stream. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled.
+
+`undo` reads the undo store rather than the journal, so it answers even when the journal is gone, and it removes the record it used: one record, one restore target.
 
 `jobs resume` continues a `partial` job: outputs that still match their recorded identity are skipped, the rest are run again, and `--force` re-runs all of them. Resume is available only while the source bytes are still reachable, which means the source path or the job's undo record. `jobs list --state partial` finds the candidates.
 

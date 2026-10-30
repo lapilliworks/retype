@@ -42,6 +42,16 @@ enum Command {
 		detached: bool,
 	},
 
+	/// Reverse a job: put the source back and remove what it produced
+	Undo {
+		/// A job id, or a prefix unique among the undo records
+		job: Option<String>,
+
+		/// Undo the most recent job
+		#[arg(long)]
+		last: bool,
+	},
+
 	/// Inspect and control jobs
 	Jobs {
 		#[command(subcommand)]
@@ -139,6 +149,19 @@ enum DaemonAction {
 
 fn main() -> ExitCode {
 	let cli = Cli::parse();
+
+	if let Command::Undo { job, last } = &cli.command {
+		let code = retype_cli::state::resolve(cli.state_dir.clone())
+			.and_then(|state_dir| retype_cli::undo::run(&state_dir, job.as_deref(), *last, cli.json));
+
+		return match code {
+			Ok(code) => code,
+			Err(error) => {
+				eprintln!("retype: {error}");
+				ExitCode::from(error.exit_code())
+			}
+		};
+	}
 
 	if let Command::Jobs { action } = &cli.command {
 		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| match action {
@@ -268,7 +291,8 @@ fn main() -> ExitCode {
 			None => daemon::run(cli.state_dir.clone(), !detached),
 			Some(action) => control(&cli, action),
 		},
-		Command::Jobs { .. }
+		Command::Undo { .. }
+		| Command::Jobs { .. }
 		| Command::Watch { .. }
 		| Command::Unwatch { .. }
 		| Command::Convert { .. }

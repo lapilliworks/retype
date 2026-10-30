@@ -18,5 +18,6 @@ pub mod print;
 pub mod registry;
 pub mod resolve;
 pub mod tools;
+pub mod undo;
 pub mod value;
 pub mod watches;

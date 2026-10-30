@@ -38,8 +38,11 @@ impl Server {
 			);
 		}
 
+		let machine = machine::load_or_create(state_dir)?;
 		let shared = Arc::new(Shared {
 			registry: crate::config::load()?,
+			machine: machine.clone(),
+			state_dir: state_dir.to_path_buf(),
 			journal: Mutex::new(journal),
 			jobs: Mutex::new(replay.jobs),
 			recent: Default::default(),
@@ -52,7 +55,7 @@ impl Server {
 			endpoint: None,
 			shared,
 			pool,
-			machine: machine::load_or_create(state_dir)?,
+			machine,
 			started: Instant::now(),
 			stopped: false,
 		})
