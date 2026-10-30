@@ -71,10 +71,46 @@ impl Bench {
 	}
 }
 
+/// Which way a format can be used, `docs/tools.md` §1.
+///
+/// The capability tuple names a direction because a format is not symmetric:
+/// `dng` is decoded and never written, `pdf` is written and never read, and a pair
+/// that ignores the difference is a promise to fail once the user has waited for
+/// it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+	/// Reading only.
+	Decode,
+	/// Writing only.
+	Encode,
+	#[default]
+	Both,
+}
+
+impl Direction {
+	pub fn can_decode(self) -> bool {
+		matches!(self, Self::Decode | Self::Both)
+	}
+
+	pub fn can_encode(self) -> bool {
+		matches!(self, Self::Encode | Self::Both)
+	}
+
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Decode => "decode",
+			Self::Encode => "encode",
+			Self::Both => "both",
+		}
+	}
+}
+
 /// A format the product can read or write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Format {
 	pub family: String,
+	pub direction: Direction,
 	pub lossy: bool,
 	pub alpha: bool,
 	pub tier: Tier,
@@ -300,7 +336,7 @@ impl Registry {
 		if problems.is_empty() {
 			let before = base.clone();
 			merge(&mut base, &over);
-			prune_preference(&before, &mut base);
+			prune_removed(&before, &mut base);
 		}
 
 		if !problems.is_empty() {
@@ -1069,16 +1105,6 @@ fn validate_bench(
 		}
 	}
 
-	// A seed with no generator is a promise `retype bench` could never keep.
-	for family in entry.seed.keys() {
-		if entry.sample.get(family).is_none_or(|generators| generators.is_empty()) {
-			problems.push(fail(
-				Code::CfgValidation,
-				format!("{label}: [bench.seed] {family} has no sample generator"),
-			));
-		}
-	}
-
 	problems
 }
 
@@ -1279,13 +1305,18 @@ fn table(value: &toml::Value, path: &str) -> toml::value::Table {
 /// A tool the user removed cannot stay in the preference list. Dropping it is the
 /// only reading that does not force a user who disables one tool to restate the
 /// whole order, and it is narrow: a name that was never declared still fails V9.
-fn prune_preference(before: &toml::Value, merged: &mut toml::Value) {
+/// Take a removed tool out of everything that named it.
+///
+/// `enabled = false` means "this machine does not have it", and a fragment that
+/// names it is not a capability of its own: it is how a format reaches that tool.
+/// Leaving the fragments behind would make disabling one tool a validation error
+/// in some other table, which is a worse answer than removing what cannot be used,
+/// `docs/config.md` §2.
+fn prune_removed(before: &toml::Value, merged: &mut toml::Value) {
 	let names = |value: &toml::Value| -> Vec<String> { table(value, "tools").keys().cloned().collect() };
+	let kept = names(merged);
 
-	let removed: Vec<String> = names(before)
-		.into_iter()
-		.filter(|tool| !names(merged).contains(tool))
-		.collect();
+	let removed: Vec<String> = names(before).into_iter().filter(|tool| !kept.contains(tool)).collect();
 
 	if removed.is_empty() {
 		return;
@@ -1300,6 +1331,30 @@ fn prune_preference(before: &toml::Value, merged: &mut toml::Value) {
 			name.as_str()
 				.is_none_or(|name| !removed.iter().any(|removed| removed == name))
 		});
+	}
+
+	// Every table that carries an `argv` keyed by tool name: formats and operations.
+	for section in ["formats", "ops"] {
+		let Some(entries) = merged.get_mut(section).and_then(toml::Value::as_table_mut) else {
+			continue;
+		};
+
+		for (_, entry) in entries.iter_mut() {
+			if let Some(argv) = entry.get_mut("argv").and_then(toml::Value::as_table_mut) {
+				for tool in &removed {
+					argv.remove(tool);
+				}
+			}
+		}
+	}
+
+	// And the benchmark's sample generators, which are keyed by tool as well.
+	if let Some(samples) = merged.get_mut("bench").and_then(|bench| bench.get_mut("sample")) {
+		for (_, generators) in samples.as_table_mut().into_iter().flatten() {
+			for tool in &removed {
+				generators.as_table_mut().map(|generators| generators.remove(tool));
+			}
+		}
 	}
 }
 
@@ -1537,6 +1592,8 @@ impl ToolEntry {
 #[derive(Debug, Deserialize)]
 struct FormatEntry {
 	family: String,
+	#[serde(default)]
+	direction: Direction,
 	lossy: bool,
 	alpha: bool,
 	tier: Tier,
@@ -1564,6 +1621,7 @@ impl FormatEntry {
 	fn view(&self) -> Format {
 		Format {
 			family: self.family.clone(),
+			direction: self.direction,
 			lossy: self.lossy,
 			alpha: self.alpha,
 			tier: self.tier,
@@ -1686,28 +1744,28 @@ tier = 'converted'
 
 	#[test]
 	fn a_bench_seed_must_name_a_declared_format_of_its_family() {
-		// Two problems for the first one: the format does not exist, and a seed
-		// without a generator could never run.
 		assert_eq!(
 			codes(&format!("{HEADER}\n{BENCH_FORMATS}[bench.seed]\nimage = 'png'\n")),
-			vec![Code::CfgValidation, Code::CfgValidation],
+			vec![Code::CfgValidation],
 			"an undeclared format cannot be generated"
 		);
 
 		assert_eq!(
 			codes(&format!("{HEADER}\n{BENCH_FORMATS}[bench.seed]\nimage = 'mp3'\n")),
-			vec![Code::CfgValidation, Code::CfgValidation],
+			vec![Code::CfgValidation],
 			"an audio format is not an image sample"
 		);
 	}
 
 	#[test]
-	fn a_bench_seed_without_a_generator_is_refused() {
-		assert_eq!(
-			codes(&format!("{HEADER}\n{BENCH_FORMATS}[bench.seed]\nimage = 'jpg'\n")),
-			vec![Code::CfgValidation],
-			"nothing could generate the sample"
-		);
+	fn a_bench_seed_may_outlive_its_generator() {
+		// Removing a tool removes the generators that named it, and the seed is the
+		// user's statement about which format a family is sampled in rather than a
+		// promise that a tool is installed. `retype bench` reports the family as
+		// unmeasurable instead of the configuration failing to load.
+		let registry = Registry::load(&format!("{HEADER}\n{BENCH_FORMATS}[bench.seed]\nimage = 'jpg'\n"));
+
+		assert!(registry.is_ok());
 	}
 
 	#[test]
@@ -1728,6 +1786,35 @@ tier = 'converted'
 			)),
 			vec![Code::CfgValidation],
 			"a sample has no input"
+		);
+	}
+
+	#[test]
+	fn a_format_says_which_way_it_can_be_used() {
+		let registry = Registry::load(&format!(
+			"{HEADER}\n[formats.pdf]\nfamily = 'document'\ndirection = 'encode'\nlossy = true\nalpha = false\ntier = 'converted'\n\
+			 \n[formats.png]\nfamily = 'image'\nlossy = false\nalpha = true\ntier = 'converted'\n"
+		))
+		.unwrap();
+
+		assert_eq!(registry.format("pdf").unwrap().direction, Direction::Encode);
+		assert_eq!(
+			registry.format("png").unwrap().direction,
+			Direction::Both,
+			"both is the default, because most formats are both"
+		);
+		assert!(!Direction::Encode.can_decode());
+		assert!(Direction::Encode.can_encode());
+		assert!(!Direction::Decode.can_encode());
+	}
+
+	#[test]
+	fn a_direction_that_is_not_one_of_the_three_is_refused() {
+		assert_eq!(
+			codes(&format!(
+				"{HEADER}\n[formats.pdf]\nfamily = 'document'\ndirection = 'read'\nlossy = true\nalpha = false\ntier = 'converted'\n"
+			)),
+			vec![Code::CfgParse]
 		);
 	}
 
@@ -1777,8 +1864,9 @@ tier = 'converted'
 		let registry = builtin();
 
 		assert!(registry.format("jpg").is_some());
-		// Nine image formats, four video containers and four audio ones.
-		assert_eq!(registry.formats().count(), 17);
+		// Nine image formats, four video containers, four audio ones and six
+		// documents.
+		assert_eq!(registry.formats().count(), 23);
 		assert_eq!(registry.ops().count(), 30);
 
 		// Every shipped tool says which families it carries, because a tool without
@@ -2376,6 +2464,31 @@ enabled = false
 			!registry.backends().iter().any(|name| name == "pandoc"),
 			"a removed tool leaves the preference list with it"
 		);
+	}
+
+	#[test]
+	fn removing_a_tool_removes_what_named_it() {
+		// `enabled = false` on a tool means this machine does not have it, and a
+		// fragment naming it is how a format reaches that tool rather than a
+		// capability of its own. Leaving them behind made disabling ImageMagick a
+		// V9 error in every format that had a fragment for it.
+		let registry = merged(
+			"\
+version = 'retype-config-1'
+
+[tools.magick]
+enabled = false
+",
+		)
+		.expect("loads");
+
+		assert!(registry.tool("magick").is_none());
+		assert!(registry.format("jpg").is_some(), "the format stays declared");
+		assert!(
+			registry.format("jpg").unwrap().fragment("magick").is_none(),
+			"and so does nothing that pointed at the removed tool"
+		);
+		assert!(!registry.backends().iter().any(|name| name == "magick"));
 	}
 
 	#[test]

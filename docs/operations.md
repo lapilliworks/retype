@@ -128,7 +128,12 @@ Per-format constraints of this kind come from `docs/tools.md`, because they are 
 
 ## 6. Not specified yet
 
-`at`, `fps`, `mute` and `cap` have landed for video and audio, `docs/tools.md` §3.1. `trim`, `speed`, `normalize`, `mono`, `bitrate`, `codec`, `page` and `dpi` are reserved with their slots and parameters. Ranges, defaults and per-container applicability are defined with the video, audio and document verticals. Until then a job that uses them is `E_UNSUPPORTED`, not `E_NAME_UNKNOWN`.
+`at`, `fps`, `mute` and `cap` have landed for video and audio, `docs/tools.md` §3.1. Documents landed with their formats and no operations: `md`, `html`, `docx`, `odt`, `epub` and `pdf` convert through pandoc, `docs/tools.md` §5.
+
+`trim`, `speed`, `normalize`, `mono`, `bitrate`, `codec`, `page` and `dpi` stay reserved with their slots and parameters, and a job that uses one is `E_UNSUPPORTED` rather than `E_NAME_UNKNOWN`. Two of them have a reason rather than a pending vertical:
+
+- `page` and `trim` take a `range`, and a fragment has one `{value}` hole. Expressing a range needs an argument that can carry two numbers
+- `dpi` means something different to every document engine, and nothing at all to `docx`: pandoc's variable reaches a LaTeX preamble and a typst document alike only by accident. A dial that silently does nothing in half its targets is worse than a dial that refuses
 
 ## 7. Presets
 

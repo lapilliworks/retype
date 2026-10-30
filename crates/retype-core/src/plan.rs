@@ -134,6 +134,20 @@ fn plan_group<'a>(
 	group: &resolve::Group,
 	origin: &str,
 ) -> Result<Plan<'a>, Vec<Error>> {
+	// The other direction of the same rule: a format with no writer cannot be a
+	// target, whatever the backend claims.
+	if let Some(format) = registry.format(&group.format) {
+		if !format.direction.can_encode() {
+			return Err(vec![Error::Diagnostic(Diagnostic::global(
+				Code::Unsupported,
+				format!(
+					"{} is read but not written, so it cannot be the target of a conversion",
+					group.format
+				),
+			))]);
+		}
+	}
+
 	let pipeline = group.pipeline();
 	let mut unavailable: Vec<&Tool> = Vec::new();
 
@@ -608,6 +622,47 @@ tier = 'converted'
 
 		assert_eq!(plans[0].backend.name(), "magick");
 		assert_eq!(plans[0].command, "magick-alt");
+	}
+
+	#[test]
+	fn a_target_that_can_only_be_read_is_unsupported() {
+		let registry = Registry::load(
+			"\
+version = 'retype-config-1'
+
+[backends]
+prefer = ['magick']
+
+[tools.magick]
+command = 'magick'
+layout = ['{input}', '{ops}', '{output}']
+
+[formats.raw]
+family = 'image'
+direction = 'decode'
+lossy = false
+alpha = false
+tier = 'exact'
+",
+		)
+		.expect("the fixture loads");
+
+		let intent = intent::parse("raw").expect("scans");
+		let resolved = resolve::resolve(
+			&intent,
+			resolve::Source {
+				format: "jpg",
+				is_directory: false,
+			},
+			&registry,
+		)
+		.expect("resolves: only the target is refused");
+
+		let codes = compile(&registry, &Machine::with(&["magick"]), &resolved)
+			.unwrap_err()
+			.codes();
+
+		assert_eq!(codes, vec![Code::Unsupported]);
 	}
 
 	#[test]

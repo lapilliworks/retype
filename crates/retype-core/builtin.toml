@@ -235,6 +235,62 @@ alpha = false
 tier = 'converted'
 argv.ffmpeg = { args = ['-vn', '-c:a', 'pcm_s16le'] }
 
+# Documents, `docs/tools.md` §5. `pandoc` reads and writes all of these, and the
+# PDF engine is resolved rather than fixed, so the same intent on two machines is
+# two documents and the engine is recorded with the job.
+#
+# `md` is both a source and a target: `notes.md` to `notes.docx` is the gesture the
+# product exists for, and `notes.docx` back to `notes.md` is the same gesture in
+# reverse.
+[formats.md]
+family = 'document'
+lossy = false
+alpha = false
+tier = 'converted'
+aliases = ['markdown']
+
+# `--standalone` is what makes the output a document rather than a fragment: a
+# body without a head is not an HTML file anyone can open.
+[formats.html]
+family = 'document'
+lossy = false
+alpha = false
+tier = 'converted'
+
+[formats.html.argv.pandoc]
+args = ['--standalone']
+
+[formats.docx]
+family = 'document'
+lossy = false
+alpha = false
+tier = 'converted'
+
+[formats.odt]
+family = 'document'
+lossy = false
+alpha = false
+tier = 'converted'
+
+[formats.epub]
+family = 'document'
+lossy = false
+alpha = false
+tier = 'converted'
+
+# Written and never read: pandoc has no PDF reader, so `pdf` as a source is a
+# promise to fail. `docs/tools.md` §5 says the output is web-grade or TeX-grade
+# depending on the engine, which is why it is `converted` and never `exact`.
+[formats.pdf]
+family = 'document'
+direction = 'encode'
+lossy = false
+alpha = false
+tier = 'converted'
+
+[formats.pdf.argv.pandoc]
+args = ['--pdf-engine', '{engine.pdf}']
+
 [ops.quality]
 aliases = ['q']
 slot = 50

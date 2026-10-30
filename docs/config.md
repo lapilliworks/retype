@@ -61,7 +61,7 @@ Shadowing:
 | User preset with an operation name | No | `E_CFG_NAME_CLASH` |
 | Directory file defining anything but policy | No | `E_CFG_VALIDATION` |
 
-A removed entry leaves the preference list with it: disabling a tool drops it from `backends.prefer` rather than making the user restate the whole order. A name that was never declared is still a V9 error, so a typo is not silently ignored.
+A removed entry leaves everything that named it behind: disabling a tool drops it from `backends.prefer`, from every `argv` fragment keyed by it, and from `[bench.sample]`, because a fragment is how a format reaches a tool rather than a capability of its own. A name that was never declared is still a V9 error, so a typo is not silently ignored.
 
 The distinction exists because the grammar is a published contract. A configuration file may change how an operation is executed, and may add new names to the vocabulary, but may not silently change what a shipped name means. Otherwise two machines running `retype-grammar-1` would disagree about the same intent string.
 
@@ -155,11 +155,14 @@ args = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart']
 | Key | Meaning |
 |---|---|
 | `family` | `image`, `audio`, `video`, `document`, `archive`, `folder` |
+| `direction` | `decode`, `encode` or `both`, default `both`. A format that is read and never written, such as `dng`, or written and never read, such as `pdf` |
 | `lossy` | Whether the format is lossy |
 | `alpha` | Whether the format carries alpha |
 | `tier` | Default fidelity tier for pairs targeting this format |
 | `aliases` | Alternate extension spellings, resolved by the grammar |
 | `argv.<tool>` | Fragment contributed by the format to that tool's `{ops}` |
+
+A pair whose source cannot be read or whose target cannot be written is `E_UNSUPPORTED` before a tool is chosen, because the honest answer is "not supported" rather than a tool that fails once the work has started. `retype list` prints the direction beside each format.
 
 ## 5. Watch policy
 
@@ -353,7 +356,7 @@ Loading fails, naming the file and key, on any of:
 | V16 | `components` declared by a tool that declares no `probe` |
 | V17 | `version_min` declared by a tool that declares no `probe`, since the floor could then never be met |
 | V18 | A `families` entry naming a family that does not exist |
-| V19 | A `[bench.seed]` naming an undeclared format, a format of another family, or a family with no sample generator |
+| V19 | A `[bench.seed]` naming an undeclared format, or a format of another family |
 | V20 | A `[bench.sample]` naming a family with no `[bench.seed]`, or a tool that is not declared |
 | V21 | A sample argv naming a placeholder other than `{output}` |
 
@@ -393,7 +396,7 @@ args = ['-size', '2400x1600', '-seed', '0', 'plasma:fractal', '{output}']
 
 The argv is a tool's own way of drawing something, so it is declared rather than written in Rust. `{output}` is the only hole: the sample generator has no input. The first declared tool that is installed generates the sample, in `[backends]` order, so the preference the product states is the one the benchmark measures.
 
-A seed with no generator is refused at load, because `retype bench` could never keep that promise. A family may be measured without being listed here, by naming pairs with `--pair`.
+A seed is a statement about which format a family is sampled in, not a promise that a tool is installed, so a seed whose generators have all been removed still loads: `retype bench` reports that family as unmeasurable. A family may also be measured without being listed here, by naming pairs with `--pair`.
 
 ## 15. Versioning
 

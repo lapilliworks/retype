@@ -25,7 +25,8 @@ Constraints this establishes:
 
 ## 5. Document capabilities
 
-- `pandoc` writes `docx`, `html`, `odt`, `epub`, `rst`, `tex`, `typst`, `markdown` and many more, verified for `docx` here
+- `pandoc` writes `docx`, `html`, `odt`, `epub`, `rst`, `tex`, `typst`, `markdown` and many more. Measured here on 2026-10-30 with pandoc 3.11: `md` to `html`, `docx`, `odt`, `epub` and `pdf` all succeed, and `html` uses `--standalone` so the output is a document rather than a fragment
+- `pdf` is written and never read: pandoc has no PDF reader, so `pdf` as a source is refused at plan time rather than at the tool
 - **PDF works via WeasyPrint 70.0**, measured: markdown to PDF through `--pdf-engine=weasyprint`, 5,177 bytes for a heading, emphasis and a table
 - WeasyPrint is an HTML and CSS renderer. pandoc renders to HTML and then to PDF, so output is web-grade rather than TeX-grade: math needs an engine that supports it, cross-references and citation styles differ, and page breaking follows CSS. Therefore `pdf` is `converted` at best, never `exact`, and the engine is recorded with the job because it changes the result
 - A TeX engine or `typst`, if later installed, produces better typesetting and is preferred by the resolution order below

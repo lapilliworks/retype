@@ -37,7 +37,10 @@ pub fn run(registry: &Registry, tiers: bool, json: bool) -> Result<ExitCode> {
 /// What is declared: formats, operations, presets and the backend order.
 fn describe(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: bool) {
 	if !json {
-		println!("{:<10}{:<10}{:<10}{:<8}TIER", "FORMAT", "FAMILY", "LOSS", "ALPHA");
+		println!(
+			"{:<10}{:<10}{:<10}{:<10}{:<8}TIER",
+			"FORMAT", "FAMILY", "DIRECTION", "LOSS", "ALPHA"
+		);
 	}
 
 	for (name, format) in registry.formats() {
@@ -48,6 +51,7 @@ fn describe(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: 
 					"kind": "format",
 					"name": name,
 					"family": format.family,
+					"direction": format.direction.as_str(),
 					"lossy": format.lossy,
 					"alpha": format.alpha,
 					"tier": tier_name(format.tier),
@@ -56,9 +60,10 @@ fn describe(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: 
 			);
 		} else {
 			println!(
-				"{:<10}{:<10}{:<10}{:<8}{}",
+				"{:<10}{:<10}{:<10}{:<10}{:<8}{}",
 				name,
 				format.family,
+				format.direction.as_str(),
 				match format.lossy {
 					true => "lossy",
 					false => "lossless",
@@ -220,15 +225,18 @@ fn claim<'a>(
 		return (tier, None, None);
 	};
 
-	let Ok(resolved) = resolve::resolve(
+	// A pair refused before any backend is chosen, such as a source that cannot be
+	// read, is the same answer as one no backend carries: the user is told why.
+	let resolved = match resolve::resolve(
 		&parsed,
 		Origin {
 			format: from,
 			is_directory: false,
 		},
 		registry,
-	) else {
-		return (tier, None, None);
+	) {
+		Ok(resolved) => resolved,
+		Err(problems) => return (tier, Some(refusal(&problems)), None),
 	};
 
 	match plan::compile(registry, &tools::Machine, &resolved) {
@@ -248,16 +256,18 @@ fn claim<'a>(
 		// A pair nothing can carry is worth saying out loud rather than leaving
 		// blank, because it is the pair a user will try. The code is bracketed so
 		// it cannot be mistaken for a backend name.
-		Err(problems) => {
-			let code = problems
-				.codes()
-				.first()
-				.map(|code| format!("({code})"))
-				.unwrap_or_default();
-
-			(tier, Some(code), None)
-		}
+		Err(problems) => (tier, Some(refusal(&problems)), None),
 	}
+}
+
+/// The first code a refusal carries, in brackets so it cannot be read as a
+/// backend name.
+fn refusal(problems: &retype_core::error::Diagnoses) -> String {
+	problems
+		.codes()
+		.first()
+		.map(|code| format!("({code})"))
+		.unwrap_or_default()
 }
 
 fn tier_name(tier: Tier) -> &'static str {

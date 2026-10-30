@@ -71,6 +71,21 @@ pub struct Argument {
 
 pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Result<Resolved, Diagnoses> {
 	let mut problems = Vec::new();
+
+	// A format that is written and never read cannot start a conversion, and
+	// saying so before anything is planned is the difference between "not
+	// supported" and "this tool failed", `docs/tools.md` §1.
+	if let Some(format) = registry.format(source.format) {
+		if !format.direction.can_decode() {
+			problems.push(Error::Diagnostic(crate::error::Diagnostic::global(
+				Code::Unsupported,
+				format!(
+					"{} is written but not read, so it cannot be the source of a conversion",
+					source.format
+				),
+			)));
+		}
+	}
 	let mut groups = Vec::new();
 	let mut meta = intent.meta;
 	let mut warnings = intent.warnings.clone();
@@ -501,6 +516,41 @@ mod tests {
 
 	fn codes(text: &str, source: Source<'_>) -> Vec<Code> {
 		resolve_text(text, source).unwrap_err().codes()
+	}
+
+	#[test]
+	fn a_written_but_unreadable_source_is_unsupported() {
+		let registry = Registry::load(
+			"\
+version = 'retype-config-1'
+
+[formats.pdf]
+family = 'document'
+direction = 'encode'
+lossy = true
+alpha = false
+tier = 'converted'
+
+[formats.md]
+family = 'document'
+lossy = false
+alpha = false
+tier = 'converted'
+",
+		)
+		.expect("the fixture loads");
+
+		let intent = intent::parse("md").expect("scans");
+		let resolved = resolve(
+			&intent,
+			Source {
+				format: "pdf",
+				is_directory: false,
+			},
+			&registry,
+		);
+
+		assert_eq!(resolved.unwrap_err().codes(), vec![Code::Unsupported]);
 	}
 
 	#[test]
