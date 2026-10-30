@@ -899,6 +899,16 @@ fn validate_tool(tool: &Tool, label: &str) -> Vec<Error> {
 	let mut problems = Vec::new();
 	let name = &tool.name;
 
+	// V17: a floor is a comparison against a version, and the version comes from
+	// the probe. Without one the floor can never be met, so the tool would be
+	// unusable everywhere for a reason nobody could see.
+	if tool.version_min.is_some() && tool.probe.is_empty() {
+		problems.push(fail(
+			Code::CfgValidation,
+			format!("{label}: tool '{name}' declares version_min but no probe to read a version from"),
+		));
+	}
+
 	// V16: a component is checked against probe output, so a tool that claims one
 	// without a probe has claimed something nothing can verify.
 	if !tool.components.is_empty() && tool.probe.is_empty() {
@@ -1414,6 +1424,17 @@ mod tests {
 		let registry = Registry::load(&format!("{HEADER}\n[undo]\nenabled = false\nretention = '720h'\n")).unwrap();
 		assert!(!registry.undo().enabled);
 		assert_eq!(registry.undo().retention, std::time::Duration::from_secs(720 * 60 * 60));
+	}
+
+	#[test]
+	fn a_version_floor_without_a_probe_is_refused() {
+		// The floor is a comparison against a version, and only a probe supplies
+		// one, so without it the tool could never be usable.
+		let codes = codes(&format!(
+			"{HEADER}\n[tools.copy]\ncommand = 'cp'\nversion_min = '1.0'\nlayout = ['{{input}}', '{{ops}}', '{{output}}']\n"
+		));
+
+		assert_eq!(codes, vec![Code::CfgValidation]);
 	}
 
 	#[test]

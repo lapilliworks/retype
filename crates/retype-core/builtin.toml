@@ -78,6 +78,7 @@ engines = { pdf = ['typst', 'xelatex', 'lualatex', 'pdflatex', 'weasyprint', 'wk
 [tools.7zz]
 command = '7zz'
 aliases = ['7z', '7za']
+probe = ['i']
 version_min = '23.0'
 purpose = '7z archives'
 layout = ['a', '-y', '{ops}', '{output}', '{input}']

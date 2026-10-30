@@ -56,9 +56,34 @@ impl Tool {
 	}
 }
 
-/// A dotted numeric version, comparable in the obvious way.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Version(Vec<u32>);
+/// A dotted numeric version: the parts it compares by, and the text it was read
+/// from, because `26.05` is not the same string as `26.5` to the person reading
+/// it even though the two are the same version.
+#[derive(Debug, Clone)]
+pub struct Version {
+	parts: Vec<u32>,
+	written: String,
+}
+
+impl PartialEq for Version {
+	fn eq(&self, other: &Self) -> bool {
+		self.parts == other.parts
+	}
+}
+
+impl Eq for Version {}
+
+impl PartialOrd for Version {
+	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+		Some(self.cmp(other))
+	}
+}
+
+impl Ord for Version {
+	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+		self.parts.cmp(&other.parts)
+	}
+}
 
 impl Version {
 	/// First dotted numeric run in a line, e.g. `9.0.2` out of
@@ -71,15 +96,17 @@ impl Version {
 				return None;
 			}
 			let parts: Vec<u32> = trimmed.split('.').filter_map(|p| p.parse().ok()).collect();
-			(!parts.is_empty()).then_some(Self(parts))
+			(!parts.is_empty()).then_some(Self {
+				parts,
+				written: trimmed.to_string(),
+			})
 		})
 	}
 }
 
 impl fmt::Display for Version {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		let parts: Vec<String> = self.0.iter().map(u32::to_string).collect();
-		f.write_str(&parts.join("."))
+	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+		formatter.write_str(&self.written)
 	}
 }
 
@@ -356,12 +383,14 @@ mod tests {
 
 	#[test]
 	fn version_from_sevenzip() {
-		assert_eq!(
-			Version::parse("7-Zip 26.05 (x64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-10-21")
-				.unwrap()
-				.to_string(),
-			"26.5"
-		);
+		let version =
+			Version::parse("7-Zip 26.05 (x64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-10-21").expect("a version");
+
+		// Reported as it was written, compared as a number: `26.05` is the release
+		// name and `26.5` is what a floor means.
+		assert_eq!(version.to_string(), "26.05");
+		assert_eq!(version, Version::parse("26.5").unwrap());
+		assert!(version >= Version::parse("23.0").unwrap());
 	}
 
 	#[test]

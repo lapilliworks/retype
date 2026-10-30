@@ -335,6 +335,7 @@ Loading fails, naming the file and key, on any of:
 | V11 | `version_min` that does not parse as a version |
 | V13 | A per-directory file defining `tools`, `formats`, `ops`, `presets`, or any key of the `[watch]` table |
 | V16 | `components` declared by a tool that declares no `probe` |
+| V17 | `version_min` declared by a tool that declares no `probe`, since the floor could then never be met |
 
 V12 named an in-process backend and was retired with it. The number is not reused, so that a configuration error reported against an older build stays identifiable.
 
