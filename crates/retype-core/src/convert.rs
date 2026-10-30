@@ -18,7 +18,7 @@ use crate::error::{Error, Result};
 /// Implementations compiled into this build, `docs/config.md` V12. An operation
 /// may only name one of these, so a configuration cannot ask for a backend that
 /// does not exist. Empty until the image vertical lands its own encoder.
-pub const NATIVE: &[&str] = &[];
+pub const NATIVE_BACKENDS: &[&str] = &[];
 
 /// Prefix for temporary output files. Never a valid intent, never a user name.
 pub const TEMP_PREFIX: &str = ".retype-tmp.";

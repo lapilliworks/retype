@@ -163,6 +163,10 @@ pub fn probe(tool: &Tool) -> ToolStatus<'_> {
 	}
 }
 
+/// This machine, as the planner sees it: presence and engine resolution through
+/// the declared probes.
+pub struct Machine;
+
 pub fn probe_all(tools: &[Tool]) -> Vec<ToolStatus<'_>> {
 	tools.iter().map(probe).collect()
 }

@@ -10,13 +10,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
-use crate::convert::NATIVE;
+use crate::convert::NATIVE_BACKENDS;
 use crate::error::{Code, Diagnoses, Diagnostic, Error};
 use crate::job::Tier;
 use crate::tools::{Tool, Version};
 
 /// Schema identifier, `docs/config.md` §1.
 pub const CONFIG_VERSION: &str = "retype-config-1";
+
+/// The backend name for an implementation compiled into this build rather than
+/// run as a process, `docs/config.md` §8.
+pub const NATIVE: &str = "native";
 
 const FAMILIES: &[&str] = &["image", "audio", "video", "document", "archive", "folder"];
 
@@ -140,6 +144,9 @@ pub struct Resolved<'a> {
 #[derive(Debug, Clone)]
 pub struct Registry {
 	tools: BTreeMap<String, Tool>,
+	/// Backend preference order, `docs/config.md` §8. The first entry that
+	/// carries every operation in a plan and is present wins.
+	backends: Vec<String>,
 	formats: BTreeMap<String, Format>,
 	ops: BTreeMap<String, Op>,
 	/// Every name and alias with the key it resolves to, longest first, so that
@@ -198,6 +205,16 @@ impl Registry {
 			.collect();
 
 		let tool_names: BTreeSet<&str> = tools.keys().map(String::as_str).collect();
+
+		// Default order: the compiled backend first, then every declared tool by
+		// name, so a configuration that says nothing is still deterministic.
+		let mut backends = vec![NATIVE.to_string()];
+		backends.extend(tools.keys().cloned());
+
+		if let Some(declared) = &document.backends {
+			backends = declared.prefer.clone();
+			problems.extend(validate_backends(&backends, &tool_names, label));
+		}
 
 		for (name, format) in &formats {
 			problems.extend(validate_fragments(
@@ -268,7 +285,7 @@ impl Registry {
 			// V12: a native backend is compiled in, so a name that is not in the
 			// list can never be honoured.
 			if let Some(native) = &op.native {
-				if !NATIVE.contains(&native.as_str()) {
+				if !NATIVE_BACKENDS.contains(&native.as_str()) {
 					problems.push(fail(
 						Code::CfgValidation,
 						format!(
@@ -304,11 +321,17 @@ impl Registry {
 
 		Ok(Self {
 			tools,
+			backends,
 			formats,
 			ops,
 			names,
 			format_names,
 		})
+	}
+
+	/// Backend names in preference order, `native` and tools alike.
+	pub fn backends(&self) -> &[String] {
+		&self.backends
 	}
 
 	pub fn tool(&self, name: &str) -> Option<&Tool> {
@@ -403,6 +426,33 @@ impl Registry {
 	pub fn names(&self) -> impl Iterator<Item = &str> {
 		self.names.iter().map(|(name, _)| name.as_str())
 	}
+}
+
+/// V9 and V6 for the backend list: every entry has to name something that
+/// exists, and naming one twice would make the order ambiguous.
+fn validate_backends(backends: &[String], tool_names: &BTreeSet<&str>, label: &str) -> Vec<Error> {
+	let mut problems = Vec::new();
+	let mut seen: BTreeSet<&str> = BTreeSet::new();
+
+	for name in backends {
+		let known = name == NATIVE || tool_names.contains(name.as_str());
+
+		if !known {
+			problems.push(fail(
+				Code::CfgValidation,
+				format!("{label}: backends.prefer names '{name}', which is neither '{NATIVE}' nor a declared tool"),
+			));
+		}
+
+		if !seen.insert(name.as_str()) {
+			problems.push(fail(
+				Code::CfgValidation,
+				format!("{label}: backends.prefer names '{name}' twice"),
+			));
+		}
+	}
+
+	problems
 }
 
 /// V1 and V9: a fragment may carry `{value}` and `{engine.<name>}`, both of which
@@ -647,9 +697,16 @@ struct Document {
 	#[serde(default)]
 	tools: BTreeMap<String, ToolEntry>,
 	#[serde(default)]
+	backends: Option<BackendsEntry>,
+	#[serde(default)]
 	formats: BTreeMap<String, FormatEntry>,
 	#[serde(default)]
 	ops: BTreeMap<String, OpEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BackendsEntry {
+	prefer: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1052,6 +1109,31 @@ tier = 'converted'
 		let problems = config(&text).unwrap_err();
 		assert_eq!(problems.len(), 2, "one per placeholder");
 		assert!(problems.iter().all(|code| *code == Code::CfgValidation));
+	}
+
+	#[test]
+	fn the_builtin_prefers_the_compiled_backend_first() {
+		let registry = builtin();
+		let backends = registry.backends();
+
+		assert_eq!(backends.first().map(String::as_str), Some(NATIVE));
+		assert!(backends.iter().any(|name| name == "magick"));
+	}
+
+	#[test]
+	fn a_backend_that_is_not_declared_is_refused() {
+		let unknown = "[backends]\nprefer = ['native', 'ghostscript']\n";
+		assert_eq!(config(unknown).unwrap_err(), [Code::CfgValidation]);
+
+		let twice = "[backends]\nprefer = ['magick', 'magick']\n";
+		assert_eq!(config(twice).unwrap_err(), [Code::CfgValidation]);
+	}
+
+	#[test]
+	fn a_declared_preference_is_kept_in_order() {
+		let registry = config("[backends]\nprefer = ['pandoc', 'magick']\n").expect("loads");
+
+		assert_eq!(registry.backends(), ["pandoc", "magick"]);
 	}
 
 	#[test]

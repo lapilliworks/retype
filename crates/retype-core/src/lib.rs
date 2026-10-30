@@ -12,6 +12,7 @@ pub mod intent;
 pub mod job;
 pub mod journal;
 pub mod output;
+pub mod plan;
 pub mod print;
 pub mod registry;
 pub mod resolve;

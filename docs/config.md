@@ -237,7 +237,9 @@ Backend selection:
 prefer = ['native', 'magick', 'ffmpeg', 'pandoc', '7z']
 ```
 
-The first backend in `prefer` that implements every operation in the plan and is available wins. Determinism is required: a plan never depends on discovery order.
+The first backend in `prefer` that implements every operation in the plan and is available wins. Determinism is required: a plan never depends on discovery order, so a missing earlier backend moves the plan down the list rather than shuffling it.
+
+Availability is a plan-time question with a fixed answer at that moment: the tool is on `PATH`, above its version floor, and carrying its components. The chosen backend and its resolved engine are recorded with the job, because a later machine that has since gained ImageMagick must not silently produce a different file.
 
 ## 9. Per-directory policy
 
@@ -277,7 +279,7 @@ Loading fails, naming the file and key, on any of:
 | V6 | A name used twice, or a preset name equal to an operation name or alias |
 | V7 | A preset whose tokens do not parse, or a reference cycle |
 | V8 | An exclusive group with a single member, or a group declared but never used |
-| V9 | A format or tool referenced by an operation or fragment but not declared |
+| V9 | A format or tool referenced by an operation, fragment or `backends.prefer` but not declared |
 | V10 | A tier outside `exact`, `converted`, `delegated`, `docs/fidelity.md` |
 | V11 | `version_min` that does not parse as a version |
 | V12 | A `native` name not present in the compiled implementation list, which is empty until the first native backend lands |
