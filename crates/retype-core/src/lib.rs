@@ -12,6 +12,7 @@ pub mod ext;
 pub mod intent;
 pub mod job;
 pub mod journal;
+pub mod output;
 pub mod registry;
 pub mod resolve;
 pub mod tools;
