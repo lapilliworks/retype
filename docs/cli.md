@@ -61,16 +61,19 @@ The command runs through the daemon as an immediate job when one is reachable, a
 ## 3. Explanation
 
 ```
-retype explain <intent> [--from <ext>] [--size <size>] [--name <stem>]
+retype explain <intent> [--from <ext>] [--name <stem>]
 ```
 
-Prints the canonical intent, the derived output names, the resolved plan in pipeline order, the chosen backend, the tier, the estimate and every diagnostic.
+Prints the canonical intent, the derived output names, the resolved plan in pipeline order, the chosen backend, the argv it would run, the tier and every diagnostic.
 
 | Flag | Purpose |
 |---|---|
-| `--from <ext>` | Source format, needed for applicability and for the tier |
-| `--size <size>` | Source size, for the estimate, using the grammar's size syntax |
+| `--from <ext>` | Source format, needed for applicability, for the tier and for recognising a kept source. An unknown or absent one is a diagnosis |
 | `--name <stem>` | Source stem, for the derived names. Defaults to `input` |
+
+The estimate needs an estimator calibrated against real files, which is `retype bench`'s job; until then `explain` prints no number rather than a guess, and takes no `--size`.
+
+A backend that the plan needs and the machine lacks is reported in the plan and exits 4, rather than failing without an explanation: the string was understood, the machine cannot carry it out.
 
 `explain` never touches the daemon and never writes anything. It exists to answer "what does this string mean", which is why it takes no file. "What would happen to this file" is `convert --dry-run`.
 
@@ -139,6 +142,6 @@ retype jobs list --state needs-attention
 retype jobs get 01J8Z
 retype undo --last
 retype why photo.webp
-retype explain 'mp4+cap1080+trim10-30+mute+now' --from mov --size 1.2gb
+retype explain 'mp4+cap1080+trim10s-30s+mute+now' --from mov
 retype doctor --emit
 ```

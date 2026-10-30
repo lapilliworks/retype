@@ -69,31 +69,30 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 	let mut warnings = intent.warnings.clone();
 
 	for group in &intent.groups {
-		let known_format = if group.format == "folder" {
-			if source.is_directory {
-				true
-			} else {
+		// `jpeg` is `jpg`: a format is accepted in every spelling it is declared
+		// under, and the rest of the pipeline sees one name.
+		let format = if group.format == "folder" {
+			if !source.is_directory {
 				problems.push(error(
 					Code::FormatFolder,
 					"'folder' names a directory, and the source is a file",
 					group.span,
 				));
-				false
 			}
-		} else if registry.format(&group.format).is_none() {
-			problems.push(error(
-				Code::FormatUnknown,
-				format!("'{}' is not a format this build knows", group.format),
-				group.span,
-			));
-			false
+			group.format.clone()
 		} else {
-			true
+			match registry.canonical_format(&group.format) {
+				Some(canonical) => canonical.to_string(),
+				None => {
+					problems.push(error(
+						Code::FormatUnknown,
+						format!("'{}' is not a format this build knows", group.format),
+						group.span,
+					));
+					continue;
+				}
+			}
 		};
-
-		if !known_format {
-			continue;
-		}
 
 		// Duplicates and exclusivity are per group: two outputs may each ask for
 		// their own quality, and may not each ask for two.
@@ -118,10 +117,10 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 				continue;
 			}
 
-			if !found.op.applies_to(&group.format) {
+			if !found.op.applies_to(&format) {
 				problems.push(error(
 					Code::Inapplicable,
-					format!("'{}' does not apply to {}", found.op.name, group.format),
+					format!("'{}' does not apply to {format}", found.op.name),
 					token.span,
 				));
 				continue;
@@ -221,7 +220,7 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 		}
 
 		groups.push(Group {
-			format: group.format.clone(),
+			format,
 			keep_source: group.format == source.format && ops.is_empty(),
 			ops,
 		});

@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use retype_cli::error::{Error, Result};
-use retype_cli::{client, daemon, doctor};
+use retype_cli::{client, daemon, doctor, explain};
 use retype_core::registry::Registry;
 use serde_json::Value;
 
@@ -23,6 +23,10 @@ struct Cli {
 	#[arg(long, global = true)]
 	json: bool,
 
+	/// Suppress everything below errors
+	#[arg(long, global = true)]
+	quiet: bool,
+
 	#[command(subcommand)]
 	command: Command,
 }
@@ -37,6 +41,20 @@ enum Command {
 		/// Run without a terminal, as an auto-started daemon does
 		#[arg(long)]
 		detached: bool,
+	},
+
+	/// Parse, plan, and explain an intent without touching a file
+	Explain {
+		/// The intent, as it would be written in a rename
+		intent: String,
+
+		/// Source format, for applicability and for the kept-source case
+		#[arg(long)]
+		from: Option<String>,
+
+		/// Source stem, for the names the intent derives
+		#[arg(long, default_value = "input")]
+		name: String,
 	},
 
 	/// Report external tool availability
@@ -64,6 +82,29 @@ enum DaemonAction {
 fn main() -> ExitCode {
 	let cli = Cli::parse();
 
+	if let Command::Explain { intent, from, name } = &cli.command {
+		let code = Registry::builtin().map_err(Error::Config).and_then(|registry| {
+			explain::run(
+				&registry,
+				&explain::Request {
+					intent,
+					from: from.as_deref(),
+					name,
+					json: cli.json,
+					quiet: cli.quiet,
+				},
+			)
+		});
+
+		return match code {
+			Ok(code) => code,
+			Err(error) => {
+				eprintln!("retype: {error}");
+				ExitCode::from(error.exit_code())
+			}
+		};
+	}
+
 	if let Command::Doctor { check, require } = &cli.command {
 		let code = Registry::builtin()
 			.map_err(Error::Config)
@@ -83,7 +124,9 @@ fn main() -> ExitCode {
 			None => daemon::run(cli.state_dir.clone(), !detached),
 			Some(action) => control(&cli, action),
 		},
-		Command::Doctor { .. } => unreachable!("doctor is dispatched before the outcome is built"),
+		Command::Explain { .. } | Command::Doctor { .. } => {
+			unreachable!("explain and doctor are dispatched before the outcome is built")
+		}
 	};
 
 	match outcome {

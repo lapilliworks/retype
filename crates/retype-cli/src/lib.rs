@@ -8,4 +8,5 @@ pub mod client;
 pub mod daemon;
 pub mod doctor;
 pub mod error;
+pub mod explain;
 pub mod state;

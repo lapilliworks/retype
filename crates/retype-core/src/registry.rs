@@ -326,6 +326,17 @@ impl Registry {
 		self.formats.get(&name.to_ascii_lowercase())
 	}
 
+	/// The canonical spelling of a format name or alias, `docs/config.md` §4.
+	/// A name is accepted in any spelling it is declared under and printed in
+	/// one, which is why the grammar can write `jpeg` and the journal says `jpg`.
+	pub fn canonical_format(&self, name: &str) -> Option<&str> {
+		let lowered = name.to_ascii_lowercase();
+		self.format_names
+			.iter()
+			.find(|(spelling, _)| *spelling == lowered)
+			.map(|(_, canonical)| canonical.as_str())
+	}
+
 	/// Split a file name into its stem and its format, `docs/grammar.md` §3.
 	///
 	/// The registry is the list that decides this, the way a public suffix list
