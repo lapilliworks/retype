@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
 use retype_cli::daemon::{Server, serve};
-use retype_ipc::{Hello, IPC_VERSION, Request, Response, code, read_frame, write_frame};
+use retype_core::error::Code;
+use retype_ipc::{Hello, IPC_VERSION, Request, Response, read_frame, write_frame};
 
 struct Daemon {
 	dir: tempfile::TempDir,
@@ -114,7 +115,7 @@ fn a_method_before_hello_is_refused_and_the_connection_closes() {
 	let response = client.call(&Request::new(1, "status"));
 
 	assert!(!response.ok);
-	assert_eq!(response.error.as_ref().unwrap().code, code::HANDSHAKE);
+	assert_eq!(response.error.as_ref().unwrap().code, Code::IpcHandshake);
 	assert_eq!(
 		read_frame(&mut client.reader).unwrap(),
 		None,
@@ -137,7 +138,7 @@ fn a_client_from_another_protocol_major_is_refused() {
 	let response = client.call(&request);
 
 	assert!(!response.ok);
-	assert_eq!(response.error.as_ref().unwrap().code, code::VERSION);
+	assert_eq!(response.error.as_ref().unwrap().code, Code::IpcVersion);
 	assert!(response.error.as_ref().unwrap().message.contains(IPC_VERSION));
 }
 
@@ -150,7 +151,7 @@ fn an_unknown_method_is_refused_by_name() {
 	let response = client.call(&Request::new(2, "jobs.invent"));
 
 	assert!(!response.ok);
-	assert_eq!(response.error.as_ref().unwrap().code, code::METHOD);
+	assert_eq!(response.error.as_ref().unwrap().code, Code::IpcMethod);
 	assert_eq!(
 		response.error.as_ref().unwrap().detail.as_ref().unwrap()["method"],
 		"jobs.invent"

@@ -44,14 +44,20 @@ pub enum Error {
 }
 
 impl Error {
-	/// Exit codes are contract, `docs/cli.md` §6.
+	/// Exit codes are contract, `docs/cli.md` §6. The category decides, and this
+	/// layer narrows it where it knows more: a transport failure is a daemon
+	/// problem rather than a filesystem one, and a held lock is a state conflict.
 	pub fn exit_code(&self) -> u8 {
 		match self {
+			Self::Core(error) => error.exit_code(),
+			Self::Io(error) => retype_core::error::category_for_io(error).exit_code(),
+			Self::Frame(_) | Self::Client(_) | Self::UnsupportedTransport => 6,
+			Self::DaemonUnavailable | Self::DaemonStartFailed(..) => 6,
 			Self::AlreadyRunning(_) => 7,
-			Self::UnsupportedTransport | Self::Frame(_) | Self::DaemonUnavailable | Self::DaemonStartFailed(..) => 6,
-			Self::Client(_) => 6,
-			Self::Io(_) | Self::Core(_) | Self::SocketPathTooLong { .. } | Self::BadIdentity(_) => 5,
-			Self::NoStateDirectory => 1,
+			Self::SocketPathTooLong { .. } | Self::BadIdentity(_) => {
+				retype_core::error::Category::Transient.exit_code()
+			}
+			Self::NoStateDirectory => retype_core::error::Category::Internal.exit_code(),
 		}
 	}
 }

@@ -9,6 +9,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+retype-core = { path = "../retype-core" }
 serde.workspace = true
 serde_json.workspace = true
 

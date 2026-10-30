@@ -13,6 +13,7 @@ pub use client::{Client, ClientError};
 
 use std::io::{BufRead, Write};
 
+use retype_core::error::Code;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -22,20 +23,6 @@ pub const IPC_VERSION: &str = "retype-ipc-1";
 /// Largest frame accepted. A bigger one closes the connection rather than being
 /// truncated, because a truncated frame is a request the client did not make.
 pub const MAX_FRAME: usize = 1024 * 1024;
-
-/// Error codes carried over the wire, `docs/ipc.md` §8 and `docs/errors.md`.
-pub mod code {
-	pub const VERSION: &str = "E_IPC_VERSION";
-	pub const HANDSHAKE: &str = "E_IPC_HANDSHAKE";
-	pub const FRAME: &str = "E_IPC_FRAME";
-	pub const METHOD: &str = "E_IPC_METHOD";
-	pub const UNAVAILABLE: &str = "E_IPC_UNAVAILABLE";
-	pub const AMBIGUOUS: &str = "E_IPC_AMBIGUOUS";
-	pub const RESYNC: &str = "E_IPC_RESYNC";
-	pub const SUPERVISED: &str = "E_IPC_SUPERVISED";
-	pub const AUTH: &str = "E_IPC_AUTH";
-	pub const INTERNAL: &str = "E_IPC_INTERNAL";
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request {
@@ -99,16 +86,16 @@ impl Response {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WireError {
-	pub code: String,
+	pub code: Code,
 	pub message: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub detail: Option<Value>,
 }
 
 impl WireError {
-	pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+	pub fn new(code: Code, message: impl Into<String>) -> Self {
 		Self {
-			code: code.into(),
+			code,
 			message: message.into(),
 			detail: None,
 		}
@@ -287,7 +274,7 @@ mod tests {
 	fn an_error_response_carries_its_code() {
 		let response = Response::error(
 			3,
-			WireError::new(code::METHOD, "no such method")
+			WireError::new(Code::IpcMethod, "no such method")
 				.with_detail(serde_json::json!({"method": "nope"}))
 				.unwrap(),
 		);

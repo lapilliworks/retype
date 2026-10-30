@@ -38,18 +38,24 @@ pub struct Error {
 
 Grammar diagnostics keep their unprefixed names, fixed by `retype-grammar-1`: `E_ANCHOR`, `E_CHARSET`, `E_INTENT_EMPTY`, `E_TOO_LONG`, `E_TOO_MANY`, `E_GROUP_EMPTY`, `E_TOKEN_EMPTY`, `E_FORMAT_UNKNOWN`, `E_FORMAT_FOLDER`, `E_NAME_UNKNOWN`, `E_VALUE_MISSING`, `E_VALUE_UNEXPECTED`, `E_VALUE_SYNTAX`, `E_VALUE_RANGE`, `E_DUPLICATE`, `E_EXCLUSIVE`, `E_META_CONFLICT`, `E_NOOP`, `E_INAPPLICABLE`, `E_UNSUPPORTED`.
 
-Everything else is namespaced:
+A code is an enum in `retype-core::error::Code`, serialised as the string above. The variant name is the only place a code is written: `IoPermission` is `E_IO_PERMISSION` because the derive in `retype-macros` says so. Renaming a variant therefore changes a code, which is a wire-breaking change, and the test at the end of this section exists to make that loud.
 
-| Namespace | Codes |
+The enum has an `Unknown` variant, so a client that receives a code from a later version reports it rather than substituting a nearer one, and matching on a known code is exhaustive.
+
+Everything else is namespaced, and the table lists every code in full so that a search finds it.
+
+| Group | Codes |
 |---|---|
-| `E_USAGE_` | `ARGS`, `CONFLICT`, `OUTPUT_COUNT` |
-| `E_CFG_` | `PARSE`, `VERSION`, `VALIDATION`, `MISSING`, `UNKNOWN_KEY`, `NAME_CLASH` |
-| `E_TOOL_` | `MISSING`, `VERSION`, `FAILED`, `TIMEOUT` |
-| `E_IO_` | `PERMISSION`, `SPACE`, `NOT_FOUND`, `EXISTS`, `LOCKED`, `CORRUPT_JOURNAL` |
-| `E_JOB_` | `STATE`, `CANCELLED`, `INTERRUPTED`, `PARTIAL`, `SUPERSEDED`, `RESUME_UNAVAILABLE` |
-| `E_WATCH_` | `PAUSED_BY_POLICY`: the directory file sets `paused = true` |
-| `E_IPC_` | As defined in `docs/ipc.md` |
-| `E_INTERNAL_` | `INVARIANT`, `PANIC`, `UNEXPECTED` |
+| Invocation | `E_USAGE_ARGS`, `E_USAGE_CONFLICT`, `E_USAGE_OUTPUT_COUNT` |
+| Configuration | `E_CFG_PARSE`, `E_CFG_VERSION`, `E_CFG_VALIDATION`, `E_CFG_MISSING`, `E_CFG_UNKNOWN_KEY`, `E_CFG_NAME_CLASH` |
+| Watches | `E_WATCH_PAUSED_BY_POLICY` |
+| Tools | `E_TOOL_MISSING`, `E_TOOL_VERSION`, `E_TOOL_FAILED`, `E_TOOL_TIMEOUT` |
+| Filesystem and state | `E_IO_FAILED`, `E_IO_PERMISSION`, `E_IO_SPACE`, `E_IO_NOT_FOUND`, `E_IO_EXISTS`, `E_IO_LOCKED`, `E_IO_CORRUPT_JOURNAL` |
+| Jobs | `E_JOB_STATE`, `E_JOB_CANCELLED`, `E_JOB_INTERRUPTED`, `E_JOB_PARTIAL`, `E_JOB_SUPERSEDED`, `E_JOB_RESUME_UNAVAILABLE` |
+| Transport | `E_IPC_VERSION`, `E_IPC_HANDSHAKE`, `E_IPC_FRAME`, `E_IPC_METHOD`, `E_IPC_UNAVAILABLE`, `E_IPC_AMBIGUOUS`, `E_IPC_RESYNC`, `E_IPC_SUPERVISED`, `E_IPC_AUTH`, `E_IPC_INTERNAL` |
+| Bugs | `E_INTERNAL_INVARIANT`, `E_INTERNAL_PANIC`, `E_INTERNAL_UNEXPECTED` |
+
+`docs/ipc.md` §8 defines the transport codes; they are listed here as well so that one table answers "what can this build emit". A test compares this document against the enum in both directions, so a code that exists without documentation, or is documented without existing, fails the build.
 
 ## 4. Categories
 

@@ -12,6 +12,7 @@ repository.workspace = true
 getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+retype-macros = { path = "../retype-macros" }
 thiserror.workspace = true
 
 [dev-dependencies]

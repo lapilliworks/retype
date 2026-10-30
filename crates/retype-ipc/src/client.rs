@@ -10,7 +10,9 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{Hello, HelloResult, IPC_VERSION, Request, Response, WireError, code, read_frame, write_frame};
+use retype_core::error::Code;
+
+use crate::{Hello, HelloResult, IPC_VERSION, Request, Response, WireError, read_frame, write_frame};
 
 #[cfg(unix)]
 type Stream = std::os::unix::net::UnixStream;
@@ -147,9 +149,9 @@ impl ClientError {
 		matches!(self, Self::Connect(_))
 	}
 
-	pub fn code(&self) -> Option<&str> {
+	pub fn code(&self) -> Option<&Code> {
 		match self {
-			Self::Rpc(error) => Some(error.code.as_str()),
+			Self::Rpc(error) => Some(&error.code),
 			_ => None,
 		}
 	}
@@ -158,5 +160,5 @@ impl ClientError {
 /// The version refusal is worth recognising on its own, because a client that
 /// guesses past it is worse than one that stops, `docs/ipc.md` §9.
 pub fn is_version_refusal(error: &ClientError) -> bool {
-	error.code() == Some(code::VERSION)
+	error.code() == Some(&Code::IpcVersion)
 }

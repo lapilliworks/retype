@@ -4,9 +4,10 @@ use std::io::{BufRead, Write};
 use std::path::Path;
 use std::time::Instant;
 
+use retype_core::error::Code;
 use retype_core::job::Job;
 use retype_core::journal::Journal;
-use retype_ipc::{Hello, HelloResult, IPC_VERSION, Request, Response, WireError, code, read_frame, same_major};
+use retype_ipc::{Hello, HelloResult, IPC_VERSION, Request, Response, WireError, read_frame, same_major};
 use serde_json::json;
 
 use crate::daemon::machine;
@@ -75,7 +76,7 @@ impl Server {
 				Ok(Some(frame)) => frame,
 				Ok(None) => return Ok(()),
 				Err(error) => {
-					let response = Response::error(0, WireError::new(code::FRAME, error.to_string()));
+					let response = Response::error(0, WireError::new(Code::IpcFrame, error.to_string()));
 					let _ = retype_ipc::write_frame(writer, &response);
 					return Ok(());
 				}
@@ -84,7 +85,7 @@ impl Server {
 			let request: Request = match serde_json::from_value(frame) {
 				Ok(request) => request,
 				Err(error) => {
-					let response = Response::error(0, WireError::new(code::FRAME, error.to_string()));
+					let response = Response::error(0, WireError::new(Code::IpcFrame, error.to_string()));
 					retype_ipc::write_frame(writer, &response)?;
 					return Ok(());
 				}
@@ -94,7 +95,7 @@ impl Server {
 				if request.method != "hello" {
 					let response = Response::error(
 						request.id,
-						WireError::new(code::HANDSHAKE, "send hello before any other method"),
+						WireError::new(Code::IpcHandshake, "send hello before any other method"),
 					);
 					retype_ipc::write_frame(writer, &response)?;
 					return Ok(());
@@ -103,7 +104,8 @@ impl Server {
 				let hello: Hello = match request.parse() {
 					Ok(hello) => hello,
 					Err(error) => {
-						let response = Response::error(request.id, WireError::new(code::HANDSHAKE, error.to_string()));
+						let response =
+							Response::error(request.id, WireError::new(Code::IpcHandshake, error.to_string()));
 						retype_ipc::write_frame(writer, &response)?;
 						return Ok(());
 					}
@@ -113,7 +115,7 @@ impl Server {
 					let response = Response::error(
 						request.id,
 						WireError::new(
-							code::VERSION,
+							Code::IpcVersion,
 							format!("this daemon speaks {IPC_VERSION}, the client speaks {}", hello.ipc),
 						),
 					);
@@ -175,7 +177,8 @@ impl Server {
 			}
 			other => Response::error(
 				request.id,
-				WireError::new(code::METHOD, format!("no method '{other}'")).with_detail(json!({"method": other}))?,
+				WireError::new(Code::IpcMethod, format!("no method '{other}'"))
+					.with_detail(json!({"method": other}))?,
 			),
 		};
 
