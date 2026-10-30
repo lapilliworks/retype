@@ -42,6 +42,28 @@ enum Command {
 		detached: bool,
 	},
 
+	/// Convert one file, as a rename would
+	#[command(alias = "c")]
+	Convert {
+		/// The file to convert
+		input: String,
+
+		/// The intent string, as it would be written in a rename
+		intent: String,
+
+		/// The output path, instead of the one the intent derives
+		#[arg(short, long)]
+		output: Option<String>,
+
+		/// Overwrite an existing output
+		#[arg(long)]
+		force: bool,
+
+		/// Print what would happen and write nothing
+		#[arg(long = "dry-run")]
+		dry_run: bool,
+	},
+
 	/// Parse, plan, and explain an intent without touching a file
 	Explain {
 		/// The name being replaced; it need not exist
@@ -75,6 +97,42 @@ enum DaemonAction {
 
 fn main() -> ExitCode {
 	let cli = Cli::parse();
+
+	if let Command::Convert {
+		input,
+		intent,
+		output,
+		force,
+		dry_run,
+	} = &cli.command
+	{
+		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
+			config::load().and_then(|registry| {
+				config::report_warnings(&registry);
+
+				retype_cli::convert::run(
+					&registry,
+					&retype_cli::convert::Request {
+						input,
+						intent,
+						output: output.as_deref(),
+						force: *force,
+						dry_run: *dry_run,
+						state_dir: &state_dir,
+						quiet: cli.quiet,
+					},
+				)
+			})
+		});
+
+		return match code {
+			Ok(code) => code,
+			Err(error) => {
+				eprintln!("retype: {error}");
+				ExitCode::from(error.exit_code())
+			}
+		};
+	}
 
 	if let Command::Explain { source, intent } = &cli.command {
 		let code = config::load().and_then(|registry| {
@@ -121,8 +179,8 @@ fn main() -> ExitCode {
 			None => daemon::run(cli.state_dir.clone(), !detached),
 			Some(action) => control(&cli, action),
 		},
-		Command::Explain { .. } | Command::Doctor { .. } => {
-			unreachable!("explain and doctor are dispatched before the outcome is built")
+		Command::Convert { .. } | Command::Explain { .. } | Command::Doctor { .. } => {
+			unreachable!("convert, explain and doctor are dispatched before the outcome is built")
 		}
 	};
 

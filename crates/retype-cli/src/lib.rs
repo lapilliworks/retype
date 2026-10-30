@@ -6,6 +6,7 @@
 
 pub mod client;
 pub mod config;
+pub mod convert;
 pub mod daemon;
 pub mod doctor;
 pub mod error;

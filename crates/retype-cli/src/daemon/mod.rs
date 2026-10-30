@@ -5,7 +5,7 @@
 //! connection per thread, and it arrives with the job queue.
 
 mod lock;
-mod machine;
+pub mod machine;
 #[cfg(windows)]
 mod pipe;
 mod server;

@@ -84,7 +84,7 @@ layout = ['{input}', '{ops}', '{output}']
 |---|---|---|
 | `command` | yes | Executable, absolute or bare name. No shell metacharacters, no spaces |
 | `aliases` | no | Alternate executable names, tried in order when `command` is absent or unusable |
-| `probe` | no | Argv run by `retype doctor` to report a version |
+| `probe` | no | Argv run by `retype doctor` to report a version. A tool that declares neither a probe nor a floor makes no version claim, so a local script is usable as it stands |
 | `version_min` | no | Minimum accepted version, compared against the probe output |
 | `purpose` | no | One line, printed by `retype doctor` |
 | `components` | no | Substrings the probe output has to mention, see 3.2 |

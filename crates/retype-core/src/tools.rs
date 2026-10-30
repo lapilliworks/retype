@@ -97,12 +97,19 @@ pub struct ToolStatus<'a> {
 }
 
 impl ToolStatus<'_> {
+	/// Whether the version has to be known at all. A tool that declares neither a
+	/// floor nor a probe makes no version claim, so `cp` or a local script is
+	/// usable without one.
+	fn needs_version(&self) -> bool {
+		self.tool.version_min.is_some() || !self.tool.probe.is_empty()
+	}
+
 	/// Present, new enough, and carrying every component the declaration
 	/// requires. The version floor is part of usability rather than a separate
 	/// question, since a tool below it behaves like a missing one.
 	pub fn is_usable(&self) -> bool {
 		self.path.is_some()
-			&& self.version.is_some()
+			&& (!self.needs_version() || self.version.is_some())
 			&& self.missing_components.is_empty()
 			&& self.error.is_none()
 			&& self.meets_minimum()
@@ -114,10 +121,9 @@ impl ToolStatus<'_> {
 	}
 
 	pub fn meets_minimum(&self) -> bool {
-		match (&self.version, &self.tool.version_min) {
-			(Some(version), Some(minimum)) => version >= minimum,
-			(Some(_), None) => true,
-			(None, _) => false,
+		match &self.tool.version_min {
+			None => true,
+			Some(minimum) => self.version.as_ref().is_some_and(|version| version >= minimum),
 		}
 	}
 
@@ -134,7 +140,8 @@ impl ToolStatus<'_> {
 				line
 			}
 			(None, _) => "not found".to_string(),
-			(Some(_), None) => "version unknown".to_string(),
+			(Some(_), None) if self.needs_version() => "version unknown".to_string(),
+			(Some(_), None) => "present".to_string(),
 		}
 	}
 }
