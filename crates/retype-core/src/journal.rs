@@ -11,11 +11,28 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
 use crate::job::{JOURNAL_VERSION, Job, JobId, JobState, now_ms};
+
+/// When compaction is worth doing, `docs/state.md` §4.
+const MAX_LINES: usize = 10_000;
+
+/// The journal outlives undo, because a record of a conversion from long ago is
+/// more likely to mislead than to help, `docs/provenance.md` §7.
+const HORIZON_FLOOR: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// What compaction did.
+#[derive(Debug, Default)]
+pub struct Compact {
+	/// The live records that remain. Present only when the file was rewritten.
+	pub kept: Option<Vec<Job>>,
+	/// Records dropped by age, which is only some of what a rewrite removes.
+	pub dropped: usize,
+}
 
 /// An open journal, positioned at the end.
 #[derive(Debug)]
@@ -66,6 +83,73 @@ impl Journal {
 			},
 			replay,
 		))
+	}
+
+	/// Rewrite the journal down to its live records, dropping those past the
+	/// horizon.
+	///
+	/// It runs on startup and only when the file has earned it: ten thousand
+	/// lines, or more records superseded than live. Rewriting is a rename, so a
+	/// crash leaves either the old file or the new one, never a half-written
+	/// journal.
+	pub fn compact(&mut self, retention: Duration) -> Result<Compact> {
+		let replay = replay(&self.path)?;
+		let lines = self.lines()?;
+		let superseded = lines.saturating_sub(replay.jobs.len());
+
+		if lines <= MAX_LINES && superseded <= replay.jobs.len() {
+			return Ok(Compact::default());
+		}
+
+		let horizon = (retention * 2).max(HORIZON_FLOOR);
+		let cutoff = now_ms() - horizon.as_millis() as i64;
+		let total = replay.jobs.len();
+
+		let kept: Vec<Job> = replay.jobs.into_iter().filter(|job| job.updated >= cutoff).collect();
+		let dropped = total - kept.len();
+
+		self.rewrite(&kept)?;
+		Ok(Compact {
+			kept: Some(kept),
+			dropped,
+		})
+	}
+
+	fn lines(&self) -> Result<usize> {
+		match fs::read(&self.path) {
+			Ok(bytes) => Ok(bytes.iter().filter(|byte| **byte == b'\n').count()),
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+			Err(error) => Err(Error::Io(error)),
+		}
+	}
+
+	/// Write `jobs` to a temporary file and rename it into place, then reopen the
+	/// handle, which now points at the replacement.
+	fn rewrite(&mut self, jobs: &[Job]) -> Result<()> {
+		let temp = self.path.with_file_name(format!(
+			"{}.compact",
+			self.path.file_name().unwrap_or_default().to_string_lossy()
+		));
+		let mut text = String::new();
+
+		for job in jobs {
+			text.push_str(&job.to_line()?);
+			text.push('\n');
+		}
+
+		let mut replacement = fs::OpenOptions::new()
+			.write(true)
+			.create(true)
+			.truncate(true)
+			.open(&temp)?;
+		set_private_file(&replacement)?;
+		replacement.write_all(text.as_bytes())?;
+		replacement.sync_data()?;
+		self.file.sync_all()?;
+
+		crate::fsx::rename(&temp, &self.path)?;
+		self.file = fs::OpenOptions::new().append(true).open(&self.path)?;
+		Ok(())
 	}
 
 	pub fn path(&self) -> &Path {
@@ -205,6 +289,61 @@ mod tests {
 		let output = Output::pending(PathBuf::from("/home/u/Pictures/a.jpg"), "jpg", Tier::Converted);
 
 		Job::new(source, Some("jpg".to_string()), vec![output], "7f3c1a2b").unwrap()
+	}
+
+	#[test]
+	fn compaction_keeps_live_records_and_drops_those_past_the_horizon() {
+		let (_dir, path) = path();
+		let month = 30 * 24 * 60 * 60 * 1_000;
+
+		{
+			let (mut journal, _) = Journal::open(&path).unwrap();
+
+			// Four records for one job, plus an old job of its own: enough
+			// supersession to earn a rewrite, and one record old enough to drop.
+			let mut old = job();
+			old.updated = now_ms() - 20 * month;
+			journal.append(&old).unwrap();
+
+			let mut current = job();
+			for _ in 0..4 {
+				journal.append(&current).unwrap();
+			}
+
+			// Give the live job a fresh timestamp so it survives.
+			current.updated = now_ms();
+			journal.append(&current).unwrap();
+		}
+
+		let (mut journal, _) = Journal::open(&path).unwrap();
+		let compact = journal.compact(Duration::from_secs(7 * 24 * 60 * 60)).unwrap();
+		let kept = compact.kept.expect("the file earned a rewrite");
+
+		assert_eq!(kept.len(), 1, "{kept:?}");
+		assert_eq!(compact.dropped, 1);
+
+		let (_, replay) = Journal::open(&path).unwrap();
+		assert_eq!(replay.jobs.len(), 1);
+		assert!(journal.path().exists());
+	}
+
+	#[test]
+	fn a_small_journal_is_left_alone() {
+		let (_dir, path) = path();
+		let mut job = job();
+
+		{
+			let (mut journal, _) = Journal::open(&path).unwrap();
+			journal.append(&job).unwrap();
+			job.set_state(JobState::Done);
+			journal.append(&job).unwrap();
+		}
+
+		let (mut journal, _) = Journal::open(&path).unwrap();
+		let compact = journal.compact(Duration::from_secs(7 * 24 * 60 * 60)).unwrap();
+
+		assert!(compact.kept.is_none());
+		assert_eq!(journal.lines().unwrap(), 2);
 	}
 
 	#[test]

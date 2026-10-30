@@ -303,23 +303,31 @@ pub fn convert(shared: &Shared, work: &crate::daemon::queue::Work, cancellation:
 	let derived = retype_core::output::derive(stem, source_format, &resolved.groups);
 
 	// Keep the bytes before touching them: an undo has to be possible even if this
-	// process dies mid-conversion.
+	// process dies mid-conversion. Retention is a policy, so a machine that does
+	// not keep records does not pay for one.
 	let store = retype_core::undo::Store::open(&shared.state_dir);
-	let undo = store.save(retype_core::undo::Subject {
-		id: id.clone(),
-		intent: print::intent(&resolved, &shared.registry),
-		machine: shared.machine.clone(),
-		bytes: target.to_path_buf(),
-		source_path: root.join(source_name),
-		source_ext: source_format.to_string(),
-		outputs: derived
-			.iter()
-			.map(|derived| retype_core::undo::Output {
-				path: target.parent().unwrap_or(Path::new("")).join(&derived.path),
-				ext: derived.format.clone(),
-			})
-			.collect(),
-	});
+	let policy = shared.registry.undo();
+	let undo = if !policy.enabled {
+		None
+	} else {
+		Some(
+			store.save(retype_core::undo::Subject {
+				id: id.clone(),
+				intent: print::intent(&resolved, &shared.registry),
+				machine: shared.machine.clone(),
+				bytes: target.to_path_buf(),
+				source_path: root.join(source_name),
+				source_ext: source_format.to_string(),
+				outputs: derived
+					.iter()
+					.map(|derived| retype_core::undo::Output {
+						path: target.parent().unwrap_or(Path::new("")).join(&derived.path),
+						ext: derived.format.clone(),
+					})
+					.collect(),
+			}),
+		)
+	};
 
 	for (plan, derived) in plans.iter().zip(&derived) {
 		let output = target.parent().unwrap_or(Path::new("")).join(&derived.path);
@@ -361,7 +369,7 @@ pub fn convert(shared: &Shared, work: &crate::daemon::queue::Work, cancellation:
 		(false, false) => JobState::Failed,
 	};
 
-	if let Err(error) = &undo {
+	if let Some(Err(error)) = &undo {
 		eprintln!("retype: cannot keep {} for undo: {error}", target.display());
 	}
 

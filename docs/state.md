@@ -91,7 +91,7 @@ A record is a full snapshot of the job at that transition, so replay is last-win
 - A line whose `v` is not the supported identifier is skipped and reported once, so a downgrade remains usable
 - Adding fields is compatible within an identifier. Removing or renaming a field requires a new identifier, and the previous one stays readable for one major release
 
-Compaction rewrites live records into a temporary file and renames it into place. It runs on startup when the journal exceeds 10,000 lines or when more than half the records are superseded by later ones for the same id. Records older than twice the undo retention, with a floor of 30 days, are dropped.
+Compaction rewrites live records into a temporary file and renames it into place. It runs on startup when the journal exceeds 10,000 lines or when more than half the records are superseded by later ones for the same id. The horizon is twice the undo retention with a floor of thirty days, so raising retention lengthens it and lowering it never shortens the journal below a month.
 
 ## 5. Undo records
 

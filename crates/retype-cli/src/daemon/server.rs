@@ -29,7 +29,8 @@ impl Server {
 	/// Open the state the daemon owns, replaying the journal so `jobs.list`
 	/// answers from what survives rather than from what this process did.
 	pub fn open(state_dir: &Path) -> Result<Self> {
-		let (journal, replay) = Journal::open(&state_dir.join("jobs.jsonl"))?;
+		let registry = crate::config::load()?;
+		let (mut journal, replay) = Journal::open(&state_dir.join("jobs.jsonl"))?;
 
 		if let Some(quarantined) = &replay.quarantined {
 			eprintln!(
@@ -38,13 +39,29 @@ impl Server {
 			);
 		}
 
+		// Startup step 6, `docs/state.md` §6: retention before compaction, so the
+		// records a rewrite would have dropped are already gone. Nothing here is
+		// a conversion, so it never blocks one.
+		let retention = registry.undo().retention;
+		let compact = journal.compact(retention)?;
+		let jobs = compact.kept.unwrap_or(replay.jobs);
+		let swept = retype_core::undo::Store::open(state_dir).sweep(retention)?;
+
+		if compact.dropped > 0 {
+			eprintln!("retype: dropped {} journal record(s) past the horizon", compact.dropped);
+		}
+
+		if !swept.is_empty() {
+			eprintln!("retype: dropped {} undo record(s) past retention", swept.len());
+		}
+
 		let machine = machine::load_or_create(state_dir)?;
 		let shared = Arc::new(Shared {
-			registry: crate::config::load()?,
+			registry,
 			machine: machine.clone(),
 			state_dir: state_dir.to_path_buf(),
 			journal: Mutex::new(journal),
-			jobs: Mutex::new(replay.jobs),
+			jobs: Mutex::new(jobs),
 			recent: Default::default(),
 			dropped: AtomicU64::new(0),
 		});

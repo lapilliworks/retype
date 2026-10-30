@@ -96,6 +96,29 @@ pub struct Subject {
 	pub outputs: Vec<Output>,
 }
 
+/// How long a record is kept, and whether records are kept at all,
+/// `docs/config.md` §13.
+///
+/// Retention is a host-level knob rather than a per-directory one: a
+/// `.retype.toml` committed to a repository must not decide every contributor's
+/// disk budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Policy {
+	pub enabled: bool,
+	/// Age after which a record is dropped, and so after which its job can no
+	/// longer be resumed.
+	pub retention: Duration,
+}
+
+impl Default for Policy {
+	fn default() -> Self {
+		Self {
+			enabled: true,
+			retention: Duration::from_secs(7 * 24 * 60 * 60),
+		}
+	}
+}
+
 /// The store, rooted at `<state>/undo`.
 pub struct Store {
 	root: PathBuf,
@@ -263,6 +286,22 @@ impl Store {
 		}
 	}
 
+	/// Drop every record older than `retention`, and report what went. Called at
+	/// startup, `docs/state.md` §6, and never during a conversion.
+	pub fn sweep(&self, retention: Duration) -> Result<Vec<JobId>> {
+		let now = SystemTime::now();
+		let mut dropped = Vec::new();
+
+		for record in self.list()? {
+			if age(&record, now) > retention {
+				self.remove(&record.id)?;
+				dropped.push(record.id);
+			}
+		}
+
+		Ok(dropped)
+	}
+
 	/// The bytes held for a job, when a source has to be read again: resume needs
 	/// this after a rename has taken the original name away.
 	pub fn source(&self, id: &JobId) -> Result<Option<PathBuf>> {
@@ -361,6 +400,47 @@ mod tests {
 		let path = dir.join("photo.heic");
 		fs::write(&path, b"heic bytes").unwrap();
 		path
+	}
+
+	fn subject(index: usize, dir: &Path) -> Subject {
+		let bytes = dir.join(format!("photo{index}.heic"));
+		fs::write(&bytes, b"heic bytes").unwrap();
+
+		Subject {
+			id: id(index),
+			intent: "jpg+quality85".to_string(),
+			machine: "machine".to_string(),
+			bytes: bytes.clone(),
+			source_path: bytes,
+			source_ext: "heic".to_string(),
+			outputs: Vec::new(),
+		}
+	}
+
+	/// Backdate a record the way only time can, by rewriting its manifest.
+	fn backdate(store: &Store, record: &mut Record, days: i64) {
+		record.created = crate::job::now_ms() - days * 24 * 60 * 60 * 1_000;
+		fs::write(
+			store.directory(&record.id).join("meta.toml"),
+			toml::to_string(&record).unwrap(),
+		)
+		.unwrap();
+	}
+
+	#[test]
+	fn sweeping_drops_what_is_past_retention_and_keeps_the_rest() {
+		let state = state();
+		let store = Store::open(state.path());
+
+		let mut old = store.save(subject(1, state.path())).unwrap();
+		backdate(&store, &mut old, 8);
+		let recent = store.save(subject(2, state.path())).unwrap();
+
+		let dropped = store.sweep(Duration::from_secs(7 * 24 * 60 * 60)).unwrap();
+
+		assert_eq!(dropped, vec![old.id.clone()]);
+		assert!(store.load(&old.id).unwrap().is_none());
+		assert!(store.load(&recent.id).unwrap().is_some());
 	}
 
 	#[test]

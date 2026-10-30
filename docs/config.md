@@ -252,7 +252,28 @@ The first backend in `prefer` that implements every operation in the plan and is
 
 Availability is a plan-time question with a fixed answer at that moment: the tool is in the managed directory or on `PATH`, above its version floor, and carrying its components. A managed tool is also checked against its manifest. The chosen backend, its resolved engine and its build fingerprint are recorded with the job, because a later machine that has since gained ImageMagick must not silently produce a different file.
 
-## 9. Per-directory policy
+## 9. Undo retention
+
+Host-level, never per-directory: a `.retype.toml` committed to a repository must not decide every contributor's disk budget.
+
+```toml
+[undo]
+enabled = true
+retention = '168h'
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Keep records at all. Taking effect for future jobs, because a record has to exist at conversion time |
+| `retention` | `168h` | Age after which a record is dropped |
+
+`retention` is read as the grammar's duration class, so it is spelled the way an intent spells one: `h`, `m` and `s`, in that order, and a unit may be skipped. The class has no day unit, so a week is `168h`.
+
+Retention decides two things at once, deliberately rather than incidentally: how long an undo record survives, and therefore how long the job it describes can be resumed, `docs/state.md` §5.2. Records are dropped at startup and never during a conversion.
+
+The journal outlives them. It is compacted at startup when it earns it, dropping records past twice the retention with a floor of thirty days, `docs/state.md` §4.
+
+## 10. Per-directory policy
 
 `.retype.toml` in a watched directory may change behaviour but MUST NOT define tools, formats, operations or presets. A directory can arrive from an untrusted source, so it cannot introduce a command.
 
@@ -276,7 +297,7 @@ preset = 'headshot'
 
 `paused = true` makes the directory unwatched by policy, and policy beats state: a later `retype watch --resume <dir>` is refused with `E_WATCH_PAUSED_BY_POLICY` naming the file, rather than being accepted and then quietly undone the next time the file is read.
 
-## 10. Validation
+## 11. Validation
 
 Loading fails, naming the file and key, on any of:
 
@@ -301,7 +322,7 @@ V12 named an in-process backend and was retired with it. The number is not reuse
 
 Warnings, not errors: a name that is a prefix of another name; a tool that fails its probe; a managed tool whose fingerprint differs from its manifest; a pair whose tier is `delegated` but has no `argv` fragment.
 
-## 11. Probing
+## 12. Probing
 
 Probing is an authoring aid, never a runtime decision.
 
@@ -312,6 +333,6 @@ retype doctor --emit      # a [tools] snippet reflecting what is installed
 
 `--emit` writes nothing unless asked to with `--write`. The emitted snippet is ordinary configuration and is validated like any other.
 
-## 12. Versioning
+## 13. Versioning
 
 Version identifier: `retype-config-1`, declared at file top level. The key is mandatory in user and directory files and implicit in `builtin.toml`. A file with an unknown major fails to load; a file with a lower major is upgraded through a declared migration when one exists. Keys are never reused for different meanings, and a renamed key stays accepted as an alias for at least one major version.

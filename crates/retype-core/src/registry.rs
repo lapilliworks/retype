@@ -193,6 +193,9 @@ pub struct Registry {
 	/// Every format name and alias with the canonical format, longest first:
 	/// the list that decides where a file name's stem ends.
 	format_names: Vec<(String, String)>,
+	/// How long bytes are kept for undo, `docs/config.md` §13. Host-level, so
+	/// there is one answer per machine rather than one per directory.
+	undo: crate::undo::Policy,
 }
 
 impl Registry {
@@ -460,6 +463,24 @@ impl Registry {
 		let mut format_names = collect_format_names(&formats);
 		format_names.sort_by(|left, right| right.0.len().cmp(&left.0.len()).then(left.0.cmp(&right.0)));
 
+		let mut undo = crate::undo::Policy::default();
+
+		if let Some(entry) = &document.undo {
+			if let Some(enabled) = entry.enabled {
+				undo.enabled = enabled;
+			}
+
+			if let Some(retention) = &entry.retention {
+				match duration(retention) {
+					Ok(read) => undo.retention = read,
+					Err(fault) => problems.push(fail(
+						fault.code,
+						format!("{label}: [undo] retention '{retention}': {}", fault.message),
+					)),
+				}
+			}
+		}
+
 		let registry = Self {
 			tools,
 			presets,
@@ -468,6 +489,7 @@ impl Registry {
 			ops,
 			names,
 			format_names,
+			undo,
 			warnings: Vec::new(),
 		};
 
@@ -491,6 +513,11 @@ impl Registry {
 	/// Backend names in preference order, `docs/config.md` §8.
 	pub fn backends(&self) -> &[String] {
 		&self.backends
+	}
+
+	/// Undo retention, `docs/config.md` §13.
+	pub fn undo(&self) -> &crate::undo::Policy {
+		&self.undo
 	}
 
 	pub fn preset(&self, name: &str) -> Option<&Preset> {
@@ -750,6 +777,28 @@ fn validate_backends(backends: &[String], tool_names: &BTreeSet<&str>, label: &s
 	}
 
 	problems
+}
+
+/// A policy knob that counts time is read as the grammar's `time` class, so a
+/// configuration spells a duration the same way an intent does,
+/// `docs/grammar.md` §7.
+fn duration(text: &str) -> std::result::Result<std::time::Duration, crate::value::Fault> {
+	let param = Param {
+		class: Class::Time,
+		min: None,
+		max: None,
+		values: Vec::new(),
+		scalar: None,
+	};
+
+	match crate::value::interpret(&param, text) {
+		Ok(crate::value::Value::Time(seconds)) => Ok(std::time::Duration::from_secs(seconds)),
+		Ok(_) => Err(crate::value::Fault {
+			code: Code::ValueSyntax,
+			message: "is not a duration".to_string(),
+		}),
+		Err(fault) => Err(fault),
+	}
 }
 
 /// V1 and V9: a fragment may carry `{value}` and `{engine.<name>}`, both of which
@@ -1141,6 +1190,16 @@ struct Document {
 	formats: BTreeMap<String, FormatEntry>,
 	#[serde(default)]
 	ops: BTreeMap<String, OpEntry>,
+	#[serde(default)]
+	undo: Option<UndoEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UndoEntry {
+	#[serde(default)]
+	enabled: Option<bool>,
+	#[serde(default)]
+	retention: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1309,6 +1368,27 @@ mod tests {
 	}
 
 	const HEADER: &str = "version = 'retype-config-1'\n";
+
+	#[test]
+	fn undo_policy_defaults_and_reads_its_knobs() {
+		let registry = Registry::load(HEADER).unwrap();
+		assert!(registry.undo().enabled);
+		assert_eq!(
+			registry.undo().retention,
+			std::time::Duration::from_secs(7 * 24 * 60 * 60)
+		);
+
+		let registry = Registry::load(&format!("{HEADER}\n[undo]\nenabled = false\nretention = '720h'\n")).unwrap();
+		assert!(!registry.undo().enabled);
+		assert_eq!(registry.undo().retention, std::time::Duration::from_secs(720 * 60 * 60));
+	}
+
+	#[test]
+	fn a_retention_that_is_not_a_duration_is_refused() {
+		let codes = codes(&format!("{HEADER}\n[undo]\nretention = '7x'\n"));
+
+		assert_eq!(codes, vec![Code::ValueSyntax]);
+	}
 
 	#[test]
 	fn the_builtin_registry_loads_and_names_every_format_it_uses() {
