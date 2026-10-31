@@ -41,6 +41,23 @@ fn main() {}
 ```
 ";
 
+/// The daemon a `convert` causes, stopped when the test ends: an autostarted daemon
+/// outlives its client, and a leaked one keeps a watcher and a timer alive for every
+/// later run.
+struct Autostarted {
+	state: std::path::PathBuf,
+}
+
+impl Drop for Autostarted {
+	fn drop(&mut self) {
+		let _ = retype()
+			.args(["daemon", "stop", "--force"])
+			.arg("--state-dir")
+			.arg(&self.state)
+			.output();
+	}
+}
+
 fn convert(dir: &Path, state: &Path, target: &str) -> (std::process::Output, std::path::PathBuf) {
 	let source = dir.join("report.md");
 	fs::write(&source, SOURCE).unwrap();
@@ -65,6 +82,7 @@ fn markdown_becomes_a_readable_document_in_every_declared_target() {
 
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");
+	let _daemon = Autostarted { state: state.clone() };
 
 	// Each target is checked by its first bytes rather than by its size: a PDF that
 	// is not a PDF is the failure worth catching.
@@ -100,6 +118,7 @@ fn the_pdf_engine_is_recorded_with_the_job() {
 
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");
+	let _daemon = Autostarted { state: state.clone() };
 	let source = dir.path().join("report.md");
 	fs::write(&source, SOURCE).unwrap();
 
@@ -133,6 +152,7 @@ fn a_pdf_is_a_target_and_never_a_source() {
 	// chosen rather than a conversion that fails after the work has started.
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");
+	let _daemon = Autostarted { state: state.clone() };
 	let source = dir.path().join("report.pdf");
 	fs::write(&source, b"%PDF-1.7\n").unwrap();
 

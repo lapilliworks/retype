@@ -35,6 +35,23 @@ fn zip(dir: &Path) -> std::path::PathBuf {
 	path
 }
 
+/// The daemon a `convert` causes, stopped when the test ends: an autostarted daemon
+/// outlives its client, and a leaked one keeps a watcher and a timer alive for every
+/// later run.
+struct Autostarted {
+	state: std::path::PathBuf,
+}
+
+impl Drop for Autostarted {
+	fn drop(&mut self) {
+		let _ = retype()
+			.args(["daemon", "stop", "--force"])
+			.arg("--state-dir")
+			.arg(&self.state)
+			.output();
+	}
+}
+
 fn convert(input: &Path, intent: &str, state: &Path) -> std::process::Output {
 	retype()
 		.args(["convert"])
@@ -50,6 +67,7 @@ fn convert(input: &Path, intent: &str, state: &Path) -> std::process::Output {
 fn a_zip_becomes_a_tarball_with_its_entries_intact() {
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");
+	let _daemon = Autostarted { state: state.clone() };
 	let input = zip(dir.path());
 
 	let ran = convert(&input, "tar.gz", &state);
@@ -81,6 +99,7 @@ fn a_zip_becomes_a_tarball_with_its_entries_intact() {
 fn a_tarball_becomes_a_zip() {
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");
+	let _daemon = Autostarted { state: state.clone() };
 
 	// A tar of a directory, built here rather than by a tool.
 	let tarball = dir.path().join("notes.tar");
@@ -110,6 +129,7 @@ fn a_tarball_becomes_a_zip() {
 fn a_directory_is_not_an_archive_and_says_so() {
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");
+	let _daemon = Autostarted { state: state.clone() };
 	let tree = dir.path().join("Photos");
 	fs::create_dir(&tree).unwrap();
 	fs::write(tree.join("one.txt"), b"first").unwrap();
@@ -128,6 +148,7 @@ fn a_directory_is_not_an_archive_and_says_so() {
 fn repacking_an_archive_into_its_own_format_is_a_no_op() {
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");
+	let _daemon = Autostarted { state: state.clone() };
 	let input = zip(dir.path());
 
 	let ran = convert(&input, "zip", &state);
