@@ -656,6 +656,16 @@ pub fn serve(listener: std::os::unix::net::UnixListener, mut server: Server) -> 
 
 	for stream in listener.incoming() {
 		let mut stream = stream?;
+
+		// The state directory's modes are the boundary; this is the second lock, for
+		// the day a backup or a stray `chmod` moved them, `docs/ipc.md` §4.
+		let peer = crate::daemon::peer::peer_uid(&stream);
+
+		if !crate::daemon::peer::accepts(peer, crate::daemon::peer::our_uid()) {
+			eprintln!("retype: refused a connection from uid {}", peer.unwrap_or_default());
+			continue;
+		}
+
 		let mut reader = BufReader::new(stream.try_clone()?);
 
 		server.serve_connection(&mut reader, &mut stream)?;

@@ -8,6 +8,8 @@ pub mod events;
 pub mod immediate;
 mod lock;
 pub mod machine;
+#[cfg(unix)]
+pub mod peer;
 #[cfg(windows)]
 mod pipe;
 pub mod queue;
