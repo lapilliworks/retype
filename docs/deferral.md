@@ -49,14 +49,16 @@ string that cannot be carried is never quietly run because it happened to be che
 
 1. The job cannot run as asked:
    - `[deferral] repair = 'convert'`, the job would keep an undo record, the estimate
-     is at or below `repair_above`, and the target format survives dropping the tokens
-     that could not be carried → run it, record the dropped tokens, and notify with
-     what happened, §6
+     is at or below `above`, and the target format survives dropping the tokens that
+     could not be carried → run it, record the dropped tokens, and notify with what
+     happened, §6
    - otherwise → `needs-attention`
 2. The intent carries `ask` → `pending`, reason `ask`
-3. The job is derived from a watched rename, no undo record can be kept for it, and
-   the estimate exceeds `above_without_undo` → `pending`, reason `cost`
-4. The job is derived from a watched rename and the estimate exceeds `above` →
+3. The job is derived from a watched rename, no undo record can be kept for it, the
+   estimate exceeds `above_without_undo`, and neither `+now` nor `mode = 'now'`
+   suppresses deferral → `pending`, reason `cost`
+4. The job is derived from a watched rename, the estimate exceeds `above`, and none of
+   `+now`, `mode = 'now'` or the directory's `confirm = false` suppresses deferral →
    `pending`, reason `cost`
 5. Otherwise the job runs
 
@@ -77,41 +79,61 @@ Two rules follow from the list rather than from a special case:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `mode` | `ask` | `ask` defers by §3; `now` runs immediately and parks only for `needs-attention` |
+| `mode` | `ask` | `ask` defers by §3; `now` skips the two cost triggers, and still parks for `needs-attention` and for `+ask`, §5 |
 | `above` | `10s` | Estimated duration above which a watched rename is deferred |
 | `above_without_undo` | `2s` | The same, for a job whose source cannot be kept |
 | `pause` | `1h` | How long a `pending` job waits before it runs anyway |
 | `repair` | `ask` | What to do with a job that cannot run as asked: `ask` parks it, `convert` runs it without the tokens that could not be carried |
-| `repair_above` | `5s` | The largest job `repair = 'convert'` will guess its way through; above this it parks |
 
 Durations are the grammar's time class, so they are spelled the way an intent spells
 one, `docs/grammar.md` §7. Thresholds are compared against the whole job: the sum of
 the per-output estimates, since one job's outputs run one after another.
 
 `repair = 'convert'` is the convenience the user opts into. It is deliberately the
-non-default, it never applies without an undo record, and it is bounded by cost: a
-dropped token is a small cut on a job that takes a second, and a guess that spends
-minutes on work nobody asked for is not. Whatever it drops is recorded with the job
-and reported with the result, together with the intent string the user meant.
+non-default, it never applies without an undo record, and it is bounded by `above`
+rather than by a threshold of its own: a dropped token is a small cut on a job that
+takes a second, and a guess that spends minutes on work nobody asked for is not.
+Whatever it drops is recorded with the job and reported with the result, together with
+the intent string the user meant.
 
 An estimate that does not exist is not a reason to park. A family with no constant
 and no measurement has an unknown cost, and turning "unknown" into "you must answer"
 is worse than running. Deferral is a courtesy for expensive jobs, never a gate.
 
-A directory file may set `confirm = false`, which is `mode = 'now'` for that
-directory's renames only, `docs/config.md` §11. It cannot raise a threshold, change a
-pause or turn on repair, because those describe the machine and the user's tolerance
-for a guess.
+A directory file may set `confirm = false`, which suppresses deferral for that
+directory's renames only, §5. It cannot raise a threshold, change a pause or turn on
+repair, because those describe the machine and the user's tolerance for a guess.
 
-## 5. `now` and `ask` in the name
+## 5. Who decides
 
-| Token | Effect |
-|---|---|
-| `+now` | Skips the `ask` and `cost` triggers for this job. `needs-attention` still applies, because the job cannot run as asked |
-| `+ask` | Parks this job with reason `ask`, whatever the mode, the directory's `confirm` or the estimate says |
+Three places can ask for a confirmation or suppress one, and they are not equal: one
+of them was typed a moment ago about this file, and one may have arrived with a
+directory from somewhere else.
 
-Both are one job's worth of override, and both print in the canonical form so the
-journal records what was asked, `docs/grammar.md` §10.
+| Statement | Written where | Effect |
+|---|---|---|
+| `+ask` | the new name, now | Parks the job with reason `ask`, whatever anything else says |
+| `+now` | the new name, now | Skips both cost triggers for this job |
+| `mode = 'now'` | the user config | Skips both cost triggers on this machine |
+| `confirm = false` | the directory file | Skips the `above` trigger. The no-undo trigger of §3 still applies |
+| `mode = 'ask'` | the user config | The default: defer by §3 |
+
+Two rules produce the table:
+
+- **An ask beats a suppression.** Asking is the safe direction: the cost of a prompt
+  nobody wanted is one keystroke, and the cost of a conversion nobody saw is a file
+  they have to notice and undo. So a `+ask` in the name parks the job even when the
+  host, the directory and `now` mode all say not to
+- **A directory file cannot remove the brake on an irreversible job.** A `.retype.toml`
+  can arrive with a repository, and `confirm = false` in it would otherwise be enough
+  to let a job delete its source without a record and without asking. It suppresses the
+  ordinary cost trigger, which is a statement about a build directory; it does not
+  suppress the threshold that exists because there is no way back. Only the machine's
+  own setting and a `+now` typed by the person can do that
+
+Both tokens print in the canonical form so the journal records what was asked,
+`docs/grammar.md` §10, and neither changes what the job does: they decide whether the
+user is asked first.
 
 ## 6. The report of a job that did not run as asked
 
