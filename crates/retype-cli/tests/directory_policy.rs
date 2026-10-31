@@ -279,3 +279,38 @@ fn confirm_false_suppresses_the_cost_confirmation_in_that_directory() {
 	assert_eq!(done["state"], "done", "{done}");
 	assert!(fixture.photos.join("e.webp").exists());
 }
+
+/// A directory may ask for more settled time than the daemon's window gives,
+/// `docs/watch.md` §7.
+///
+/// The tool here is a copy, so a job finishes as soon as it starts: what the test
+/// measures is when the decision happens, not how long the work takes.
+#[test]
+fn debounce_ms_holds_a_rename_until_the_file_stops_changing() {
+	let fixture = Fixture::new("1h", "debounce_ms = 1500\n");
+	let source = fixture.photos.join("f.png");
+	fs::write(&source, b"pixels").unwrap();
+	fs::rename(&source, fixture.photos.join("f.webp")).unwrap();
+
+	// Nothing decides on the daemon's own four hundred milliseconds.
+	std::thread::sleep(Duration::from_millis(700));
+	assert!(fixture.records().is_empty(), "{:?}", fixture.records());
+
+	// The second rename arrives inside the hold and is the one that counts.
+	fs::rename(fixture.photos.join("f.webp"), fixture.photos.join("f.webp+q75")).unwrap();
+
+	let done = fixture
+		.wait_for(|record| record["state"] == "done")
+		.expect("a settled job");
+
+	// One job, asked for what the last name asked for, and named after it.
+	assert_eq!(done["intent"], "webp+quality75", "{done:?}");
+	assert_eq!(done["source"]["path"], source.to_str().unwrap(), "{done:?}");
+	assert!(fixture.photos.join("f-quality75.webp").exists());
+	assert_eq!(
+		fixture.records().len(),
+		2,
+		"one job, one settled record: {:?}",
+		fixture.records()
+	);
+}

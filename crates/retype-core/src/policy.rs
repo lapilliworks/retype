@@ -39,6 +39,9 @@ pub struct Policy {
 	pub confirm: bool,
 	/// Whether the directory is watched at all.
 	pub paused: bool,
+	/// How long a rename here waits for the file to settle before anything decides,
+	/// `docs/watch.md` §7. `None` is the daemon's own window.
+	pub debounce_ms: Option<u64>,
 	/// Where the policy came from, for a message that names the file.
 	pub path: PathBuf,
 }
@@ -52,6 +55,7 @@ impl Policy {
 			limits: BTreeMap::new(),
 			confirm: true,
 			paused: false,
+			debounce_ms: None,
 			path: path.to_path_buf(),
 		}
 	}
@@ -154,6 +158,7 @@ impl Policy {
 			.or_else(|| document.deferral.as_ref().and_then(|deferral| deferral.confirm))
 			.unwrap_or(true);
 		policy.paused = document.paused.unwrap_or(false);
+		policy.debounce_ms = document.debounce_ms;
 
 		Ok(policy)
 	}
@@ -309,6 +314,8 @@ struct Document {
 	#[serde(default)]
 	paused: Option<bool>,
 	#[serde(default)]
+	debounce_ms: Option<u64>,
+	#[serde(default)]
 	deferral: Option<DeferralKeys>,
 	#[serde(flatten)]
 	keys: BTreeMap<String, toml::Value>,
@@ -375,6 +382,14 @@ mod tests {
 		assert!(policy.allows("a.heic", Path::new("a.heic")));
 		assert!(policy.confirm);
 		assert!(!policy.paused);
+	}
+
+	#[test]
+	fn a_directory_may_ask_for_a_longer_debounce() {
+		assert_eq!(Policy::open_ended(Path::new("/photos/.retype.toml")).debounce_ms, None);
+
+		let policy = directory("version = 'retype-config-1'\ndebounce_ms = 800\n");
+		assert_eq!(policy.debounce_ms, Some(800));
 	}
 
 	#[test]

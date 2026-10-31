@@ -80,7 +80,7 @@ The size limit exists because a rename is a fast gesture and a 40 GiB video is n
 
 | Concern | Rule |
 |---|---|
-| Debounce | Per path, default 500 ms, overridable by `.retype.toml` `debounce_ms` |
+| Debounce | The daemon collects for four hundred milliseconds and waits for two hundred of quiet, capped at three seconds. A directory's `debounce_ms` holds its renames until that many milliseconds have passed since the last one, so an application that saves by renaming twice is converted once, under the name it finally chose |
 | Scope | In-place renames only, per |
 | Batching | Renames arriving within one window are collected into one job batch and one notification |
 | Ordering | Queue order follows the earliest event in the batch, not arrival order of the last |

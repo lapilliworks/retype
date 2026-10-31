@@ -215,9 +215,16 @@ fn spawn_worker(
 		// arriving.
 		let _watcher = watcher;
 		let mut correlator = Correlator::new(256);
+		// Renames waiting out a directory's own debounce, by directory.
+		let mut held: std::collections::BTreeMap<PathBuf, Held> = std::collections::BTreeMap::new();
 
 		while !worker_stop.load(Ordering::Relaxed) {
-			let batch = retype_watch::collect(&receiver, window);
+			// A directory that asked for a longer debounce is answered when its own clock
+			// says so, before this pass waits for anything else.
+			release(&shared, &pool, &watched_root, &mut held);
+
+			let batch = retype_watch::collect(&receiver, less_than(&held, window));
+
 			if batch.is_empty() {
 				continue;
 			}
@@ -227,147 +234,241 @@ fn spawn_worker(
 			let parked_batch = retype_core::job::JobId::now().ok().map(|id| id.as_str().to_string());
 
 			for fact in feed(&mut correlator, &batch) {
-				if retype_core::convert::is_temp_file(&fact.source) || retype_core::convert::is_temp_file(&fact.target)
-				{
-					continue;
-				}
-
-				if shared.recent.is_echo(&fact.source, &fact.target) {
-					continue;
-				}
-
-				// What the daemon considers at all comes before a directory's own
-				// policy: a `.git` directory cannot be opted back in by the file inside
-				// it, `docs/watch.md` §4.
-				// Both names a rename has, because they describe the same bytes: a glob
-				// that names the source is about the file being converted.
-				if !shared.registry.watch().considers(&watched_root, &fact.target)
-					|| !shared.registry.watch().considers(&watched_root, &fact.source)
-				{
-					crate::verbose::detail(format!("{} is not considered", fact.target.display()));
-					continue;
-				}
-
-				// A rename is a fast gesture and a forty gigabyte video is not, so an
-				// oversized source is passed over rather than converted, `docs/watch.md`
-				// §6.
-				let size = std::fs::metadata(&fact.target).map(|meta| meta.len()).unwrap_or(0);
-
-				if !shared.registry.watch().admits(size) {
-					shared.skipped.fetch_add(1, Ordering::Relaxed);
-					eprintln!(
-						"retype: {} is {} and the automatic limit is {}; `retype convert` converts it",
-						fact.target.display(),
-						retype_core::print::size(size),
-						retype_core::print::size(shared.registry.watch().max_source_size),
-					);
-					continue;
-				}
-
-				// The directory has a say before anything else happens: a paused
-				// directory converts nothing, and `patterns` decides which files are
-				// considered at all, `docs/config.md` §12.
+				// A directory may ask for more settled time than the window gives, which is
+				// what `debounce_ms` is for: an application that saves by renaming twice
+				// should be converted once, under the name it finally chose.
 				let directory = fact.target.parent().unwrap_or(&watched_root);
-				let cached = shared.policies.policy(&watched_root, directory);
 
-				let policy = match cached.as_ref() {
-					Ok(policy) => policy,
+				let debounce = match shared.policies.policy(&watched_root, directory).as_ref() {
+					Ok(policy) => policy.debounce_ms.unwrap_or_default(),
 					Err(problem) => {
 						eprintln!("retype: {problem}");
 						continue;
 					}
 				};
 
-				if policy.paused {
-					crate::verbose::detail(format!("{} is paused by its policy", directory.display()));
+				let wait = std::time::Duration::from_millis(debounce);
+
+				if wait > window.first_wait {
+					held.entry(directory.to_path_buf()).or_default().hold(fact, wait);
 					continue;
 				}
 
-				let name = fact
-					.source
-					.file_name()
-					.and_then(|name| name.to_str())
-					.unwrap_or_default();
-
-				let relative = fact.source.strip_prefix(&watched_root).unwrap_or(&fact.source);
-
-				if !policy.allows(name, relative) {
-					continue;
-				}
-
-				let Ok(id) = retype_core::job::JobId::now() else {
-					continue;
-				};
-
-				// A rename chain that spans two batches: the file being renamed is
-				// what an earlier job is writing, so the earlier job is spent and the
-				// chain becomes one conversion, `docs/state.md` §5.3.
-				// The rename just put the bytes at the target, so that is where they
-				// are. What the chain changes is the *source* name: after two renames
-				// the file is not what its intermediate name claimed, it is what the
-				// job that was overtaken was reading, `docs/state.md` §5.3.
-				let earlier = producers(shared.as_ref(), pool.as_ref(), &fact.source);
-
-				let source = match earlier.is_empty() {
-					true => fact.source.clone(),
-					false => supersede(shared.as_ref(), pool.as_ref(), &earlier),
-				};
-
-				// Registered before anything is published, because the first thing
-				// published may be the last thing this batch does: a parked job settles
-				// immediately.
-				if let Some(batch) = parked_batch.as_deref() {
-					shared.batches.open(batch, &id);
-				}
-
- // A later rename replaces a parked job for the same file.
-				crate::daemon::park::superseded(shared.as_ref(), &source);
-
-				match crate::daemon::park::decide(
-					shared.as_ref(),
-					pool.as_ref(),
-					&watched_root,
-					&source,
-					&fact.target,
-					&id,
-					parked_batch.as_deref(),
-					policy,
-				) {
-					crate::daemon::park::Verdict::Run => {}
-					crate::daemon::park::Verdict::Parked | crate::daemon::park::Verdict::Repaired => continue,
-					crate::daemon::park::Verdict::Ignore => {
-						// Not a job at all, so the batch must not wait for it.
-						if let Some(batch) = parked_batch.as_deref() {
-							shared.batches.forget(batch, &id);
-						}
-
-						continue;
-					}
-				}
-
-				let work = crate::daemon::queue::Work {
-					id,
-					kind: crate::daemon::queue::Kind::Rename {
-						root: watched_root.clone(),
-						bytes: fact.target.clone(),
-						source,
-						target: fact.target,
-					},
-				};
-
-				if !pool.submit(work) {
-					shared.dropped.fetch_add(1, Ordering::Relaxed);
-					eprintln!(
-						"retype: conversion is paused for {}: {} jobs are waiting",
-						watched_root.display(),
-						crate::daemon::queue::CAPACITY
-					);
-				}
+				decide(&shared, &pool, &watched_root, fact, parked_batch.as_deref());
 			}
 		}
 	});
 
 	Ok((stop, handle))
+}
+
+/// One rename, decided: hold it, park it, or run it.
+///
+/// The same path serves a fact the window has just produced and a fact a directory's
+/// own debounce has just released, so a policy cannot be honoured in one place and
+/// forgotten in the other.
+fn decide(
+	shared: &Shared,
+	pool: &Pool,
+	watched_root: &Path,
+	fact: retype_core::correlate::RenameFact,
+	parked_batch: Option<&str>,
+) {
+	if retype_core::convert::is_temp_file(&fact.source) || retype_core::convert::is_temp_file(&fact.target) {
+		return;
+	}
+
+	if shared.recent.is_echo(&fact.source, &fact.target) {
+		return;
+	}
+
+	// What the daemon considers at all comes before a directory's own
+	// policy: a `.git` directory cannot be opted back in by the file inside
+	// it, `docs/watch.md` §4.
+	// Both names a rename has, because they describe the same bytes: a glob
+	// that names the source is about the file being converted.
+	if !shared.registry.watch().considers(watched_root, &fact.target)
+		|| !shared.registry.watch().considers(watched_root, &fact.source)
+	{
+		crate::verbose::detail(format!("{} is not considered", fact.target.display()));
+		return;
+	}
+
+	// A rename is a fast gesture and a forty gigabyte video is not, so an
+	// oversized source is passed over rather than converted, `docs/watch.md`
+	// §6.
+	let size = std::fs::metadata(&fact.target).map(|meta| meta.len()).unwrap_or(0);
+
+	if !shared.registry.watch().admits(size) {
+		shared.skipped.fetch_add(1, Ordering::Relaxed);
+		eprintln!(
+			"retype: {} is {} and the automatic limit is {}; `retype convert` converts it",
+			fact.target.display(),
+			retype_core::print::size(size),
+			retype_core::print::size(shared.registry.watch().max_source_size),
+		);
+		return;
+	}
+
+	// The directory has a say before anything else happens: a paused
+	// directory converts nothing, and `patterns` decides which files are
+	// considered at all, `docs/config.md` §12.
+	let directory = fact.target.parent().unwrap_or(watched_root);
+	let cached = shared.policies.policy(watched_root, directory);
+
+	let policy = match cached.as_ref() {
+		Ok(policy) => policy,
+		Err(problem) => {
+			eprintln!("retype: {problem}");
+			return;
+		}
+	};
+
+	if policy.paused {
+		crate::verbose::detail(format!("{} is paused by its policy", directory.display()));
+		return;
+	}
+
+	let name = fact
+		.source
+		.file_name()
+		.and_then(|name| name.to_str())
+		.unwrap_or_default();
+
+	let relative = fact.source.strip_prefix(watched_root).unwrap_or(&fact.source);
+
+	if !policy.allows(name, relative) {
+		return;
+	}
+
+	let Ok(id) = retype_core::job::JobId::now() else {
+		return;
+	};
+
+	// A rename chain that spans two batches: the file being renamed is
+	// what an earlier job is writing, so the earlier job is spent and the
+	// chain becomes one conversion, `docs/state.md` §5.3.
+	// The rename just put the bytes at the target, so that is where they
+	// are. What the chain changes is the *source* name: after two renames
+	// the file is not what its intermediate name claimed, it is what the
+	// job that was overtaken was reading, `docs/state.md` §5.3.
+	let earlier = producers(shared, pool, &fact.source);
+
+	let source = match earlier.is_empty() {
+		true => fact.source.clone(),
+		false => supersede(shared, pool, &earlier),
+	};
+
+	// Registered before anything is published, because the first thing
+	// published may be the last thing this batch does: a parked job settles
+	// immediately.
+	if let Some(batch) = parked_batch {
+		shared.batches.open(batch, &id);
+	}
+
+	// A later rename replaces a parked job for the same file.
+	crate::daemon::park::superseded(shared, &source);
+
+	match crate::daemon::park::decide(
+		shared,
+		pool,
+		watched_root,
+		&source,
+		&fact.target,
+		&id,
+		parked_batch,
+		policy,
+	) {
+		crate::daemon::park::Verdict::Run => {}
+		crate::daemon::park::Verdict::Parked | crate::daemon::park::Verdict::Repaired => return,
+		crate::daemon::park::Verdict::Ignore => {
+			// Not a job at all, so the batch must not wait for it.
+			if let Some(batch) = parked_batch {
+				shared.batches.forget(batch, &id);
+			}
+
+			return;
+		}
+	}
+
+	let work = crate::daemon::queue::Work {
+		id,
+		kind: crate::daemon::queue::Kind::Rename {
+			root: watched_root.to_path_buf(),
+			bytes: fact.target.clone(),
+			source,
+			target: fact.target,
+		},
+	};
+
+	if !pool.submit(work) {
+		shared.dropped.fetch_add(1, Ordering::Relaxed);
+		eprintln!(
+			"retype: conversion is paused for {}: {} jobs are waiting",
+			watched_root.display(),
+			crate::daemon::queue::CAPACITY
+		);
+	}
+}
+
+/// Facts held for a directory that asked for more settled time.
+#[derive(Default)]
+struct Held {
+	facts: Vec<retype_core::correlate::RenameFact>,
+	due: Option<std::time::Instant>,
+}
+
+impl Held {
+	fn hold(&mut self, fact: retype_core::correlate::RenameFact, wait: std::time::Duration) {
+		self.facts.push(fact);
+		// The clock restarts on every event: settling means quiet.
+		self.due = Some(std::time::Instant::now() + wait);
+	}
+}
+
+/// Answer every held directory whose quiet period has passed.
+///
+/// The facts are coalesced before they are decided, so a rename chain that arrived
+/// inside the hold is one job from the first name to the last, the same collapse a
+/// single window gets, `docs/state.md` §5.3.
+fn release(shared: &Shared, pool: &Pool, watched_root: &Path, held: &mut std::collections::BTreeMap<PathBuf, Held>) {
+	let now = std::time::Instant::now();
+
+	let due: Vec<PathBuf> = held
+		.iter()
+		.filter(|(_, held)| held.due.is_some_and(|due| due <= now))
+		.map(|(directory, _)| directory.clone())
+		.collect();
+
+	for directory in due {
+		let Some(entry) = held.remove(&directory) else {
+			continue;
+		};
+
+		let batch = retype_core::job::JobId::now().ok().map(|id| id.as_str().to_string());
+
+		for fact in retype_core::correlate::coalesce(entry.facts) {
+			decide(shared, pool, watched_root, fact, batch.as_deref());
+		}
+	}
+}
+
+/// The window to collect with, shortened so a held directory is not waited on past its
+/// own deadline.
+fn less_than(held: &std::collections::BTreeMap<PathBuf, Held>, window: Window) -> Window {
+	let soonest = held.values().filter_map(|held| held.due).min();
+
+	let Some(due) = soonest else {
+		return window;
+	};
+
+	let left = due.saturating_duration_since(std::time::Instant::now());
+
+	Window {
+		first_wait: left.min(window.first_wait),
+		quiet: left.min(window.quiet),
+		cap: window.cap,
+	}
 }
 
 /// Every job still in flight that this path belongs to.

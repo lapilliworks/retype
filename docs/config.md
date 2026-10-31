@@ -375,7 +375,7 @@ preset = 'headshot'
 | `limits` | yes | Ceilings for a parameter, by operation name. A number is clamped and the derived name says the clamped value; a class with no ceiling is left alone |
 | `confirm` | yes | `false` suppresses the cost confirmation in this directory, and not the one that exists because a source would be destroyed with no record, `docs/deferral.md` §5 |
 | `paused` | yes | Whether the directory is watched at all. `retype watch` refuses it with `E_WATCH_PAUSED_BY_POLICY` naming the file, rather than accepting a registration that the next read would undo |
-| `debounce_ms` | no | How long a batch waits. Collection is per root rather than per directory, so this waits on a batch that can be split |
+| `debounce_ms` | yes | How long a rename here waits for the file to stop changing before anything decides, `docs/watch.md` §7. Below the daemon's own window it changes nothing |
 | `[conversions]` | no | Named conversions with presets. A rule engine of its own |
 
 A file is read when it changes rather than on a second watcher: the answer is cached per directory and re-read when its modification time moves, which is the same answer `docs/watch.md` §2 asks for with less machinery.
