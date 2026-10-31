@@ -33,6 +33,7 @@ Transformations ride on the same gesture: `photo.heic` becomes `photo.webp+q80`.
 | `docs/platforms.md` | Supported targets and delivery tiers |
 | `docs/events.md` | Filesystem event behaviour per platform (generated) |
 | `docs/fidelity.md` | Per pair fidelity claims (generated) |
+| `docs/deferral.md` | When a job is parked instead of run |
 
 ## Development
 
