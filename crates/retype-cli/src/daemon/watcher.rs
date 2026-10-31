@@ -25,8 +25,8 @@ use retype_core::job::{Job, JobError, JobState, Output, OutputState, Source, now
 use retype_core::journal::Journal;
 use retype_core::plan::{self, Plan};
 use retype_core::registry::Registry;
-use retype_core::resolve::{self, Source as Origin};
-use retype_core::{execute, print, watches};
+use retype_core::resolve::{self, Resolved, Source as Origin};
+use retype_core::{execute, intent, print, watches};
 use retype_watch::{Window, feed};
 
 use crate::daemon::queue::Pool;
@@ -66,7 +66,7 @@ pub struct Recent {
 const ECHO_WINDOW: Duration = Duration::from_secs(5);
 
 impl Recent {
-	fn note(&self, consumed: &Path, produced: &Path) {
+	pub fn note(&self, consumed: &Path, produced: &Path) {
 		if let Ok(mut pairs) = self.pairs.lock() {
 			pairs.retain(|(_, _, at)| at.elapsed() < ECHO_WINDOW);
 			pairs.push((consumed.to_path_buf(), produced.to_path_buf(), Instant::now()));
@@ -211,6 +211,10 @@ fn spawn_worker(
 				continue;
 			}
 
+			// One batch per window, so the jobs parked in one tick can be answered
+			// together, `docs/deferral.md` §10.
+			let parked_batch = retype_core::job::JobId::now().ok().map(|id| id.as_str().to_string());
+
 			for fact in feed(&mut correlator, &batch) {
 				if retype_core::convert::is_temp_file(&fact.source) || retype_core::convert::is_temp_file(&fact.target)
 				{
@@ -238,6 +242,21 @@ fn spawn_worker(
 					true => fact.source.clone(),
 					false => supersede(shared.as_ref(), pool.as_ref(), &earlier),
 				};
+
+ // A later rename replaces a parked job for the same file.
+				crate::daemon::park::superseded(shared.as_ref(), &source);
+
+				match crate::daemon::park::decide(
+					shared.as_ref(),
+					&watched_root,
+					&source,
+					&fact.target,
+					&id,
+					parked_batch.as_deref(),
+				) {
+					crate::daemon::park::Verdict::Run => {}
+					crate::daemon::park::Verdict::Parked | crate::daemon::park::Verdict::Ignore => continue,
+				}
 
 				let work = crate::daemon::queue::Work {
 					id,
@@ -321,6 +340,7 @@ fn retire(shared: &Shared, work: &crate::daemon::queue::Work, state: JobState) {
 	let (source, target) = match &work.kind {
 		Kind::Rename { source, target, .. } => (source.clone(), target.clone()),
 		Kind::Immediate(request) => (request.input.clone(), request.input.clone()),
+		Kind::Deferred { source, .. } => (source.clone(), source.clone()),
 	};
 
 	let mut job = Job {
@@ -354,7 +374,26 @@ fn retire(shared: &Shared, work: &crate::daemon::queue::Work, state: JobState) {
 	publish(shared, &job);
 }
 
+/// Where a job's bytes are, and what has to happen to them afterwards.
+enum Input {
+	/// A rename put them at `renamed`: relabel before reading, then consume or keep,
+	///.
+	Renamed { renamed: PathBuf },
+	/// A parked job whose bytes are already under the source name,
+	/// `docs/deferral.md` §9. Consumed on commit, like any rename-derived job.
+	Named,
+}
+
+/// What a job will do, worked out once and then run.
+struct Prepared<'a> {
+	stem: String,
+	format: String,
+	resolved: Resolved,
+	plans: Vec<Plan<'a>>,
+}
+
 /// Turn one rename into jobs, or explain in the log why it is not one.
+#[allow(clippy::too_many_arguments)]
 pub fn convert(
 	shared: &Shared,
 	root: &Path,
@@ -364,58 +403,146 @@ pub fn convert(
 	id: &retype_core::job::JobId,
 	cancellation: &Cancellation,
 ) {
-	let (Some(source_name), Some(target_name)) = (
-		source.file_name().and_then(|name| name.to_str()),
-		target.file_name().and_then(|name| name.to_str()),
-	) else {
+	let Some(prepared) = prepare(shared, source, target) else {
 		return;
 	};
 
-	let Some((stem, source_format)) = shared.registry.split(source_name) else {
+	let input = Input::Renamed {
+		renamed: bytes.to_path_buf(),
+	};
+
+	run(shared, root, source, target, prepared, input, id, cancellation);
+}
+
+/// Run a job whose time has come, `docs/deferral.md` §7: the intent is the one the
+/// journal recorded and the bytes are already under the source name.
+pub fn convert_deferred(
+	shared: &Shared,
+	root: &Path,
+	source: &Path,
+	intent: &str,
+	id: &retype_core::job::JobId,
+	cancellation: &Cancellation,
+) {
+	let Some(prepared) = prepare_from(shared, source, intent) else {
+		return;
+	};
+
+	run(shared, root, source, source, prepared, Input::Named, id, cancellation);
+}
+
+/// Read a rename as a job, or say why it is not one.
+fn prepare<'a>(shared: &'a Shared, source: &Path, target: &Path) -> Option<Prepared<'a>> {
+	let (source_name, target_name) = (
+		source.file_name().and_then(|name| name.to_str())?,
+		target.file_name().and_then(|name| name.to_str())?,
+	);
+
+	let Some((stem, format)) = shared.registry.split(source_name) else {
 		// Not a file whose format we know, so not ours to act on.
-		return;
+		return None;
 	};
 
-	let intent = match resolve::intent_of(&shared.registry, source_name, target_name) {
+	let parsed = match resolve::intent_of(&shared.registry, source_name, target_name) {
 		Ok(Some(intent)) => intent,
-		Ok(None) => return,
+		Ok(None) => return None,
 		Err(problems) => {
 			eprintln!("retype: {}: {problems}", target.display());
-			return;
+			return None;
 		}
 	};
 
+	build(shared, stem, format, parsed, target)
+}
+
+/// Read a recorded intent as a job, which is what a parked job carries.
+fn prepare_from<'a>(shared: &'a Shared, source: &Path, text: &str) -> Option<Prepared<'a>> {
+	let source_name = source.file_name().and_then(|name| name.to_str())?;
+	let (stem, format) = shared.registry.split(source_name)?;
+
+	let parsed = match intent::parse(text) {
+		Ok(parsed) => parsed,
+		Err(problems) => {
+			eprintln!("retype: {}: {problems}", source.display());
+			return None;
+		}
+	};
+
+	build(shared, stem, format, parsed, source)
+}
+
+/// Resolve and compile, which is the same work whether the request came from a name
+/// or from a journal record.
+fn build<'a>(
+	shared: &'a Shared,
+	stem: &str,
+	format: &str,
+	parsed: intent::Intent,
+	reported: &Path,
+) -> Option<Prepared<'a>> {
 	let resolved = match resolve::resolve(
-		&intent,
+		&parsed,
 		Origin {
-			format: source_format,
+			format,
 			is_directory: false,
 		},
 		&shared.registry,
 	) {
 		Ok(resolved) => resolved,
 		Err(problems) => {
-			eprintln!("retype: {}: {problems}", target.display());
-			return;
+			eprintln!("retype: {}: {problems}", reported.display());
+			return None;
 		}
 	};
 
 	let plans = match plan::compile(&shared.registry, &retype_core::tools::Machine, &resolved) {
 		Ok(plans) => plans,
 		Err(problems) => {
-			eprintln!("retype: {}: {problems}", target.display());
-			return;
+			eprintln!("retype: {}: {problems}", reported.display());
+			return None;
 		}
+	};
+
+	Some(Prepared {
+		stem: stem.to_string(),
+		format: format.to_string(),
+		resolved,
+		plans,
+	})
+}
+
+/// Convert, record what happened, and dispose of the source.
+#[allow(clippy::too_many_arguments)]
+fn run(
+	shared: &Shared,
+	root: &Path,
+	source: &Path,
+	target: &Path,
+	prepared: Prepared<'_>,
+	input: Input,
+	id: &retype_core::job::JobId,
+	cancellation: &Cancellation,
+) {
+	let Prepared {
+		stem,
+		format,
+		resolved,
+		plans,
+	} = prepared;
+
+	let Some(source_name) = source.file_name().and_then(|name| name.to_str()) else {
+		return;
 	};
 
 	let id = id.clone();
 	let now = now_ms();
 	let mut outputs = Vec::new();
-	running(shared, &id, root, source, source_format, target, &resolved);
+
+	running(shared, &id, root, source, &format, target, &resolved);
 
 	// The rename names the request; the file is called what the tokens say, the
 	// same way `convert` derives its paths.
-	let derived = retype_core::output::derive(stem, source_format, &resolved.groups);
+	let derived = retype_core::output::derive(&stem, &format, &resolved.groups);
 
 	// Keep the bytes before touching them: an undo has to be possible even if this
 	// process dies mid-conversion. Retention and quota are policy, so a machine that
@@ -423,11 +550,15 @@ pub fn convert(
 	// the conversion runs anyway.
 	let store = retype_core::undo::Store::open(&shared.state_dir);
 	let policy = shared.registry.undo();
+	let bytes = match &input {
+		Input::Renamed { renamed } => renamed.clone(),
+		Input::Named => source.to_path_buf(),
+	};
 	let mut disposal = execute::Disposal::Remove;
 	let undo = if !policy.enabled {
 		None
 	} else {
-		match store.make_room(target, policy) {
+		match store.make_room(&bytes, policy) {
 			Ok(retype_core::undo::Room::Kept { dropped }) => {
 				for id in &dropped {
 					eprintln!("retype: dropped undo record {id} to stay within the quota");
@@ -438,9 +569,9 @@ pub fn convert(
 						id: id.clone(),
 						intent: print::intent(&resolved, &shared.registry),
 						machine: shared.machine.clone(),
-						bytes: target.to_path_buf(),
+						bytes: bytes.clone(),
 						source_path: root.join(source_name),
-						source_ext: source_format.to_string(),
+						source_ext: format.clone(),
 						outputs: derived
 							.iter()
 							.map(|derived| retype_core::undo::Output {
@@ -473,13 +604,21 @@ pub fn convert(
 	// One job, one source: the bytes are relabelled and then read for every output,
 	//. Opening the source per output moved the bytes for the first one and
 	// left the rest with nothing to read.
-	let renamed = match execute::Rename::open(bytes, stem, source_format) {
-		Ok(renamed) => renamed,
-		Err(error) => {
-			eprintln!("retype: {}: {error}", target.display());
-			store.remove(&id).ok();
-			return;
-		}
+	let mut renamed = match input {
+		Input::Renamed { renamed } => match execute::Rename::open(&renamed, &stem, &format) {
+			Ok(renamed) => Some(renamed),
+			Err(error) => {
+				eprintln!("retype: {}: {error}", target.display());
+				store.remove(&id).ok();
+				return;
+			}
+		},
+		Input::Named => None,
+	};
+
+	let read_from = match &renamed {
+		Some(renamed) => renamed.input().to_path_buf(),
+		None => source.to_path_buf(),
 	};
 
 	for plan in &plans {
@@ -494,7 +633,7 @@ pub fn convert(
 
 		let log = crate::state::log_path(&shared.state_dir, &id);
 
-		match execute::run_logged(plan, renamed.input(), &output, cancellation, Some(&log)) {
+		match execute::run_logged(plan, &read_from, &output, cancellation, Some(&log)) {
 			Ok(report) => outputs.push(record(
 				&output,
 				plan,
@@ -548,16 +687,25 @@ pub fn convert(
 		eprintln!("retype: cannot keep {} for undo: {error}", target.display());
 	}
 
-	// The job either used the renamed file up or left it alone: a job with any output
+	// The job either used the source up or left it alone: a job with any output
 	// consumed its source, and one that produced nothing puts the source name back so
 	// no path keeps bytes its name denies.
 	match state {
 		JobState::Done | JobState::Partial => {
-			if let Err(error) = renamed.consume(disposal) {
+			let disposed = match renamed.take() {
+				Some(renamed) => renamed.consume(disposal),
+				None => execute::consume(source, disposal),
+			};
+
+			if let Err(error) = disposed {
 				eprintln!("retype: cannot dispose of {}: {error}", target.display());
 			}
 		}
-		_ => renamed.keep(),
+		_ => {
+			if let Some(renamed) = renamed {
+				renamed.keep();
+			}
+		}
 	}
 
 	let job = Job {
@@ -566,7 +714,7 @@ pub fn convert(
 		updated: now_ms(),
 		source: Source {
 			path: root.join(source_name),
-			format: source_format.to_string(),
+			format: format.clone(),
 			size: 0,
 			mtime_ns: 0,
 		},

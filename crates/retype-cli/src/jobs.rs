@@ -11,7 +11,7 @@ use retype_core::job::JobId;
 use serde_json::Value;
 
 use crate::client;
-use crate::error::Result;
+use crate::error::{Result, exit_code};
 
 pub fn list(
 	state_dir: &Path,
@@ -281,6 +281,63 @@ pub fn cancel(state_dir: &Path, prefix: &str, json: bool, allow_spawn: bool) -> 
 	}
 
 	Ok(ExitCode::SUCCESS)
+}
+
+/// Act on a parked job, `docs/deferral.md` §8: run it now, or run what a repair
+/// produced.
+pub fn resolve(state_dir: &Path, prefix: &str, convert: bool, json: bool, allow_spawn: bool) -> Result<ExitCode> {
+	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
+	let id = match single(&mut client, prefix)? {
+		Ok(id) => id,
+		Err(code) => return Ok(code),
+	};
+
+	let mode = match convert {
+		true => "convert",
+		false => "now",
+	};
+
+	let answer = match client.call("jobs.resolve", serde_json::json!({"id": id.as_str(), "mode": mode})) {
+		Ok(answer) => answer,
+		Err(retype_ipc::ClientError::Rpc(error)) => {
+			eprintln!("retype: {}: {}", error.code, error.message);
+			return Ok(ExitCode::from(exit_code(&error.code)));
+		}
+		Err(other) => return Err(other.into()),
+	};
+
+	match json {
+		true => println!("{answer}"),
+		false => println!(
+			"{}  {}",
+			id.as_str(),
+			answer.get("state").and_then(Value::as_str).unwrap_or("queued")
+		),
+	}
+
+	Ok(ExitCode::SUCCESS)
+}
+
+/// The one job a prefix names, or the exit code to answer with.
+fn single(client: &mut retype_ipc::Client, prefix: &str) -> Result<std::result::Result<JobId, ExitCode>> {
+	let candidates = matching(client, prefix)?;
+
+	match candidates.len() {
+		1 => Ok(Ok(candidates[0].clone())),
+		0 => {
+			eprintln!("retype: E_JOB_STATE: no job matches '{prefix}'");
+			Ok(Err(ExitCode::from(7)))
+		}
+		_ => {
+			eprintln!("retype: E_IPC_AMBIGUOUS: '{prefix}' matches {} jobs", candidates.len());
+
+			for candidate in &candidates {
+				eprintln!("  {candidate}");
+			}
+
+			Ok(Err(ExitCode::from(7)))
+		}
+	}
 }
 
 /// Every job whose id starts with `prefix`.

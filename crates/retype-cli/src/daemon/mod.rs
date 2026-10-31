@@ -8,6 +8,7 @@ pub mod events;
 pub mod immediate;
 mod lock;
 pub mod machine;
+pub mod park;
 #[cfg(unix)]
 pub mod peer;
 #[cfg(windows)]
@@ -17,6 +18,7 @@ pub mod reconcile;
 pub mod resume;
 mod server;
 pub mod supervision;
+pub mod timer;
 pub mod watcher;
 
 pub use server::Server;
@@ -51,6 +53,7 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	let shared = server.shared();
 	let pool = server.pool();
 	let watcher = watcher::start(shared, std::sync::Arc::clone(&pool), &state_dir)?;
+	let timer = timer::start(server.shared(), std::sync::Arc::clone(&pool));
 	let listener = UnixListener::bind(&socket)?;
 	set_socket_private(&socket)?;
 
@@ -63,6 +66,9 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	}
 
 	let result = serve(listener, server);
+
+	timer.0.store(true, std::sync::atomic::Ordering::Relaxed);
+	let _ = timer.1.join();
 
 	if let Some(watcher) = watcher {
 		watcher.stop();
@@ -93,6 +99,7 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	let shared = server.shared();
 	let pool = server.pool();
 	let watcher = watcher::start(shared, std::sync::Arc::clone(&pool), &state_dir)?;
+	let timer = timer::start(server.shared(), std::sync::Arc::clone(&pool));
 	let name = pipe::name(server.machine());
 
 	state::publish_endpoint(&state_dir, &name)?;
@@ -103,6 +110,9 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	}
 
 	let result = pipe::serve(&name, &mut server);
+
+	timer.0.store(true, std::sync::atomic::Ordering::Relaxed);
+	let _ = timer.1.join();
 
 	if let Some(watcher) = watcher {
 		watcher.stop();

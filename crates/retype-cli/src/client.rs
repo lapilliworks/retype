@@ -135,6 +135,7 @@ pub fn describe_status(status: &Value) -> Vec<(String, String)> {
 			format_uptime(status["uptime_ms"].as_u64().unwrap_or_default()),
 		),
 		("jobs".to_string(), field("jobs")),
+		("parked".to_string(), field("parked")),
 		("journal".to_string(), field("journal")),
 		("endpoint".to_string(), field("endpoint")),
 		(

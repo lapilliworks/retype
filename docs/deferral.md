@@ -193,9 +193,13 @@ The consequence is worth stating: rename `a.heic` to `a.jpg`, and the file shows
 `a.heic` again until the job runs. The rename is not lost, it is remembered as the
 job's requested target, and the journal says so.
 
-- The requested target name and the intent are recorded with the job; the derived
-  outputs are recomputed when it runs, so a name taken during the pause is numbered
-  rather than failing the job
+- The requested target name and the intent are recorded with the job, and the derived
+  outputs are worked out again when it runs, because the request is read from the record
+  rather than from a file name that has since changed
+- An output whose name appeared during the pause is overwritten, exactly as a
+  rename-derived job overwrites an output of the same name today. The undo record puts
+  the source back; the file that was there is not recoverable, which is the risk a
+  rename already carries and which deferral lengthens rather than introduces
 - A second rename of the same source supersedes the parked job: the chain
   continues and the park is replaced rather than run later against a file that has
   moved on
@@ -215,4 +219,13 @@ with the journal entry so a later reader can tell which jobs were decided togeth
 How a notification is delivered, and what its buttons do, is and not
 part of this document. Deferral is complete without it: the timer fires, and
 `jobs --interactive` is the path that needs a person.
+
+## 13. Not built yet
+
+- `jobs --interactive`, the terminal path for a person with no notifications
+- `jobs resolve --force`, which the `--now` form names for the case where an output has
+  appeared during the pause
+- Notification delivery, capability tiers and click routing
+- `retype://job/<id>` actions beyond `resolve` and `cancel`
+- The editor's view of a parked job
 

@@ -328,6 +328,10 @@ pub struct Parked {
 	/// The tokens a repair dropped, in written order.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub dropped: Vec<String>,
+	/// Whether the job removes its source when it commits, which is true for a job a
+	/// rename asked for and false for one a client submitted.
+	#[serde(default)]
+	pub consume: bool,
 }
 
 /// What a job is expected to cost, `docs/state.md` §7.
@@ -578,6 +582,7 @@ mod tests {
 			requested: None,
 			corrected: None,
 			dropped: Vec::new(),
+			consume: true,
 		});
 
 		let line = job.to_line().expect("a record");

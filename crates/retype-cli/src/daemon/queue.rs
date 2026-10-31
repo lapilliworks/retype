@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use retype_core::job::JobId;
 
-use crate::daemon::watcher::{Shared, convert};
+use crate::daemon::watcher::{Shared, convert, convert_deferred};
 use retype_core::execute::Cancellation;
 
 /// How many automatic jobs may wait. Fixed rather than derived from the machine,
@@ -66,6 +66,14 @@ pub enum Kind {
 	},
 	/// A conversion a client asked for, `docs/ipc.md` §6.
 	Immediate(crate::daemon::immediate::Request),
+	/// A parked rename whose time has come, `docs/deferral.md` §7. The bytes are
+	/// already under the source name, so nothing is relabelled, and the source is
+	/// consumed on commit.
+	Deferred {
+		root: PathBuf,
+		source: PathBuf,
+		intent: String,
+	},
 }
 
 /// What a cancel request found.
@@ -363,6 +371,9 @@ fn serve(shared: &Shared, queue: &Queue, inflight: &Inflight) {
 					}
 					Kind::Immediate(request) => {
 						crate::daemon::immediate::run(shared, request, &work.id, &cancellation);
+					}
+					Kind::Deferred { root, source, intent } => {
+						convert_deferred(shared, root, source, intent, &work.id, &cancellation);
 					}
 				}
 

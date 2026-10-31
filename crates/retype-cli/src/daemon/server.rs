@@ -392,6 +392,22 @@ impl Server {
 			));
 		};
 
+		// A parked job never reached the queue, so it is cancelled in the record rather
+		// than by stopping anything, `docs/deferral.md` §8.
+		if let Some(parked) = self
+			.find(id.as_str())
+			.filter(|job| matches!(job.state, JobState::Pending | JobState::NeedsAttention))
+		{
+			let mut cancelled = parked;
+			cancelled.set_state(JobState::Cancelled);
+			crate::daemon::watcher::publish(&self.shared, &cancelled);
+
+			return Ok(Response::ok(
+				request.id,
+				json!({"id": id, "cancelled": true, "state": "cancelled"}),
+			)?);
+		}
+
 		let (found, queued) = self.pool.cancel(&id);
 
 		let response = match found {
@@ -454,6 +470,84 @@ impl Server {
 				WireError::new(error.code(), error.to_string()),
 			)),
 		}
+	}
+
+	/// Run a parked job now, or run what a repair produced, `docs/deferral.md` §8.
+	fn resolve(&self, request: &Request) -> Result<Response> {
+		let Some(written) = request.params.get("id").and_then(|id| id.as_str()) else {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::IpcMethod, "jobs.resolve needs an id"),
+			));
+		};
+
+		let mode = request
+			.params
+			.get("mode")
+			.and_then(|mode| mode.as_str())
+			.unwrap_or("now");
+
+		let Some(job) = self.find(written) else {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::JobState, format!("no job matches '{written}'")),
+			));
+		};
+
+		let parked = match job.state {
+			JobState::Pending | JobState::NeedsAttention => job.parked.clone(),
+			other => {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(Code::JobState, format!("{} is {other:?}, and not parked", job.id)),
+				));
+			}
+		};
+
+		let intent = match mode {
+			// The request as written cannot run, which is why it is parked: asking again
+			// is a state error rather than a second failure.
+			"now" if job.state == JobState::NeedsAttention => {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(
+						Code::JobState,
+						format!(
+							"{} cannot run as asked; `jobs resolve --convert` runs what can be carried",
+							job.id
+						),
+					),
+				));
+			}
+			"now" => None,
+			"convert" => match parked.as_ref().and_then(|parked| parked.corrected.clone()) {
+				Some(corrected) => Some(corrected),
+				None => {
+					return Ok(Response::error(
+						request.id,
+						WireError::new(
+							Code::JobState,
+							format!("{} has nothing that can be carried: fix the name instead", job.id),
+						),
+					));
+				}
+			},
+			other => {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(Code::IpcMethod, format!("'{other}' is not a way to resolve a job")),
+				));
+			}
+		};
+
+		if !crate::daemon::timer::start_job(&self.pool, &job, intent.as_deref()) {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::JobState, "the queue is full, so nothing was started"),
+			));
+		}
+
+		Ok(Response::ok(request.id, json!({"id": job.id, "state": "queued"}))?)
 	}
 
 	/// Stop, unless a supervisor would only start us again.
@@ -566,6 +660,7 @@ impl Server {
 		let (source, target) = match &work.kind {
 			Kind::Rename { source, target, .. } => (source.clone(), target.clone()),
 			Kind::Immediate(request) => (request.input.clone(), request.input.clone()),
+			Kind::Deferred { source, .. } => (source.clone(), source.clone()),
 		};
 
 		let job = Job {
@@ -623,6 +718,9 @@ impl Server {
 					"machine": self.machine,
 					"uptime_ms": self.started.elapsed().as_millis() as u64,
 					"jobs": self.shared.jobs.lock().map(|jobs| jobs.len()).unwrap_or_default(),
+					"parked": self.shared.jobs.lock().map(|jobs| jobs.iter().filter(|job| {
+						matches!(job.state, JobState::Pending | JobState::NeedsAttention)
+					}).count()).unwrap_or_default(),
 					"journal": self.journal_path().display().to_string(),
 					"dropped": self.shared.dropped.load(Ordering::Relaxed),
 					"endpoint": self.endpoint,
@@ -643,6 +741,7 @@ impl Server {
 			"jobs.submit" => self.submit(request)?,
 			"jobs.cancel" => self.cancel(request)?,
 			"jobs.resume" => self.resume(request)?,
+			"jobs.resolve" => self.resolve(request)?,
 			"shutdown" => self.shutdown(request)?,
 			other => Response::error(
 				request.id,

@@ -171,6 +171,7 @@ retype jobs get <id|prefix>
 retype jobs cancel <id|prefix>
 retype jobs resume <id|prefix> [--force]
 retype jobs logs <id|prefix> [--follow]
+retype jobs resolve <id|prefix> --now | --convert
 retype undo <id|prefix|--last>
 retype why <path>
 ```
@@ -188,6 +189,8 @@ retype why <path>
 Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the candidates printed.
 
 `jobs resolve` acts on a parked job, and `jobs --interactive` walks the parked ones with one key each; both are specified in `docs/deferral.md` §8, which is a draft until a later release begins.
+
+`jobs resolve` acts on a parked job: `--now` runs it as asked, `--convert` runs the corrected intent with the tokens that could not be carried dropped. A job that cannot run as asked refuses `--now` with `E_JOB_STATE` and says why, and a job whose target format does not survive the reduction has nothing for `--convert` to run. Exactly one of the two is required; the states, the reasons and the timer are `docs/deferral.md`.
 
 `jobs logs` prints what the tool printed. The full output is in `<state>/logs/<id>.log`, which is written as it arrives, and the journal keeps the last four kilobytes, because a converter can print megabytes while a failure needs the last ten lines. A job whose log file is gone answers from the record instead, and says which it used. `--follow` prints what arrives while the job runs and stops when the job reaches a terminal state, so it ends by itself rather than waiting to be interrupted.
 

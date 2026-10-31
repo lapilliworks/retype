@@ -81,8 +81,10 @@ pub fn exit_code(code: &retype_core::error::Code) -> u8 {
 		| Code::ToolFailed
 		| Code::ToolTimeout
 		| Code::JobCancelled
-		| Code::JobInterrupted
-		| Code::IoLocked => 4,
+		| Code::JobInterrupted => 4,
+		// A state conflict: the lock, an ambiguous prefix, or a job that is not in the
+		// state the request needs, `docs/cli.md` §7.
+		Code::IoLocked | Code::IpcAmbiguous | Code::JobState => 7,
 		// Something to retry: the filesystem or the moment.
 		Code::IoFailed
 		| Code::IoPermission

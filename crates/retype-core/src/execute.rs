@@ -279,27 +279,11 @@ impl Rename {
 	/// The job produced at least one output, so the renamed file has done its work
 	/// and its bytes are no longer needed under the source name.
 	pub fn consume(self, disposal: Disposal) -> Result<()> {
-		match (&self.prepared, disposal) {
-			(crate::convert::PreparedInput::Restored { input, .. }, Disposal::Remove) => {
-				match std::fs::remove_file(input) {
-					Ok(()) => Ok(()),
-					Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-					Err(error) => Err(Error::Io(error)),
-				}
-			}
-			// No record was kept, so the way back is the platform's trash rather than an
-			// undo this machine cannot offer.
-			(crate::convert::PreparedInput::Restored { input, .. }, Disposal::Trash) => {
-				trash::delete(input).map_err(|error| {
-					Error::Diagnostic(Diagnostic::global(
-						Code::IoFailed,
-						format!("{} could not be moved to the trash: {error}", input.display()),
-					))
-				})
-			}
+		match &self.prepared {
+			crate::convert::PreparedInput::Restored { input, .. } => consume(input, disposal),
 			// The bytes are a link to the renamed file, which the output replaced, so
 			// there is nothing else to remove; the prepared input cleans the link up.
-			(crate::convert::PreparedInput::Linked { .. }, _) => Ok(()),
+			crate::convert::PreparedInput::Linked { .. } => Ok(()),
 		}
 	}
 
@@ -311,6 +295,28 @@ impl Rename {
 		if let crate::convert::PreparedInput::Linked { target, .. } = &self.prepared {
 			let _ = crate::convert::restore_source_name(target, &self.stem, &self.source_format);
 		}
+	}
+}
+
+/// Dispose of the bytes a job used up.
+///
+/// A kept undo record can put the source back, so the bytes are removed. When no
+/// record could be kept, they go to the operating system's trash instead: the file
+/// leaves the directory the rename asked it to leave, and the user can still get it
+/// back.
+pub fn consume(path: &Path, disposal: Disposal) -> Result<()> {
+	match disposal {
+		Disposal::Remove => match std::fs::remove_file(path) {
+			Ok(()) => Ok(()),
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+			Err(error) => Err(Error::Io(error)),
+		},
+		Disposal::Trash => trash::delete(path).map_err(|error| {
+			Error::Diagnostic(Diagnostic::global(
+				Code::IoFailed,
+				format!("{} could not be moved to the trash: {error}", path.display()),
+			))
+		}),
 	}
 }
 

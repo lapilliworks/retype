@@ -378,7 +378,21 @@ impl Store {
 	/// record is dropped for a job that will not have one, because a conversion must
 	/// never be blocked and the history is worth more than nothing.
 	pub fn make_room(&self, path: &Path, policy: &Policy) -> Result<Room> {
-		let wanted = fs::metadata(path)?.len();
+		let room = self.room_for(fs::metadata(path)?.len(), policy)?;
+
+		if let Room::Kept { dropped } = &room {
+			for id in dropped {
+				self.remove(id)?;
+			}
+		}
+
+		Ok(room)
+	}
+
+	/// The same answer without changing anything, which is what a decision about a job
+	/// needs: whether a record could be kept if it came to that, `docs/deferral.md`
+	/// §3.
+	pub fn room_for(&self, wanted: u64, policy: &Policy) -> Result<Room> {
 		let now = SystemTime::now();
 		let mut dropped = Vec::new();
 		let mut held: u64 = 0;
@@ -387,7 +401,6 @@ impl Store {
 		// Expiry is retention rather than overflow, so it applies whoever is asking.
 		for record in self.list()? {
 			if age(&record, now) > policy.retention {
-				self.remove(&record.id)?;
 				dropped.push(record.id);
 			} else {
 				held += record.source_size;
@@ -416,7 +429,6 @@ impl Store {
 				break;
 			}
 
-			self.remove(&record.id)?;
 			held -= record.source_size.min(held);
 			dropped.push(record.id.clone());
 		}
@@ -609,6 +621,27 @@ mod tests {
 		);
 		assert!(store.load(&oldest.id).unwrap().is_none());
 		assert!(store.load(&middle.id).unwrap().is_some());
+	}
+
+	#[test]
+	fn asking_whether_a_record_fits_changes_nothing() {
+		let state = state();
+		let store = Store::open(state.path());
+		let source = state.path().join("photo.heic");
+		fs::write(&source, vec![b'x'; 400]).unwrap();
+		let existing = store.save(sized(1, state.path(), 400)).unwrap();
+
+		// One record of 400 in a quota of 900 leaves 500, and 600 does not fit, so the
+		// record has to go. This call says which without removing it.
+		let room = store.room_for(600, &policy(900)).unwrap();
+
+		assert_eq!(
+			room,
+			Room::Kept {
+				dropped: vec![existing.id.clone()]
+			}
+		);
+		assert!(store.load(&existing.id).unwrap().is_some(), "nothing was dropped");
 	}
 
 	#[test]

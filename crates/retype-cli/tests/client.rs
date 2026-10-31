@@ -105,6 +105,15 @@ fn the_status_lines_are_what_a_human_needs() {
 
 	assert_eq!(
 		described,
-		vec!["pid", "machine", "uptime", "jobs", "journal", "endpoint", "supervised"]
+		vec![
+			"pid",
+			"machine",
+			"uptime",
+			"jobs",
+			"parked",
+			"journal",
+			"endpoint",
+			"supervised"
+		]
 	);
 }

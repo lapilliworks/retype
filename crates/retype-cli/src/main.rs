@@ -236,6 +236,20 @@ enum JobsAction {
 		job: String,
 	},
 
+	/// Run a parked job now, or run what can be carried
+	Resolve {
+		/// A job id, or a prefix unique among the jobs
+		job: String,
+
+		/// Run it as asked, ignoring the wait
+		#[arg(long)]
+		now: bool,
+
+		/// Run the corrected intent, dropping the tokens that could not be carried
+		#[arg(long)]
+		convert: bool,
+	},
+
 	/// Continue a partial job, running the outputs that did not succeed
 	Resume {
 		/// A job id, or a prefix unique among the jobs
@@ -302,6 +316,15 @@ fn main() -> ExitCode {
 			JobsAction::Resume { job, force } => {
 				retype_cli::jobs::resume(&state_dir, job, *force, cli.json, !cli.no_spawn)
 			}
+			JobsAction::Resolve { job, now, convert } => match (now, convert) {
+				(true, false) | (false, true) => {
+					retype_cli::jobs::resolve(&state_dir, job, *convert, cli.json, !cli.no_spawn)
+				}
+				_ => {
+					eprintln!("retype: E_USAGE_ARGS: resolve needs exactly one of --now or --convert");
+					Ok(ExitCode::from(2))
+				}
+			},
 		});
 
 		return match code {
