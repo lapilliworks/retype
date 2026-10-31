@@ -49,7 +49,7 @@ tokens = ['cap={value}', 'quality85']
 [backends]
 prefer = ['magick', 'ffmpeg', 'pandoc', '7zz']
 
-# How `retype bench` makes its samples, `docs/config.md` §14. A sample is generated
+# How `retype bench` makes its samples, `docs/config.md` §15. A sample is generated
 # once per family, in the format named by `[bench.seed]`, by the first tool below
 # that is installed; the pair is then measured from that sample. The argv is a
 # tool's own way of drawing something, so it lives here rather than in Rust.

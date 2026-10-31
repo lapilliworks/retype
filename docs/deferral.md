@@ -75,7 +75,7 @@ Two rules follow from the list rather than from a special case:
 
 ## 4. Thresholds and the repair policy
 
-`[deferral]`, host-level, `docs/config.md` §9.
+`[deferral]`, host-level, `docs/config.md` §10.
 
 | Key | Default | Meaning |
 |---|---|---|

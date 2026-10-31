@@ -34,7 +34,7 @@ impl Fragment {
 	}
 }
 
-/// How `retype bench` makes its samples, `docs/config.md` §14.
+/// How `retype bench` makes its samples, `docs/config.md` §15.
 ///
 /// A sample has to be produced for each family before a pair can be measured, and
 /// the argv that produces one is a property of the tool rather than of this
@@ -297,10 +297,12 @@ pub struct Registry {
 	/// How long bytes are kept for undo, `docs/config.md` §9. Host-level, so
 	/// there is one answer per machine rather than one per directory.
 	undo: crate::undo::Policy,
-	/// Whether the record is also written onto the file, `docs/config.md` §10.
+	/// Whether the record is also written onto the file, `docs/config.md` §11.
 	provenance: crate::provenance::Policy,
-	/// How `retype bench` makes its samples, `docs/config.md` §14.
+	/// How `retype bench` makes its samples, `docs/config.md` §15.
 	bench: Bench,
+	/// When a job is parked instead of run, `docs/config.md` §10.
+	deferral: crate::deferral::Policy,
 }
 
 impl Registry {
@@ -350,7 +352,7 @@ impl Registry {
 		problems.extend(flatten_format_names(&mut base, "the built-in configuration"));
 		problems.extend(flatten_format_names(&mut over, label));
 
-		// A user file declares its version, `docs/config.md` §12: without it the
+		// A user file declares its version, `docs/config.md` §13: without it the
 		// merge would silently inherit the built-in one and hide a stale file.
 		match over.get("version").and_then(toml::Value::as_str) {
 			None => problems.push(fail(
@@ -631,6 +633,58 @@ impl Registry {
 			}
 		}
 
+		let mut deferral = crate::deferral::Policy::default();
+
+		if let Some(entry) = &document.deferral {
+			if let Some(mode) = &entry.mode {
+				match crate::deferral::Mode::parse(mode) {
+					Some(read) => deferral.mode = read,
+					None => problems.push(fail(
+						Code::CfgValidation,
+						format!("{label}: [deferral] mode '{mode}' is not one of ask or now"),
+					)),
+				}
+			}
+
+			if let Some(repair) = &entry.repair {
+				match crate::deferral::Repair::parse(repair) {
+					Some(read) => deferral.repair = read,
+					None => problems.push(fail(
+						Code::CfgValidation,
+						format!("{label}: [deferral] repair '{repair}' is not one of ask or convert"),
+					)),
+				}
+			}
+
+			for (key, written, target) in [
+				("above", &entry.above, &mut deferral.above),
+				(
+					"above_without_undo",
+					&entry.above_without_undo,
+					&mut deferral.above_without_undo,
+				),
+				("pause", &entry.pause, &mut deferral.pause),
+			] {
+				let Some(written) = written else {
+					continue;
+				};
+
+				match duration(written) {
+					Ok(read) if key == "pause" && read.is_zero() => problems.push(fail(
+						Code::CfgValidation,
+						format!(
+							"{label}: [deferral] pause is '{written}', and a parked job that never expires is a cancelled job"
+						),
+					)),
+					Ok(read) => *target = read,
+					Err(fault) => problems.push(fail(
+						fault.code,
+						format!("{label}: [deferral] {key} '{written}': {}", fault.message),
+					)),
+				}
+			}
+		}
+
 		let bench = match &document.bench {
 			Some(entry) => {
 				problems.extend(validate_bench(entry, &formats, &tool_names, label));
@@ -664,6 +718,7 @@ impl Registry {
 			undo,
 			provenance,
 			bench,
+			deferral,
 			warnings: Vec::new(),
 		};
 
@@ -694,14 +749,19 @@ impl Registry {
 		&self.undo
 	}
 
-	/// Whether provenance is written onto the file, `docs/config.md` §10.
+	/// Whether provenance is written onto the file, `docs/config.md` §11.
 	pub fn provenance(&self) -> crate::provenance::Policy {
 		self.provenance
 	}
 
-	/// How `retype bench` makes its samples, `docs/config.md` §14.
+	/// How `retype bench` makes its samples, `docs/config.md` §15.
 	pub fn bench(&self) -> &Bench {
 		&self.bench
+	}
+
+	/// When a job is parked instead of run, `docs/config.md` §10.
+	pub fn deferral(&self) -> &crate::deferral::Policy {
+		&self.deferral
 	}
 
 	pub fn preset(&self, name: &str) -> Option<&Preset> {
@@ -1615,6 +1675,8 @@ struct Document {
 	#[serde(default)]
 	provenance: Option<ProvenanceEntry>,
 	#[serde(default)]
+	deferral: Option<DeferralEntry>,
+	#[serde(default)]
 	bench: Option<BenchEntry>,
 }
 
@@ -1630,6 +1692,20 @@ struct BenchEntry {
 struct ProvenanceEntry {
 	#[serde(default)]
 	xattr: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeferralEntry {
+	#[serde(default)]
+	mode: Option<String>,
+	#[serde(default)]
+	above: Option<String>,
+	#[serde(default)]
+	above_without_undo: Option<String>,
+	#[serde(default)]
+	pause: Option<String>,
+	#[serde(default)]
+	repair: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1842,6 +1918,56 @@ mod tests {
 
 		assert_eq!(registry.undo().quota, 250_000_000);
 		assert_eq!(registry.undo().on_overflow, crate::undo::Overflow::Skip);
+	}
+
+	#[test]
+	fn the_deferral_policy_defaults_and_reads_its_knobs() {
+		let registry = Registry::load(HEADER).unwrap();
+		let policy = registry.deferral();
+
+		assert_eq!(policy.mode, crate::deferral::Mode::Ask);
+		assert_eq!(policy.above, std::time::Duration::from_secs(10));
+		assert_eq!(policy.above_without_undo, std::time::Duration::from_secs(2));
+		assert_eq!(policy.pause, std::time::Duration::from_secs(3_600));
+		assert_eq!(policy.repair, crate::deferral::Repair::Ask);
+
+		let registry = Registry::load(&format!(
+			"{HEADER}\n[deferral]\nmode = 'now'\nabove = '30s'\nabove_without_undo = '5s'\npause = '10m'\nrepair = 'convert'\n"
+		))
+		.unwrap();
+		let policy = registry.deferral();
+
+		assert_eq!(policy.mode, crate::deferral::Mode::Now);
+		assert_eq!(policy.above, std::time::Duration::from_secs(30));
+		assert_eq!(policy.above_without_undo, std::time::Duration::from_secs(5));
+		assert_eq!(policy.pause, std::time::Duration::from_secs(600));
+		assert_eq!(policy.repair, crate::deferral::Repair::Convert);
+	}
+
+	#[test]
+	fn a_deferral_knob_that_is_not_what_it_says_is_refused() {
+		assert_eq!(
+			codes(&format!("{HEADER}\n[deferral]\nmode = 'later'\n")),
+			vec![Code::CfgValidation]
+		);
+		assert_eq!(
+			codes(&format!("{HEADER}\n[deferral]\nrepair = 'guess'\n")),
+			vec![Code::CfgValidation]
+		);
+		assert_eq!(
+			codes(&format!("{HEADER}\n[deferral]\nabove = 'soon'\n")),
+			vec![Code::ValueSyntax]
+		);
+	}
+
+	#[test]
+	fn a_pause_of_zero_is_refused() {
+		// A parked job that never expires is a cancelled job with extra paperwork, so
+		// "wait for ever" is not spelled as a zero.
+		assert_eq!(
+			codes(&format!("{HEADER}\n[deferral]\npause = '0s'\n")),
+			vec![Code::CfgValidation]
+		);
 	}
 
 	#[test]

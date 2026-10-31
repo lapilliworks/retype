@@ -8,6 +8,7 @@
 pub mod archive;
 pub mod convert;
 pub mod correlate;
+pub mod deferral;
 pub mod error;
 pub mod estimate;
 pub mod execute;

@@ -304,7 +304,32 @@ The quota is a second, independent bound: retention bounds records by age and th
 
 The journal outlives them. It is compacted at startup when it earns it, dropping records past twice the retention with a floor of thirty days, `docs/state.md` §4.
 
-## 10. Provenance
+## 10. Deferral
+
+Host-level, because the thresholds describe this machine and this person's tolerance for waiting rather than a directory's contents, `docs/deferral.md`.
+
+```toml
+[deferral]
+mode = 'ask'
+above = '10s'
+above_without_undo = '2s'
+pause = '1h'
+repair = 'ask'
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `mode` | `ask` | `ask` defers by `docs/deferral.md` §3; `now` skips the two cost triggers and still parks a job that cannot run as asked |
+| `above` | `10s` | Estimated duration above which a watched rename is parked |
+| `above_without_undo` | `2s` | The same, for a job that consumes its source and keeps no record of it |
+| `pause` | `1h` | How long a parked job waits before it runs anyway |
+| `repair` | `ask` | `ask` parks a job that cannot run as asked; `convert` runs it without the tokens that could not be carried, `docs/deferral.md` §4 |
+
+Durations are read as the grammar's time class, so they are spelled the way an intent spells one. A threshold is compared against the whole job, which is the sum of its outputs' estimates. `pause = '0s'` is refused: a parked job that never expires is a cancelled job with extra paperwork.
+
+A directory file may set `confirm = false`, which suppresses the ordinary cost trigger in that directory and nothing else, `docs/deferral.md` §5.
+
+## 11. Provenance
 
 Host-level, like retention.
 
@@ -321,7 +346,7 @@ The attribute is `user.retype.intent` on Linux and `com.retype.intent` on macOS.
 
 Turning it off affects future conversions. An attribute already on a file is still read, because it is evidence about that file rather than a setting of this one.
 
-## 11. Per-directory policy
+## 12. Per-directory policy
 
 `.retype.toml` in a watched directory may change behaviour but MUST NOT define tools, formats, operations or presets. A directory can arrive from an untrusted source, so it cannot introduce a command.
 
@@ -345,7 +370,7 @@ preset = 'headshot'
 
 `paused = true` makes the directory unwatched by policy, and policy beats state: a later `retype watch --resume <dir>` is refused with `E_WATCH_PAUSED_BY_POLICY` naming the file, rather than being accepted and then quietly undone the next time the file is read.
 
-## 12. Validation
+## 13. Validation
 
 Loading fails, naming the file and key, on any of:
 
@@ -372,12 +397,14 @@ Loading fails, naming the file and key, on any of:
 | V20 | A `[bench.sample]` naming a family with no `[bench.seed]`, or a tool that is not declared |
 | V21 | A sample argv naming a placeholder other than `{output}` |
 | V22 | A `native` codec on a format whose family is not `archive` |
+| V23 | A `[deferral]` key in a directory file, other than `confirm` |
+| V24 | A `pause` of zero, a deferral value that is not a duration, or a `mode` or `repair` outside the two it accepts |
 
 V12 named an in-process backend and was retired with it. The number is not reused, so that a configuration error reported against an older build stays identifiable.
 
 Warnings, not errors: a name that is a prefix of another name; a tool that fails its probe; a managed tool whose fingerprint differs from its manifest; a pair whose tier is `delegated` but has no `argv` fragment.
 
-## 13. Probing
+## 14. Probing
 
 Probing is an authoring aid, never a runtime decision.
 
@@ -388,7 +415,7 @@ retype doctor --emit      # a [tools] snippet reflecting what is installed
 
 `--emit` writes nothing unless asked to with `--write`. The emitted snippet is ordinary configuration and is validated like any other.
 
-## 14. Benchmark samples
+## 15. Benchmark samples
 
 What `retype bench` converts, `docs/state.md` §7. Host-level.
 
@@ -411,6 +438,6 @@ The argv is a tool's own way of drawing something, so it is declared rather than
 
 A seed is a statement about which format a family is sampled in, not a promise that a tool is installed, so a seed whose generators have all been removed still loads: `retype bench` reports that family as unmeasurable. A family may also be measured without being listed here, by naming pairs with `--pair`.
 
-## 15. Versioning
+## 16. Versioning
 
 Version identifier: `retype-config-1`, declared at file top level. The key is mandatory in user and directory files and implicit in `builtin.toml`. A file with an unknown major fails to load; a file with a lower major is upgraded through a declared migration when one exists. Keys are never reused for different meanings, and a renamed key stays accepted as an alias for at least one major version.

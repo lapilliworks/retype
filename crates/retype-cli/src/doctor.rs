@@ -7,7 +7,7 @@ use retype_core::tools;
 
 use crate::error::Result;
 
-/// What to do with the pinning snippet, `docs/config.md` §13.
+/// What to do with the pinning snippet, `docs/config.md` §14.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Emit {
 	/// Report only.
