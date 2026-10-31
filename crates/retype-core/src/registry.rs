@@ -106,11 +106,39 @@ impl Direction {
 	}
 }
 
+/// A format handled by this build rather than by a tool, `docs/tools.md` §7.
+///
+/// Only formats that move bytes without re-encoding them: an archive is a
+/// container, and copying a payload into one has none of the parity problem that
+/// keeps codecs external.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum Native {
+	#[serde(rename = "zip")]
+	Zip,
+	#[serde(rename = "tar")]
+	Tar,
+	/// A tar stream through gzip.
+	#[serde(rename = "tar.gz")]
+	TarGz,
+}
+
+impl Native {
+	pub fn name(self) -> &'static str {
+		match self {
+			Self::Zip => "zip",
+			Self::Tar => "tar",
+			Self::TarGz => "tar.gz",
+		}
+	}
+}
+
 /// A format the product can read or write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Format {
 	pub family: String,
 	pub direction: Direction,
+	/// The codec this build runs itself, when there is one.
+	pub native: Option<Native>,
 	pub lossy: bool,
 	pub alpha: bool,
 	pub tier: Tier,
@@ -1594,6 +1622,8 @@ struct FormatEntry {
 	family: String,
 	#[serde(default)]
 	direction: Direction,
+	#[serde(default)]
+	native: Option<Native>,
 	lossy: bool,
 	alpha: bool,
 	tier: Tier,
@@ -1622,6 +1652,7 @@ impl FormatEntry {
 		Format {
 			family: self.family.clone(),
 			direction: self.direction,
+			native: self.native,
 			lossy: self.lossy,
 			alpha: self.alpha,
 			tier: self.tier,
@@ -1864,9 +1895,9 @@ tier = 'converted'
 		let registry = builtin();
 
 		assert!(registry.format("jpg").is_some());
-		// Nine image formats, four video containers, four audio ones and six
-		// documents.
-		assert_eq!(registry.formats().count(), 23);
+		// Nine image formats, four video containers, four audio ones, six documents
+		// and three archives.
+		assert_eq!(registry.formats().count(), 26);
 		assert_eq!(registry.ops().count(), 30);
 
 		// Every shipped tool says which families it carries, because a tool without

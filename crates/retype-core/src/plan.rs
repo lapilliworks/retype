@@ -12,7 +12,7 @@ use std::path::Path;
 use crate::error::{Code, Diagnoses, Diagnostic, Error};
 use crate::job::Tier;
 use crate::print;
-use crate::registry::{Fragment, Registry};
+use crate::registry::{Fragment, Native, Registry};
 use crate::resolve::{self, Resolved};
 use crate::tools::Tool;
 
@@ -50,18 +50,30 @@ impl Presence for crate::tools::Machine {
 	}
 }
 
-/// Where a plan will run. One variant today: every conversion is a process. The
-/// enum is the seam a second kind of backend would arrive through, so that the
-/// rest of the compiler does not change shape when one does.
+/// Where a plan will run.
+///
+/// A codec is always an external process: parity with libjpeg-turbo and libaom is
+/// not a thing to rewrite. A container that only moves bytes is a different
+/// problem, and putting it here rather than behind a fake tool keeps the planner's
+/// shape instead of teaching it a command name that resolves to nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend<'a> {
 	Tool(&'a Tool),
+	Native(Native),
 }
 
 impl Backend<'_> {
+	/// The name recorded with a job and printed by `explain`.
 	pub fn name(&self) -> &str {
-		let Self::Tool(tool) = self;
-		&tool.name
+		match self {
+			Self::Tool(tool) => &tool.name,
+			Self::Native(codec) => codec.name(),
+		}
+	}
+
+	/// Whether this backend is this build rather than a tool on the machine.
+	pub fn is_native(&self) -> bool {
+		matches!(self, Self::Native(_))
 	}
 }
 
@@ -77,6 +89,9 @@ pub enum Arg {
 /// What one output of one rename will do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan<'a> {
+	/// The group this output belongs to, which is what a caller needs to find the
+	/// name it was given: a kept source has a group and no plan.
+	pub group: usize,
 	/// The format this output carries.
 	pub format: String,
 	pub backend: Backend<'a>,
@@ -105,7 +120,11 @@ impl Plan<'_> {
 	}
 }
 
-/// Compile every output of a resolved intent, in written order.
+/// Compile every output a resolved intent produces, in written order.
+///
+/// A group that keeps the source produces no plan. Re-encoding a file to the format
+/// it already has would be a conversion nobody asked for, and for a directory there
+/// is nothing to encode at all.
 pub fn compile<'a>(
 	registry: &'a Registry,
 	presence: &dyn Presence,
@@ -114,8 +133,12 @@ pub fn compile<'a>(
 	let mut plans = Vec::new();
 	let mut problems = Vec::new();
 
-	for group in &resolved.groups {
-		match plan_group(registry, presence, group, &resolved.origin) {
+	for (index, group) in resolved.groups.iter().enumerate() {
+		if group.keep_source {
+			continue;
+		}
+
+		match plan_group(registry, presence, index, group, &resolved.origin) {
 			Ok(plan) => plans.push(plan),
 			Err(diagnosed) => problems.extend(diagnosed),
 		}
@@ -131,6 +154,7 @@ pub fn compile<'a>(
 fn plan_group<'a>(
 	registry: &'a Registry,
 	presence: &dyn Presence,
+	index: usize,
 	group: &resolve::Group,
 	origin: &str,
 ) -> Result<Plan<'a>, Vec<Error>> {
@@ -149,6 +173,29 @@ fn plan_group<'a>(
 	}
 
 	let pipeline = group.pipeline();
+
+	// A format this build handles itself needs no tool and no argv.
+	if let Some(native) = registry.format(&group.format).and_then(|format| format.native) {
+		if !pipeline.is_empty() {
+			return Err(vec![Error::Diagnostic(Diagnostic::global(
+				Code::Unsupported,
+				format!("no operation applies to a {} archive", group.format),
+			))]);
+		}
+
+		return Ok(Plan {
+			group: index,
+			format: group.format.clone(),
+			backend: Backend::Native(native),
+			// Nothing to run, which is what `explain` prints and what the recorder
+			// stores as an empty command rather than as a tool that was not found.
+			command: String::new(),
+			argv: Vec::new(),
+			tier: tier_of(registry, &group.format),
+			engine: None,
+		});
+	}
+
 	let mut unavailable: Vec<&Tool> = Vec::new();
 
 	for candidate in registry.backends() {
@@ -183,7 +230,7 @@ fn plan_group<'a>(
 			continue;
 		};
 
-		return assemble(registry, presence, tool, command, group, pipeline);
+		return assemble(registry, presence, index, tool, command, group, pipeline);
 	}
 
 	Err(vec![unsatisfiable(registry, group, pipeline, &unavailable)])
@@ -246,9 +293,11 @@ fn tier_of(registry: &Registry, format: &str) -> Tier {
 
 /// Splice the format fragment and the operation fragments into the tool's
 /// layout, `docs/config.md` §8.
+#[allow(clippy::too_many_arguments)]
 fn assemble<'a>(
 	registry: &'a Registry,
 	presence: &dyn Presence,
+	index: usize,
 	tool: &'a Tool,
 	command: String,
 	group: &resolve::Group,
@@ -305,6 +354,7 @@ fn assemble<'a>(
 	}
 
 	Ok(Plan {
+		group: index,
 		format: group.format.clone(),
 		backend: Backend::Tool(tool),
 		command,

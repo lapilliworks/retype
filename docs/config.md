@@ -156,6 +156,7 @@ args = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart']
 |---|---|
 | `family` | `image`, `audio`, `video`, `document`, `archive`, `folder` |
 | `direction` | `decode`, `encode` or `both`, default `both`. A format that is read and never written, such as `dng`, or written and never read, such as `pdf` |
+| `native` | `zip`, `tar` or `tar.gz`. The format is written by this build rather than by a tool. Only the `archive` family may name one |
 | `lossy` | Whether the format is lossy |
 | `alpha` | Whether the format carries alpha |
 | `tier` | Default fidelity tier for pairs targeting this format |
@@ -163,6 +164,15 @@ args = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart']
 | `argv.<tool>` | Fragment contributed by the format to that tool's `{ops}` |
 
 A pair whose source cannot be read or whose target cannot be written is `E_UNSUPPORTED` before a tool is chosen, because the honest answer is "not supported" rather than a tool that fails once the work has started. `retype list` prints the direction beside each format.
+
+A format name containing a dot must be quoted:
+
+```toml
+[formats."tar.gz"]
+family = 'archive'
+```
+
+An unquoted `[formats.tar.gz]` is TOML for `gz` inside `tar`, which is a different document and used to drop the format without a word. Unknown keys are not refused yet, which is why the quotes matter; records that as a gap rather than as a rule.
 
 ## 5. Watch policy
 
@@ -359,6 +369,7 @@ Loading fails, naming the file and key, on any of:
 | V19 | A `[bench.seed]` naming an undeclared format, or a format of another family |
 | V20 | A `[bench.sample]` naming a family with no `[bench.seed]`, or a tool that is not declared |
 | V21 | A sample argv naming a placeholder other than `{output}` |
+| V22 | A `native` codec on a format whose family is not `archive` |
 
 V12 named an in-process backend and was retired with it. The number is not reused, so that a configuration error reported against an older build stays identifiable.
 

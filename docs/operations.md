@@ -130,6 +130,8 @@ Per-format constraints of this kind come from `docs/tools.md`, because they are 
 
 `at`, `fps`, `mute` and `cap` have landed for video and audio, `docs/tools.md` §3.1. Documents landed with their formats and no operations: `md`, `html`, `docx`, `odt`, `epub` and `pdf` convert through pandoc, `docs/tools.md` §5.
 
+Archives take no operations at all: `zip`, `tar` and `tar.gz` store the bytes they are given, and an operation that changed them would make the format an encoder. A plan that asks for one is `E_UNSUPPORTED` naming the archive.
+
 `trim`, `speed`, `normalize`, `mono`, `bitrate`, `codec`, `page` and `dpi` stay reserved with their slots and parameters, and a job that uses one is `E_UNSUPPORTED` rather than `E_NAME_UNKNOWN`. Two of them have a reason rather than a pending vertical:
 
 - `page` and `trim` take a `range`, and a fragment has one `{value}` hole. Expressing a range needs an argument that can carry two numbers

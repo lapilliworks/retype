@@ -237,21 +237,30 @@ fn print_human(
 	);
 	println!("{:<10}{sentence}", "says");
 
-	for (index, plan) in plans.iter().enumerate() {
-		let name = derived
-			.iter()
-			.find(|derived| derived.group == index)
-			.map(|derived| derived.path.display().to_string())
-			.unwrap_or_default();
+	// One line per group, because a group that keeps the source is part of what the
+	// string means even though it runs nothing.
+	for named in derived {
+		println!("{:<10}{}", "output", named.path.display());
 
-		println!("{:<10}{name}", "output");
+		let Some(index) = plans.iter().position(|plan| plan.group == named.group) else {
+			println!("  {:<8}kept: the source already has this format", "action");
+			continue;
+		};
+		let plan = &plans[index];
 
 		match installed {
 			true => println!("  {:<8}{}", "backend", plan.backend.name()),
 			false => println!("  {:<8}{} (not installed)", "backend", plan.backend.name()),
 		}
 
-		println!("  {:<8}{}", "argv", render(&plan.command, plan));
+		println!(
+			"  {:<8}{}",
+			"argv",
+			match plan.backend.is_native() {
+				true => "nothing to run: this build writes it".to_string(),
+				false => render(&plan.command, plan),
+			}
+		);
 		println!("  {:<8}{}", "tier", tier(plan));
 
 		if let Some((engine, candidate)) = &plan.engine {
@@ -279,17 +288,30 @@ fn print_json(
 	estimates: &[Option<Estimate>],
 	installed: bool,
 ) {
-	let outputs: Vec<serde_json::Value> = plans
+	let outputs: Vec<serde_json::Value> = derived
 		.iter()
-		.enumerate()
-		.map(|(index, plan)| {
+		.map(|named| {
+			let Some(index) = plans.iter().position(|plan| plan.group == named.group) else {
+				// A kept group is part of what the string means and runs nothing.
+				return json!({
+					"path": named.path.display().to_string(),
+					"format": named.format,
+					"kept": true,
+				});
+			};
+			let plan = &plans[index];
+
 			json!({
-				"path": derived.iter().find(|derived| derived.group == index).map(|derived| derived.path.display().to_string()),
-				"format": plan.format,
+				"path": named.path.display().to_string(),
+				"format": named.format,
+				"kept": false,
 				"backend": plan.backend.name(),
 				"available": installed,
 				"command": plan.command,
-				"argv": render(&plan.command, plan),
+				"argv": match plan.backend.is_native() {
+					true => serde_json::Value::Null,
+					false => json!(render(&plan.command, plan)),
+				},
 				"tier": tier(plan),
 				"engine": plan.engine.as_ref().map(|(name, candidate)| json!({"name": name, "resolved": candidate})),
 				"estimate": estimates.get(index).copied().flatten().map(|estimate| json!({

@@ -291,6 +291,40 @@ tier = 'converted'
 [formats.pdf.argv.pandoc]
 args = ['--pdf-engine', '{engine.pdf}']
 
+# Archives, `docs/tools.md` §7. These are containers: the bytes go in unchanged,
+# so there is no encoder parity question and nothing belongs in another process,
+#. `native` names the codec this build runs itself, and only the
+# archive family may name one.
+#
+# Written and not read, for now: `zip` and `tar` as a *target* of a directory is a
+# gesture the grammar has, and extracting one into a directory is not, so the
+# direction says so rather than promising a read that cannot be asked for.
+[formats.zip]
+family = 'archive'
+direction = 'encode'
+native = 'zip'
+lossy = false
+alpha = false
+tier = 'exact'
+
+[formats.tar]
+family = 'archive'
+direction = 'encode'
+native = 'tar'
+lossy = false
+alpha = false
+tier = 'exact'
+
+# Quoted, because an unquoted dotted key would nest `gz` under `tar` and the format
+# would silently disappear.
+[formats."tar.gz"]
+family = 'archive'
+direction = 'encode'
+native = 'tar.gz'
+lossy = false
+alpha = false
+tier = 'exact'
+
 [ops.quality]
 aliases = ['q']
 slot = 50

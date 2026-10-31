@@ -155,6 +155,9 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 /// The claim one successful conversion earns.
 fn claim_of(plan: &Plan<'_>, source: &str, target: &str, samples: &Samples<'_>) -> Claim {
 	let (version, fingerprint) = match plan.backend {
+		// This build is the backend, so the claim is earned by the release rather
+		// than by a tool on the machine.
+		plan::Backend::Native(_) => (env!("CARGO_PKG_VERSION").to_string(), String::new()),
 		plan::Backend::Tool(tool) => {
 			let status = tools::probe(tool);
 			(

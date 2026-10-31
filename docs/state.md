@@ -73,7 +73,7 @@ One JSON object per line. Every line is self-contained and carries its own versi
 | `intent` | Canonical intent string, or null for a plain conversion |
 | `outputs` | Resolved outputs with format, per-output state, resulting size, tier, file identity and per-output error. `bytes`, `identity` and `error` are omitted until they exist, so a pending output is a path, a format, a state and a tier |
 | `state` | `pending`, `queued`, `running`, `done`, `partial`, `failed`, `cancelled`, `superseded`, `needs-attention` |
-| `backend` | Backend name that ran or will run the job |
+| `backend` | Backend name that ran or will run the job: a tool's name, or the codec's, such as `zip`, when this build wrote the file itself |
 | `machine` | Per-install identity |
 | `error` | Null, or `{code, message}` with a journal-level code such as `E_INTERRUPTED`, `E_BACKEND_FAILED`, `E_DIAGNOSIS` |
 

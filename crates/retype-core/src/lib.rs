@@ -5,6 +5,7 @@
 //! The long-running daemon and the command line client live beside this crate
 //! and use it.
 
+pub mod archive;
 pub mod convert;
 pub mod correlate;
 pub mod error;

@@ -41,6 +41,12 @@ family = 'image'
 lossy = true
 alpha = true
 tier = 'converted'
+
+[formats.bmp]
+family = 'image'
+lossy = false
+alpha = true
+tier = 'converted'
 "
 		),
 	)
@@ -161,10 +167,37 @@ fn an_output_path_needs_one_output() {
 	let fixture = Fixture::new();
 	let input = fixture.input();
 
-	let output = fixture.convert(&["convert", input.to_str().unwrap(), "webp,png", "-o", "one.webp"]);
+	let output = fixture.convert(&["convert", input.to_str().unwrap(), "webp,bmp", "-o", "one.webp"]);
 
 	assert_eq!(output.status.code(), Some(3));
 	assert!(String::from_utf8_lossy(&output.stderr).contains("E_USAGE_OUTPUT_COUNT"));
+}
+
+#[test]
+fn a_kept_source_is_not_an_output() {
+	// `webp,png` from a png writes one file and keeps the source, so `-o` names the
+	// file that is actually produced, and the source is left exactly as it was.
+	let fixture = Fixture::new();
+	let input = fixture.input();
+	let before = fs::read(&input).unwrap();
+
+	let target = fixture.dir.path().join("one.webp");
+	let output = fixture.convert(&[
+		"convert",
+		input.to_str().unwrap(),
+		"webp,png",
+		"-o",
+		target.to_str().unwrap(),
+	]);
+
+	assert_eq!(
+		output.status.code(),
+		Some(0),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert!(target.exists());
+	assert_eq!(fs::read(&input).unwrap(), before, "a kept source is not rewritten");
 }
 
 #[test]

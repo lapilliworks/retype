@@ -92,7 +92,18 @@ pub fn run_logged(
 	cancellation: &Cancellation,
 	log: Option<&Path>,
 ) -> Result<Report> {
-	let Backend::Tool(tool) = plan.backend;
+	// A format this build writes itself has nothing to run, so it goes to the
+	// archive writer rather than looking for a tool that was never planned.
+	if let Backend::Native(codec) = plan.backend {
+		return crate::archive::create(codec, input, output, cancellation);
+	}
+
+	let Backend::Tool(tool) = plan.backend else {
+		return Err(Error::Diagnostic(Diagnostic::global(
+			Code::InternalInvariant,
+			"a plan with no executable reached the runner",
+		)));
+	};
 
 	// The plan resolved this name at plan time, so running it is the same choice
 	// the explanation showed.

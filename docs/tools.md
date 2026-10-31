@@ -62,13 +62,22 @@ Archives are not one format and are not one tool. Each format uses the backend t
 
 | Format | Backend | Notes |
 |---|---|---|
-| `zip` | Native | Write and read, with explicit zip64, symlink and permission rules |
-| `tar` | Native | Write and read, with the compression layers below |
-| `gz`, `bz2`, `xz`, `zst`, `br`, `lz4` | Native | Codec crates or the system C library where the crate is a thin binding |
+| `zip` | Native | Written, with explicit zip64, symlink and permission rules below. Reading is not expressible yet, because the grammar has no target that names a directory |
+| `tar` | Native | Written, as above |
+| `tar.gz` | Native | Written: a tar stream through gzip |
+| `gz`, `bz2`, `xz`, `zst`, `br`, `lz4` | Native | Codec crates or the system C library where the crate is a thin binding. Not declared yet |
 | `7z` | `7zz`, `7z` or `7za` | The only archive format that needs an external tool |
 | `rar` | `unrar` or a `7zz` build with the unRAR code | Read-only, user-supplied, never distributed |
 
 Native handling is not only fewer dependencies. Path traversal, symlink escape, decompression bombs, permission restoration, overwrite policy and cancellation are decisions that belong in our code, not in another tool's argv. It also removes the one tool whose layout put its output before its input.
+
+The rules this build applies when writing one, measured 2026-10-31:
+
+- Everything below the directory is stored, including dotfiles. The watch ignore list is about what is worth watching, not about what the user asked to package
+- A symbolic link refuses the archive and names the file. Storing what it points at misrepresents the tree, and storing the link is not portable through zip
+- Entries are sorted, so one directory produces the same archive twice
+- Permissions are stored from each file, and the mtime is zeroed: an archive is a copy of the bytes, not of the moment
+- The archive is staged and renamed into place, so a cancelled or failed run leaves no partial file
 
 `7zz` remains the declared backend and may be installed from the managed set; `7z` and `7za` are executable aliases, not separate backends. It is not used for `zip` or `tar`, where the native backend is more precise.
 

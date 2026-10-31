@@ -483,7 +483,12 @@ pub fn convert(
 		}
 	};
 
-	for (plan, derived) in plans.iter().zip(&derived) {
+	for plan in &plans {
+		// Plans carry their group, because a kept source has one and no plan.
+		let Some(derived) = derived.iter().find(|derived| derived.group == plan.group) else {
+			continue;
+		};
+
 		let output = target.parent().unwrap_or(Path::new("")).join(&derived.path);
 
 		shared.recent.note(source, &output);

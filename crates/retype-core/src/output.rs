@@ -26,7 +26,12 @@ pub struct Derived {
 /// is whatever remains when the source format is removed, and only the registry
 /// knows that `archive.tar.gz` carries one format rather than two.
 pub fn derive(stem: &str, source_format: &str, groups: &[Group]) -> Vec<Derived> {
-	let kept = format!("{stem}.{source_format}");
+	// A directory's whole name is its stem: `folder` is the absence of a format
+	// rather than one, so there is no extension to append, `docs/grammar.md` §3.
+	let kept = match source_format {
+		"folder" => stem.to_string(),
+		_ => format!("{stem}.{source_format}"),
+	};
 	let mut taken: Vec<String> = Vec::new();
 	let mut derived = Vec::with_capacity(groups.len());
 

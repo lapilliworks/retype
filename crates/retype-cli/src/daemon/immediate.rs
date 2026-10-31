@@ -53,22 +53,24 @@ pub fn prepare<'a>(registry: &'a Registry, request: &Request) -> std::result::Re
 			)))
 		})?;
 
-	let (stem, format) = registry.split(name).ok_or_else(|| {
-		Diagnoses::one(Error::Diagnostic(Diagnostic::global(
-			Code::FormatUnknown,
-			format!("'{name}' ends in a suffix this build has no format for"),
-		)))
-	})?;
+	// A directory has no format of its own: its whole name is its stem, and
+	// `folder` is how the grammar says so, `docs/grammar.md` §3.
+	let (stem, format, is_directory) = match request.input.is_dir() {
+		true => (name.to_string(), "folder", true),
+		false => {
+			let (stem, format) = registry.split(name).ok_or_else(|| {
+				Diagnoses::one(Error::Diagnostic(Diagnostic::global(
+					Code::FormatUnknown,
+					format!("'{name}' ends in a suffix this build has no format for"),
+				)))
+			})?;
+			(stem.to_string(), format, false)
+		}
+	};
+	let stem = stem.as_str();
 
 	let parsed = intent::parse(&request.intent)?;
-	let resolved = resolve::resolve(
-		&parsed,
-		Origin {
-			format,
-			is_directory: false,
-		},
-		registry,
-	)?;
+	let resolved = resolve::resolve(&parsed, Origin { format, is_directory }, registry)?;
 	let plans = plan::compile(registry, &tools::Machine, &resolved)?;
 	let paths = targets(request, &plans, stem, format, &resolved)?;
 
@@ -98,10 +100,18 @@ fn targets(
 			format!("-o names one path and this intent produces {} outputs", plans.len()),
 		)))),
 		Some(path) => Ok(vec![PathBuf::from(path)]),
-		// A derived name is a file name, so it belongs beside the input.
-		None => Ok(derived
+		// A derived name is a file name, so it belongs beside the input, and the plan
+		// says which group it came from because a kept source has no plan.
+		None => Ok(plans
 			.iter()
-			.map(|derived| request.input.parent().unwrap_or(Path::new("")).join(&derived.path))
+			.map(|plan| {
+				let group = derived
+					.iter()
+					.find(|derived| derived.group == plan.group)
+					.expect("every plan has a group");
+
+				request.input.parent().unwrap_or(Path::new("")).join(&group.path)
+			})
 			.collect()),
 	}
 }
