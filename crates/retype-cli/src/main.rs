@@ -63,7 +63,11 @@ enum Command {
 	/// Inspect and control jobs
 	Jobs {
 		#[command(subcommand)]
-		action: JobsAction,
+		action: Option<JobsAction>,
+
+		/// Walk the parked jobs and read one key each
+		#[arg(long)]
+		interactive: bool,
 	},
 
 	/// Register directories, or list what is registered
@@ -305,7 +309,25 @@ fn main() -> ExitCode {
 		};
 	}
 
-	if let Command::Jobs { action } = &cli.command {
+	if let Command::Jobs { action, interactive } = &cli.command {
+		if *interactive {
+			let code = retype_cli::state::resolve(cli.state_dir.clone())
+				.and_then(|state_dir| retype_cli::jobs::interactive(&state_dir, cli.json, !cli.no_spawn));
+
+			return match code {
+				Ok(code) => code,
+				Err(error) => {
+					eprintln!("retype: {error}");
+					ExitCode::from(error.exit_code())
+				}
+			};
+		}
+
+		let Some(action) = action else {
+			eprintln!("retype: E_USAGE_ARGS: jobs needs a subcommand, or --interactive");
+			return ExitCode::from(2);
+		};
+
 		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| match action {
 			JobsAction::List { state, limit } => {
 				retype_cli::jobs::list(&state_dir, state.as_deref(), *limit, cli.json, !cli.no_spawn)

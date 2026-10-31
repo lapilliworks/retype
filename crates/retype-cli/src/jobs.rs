@@ -283,6 +283,181 @@ pub fn cancel(state_dir: &Path, prefix: &str, json: bool, allow_spawn: bool) -> 
 	Ok(ExitCode::SUCCESS)
 }
 
+/// Walk the parked jobs and read one key each, `docs/deferral.md` §8.
+///
+/// The terminal path exists so deferral does not depend on notifications: a person at
+/// a prompt can run a job now, run what can be carried, or refuse it.
+pub fn interactive(state_dir: &Path, json: bool, allow_spawn: bool) -> Result<ExitCode> {
+	use std::io::{BufRead, IsTerminal, Write};
+
+	if !std::io::stdin().is_terminal() {
+		eprintln!(
+			"retype: E_USAGE_ARGS: --interactive needs a terminal; \
+			 `jobs list --state pending` and `jobs resolve` work without one"
+		);
+		return Ok(ExitCode::from(2));
+	}
+
+	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
+	let parked = parked(&mut client)?;
+
+	if parked.is_empty() {
+		if !json {
+			eprintln!("retype: nothing is parked");
+		}
+
+		return Ok(ExitCode::SUCCESS);
+	}
+
+	let mut stdin = std::io::stdin().lock();
+
+	for id in parked {
+		let job = client.call("jobs.get", serde_json::json!({"id": id.as_str()}))?;
+
+		if !json {
+			print!("{}", describe(&job));
+		}
+
+		loop {
+			print!("[n]ow  [c]onvert  [r]efuse  [s]kip  [q]uit > ");
+			let _ = std::io::stdout().flush();
+
+			let mut line = String::new();
+			if stdin.read_line(&mut line)? == 0 {
+				return Ok(ExitCode::SUCCESS);
+			}
+
+			let key = line.trim().chars().next().unwrap_or_default();
+			let Some(action) = choose(key, &job) else {
+				eprintln!("retype: '{key}' is not one of the keys offered for this job");
+				continue;
+			};
+
+			match action {
+				Action::Quit => return Ok(ExitCode::SUCCESS),
+				Action::Skip => break,
+				Action::Now => {
+					answer(client.call("jobs.resolve", serde_json::json!({"id": id.as_str(), "mode": "now"}))?);
+					break;
+				}
+				Action::Convert => {
+					answer(client.call(
+						"jobs.resolve",
+						serde_json::json!({"id": id.as_str(), "mode": "convert"}),
+					)?);
+					break;
+				}
+				Action::Refuse => {
+					answer(client.call("jobs.cancel", serde_json::json!({"id": id.as_str()}))?);
+					break;
+				}
+			}
+		}
+	}
+
+	Ok(ExitCode::SUCCESS)
+}
+
+/// What one key asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Action {
+	Now,
+	Convert,
+	Refuse,
+	Skip,
+	Quit,
+}
+
+/// The action a key names, or nothing when the key does not apply to this job: a job
+/// that cannot run as asked has no `now`, and one with no corrected intent has no
+/// `convert`.
+fn choose(key: char, job: &Value) -> Option<Action> {
+	let key = key.to_ascii_lowercase();
+	let state = job.get("state").and_then(Value::as_str).unwrap_or_default();
+	let corrected = job.pointer("/parked/corrected").and_then(Value::as_str);
+
+	match key {
+		'n' if state == "pending" => Some(Action::Now),
+		'c' if corrected.is_some() => Some(Action::Convert),
+		'r' => Some(Action::Refuse),
+		's' => Some(Action::Skip),
+		'q' => Some(Action::Quit),
+		_ => None,
+	}
+}
+
+/// The jobs that are waiting for a person or a timer, oldest first.
+fn parked(client: &mut retype_ipc::Client) -> Result<Vec<JobId>> {
+	let answer = client.call_without_params("jobs.list")?;
+
+	let mut parked: Vec<(i64, JobId)> = answer
+		.get("jobs")
+		.and_then(Value::as_array)
+		.map(|jobs| {
+			jobs.iter()
+				.filter(|job| matches!(job["state"].as_str(), Some("pending" | "needs-attention")))
+				.filter_map(|job| {
+					let id = JobId::parse(job["id"].as_str()?).ok()?;
+					let created = job["created"].as_i64().unwrap_or_default();
+					Some((created, id))
+				})
+				.collect()
+		})
+		.unwrap_or_default();
+
+	parked.sort_by_key(|(created, _)| *created);
+	Ok(parked.into_iter().map(|(_, id)| id).collect())
+}
+
+/// Four lines a person can act on, `docs/deferral.md` §6.
+fn describe(job: &Value) -> String {
+	let field = |path: &str| job.pointer(path).and_then(Value::as_str).unwrap_or_default();
+
+	let mut text = format!("\n{}\n", field("/source/path"));
+	let reason = field("/parked/reason");
+
+	let estimate = job
+		.pointer("/parked/estimate")
+		.map(|estimate| {
+			let ms = estimate["ms"].as_u64().unwrap_or_default();
+			let bytes = estimate["bytes"].as_u64().unwrap_or_default();
+			format!("  (about {}, {} estimated)", duration(ms), size(bytes))
+		})
+		.unwrap_or_default();
+
+	text.push_str(&format!("  waiting {reason}{estimate}\n"));
+	text.push_str(&format!("  asked   {}\n", job["intent"].as_str().unwrap_or_default()));
+
+	if let Some(corrected) = job.pointer("/parked/corrected").and_then(Value::as_str) {
+		text.push_str(&format!("  runs    {corrected}\n"));
+	}
+
+	text
+}
+
+fn duration(ms: u64) -> String {
+	match ms {
+		0..=999 => format!("{ms}ms"),
+		ms if ms < 60_000 => format!("{:.1}s", ms as f64 / 1000.0),
+		ms => format!("{}m{:02}s", ms / 60_000, ms % 60_000 / 1000),
+	}
+}
+
+fn size(bytes: u64) -> String {
+	match bytes {
+		0..=999 => format!("{bytes} bytes"),
+		bytes if bytes < 1_000_000 => format!("{:.0}kb", bytes as f64 / 1000.0),
+		bytes => format!("{:.1}mb", bytes as f64 / 1_000_000.0),
+	}
+}
+
+/// Report what the daemon answered, on stderr so it does not mix with the prompt.
+fn answer(answer: Value) {
+	if let Some(state) = answer.get("state").and_then(Value::as_str) {
+		eprintln!("  {state}");
+	}
+}
+
 /// Act on a parked job, `docs/deferral.md` §8: run it now, or run what a repair
 /// produced.
 pub fn resolve(state_dir: &Path, prefix: &str, convert: bool, json: bool, allow_spawn: bool) -> Result<ExitCode> {
@@ -361,4 +536,53 @@ fn matching(client: &mut retype_ipc::Client, prefix: &str) -> Result<Vec<JobId>>
 	found.dedup();
 
 	Ok(found)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn job(state: &str, corrected: Option<&str>) -> Value {
+		let mut parked = serde_json::json!({"reason": "intent"});
+		if let Some(corrected) = corrected {
+			parked["corrected"] = Value::String(corrected.to_string());
+		}
+
+		serde_json::json!({"state": state, "parked": parked})
+	}
+
+	#[test]
+	fn a_key_offers_only_what_the_job_can_do() {
+		let pending = job("pending", None);
+		let attention = job("needs-attention", Some("webp"));
+
+		assert_eq!(choose('n', &pending), Some(Action::Now));
+		assert_eq!(
+			choose('n', &attention),
+			None,
+			"a job that cannot run as asked has no now"
+		);
+
+		assert_eq!(choose('c', &pending), None, "nothing was reduced");
+		assert_eq!(choose('c', &attention), Some(Action::Convert));
+
+		assert_eq!(choose('r', &pending), Some(Action::Refuse));
+		assert_eq!(choose('s', &attention), Some(Action::Skip));
+		assert_eq!(choose('q', &pending), Some(Action::Quit));
+		assert_eq!(choose('x', &pending), None);
+	}
+
+	#[test]
+	fn a_key_is_read_case_insensitively() {
+		assert_eq!(choose('Q', &job("pending", None)), Some(Action::Quit));
+	}
+
+	#[test]
+	fn an_estimate_reads_as_a_person_would_say_it() {
+		assert_eq!(duration(400), "400ms");
+		assert_eq!(duration(2_400), "2.4s");
+		assert_eq!(duration(62_000), "1m02s");
+		assert_eq!(size(900), "900 bytes");
+		assert_eq!(size(1_200_000), "1.2mb");
+	}
 }

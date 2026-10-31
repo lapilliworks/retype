@@ -248,6 +248,7 @@ fn spawn_worker(
 
 				match crate::daemon::park::decide(
 					shared.as_ref(),
+					pool.as_ref(),
 					&watched_root,
 					&source,
 					&fact.target,
@@ -255,7 +256,9 @@ fn spawn_worker(
 					parked_batch.as_deref(),
 				) {
 					crate::daemon::park::Verdict::Run => {}
-					crate::daemon::park::Verdict::Parked | crate::daemon::park::Verdict::Ignore => continue,
+					crate::daemon::park::Verdict::Parked
+					| crate::daemon::park::Verdict::Repaired
+					| crate::daemon::park::Verdict::Ignore => continue,
 				}
 
 				let work = crate::daemon::queue::Work {
@@ -728,7 +731,7 @@ fn run(
 			.map(|(name, candidate)| retype_core::job::Engine { name, candidate }),
 		machine: shared.machine.clone(),
 		error: None,
-		parked: None,
+		parked: carried(shared, &id),
 	};
 
 	publish(shared, &job);
@@ -739,6 +742,23 @@ fn run(
 	if state != JobState::Done && state != JobState::Partial {
 		let _ = store.remove(&id);
 	}
+}
+
+/// The reason a job waited, for the record that follows it: a job that was parked or
+/// repaired still says why after it has run, and only its deadline is gone,
+/// `docs/deferral.md` §11.
+pub fn carried(shared: &Shared, id: &retype_core::job::JobId) -> Option<retype_core::job::Parked> {
+	let mut parked = shared
+		.jobs
+		.lock()
+		.ok()?
+		.iter()
+		.find(|job| job.id == *id)?
+		.parked
+		.clone()?;
+
+	parked.deadline = None;
+	Some(parked)
 }
 
 /// Write the intent onto each output that was produced, `docs/provenance.md` §6.2.

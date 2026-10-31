@@ -172,6 +172,7 @@ retype jobs cancel <id|prefix>
 retype jobs resume <id|prefix> [--force]
 retype jobs logs <id|prefix> [--follow]
 retype jobs resolve <id|prefix> --now | --convert
+retype jobs --interactive
 retype undo <id|prefix|--last>
 retype why <path>
 ```
@@ -189,6 +190,8 @@ retype why <path>
 Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the candidates printed.
 
 `jobs resolve` acts on a parked job, and `jobs --interactive` walks the parked ones with one key each; both are specified in `docs/deferral.md` §8, which is a draft until a later release begins.
+
+`jobs --interactive` walks the parked jobs oldest first and reads one key each: `n` runs it as asked, `c` runs the corrected intent where there is one, `r` refuses it, `s` skips it and `q` stops. It refuses to run without a terminal rather than reading a script's stdin. `jobs resolve` is the same decisions for a script, one id at a time.
 
 `jobs resolve` acts on a parked job: `--now` runs it as asked, `--convert` runs the corrected intent with the tokens that could not be carried dropped. A job that cannot run as asked refuses `--now` with `E_JOB_STATE` and says why, and a job whose target format does not survive the reduction has nothing for `--convert` to run. Exactly one of the two is required; the states, the reasons and the timer are `docs/deferral.md`.
 

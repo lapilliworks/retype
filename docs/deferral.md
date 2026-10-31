@@ -89,7 +89,8 @@ Durations are the grammar's time class, so they are spelled the way an intent sp
 one, `docs/grammar.md` §7. Thresholds are compared against the whole job: the sum of
 the per-output estimates, since one job's outputs run one after another.
 
-`repair = 'convert'` is the convenience the user opts into. It is deliberately the
+`repair = 'convert'` is the convenience the user opts into, and the job it repairs keeps
+what it dropped in its own record, `docs/deferral.md` §6. It is deliberately the
 non-default, it never applies without an undo record, and it is bounded by `above`
 rather than by a threshold of its own: a dropped token is a small cut on a job that
 takes a second, and a guess that spends minutes on work nobody asked for is not.
@@ -222,10 +223,11 @@ part of this document. Deferral is complete without it: the timer fires, and
 
 ## 13. Not built yet
 
-- `jobs --interactive`, the terminal path for a person with no notifications
 - `jobs resolve --force`, which the `--now` form names for the case where an output has
   appeared during the pause
 - Notification delivery, capability tiers and click routing
 - `retype://job/<id>` actions beyond `resolve` and `cancel`
 - The editor's view of a parked job
+- `confirm = false` in a directory file, which waits on directory policy files being read
+  at all, and which may suppress the cost trigger and nothing else, §5
 

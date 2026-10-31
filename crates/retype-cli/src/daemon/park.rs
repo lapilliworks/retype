@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use retype_core::deferral::{Parked, Reason};
+use retype_core::deferral::{Parked, Reason, Repair};
 use retype_core::error::{Code, Diagnoses};
 use retype_core::estimate::{Calibration, Query};
 use retype_core::job::{Cost, Job, JobError, JobId, JobState, Output, Source, now_ms};
@@ -19,6 +19,7 @@ use retype_core::resolve::{self, Resolved, Source as Origin};
 use retype_core::undo::{Room, Store};
 use retype_core::{intent, output, print};
 
+use crate::daemon::queue::Pool;
 use crate::daemon::watcher::{self, Shared};
 
 /// What a rename should do, `docs/deferral.md` §3.
@@ -30,11 +31,22 @@ pub enum Verdict {
 	Ignore,
 	/// Parked, and the record says why.
 	Parked,
+	/// Run with the tokens that could not be carried dropped, and already submitted,
+	/// `docs/deferral.md` §6.
+	Repaired,
 }
 
 /// Decide, and record the answer when it is "not now".
 #[allow(clippy::too_many_arguments)]
-pub fn decide(shared: &Shared, root: &Path, source: &Path, target: &Path, id: &JobId, batch: Option<&str>) -> Verdict {
+pub fn decide(
+	shared: &Shared,
+	pool: &Pool,
+	root: &Path,
+	source: &Path,
+	target: &Path,
+	id: &JobId,
+	batch: Option<&str>,
+) -> Verdict {
 	let (Some(source_name), Some(target_name)) = (
 		source.file_name().and_then(|name| name.to_str()),
 		target.file_name().and_then(|name| name.to_str()),
@@ -91,6 +103,21 @@ pub fn decide(shared: &Shared, root: &Path, source: &Path, target: &Path, id: &J
 			let reason = reason_of(&problems);
 			let corrected = corrected(&shared.registry, &parsed, &format);
 
+			if let Some(verdict) = repair(
+				shared,
+				pool,
+				&stem,
+				&format,
+				target,
+				id,
+				batch,
+				reason,
+				requested.as_deref(),
+				corrected.as_ref(),
+			) {
+				return verdict;
+			}
+
 			return park(
 				shared,
 				&stem,
@@ -114,6 +141,24 @@ pub fn decide(shared: &Shared, root: &Path, source: &Path, target: &Path, id: &J
 	let plans = match plan::compile(&shared.registry, &retype_core::tools::Machine, &resolved) {
 		Ok(plans) => plans,
 		Err(problems) => {
+			let reason = reason_of(&problems);
+			let corrected = corrected(&shared.registry, &parsed, &format);
+
+			if let Some(verdict) = repair(
+				shared,
+				pool,
+				&stem,
+				&format,
+				target,
+				id,
+				batch,
+				reason,
+				requested.as_deref(),
+				corrected.as_ref(),
+			) {
+				return verdict;
+			}
+
 			return park(
 				shared,
 				&stem,
@@ -122,9 +167,10 @@ pub fn decide(shared: &Shared, root: &Path, source: &Path, target: &Path, id: &J
 				target,
 				id,
 				batch,
-				reason_of(&problems),
+				reason,
 				Parking {
 					requested,
+					corrected,
 					diagnosis: Some(&problems),
 					resolved: Some(&resolved),
 					consume: true,
@@ -260,8 +306,9 @@ fn reason_of(problems: &Diagnoses) -> Reason {
 
 /// The request with the tokens that cannot be carried dropped, when what is left
 /// still resolves, `docs/deferral.md` §6.
-fn corrected(registry: &Registry, parsed: &intent::Intent, format: &str) -> Option<String> {
+fn corrected(registry: &Registry, parsed: &intent::Intent, format: &str) -> Option<Correction> {
 	let mut text = String::new();
+	let mut dropped = Vec::new();
 	let mut kept_any = false;
 
 	for (index, group) in parsed.groups.iter().enumerate() {
@@ -278,17 +325,19 @@ fn corrected(registry: &Registry, parsed: &intent::Intent, format: &str) -> Opti
 				.and_then(|found| found.op().cloned())
 				.is_some_and(|op| op.is_implemented() && op.applies_to(target));
 
+			let mut written = token.name.clone();
+
+			if let Some(value) = &token.value {
+				written.push_str(&value.text);
+			}
+
 			if !carries {
+				dropped.push(written);
 				continue;
 			}
 
 			text.push('+');
-			text.push_str(&token.name);
-
-			if let Some(value) = &token.value {
-				text.push_str(&value.text);
-			}
-
+			text.push_str(&written);
 			kept_any = true;
 		}
 	}
@@ -318,14 +367,143 @@ fn corrected(registry: &Registry, parsed: &intent::Intent, format: &str) -> Opti
 		return None;
 	}
 
-	Some(print::intent(&resolved, registry))
+	Some(Correction {
+		text: print::intent(&resolved, registry),
+		dropped,
+	})
+}
+
+/// The request as written minus the tokens that could not be carried.
+struct Correction {
+	/// The canonical intent that would run.
+	text: String,
+	/// The tokens that were left out, as they were written.
+	dropped: Vec<String>,
+}
+
+/// Run the corrected request instead of parking, when the policy says to,
+/// `docs/deferral.md` §3 and §6.
+///
+/// The guess is bounded three ways: it is opt-in, it needs an undo record so the
+/// result can be dropped in one click, and the job it guesses about must be no more
+/// expensive than the ordinary threshold. Anything else parks, which is the default.
+#[allow(clippy::too_many_arguments)]
+fn repair(
+	shared: &Shared,
+	pool: &Pool,
+	stem: &str,
+	format: &str,
+	target: &Path,
+	id: &JobId,
+	batch: Option<&str>,
+	reason: Reason,
+	requested: Option<&str>,
+	correction: Option<&Correction>,
+) -> Option<Verdict> {
+	let policy = shared.registry.deferral();
+	let correction = correction?;
+
+	if policy.repair != Repair::Convert {
+		return None;
+	}
+
+	let bytes = fs::metadata(target).map(|metadata| metadata.len()).unwrap_or_default();
+
+	if !keeps_a_record(shared, bytes) {
+		return None;
+	}
+
+	let cost = cost_of(shared, format, &correction.text, bytes)?;
+
+	if Duration::from_millis(cost.ms) > policy.above {
+		return None;
+	}
+
+	// The bytes go back under the name their content fits before anything runs, so
+	// the file is not mislabelled while the conversion happens.
+	let source = retype_core::convert::restore_source_name(target, stem, format).ok()?;
+	shared.recent.note(&source, target);
+
+	let job = Job {
+		id: id.clone(),
+		created: now_ms(),
+		updated: now_ms(),
+		source: Source {
+			size: bytes,
+			path: source.clone(),
+			format: format.to_string(),
+			mtime_ns: 0,
+		},
+		intent: Some(correction.text.clone()),
+		outputs: Vec::new(),
+		state: JobState::Queued,
+		backend: None,
+		engine: None,
+		machine: shared.machine.clone(),
+		error: None,
+		parked: Some(retype_core::job::Parked {
+			reason: reason.as_str().to_string(),
+			deadline: None,
+			batch: batch.map(str::to_string),
+			estimate: Some(cost),
+			requested: requested.map(str::to_string),
+			corrected: Some(correction.text.clone()),
+			dropped: correction.dropped.clone(),
+			consume: true,
+		}),
+	};
+
+	watcher::publish(shared, &job);
+
+	match crate::daemon::timer::start_job(pool, &job, Some(&correction.text)) {
+		true => Some(Verdict::Repaired),
+		// The queue is full, so the record says nothing ran: park it instead, and the
+		// timer will try again later.
+		false => Some(park(
+			shared,
+			stem,
+			Path::new(""),
+			format,
+			&source,
+			id,
+			batch,
+			reason,
+			Parking {
+				requested: requested.map(str::to_string),
+				corrected: Some(Correction {
+					text: correction.text.clone(),
+					dropped: correction.dropped.clone(),
+				}),
+				estimate: Some(cost),
+				consume: true,
+				..Parking::default()
+			},
+		)),
+	}
+}
+
+/// What a request would cost, for a repair that has to know before it guesses.
+fn cost_of(shared: &Shared, format: &str, text: &str, bytes: u64) -> Option<Cost> {
+	let parsed = intent::parse(text).ok()?;
+	let resolved = resolve::resolve(
+		&parsed,
+		Origin {
+			format,
+			is_directory: false,
+		},
+		&shared.registry,
+	)
+	.ok()?;
+	let plans = plan::compile(&shared.registry, &retype_core::tools::Machine, &resolved).ok()?;
+
+	cost(shared, format, &plans, bytes)
 }
 
 /// Everything a parked record needs besides the reason.
 #[derive(Default)]
 struct Parking<'a> {
 	requested: Option<String>,
-	corrected: Option<String>,
+	corrected: Option<Correction>,
 	estimate: Option<Cost>,
 	resolved: Option<&'a Resolved>,
 	plans: &'a [Plan<'a>],
@@ -428,8 +606,12 @@ fn park(
 			batch: batch.map(str::to_string),
 			estimate: parking.estimate,
 			requested: parking.requested,
-			corrected: parking.corrected,
-			dropped: Vec::new(),
+			corrected: parking.corrected.as_ref().map(|correction| correction.text.clone()),
+			dropped: parking
+				.corrected
+				.as_ref()
+				.map(|correction| correction.dropped.clone())
+				.unwrap_or_default(),
 			consume: parking.consume,
 		}),
 	};
@@ -473,7 +655,10 @@ mod tests {
 		let registry = registry();
 		let parsed = intent::parse("webp+quality80+zzz").expect("scans");
 
-		assert_eq!(corrected(&registry, &parsed, "png").as_deref(), Some("webp+quality80"));
+		let correction = corrected(&registry, &parsed, "png").expect("a correction");
+
+		assert_eq!(correction.text, "webp+quality80");
+		assert_eq!(correction.dropped, vec!["zzz".to_string()]);
 	}
 
 	#[test]
@@ -483,6 +668,6 @@ mod tests {
 
 		// Dropping `quality80` leaves `png` from a `png`, which is the noop the grammar
 		// refuses, so there is nothing to offer.
-		assert_eq!(corrected(&registry, &parsed, "png"), None);
+		assert!(corrected(&registry, &parsed, "png").is_none());
 	}
 }

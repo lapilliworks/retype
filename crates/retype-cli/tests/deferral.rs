@@ -15,7 +15,7 @@ fn retype() -> Command {
 }
 
 /// A copying tool and a deferral policy that parks anything an estimate can measure.
-fn config(dir: &Path, pause: &str) -> PathBuf {
+fn config(dir: &Path, pause: &str, repair: &str) -> PathBuf {
 	let (command, layout) = match cfg!(windows) {
 		true => ("cmd", "layout = ['/c', 'copy', '{input}', '{ops}', '{output}']"),
 		false => ("cp", "layout = ['{input}', '{ops}', '{output}']"),
@@ -51,6 +51,7 @@ tier = 'converted'
 above = '1s'
 above_without_undo = '1s'
 pause = '{pause}'
+repair = '{repair}'
 "
 		),
 	)
@@ -84,11 +85,15 @@ struct Fixture {
 
 impl Fixture {
 	fn new(pause: &str) -> Self {
+		Self::with(pause, "ask")
+	}
+
+	fn with(pause: &str, repair: &str) -> Self {
 		let dir = tempfile::tempdir().unwrap();
 		let photos = dir.path().join("photos");
 		fs::create_dir(&photos).unwrap();
 		let state = dir.path().join("state");
-		let config = config(dir.path(), pause);
+		let config = config(dir.path(), pause, repair);
 
 		retype()
 			.args(["watch", photos.to_str().unwrap()])
@@ -270,4 +275,41 @@ fn a_parked_job_can_be_refused_before_its_time_comes() {
 	assert!(fixture.photos.join("d.png").exists(), "nothing was converted");
 	assert!(!fixture.photos.join("d.webp").exists());
 	let _ = fixture.dir;
+}
+
+#[test]
+fn repair_converts_without_the_token_it_could_not_carry_and_says_what_it_dropped() {
+	let fixture = Fixture::with("1h", "convert");
+	let small = fixture.photos.join("e.png");
+	fs::write(&small, b"pixels").unwrap();
+	fs::rename(&small, fixture.photos.join("e.webp+zzz")).unwrap();
+
+	let done = fixture.wait_for(|record| record["state"] == "done");
+
+	assert_eq!(done["parked"]["reason"], "intent", "{done}");
+	assert_eq!(done["parked"]["requested"], "webp+zzz", "{done}");
+	assert_eq!(done["parked"]["corrected"], "webp", "{done}");
+	assert_eq!(done["parked"]["dropped"], serde_json::json!(["zzz"]), "{done}");
+	assert!(fixture.photos.join("e.webp").exists(), "the result is there");
+	assert!(!fixture.photos.join("e.png").exists(), "the source is consumed");
+}
+
+#[test]
+fn the_interactive_walk_refuses_a_pipe_rather_than_reading_a_script() {
+	let dir = tempfile::tempdir().unwrap();
+
+	let ran = retype()
+		.args(["jobs", "--interactive"])
+		.arg("--state-dir")
+		.arg(dir.path().join("state"))
+		.stdin(Stdio::null())
+		.output()
+		.unwrap();
+
+	assert_eq!(ran.status.code(), Some(2), "usage is exit 2");
+	assert!(
+		String::from_utf8_lossy(&ran.stderr).contains("needs a terminal"),
+		"{}",
+		String::from_utf8_lossy(&ran.stderr)
+	);
 }
