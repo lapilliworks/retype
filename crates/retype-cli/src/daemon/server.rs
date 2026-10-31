@@ -79,6 +79,11 @@ impl Server {
 
 		let pool = crate::daemon::queue::Pool::start(Arc::clone(&shared), crate::daemon::queue::runners());
 
+		// Before anything watches a directory or answers a client: a job that was in
+		// flight when the last daemon died is finished or declared, not left hanging,
+		// `docs/state.md` §6.
+		crate::daemon::reconcile::run(&shared, &pool);
+
 		Ok(Self {
 			endpoint: None,
 			shared,
@@ -355,7 +360,7 @@ impl Server {
 		};
 
 		let id = retype_core::job::JobId::now()?;
-		crate::daemon::watcher::publish(&self.shared, &immediate::pending(&self.shared, &prepared, &id));
+		crate::daemon::watcher::publish(&self.shared, &immediate::queued(&self.shared, &prepared, &id));
 
 		let work = crate::daemon::queue::Work {
 			id: id.clone(),
@@ -369,7 +374,7 @@ impl Server {
 			));
 		}
 
-		Ok(Response::ok(request.id, json!({"id": id, "state": "pending"}))?)
+		Ok(Response::ok(request.id, json!({"id": id, "state": "queued"}))?)
 	}
 
 	fn cancel(&self, request: &Request) -> Result<Response> {

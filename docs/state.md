@@ -84,7 +84,7 @@ A record is a full snapshot of the job at that transition, so replay is last-win
 ## 4. Journal rules
 
 - Records are appended, never edited in place
-- `fsync` on transitions into `pending` and `done`; other transitions are best effort, because reconciliation covers the gap
+- `fsync` on transitions into `queued`, `pending` and `done`; other transitions are best effort, because reconciliation covers the gap
 - Line order defines time; wall-clock fields are informational
 - A trailing line that does not parse is a torn write and is dropped silently
 - A non-trailing line that does not parse is corruption: the file is moved to `jobs.jsonl.corrupt.<ts>`, a new journal is started, and the event is reported once. Records after the damage are still replayed, because losing jobs that are intact on disk would be a second failure on top of the first
@@ -213,10 +213,12 @@ Accounting is source bytes, which is what a hard link actually costs, `docs/conf
 
 1. Acquire the lock. Failure means another daemon owns the state directory, and the process exits with that message
 2. Load `bench.toml`, then the journal, then the undo record index
-3. For every journal job in `pending`, `queued` or `running`: if the source still exists and its ext and mtime match, requeue it. Otherwise mark it `failed` with `E_INTERRUPTED`
-4. For every undo record without a journal entry, keep it and rebuild a `done` record from `meta.toml`
-5. For every journal job whose record directory is missing, leave the state as recorded and mark undoing it as unavailable
-6. Drop undo records past retention, then compact if the thresholds are met
+3. For every journal job in `queued`: nothing ran, so nothing was written. If the source still exists and its ext and mtime match, put it back in the queue with the request the journal recorded, including the output path, which is the only place an explicit `-o` survives. Otherwise mark it `failed` with `E_INTERRUPTED`
+4. For every journal job in `running`: mark it `failed` with `E_INTERRUPTED`. A job that was running may have committed some of its outputs, so running it again would either overwrite them or fail on them: `retype jobs resume` is the path that skips the outputs whose recorded identity still matches, §5.2
+5. For every journal job in `pending`: it is parked, so it keeps its deadline and its timer is re-armed rather than run, `docs/deferral.md` §7
+6. For every undo record without a journal entry, keep it and rebuild a `done` record from `meta.toml`
+7. For every journal job whose record directory is missing, leave the state as recorded and mark undoing it as unavailable
+8. Drop undo records past retention, then compact if the thresholds are met
 
 Nothing is deleted during reconciliation. Anything inconsistent is reported and left in place for inspection.
 

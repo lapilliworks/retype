@@ -175,7 +175,9 @@ impl Journal {
 /// Transitions that are synced. The rest are best effort because reconciliation
 /// covers the gap, `docs/state.md` §4.
 fn is_durable(state: JobState) -> bool {
-	matches!(state, JobState::Pending | JobState::Done)
+	// A parked job has a deadline to survive a crash, a queued one has a queue entry
+	// that reconciliation rebuilds, and a finished one is the record itself.
+	matches!(state, JobState::Queued | JobState::Pending | JobState::Done)
 }
 
 fn replay(path: &Path) -> Result<Replay> {
@@ -473,10 +475,10 @@ mod tests {
 
 	#[test]
 	fn only_the_promised_transitions_are_synced() {
+		assert!(is_durable(JobState::Queued));
 		assert!(is_durable(JobState::Pending));
 		assert!(is_durable(JobState::Done));
 		for state in [
-			JobState::Queued,
 			JobState::Running,
 			JobState::Partial,
 			JobState::Failed,

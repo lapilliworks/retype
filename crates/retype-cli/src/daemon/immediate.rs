@@ -118,7 +118,7 @@ fn targets(
 
 /// The record a submitted job writes before a runner reaches it, so a client can
 /// see it waiting rather than only once it starts.
-pub fn pending(shared: &Shared, prepared: &Prepared<'_>, id: &JobId) -> Job {
+pub fn queued(shared: &Shared, prepared: &Prepared<'_>, id: &JobId) -> Job {
 	let now = now_ms();
 
 	Job {
@@ -133,7 +133,7 @@ pub fn pending(shared: &Shared, prepared: &Prepared<'_>, id: &JobId) -> Job {
 			.zip(&prepared.paths)
 			.map(|(plan, path)| Output::pending(path.clone(), plan.format.clone(), plan.tier))
 			.collect(),
-		state: JobState::Pending,
+		state: JobState::Queued,
 		backend: prepared.plans.first().map(|plan| plan.backend.name().to_string()),
 		engine: prepared
 			.plans
@@ -157,7 +157,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 		}
 	};
 
-	let mut started = pending(shared, &prepared, id);
+	let mut started = queued(shared, &prepared, id);
 	started.set_state(JobState::Running);
 	publish(shared, &started);
 

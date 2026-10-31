@@ -1,0 +1,86 @@
+//! Startup reconciliation, `docs/state.md` §6.
+//!
+//! A daemon that dies leaves the journal holding jobs that were in flight. Two
+//! things can be true of them, and they are different:
+//!
+//! - `queued`: nothing ran, so nothing was written. The job is put back in the queue
+//!   with the request the journal recorded
+//! - `running`: a conversion was interrupted. Some of its outputs may already be
+//!   committed, so re-running it blindly would either overwrite them or fail on them.
+//!   It is marked `E_INTERRUPTED`, which is exactly the state `retype jobs resume`
+//!   exists for: the outputs that carry their recorded identity are skipped and the
+//!   rest are run again
+//!
+//! A parked job is not reconciled here: it keeps its deadline and its timer is
+//! re-armed, `docs/deferral.md` §7.
+
+use retype_core::error::Code;
+use retype_core::job::{Job, JobError, JobState};
+
+use crate::daemon::immediate;
+use crate::daemon::queue::{Kind, Pool, Work};
+use crate::daemon::watcher::{self, Shared};
+
+/// Put the journal's unfinished jobs back where they belong.
+pub fn run(shared: &Shared, pool: &Pool) {
+	let jobs: Vec<Job> = match shared.jobs.lock() {
+		Ok(jobs) => jobs.clone(),
+		Err(_) => return,
+	};
+
+	for job in jobs {
+		match job.state {
+			JobState::Queued => requeue(shared, pool, &job),
+			JobState::Running => interrupted(shared, &job),
+			_ => {}
+		}
+	}
+}
+
+fn requeue(shared: &Shared, pool: &Pool, job: &Job) {
+	// A job with no intent was not a conversion, so there is nothing to run again.
+	let Some(intent) = job.intent.clone() else {
+		interrupted(shared, job);
+		return;
+	};
+
+	let request = immediate::Request {
+		input: job.source.path.clone(),
+		intent,
+		// The recorded path, not a fresh derivation: `-o` was part of the request and
+		// is not in the journal, so the output is the only place it survives.
+		output: match job.outputs.as_slice() {
+			[single] => Some(single.path.to_string_lossy().into_owned()),
+			_ => None,
+		},
+		force: false,
+	};
+
+	// The plan is made again rather than trusted. A source that went away or a tool
+	// that was uninstalled between the two runs is then the failure it would have
+	// been, instead of a job that dies unexplained.
+	if immediate::prepare(&shared.registry, &request).is_err() {
+		interrupted(shared, job);
+		return;
+	}
+
+	let work = Work {
+		id: job.id.clone(),
+		kind: Kind::Immediate(request),
+	};
+
+	if !pool.submit(work) {
+		interrupted(shared, job);
+	}
+}
+
+fn interrupted(shared: &Shared, job: &Job) {
+	let mut failed = job.clone();
+
+	failed.fail(JobError {
+		code: Code::JobInterrupted.to_string(),
+		message: "the daemon stopped before this job finished".to_string(),
+	});
+
+	watcher::publish(shared, &failed);
+}

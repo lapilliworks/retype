@@ -13,6 +13,7 @@ pub mod peer;
 #[cfg(windows)]
 mod pipe;
 pub mod queue;
+pub mod reconcile;
 pub mod resume;
 mod server;
 pub mod supervision;

@@ -381,7 +381,10 @@ impl Job {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum JobState {
+	/// Parked by deferral: the job could run, and is waiting for its timer or for a
+	/// person, `docs/deferral.md`.
 	Pending,
+	/// Submitted, or requeued at startup, and not started yet, `docs/state.md` §6.
 	Queued,
 	Running,
 	Done,

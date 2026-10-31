@@ -281,10 +281,8 @@ fn producers(shared: &Shared, pool: &Pool, path: &Path) -> Vec<Job> {
 
 	jobs.iter()
 		.filter(|job| {
-			matches!(
-				job.state,
-				JobState::Pending | JobState::Queued | JobState::Running | JobState::Partial
-			) && in_flight.contains(&job.id)
+			matches!(job.state, JobState::Queued | JobState::Running | JobState::Partial)
+				&& in_flight.contains(&job.id)
 				&& (job.source.path == path || job.outputs.iter().any(|output| output.path == path))
 		})
 		.cloned()
