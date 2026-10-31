@@ -195,7 +195,7 @@ max_source_size = '4GiB'
 | `allow_synced` | bool | `false` | Convert inside placeholder-capable cloud providers instead of refusing with the provider named |
 | `max_source_size` | size | `4GiB` | Largest source for automatic conversion. `retype convert` ignores it |
 
-All four are read. `allow_synced` is the exception in effect rather than in parsing: placeholder detection is not built on any platform yet, so nothing refuses a synced folder for it to allow. `docs/watch.md` §5 and the gap table say so.
+All four are read. `allow_synced` decides a registration: without it, `retype watch` refuses a directory inside a provider that can hold placeholders, naming the provider, `docs/watch.md` §5.
 
 Three things are deliberately not configurable, so that nobody tunes them and then wonders why behaviour differs between machines:
 

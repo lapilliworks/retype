@@ -26,6 +26,7 @@ pub mod print;
 pub mod provenance;
 pub mod registry;
 pub mod resolve;
+pub mod synced;
 pub mod tools;
 pub mod undo;
 pub mod value;

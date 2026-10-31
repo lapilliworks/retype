@@ -376,8 +376,17 @@ fn main() -> ExitCode {
 		non_recursive,
 	} = &cli.command
 	{
-		let code = retype_cli::state::resolve(cli.state_dir.clone())
-			.and_then(|state_dir| retype_cli::watch::run(&state_dir, directories, !non_recursive, cli.json));
+		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
+			config::load().and_then(|registry| {
+				retype_cli::watch::run(
+					&state_dir,
+					directories,
+					!non_recursive,
+					cli.json,
+					registry.watch().allow_synced,
+				)
+			})
+		});
 
 		return match code {
 			Ok(code) => code,

@@ -51,21 +51,21 @@ A directory whose name does not match user globs is not skipped, only the paths 
 
 A cloud provider that can leave a file as a placeholder is a network filesystem with a proprietary protocol. The file looks local, its contents are elsewhere, and reading it triggers a download. That is the deferred network stage, so it is refused rather than half-supported.
 
-Not built yet: the detection below is specified and no platform implements it, so `allow_synced` is read and changes nothing, and a placeholder-capable provider is watched like any other directory. A dataless file read by a conversion therefore downloads itself rather than being skipped. The gap table carries the row.
-
 Registration is refused with `E_USAGE_ARGS` when the path is inside a known placeholder-capable provider:
 
 | Platform | Detected roots |
 |---|---|
 | macOS | `~/Library/CloudStorage/**`, dataless files (`SF_DATALESS`) under a registration |
 | Windows | `%USERPROFILE%\OneDrive*`, `\Cloud\` mirrors, `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` on a registered file |
-| Linux | `gvfs` and FUSE mounts that report `EAGAIN` on read |
+| Linux | `gvfs` and `rclone` mounts, read from the mount table; a FUSE mount that answers `EAGAIN` on read is caught per file |
 
 The refusal names the provider and says that support is planned as a separate stage. `allow_synced = true` in the user configuration overrides it for people who have checked that their provider keeps full local copies. That key is user configuration only: a directory file may not set it, because a directory that arrives from an untrusted source must not be able to opt the machine into a provider whose placeholders it cannot see.
 
 Ordinary sync clients are unaffected, because there is nothing to detect: Dropbox with files available offline, Syncthing, rsync targets and git worktrees are ordinary local directories, and refusing them would be both wrong and infuriating. The rule is about placeholders, not about the word "sync".
 
-Dataless and recall-on-access files encountered inside an ordinary registration are skipped, logged once at info level, and counted in `daemon status`. They are never converted implicitly.
+Dataless and recall-on-access files encountered inside an ordinary registration are skipped, logged at info level, and counted as `placeholders` in `daemon status`. They are never converted implicitly.
+
+What is built: the provider rules above, decided from the path and the mount table, and a per-file placeholder probe that reads one byte and treats `EAGAIN`, or `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` on Windows, as "not here". What is not: the macOS `SF_DATALESS` flag, which needs a `stat` the standard library does not expose, so a dataless file there is caught by the read probe instead. The gap table names it.
 
 ## 6. Size limits
 

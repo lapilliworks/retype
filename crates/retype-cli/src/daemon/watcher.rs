@@ -46,6 +46,9 @@ pub struct Shared {
 	/// Sources passed over because they were too large to convert unasked,
 	/// `docs/watch.md` §6.
 	pub skipped: AtomicU64,
+	/// Files passed over because their contents are not on this machine: a provider's
+	/// placeholder, `docs/watch.md` §5.
+	pub placeholders: AtomicU64,
 	/// What clients replay from, `docs/ipc.md` §7.
 	pub events: Mutex<crate::daemon::events::Events>,
 	/// Each directory's `.retype.toml`, read once per change rather than once per file,
@@ -291,6 +294,14 @@ fn decide(
 		|| !shared.registry.watch().considers(watched_root, &fact.source)
 	{
 		crate::verbose::detail(format!("{} is not considered", fact.target.display()));
+		return;
+	}
+
+	// A placeholder looks like a file and behaves like a download, so it is passed over
+	// rather than read, `docs/watch.md` §5.
+	if retype_core::synced::dataless(&fact.target) {
+		shared.placeholders.fetch_add(1, Ordering::Relaxed);
+		crate::verbose::detail(format!("{} is a placeholder, not a copy", fact.target.display()));
 		return;
 	}
 

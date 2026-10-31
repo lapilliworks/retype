@@ -462,6 +462,7 @@ tier = 'converted'
 			recent: Recent::default(),
 			dropped: AtomicU64::new(0),
 			skipped: AtomicU64::new(0),
+			placeholders: AtomicU64::new(0),
 			events: std::sync::Mutex::new(crate::daemon::events::Events::default()),
 			policies: Default::default(),
 			batches: Default::default(),

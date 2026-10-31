@@ -11,7 +11,13 @@ use retype_core::watches;
 
 use crate::error::Result;
 
-pub fn run(state_dir: &Path, directories: &[String], recursive: bool, json: bool) -> Result<ExitCode> {
+pub fn run(
+	state_dir: &Path,
+	directories: &[String],
+	recursive: bool,
+	json: bool,
+	allow_synced: bool,
+) -> Result<ExitCode> {
 	if directories.is_empty() {
 		return list(state_dir, json);
 	}
@@ -27,6 +33,23 @@ pub fn run(state_dir: &Path, directories: &[String], recursive: bool, json: bool
 			eprintln!(
 				"retype: E_WATCH_PAUSED_BY_POLICY: {} sets paused = true, so {directory} stays unwatched",
 				policy.path.display()
+			);
+			refused = true;
+			continue;
+		}
+
+		// A provider that can leave a file as a placeholder is a network filesystem with
+		// a proprietary protocol: converting inside one triggers downloads, so the
+		// registration is refused and the provider is named, `docs/watch.md` §5.
+		let provider = match allow_synced {
+			true => None,
+			false => retype_core::synced::provider(Path::new(directory)),
+		};
+
+		if let Some(provider) = provider {
+			eprintln!(
+				"retype: E_USAGE_ARGS: {directory} is inside {provider}, which can hold placeholders instead of files; \
+				 support for that is a separate stage, and [watch] allow_synced = true overrides this"
 			);
 			refused = true;
 			continue;

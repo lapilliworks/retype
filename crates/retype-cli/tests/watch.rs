@@ -121,3 +121,58 @@ fn a_policy_file_is_summarised_in_the_listing() {
 
 	assert!(String::from_utf8_lossy(&listing.stdout).contains("*.jpg *.heic"));
 }
+
+/// A directory inside a provider that can hold placeholders is refused by name, and
+/// `allow_synced` is the explicit way past it, `docs/watch.md` §5.
+///
+/// The prefix rule is the macOS one, which is the same code on every platform: what is
+/// under `~/Library/CloudStorage` is a provider's mirror wherever the string is
+/// assembled.
+#[test]
+fn a_cloud_mirror_is_refused_unless_allowed() {
+	let dir = tempfile::tempdir().unwrap();
+	let home = dir.path().join("home");
+	let photos = home.join("Library/CloudStorage/OneDrive-Personal/Photos");
+	fs::create_dir_all(&photos).unwrap();
+	let state = dir.path().join("state");
+
+	let refused = retype()
+		.args(["watch", photos.to_str().unwrap()])
+		.arg("--state-dir")
+		.arg(&state)
+		.env("HOME", &home)
+		.env("USERPROFILE", &home)
+		.env_remove("RETYPE_CONFIG")
+		.output()
+		.unwrap();
+
+	assert_eq!(refused.status.code(), Some(3), "{refused:?}");
+	let stderr = String::from_utf8_lossy(&refused.stderr);
+	assert!(stderr.contains("OneDrive-Personal"), "{stderr}");
+	assert!(
+		!state.join("watches.toml").exists(),
+		"a refused registration writes nothing"
+	);
+
+	// The same directory, with the key that says the user has checked their provider.
+	let config = dir.path().join("retype.toml");
+	fs::write(&config, "version = 'retype-config-1'\n\n[watch]\nallow_synced = true\n").unwrap();
+
+	let allowed = retype()
+		.args(["watch", photos.to_str().unwrap()])
+		.arg("--state-dir")
+		.arg(&state)
+		.env("HOME", &home)
+		.env("USERPROFILE", &home)
+		.env("RETYPE_CONFIG", &config)
+		.output()
+		.unwrap();
+
+	assert_eq!(
+		allowed.status.code(),
+		Some(0),
+		"{}",
+		String::from_utf8_lossy(&allowed.stderr)
+	);
+	assert!(state.join("watches.toml").exists(), "the registration was written");
+}
