@@ -119,7 +119,7 @@ fn list(state_dir: &Path, json: bool) -> Result<ExitCode> {
 					"path": registration.path.display().to_string(),
 					"recursive": registration.recursive,
 					"added": registration.added,
-					"conversions": summary(&registration.path),
+					"policy": summary(&registration.path),
 				})
 			),
 			false => println!(

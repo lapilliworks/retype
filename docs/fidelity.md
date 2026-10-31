@@ -62,7 +62,7 @@ The properties are read from the bytes where the decoder does not report them. I
 
 Size and duration are separate: they come from `retype bench`, not from the manifest, because they depend on the machine and the claim does not, `docs/state.md` §4.
 
-A pair the user declares in their own `[conversions.*]` table cannot have evidence, so it is `unclaimed` by construction and reported as `delegated` with a diagnostic saying so. That sentence is the whole reason `delegated` is a tier rather than an escape hatch.
+`delegated` is the answer for a pair no manifest describes: a converter we did not write, or a format offered because a tool accepts it. There is no fixture to convert and nothing to claim, so the tier says what is true, which is that a valid file of the target format was produced.
 
 ## 5. How a claim is used
 

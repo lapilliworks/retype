@@ -132,7 +132,7 @@ retype unwatch <dir>...
 
 `--json` writes one object per line with a `kind` of `format`, `operation`, `preset`, `backend` or `pair`.
 
-`watch` with no arguments lists registrations as `<path>  <recursive>  <conversions summary>`. With arguments it registers each directory; registration is idempotent, and the daemon re-reads the file so a running one picks the directory up within a second. `watch` starts nothing itself, so it can be scripted.
+`watch` with no arguments lists registrations as `<path>  <recursive>  <policy summary>`. With arguments it registers each directory; registration is idempotent, and the daemon re-reads the file so a running one picks the directory up within a second. `watch` starts nothing itself, so it can be scripted.
 
 The summary column is the directory's own `.retype.toml` policy, where it has one, because "what will happen here" is the question a listing is asked.
 

@@ -360,23 +360,22 @@ deny = ['nometa']
 limits = { quality = 85 }
 confirm = false
 paused = false
-
-[conversions.to-jpg]
-enabled = false
-
-[conversions.heic-to-jpg]
-preset = 'headshot'
 ```
 
-| Key | Read today | Meaning |
-|---|---|---|
-| `patterns` | yes | Globs a file must match to be considered. A pattern without `/` matches the file name; one with it matches the path relative to this directory. Empty means everything |
-| `deny` | yes | Operations refused here, by name or alias. A job that asks for one is `E_INAPPLICABLE` and parks, `docs/deferral.md` |
-| `limits` | yes | Ceilings for a parameter, by operation name. A number is clamped and the derived name says the clamped value; a class with no ceiling is left alone |
-| `confirm` | yes | `false` suppresses the cost confirmation in this directory, and not the one that exists because a source would be destroyed with no record, `docs/deferral.md` §5 |
-| `paused` | yes | Whether the directory is watched at all. `retype watch` refuses it with `E_WATCH_PAUSED_BY_POLICY` naming the file, rather than accepting a registration that the next read would undo |
-| `debounce_ms` | yes | How long a rename here waits for the file to stop changing before anything decides, `docs/watch.md` §7. Below the daemon's own window it changes nothing |
-| `[conversions]` | no | Named conversions with presets. A rule engine of its own |
+| Key | Meaning |
+|---|---|
+| `patterns` | Globs a file must match to be considered. A pattern without `/` matches the file name; one with it matches the path relative to this directory. Empty means everything |
+| `deny` | Operations refused here, by name or alias. A job that asks for one is `E_INAPPLICABLE` and parks, `docs/deferral.md` |
+| `limits` | Ceilings for a parameter, by operation name. A number is clamped and the derived name says the clamped value; a class with no ceiling is left alone |
+| `confirm` | `false` suppresses the cost confirmation in this directory, and not the one that exists because a source would be destroyed with no record, `docs/deferral.md` §5 |
+| `paused` | Whether the directory is watched at all. `retype watch` refuses it with `E_WATCH_PAUSED_BY_POLICY` naming the file, rather than accepting a registration that the next read would undo |
+| `debounce_ms` | How long a rename here waits for the file to stop changing before anything decides, `docs/watch.md` §7. Below the daemon's own window it changes nothing |
+
+Every key is read. A `[conversions]` table was specified here once and has been dropped rather than built, for two reasons.
+
+A per-pair `preset` would add operations to a rename nobody typed, and the rename is the request: `a.heic.png` asks for a png, and a directory deciding it also means `headshot` is an expansion of the request rather than a bound on it. Everything in this section narrows. `limits` clamps a value that was asked for and the derived name says the clamped number; a preset would invent a value that was not.
+
+A per-pair `enabled = false` is a different and much smaller idea: refusing a *target format* here, which `deny` cannot express because it refuses operations. If that is wanted it should be specified as a format refusal beside `deny`, in one line, rather than as half of a rule engine. The gap is recorded in.
 
 A file is read when it changes rather than on a second watcher: the answer is cached per directory and re-read when its modification time moves, which is the same answer `docs/watch.md` §2 asks for with less machinery.
 
