@@ -9,11 +9,12 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use retype_core::deferral::{Parked, Reason, Repair};
+use retype_core::deferral::{Mode, Parked, Reason, Repair};
 use retype_core::error::{Code, Diagnoses};
 use retype_core::estimate::{Calibration, Query};
 use retype_core::job::{Cost, Job, JobError, JobId, JobState, Output, Source, now_ms};
 use retype_core::plan::{self, Plan};
+use retype_core::policy::Policy;
 use retype_core::registry::Registry;
 use retype_core::resolve::{self, Resolved, Source as Origin};
 use retype_core::undo::{Room, Store};
@@ -46,6 +47,7 @@ pub fn decide(
 	target: &Path,
 	id: &JobId,
 	batch: Option<&str>,
+	policy: &Policy,
 ) -> Verdict {
 	let (Some(source_name), Some(target_name)) = (
 		source.file_name().and_then(|name| name.to_str()),
@@ -90,7 +92,7 @@ pub fn decide(
 
 	let requested = Some(parsed.text.clone());
 
-	let resolved = match resolve::resolve(
+	let mut resolved = match resolve::resolve(
 		&parsed,
 		Origin {
 			format: &format,
@@ -100,82 +102,50 @@ pub fn decide(
 	) {
 		Ok(resolved) => resolved,
 		Err(problems) => {
-			let reason = reason_of(&problems);
-			let corrected = corrected(&shared.registry, &parsed, &format);
-
-			if let Some(verdict) = repair(
-				shared,
-				pool,
-				&stem,
-				&format,
-				target,
-				id,
-				batch,
-				reason,
-				requested.as_deref(),
-				corrected.as_ref(),
-			) {
-				return verdict;
-			}
-
-			return park(
-				shared,
-				&stem,
-				root,
-				&format,
-				target,
-				id,
-				batch,
-				reason,
-				Parking {
-					requested,
-					corrected,
-					diagnosis: Some(&problems),
-					consume: true,
-					..Parking::default()
-				},
+			return uncarried(
+				shared, pool, root, &stem, &format, target, id, batch, &parsed, requested, problems, policy, None,
 			);
 		}
 	};
 
+	// The directory may refuse an operation or clamp a parameter, `docs/config.md` §12.
+	let refused = policy.apply(&mut resolved);
+
+	if !refused.is_empty() {
+		return uncarried(
+			shared,
+			pool,
+			root,
+			&stem,
+			&format,
+			target,
+			id,
+			batch,
+			&parsed,
+			requested,
+			refused,
+			policy,
+			Some(&resolved),
+		);
+	}
+
 	let plans = match plan::compile(&shared.registry, &retype_core::tools::Machine, &resolved) {
 		Ok(plans) => plans,
 		Err(problems) => {
-			let reason = reason_of(&problems);
-			let corrected = corrected(&shared.registry, &parsed, &format);
-
-			if let Some(verdict) = repair(
+			return uncarried(
 				shared,
 				pool,
-				&stem,
-				&format,
-				target,
-				id,
-				batch,
-				reason,
-				requested.as_deref(),
-				corrected.as_ref(),
-			) {
-				return verdict;
-			}
-
-			return park(
-				shared,
-				&stem,
 				root,
+				&stem,
 				&format,
 				target,
 				id,
 				batch,
-				reason,
-				Parking {
-					requested,
-					corrected,
-					diagnosis: Some(&problems),
-					resolved: Some(&resolved),
-					consume: true,
-					..Parking::default()
-				},
+				&parsed,
+				requested,
+				problems,
+				policy,
+				Some(&resolved),
 			);
 		}
 	};
@@ -205,8 +175,8 @@ pub fn decide(
 		);
 	}
 
-	// `now` skips both cost triggers for this job; the mode skips them for the machine.
-	if !resolved.meta.now && cost_defers(shared, &estimate, bytes) {
+	// `now` skips both cost triggers for this job; the mode and the directory skip one.
+	if !resolved.meta.now && cost_defers(shared, policy, &estimate, bytes) {
 		return park(
 			shared,
 			&stem,
@@ -230,19 +200,85 @@ pub fn decide(
 	Verdict::Run
 }
 
+/// A request that cannot run as asked: park it with what went wrong, both intent
+/// strings, and a repair when the policy allows the guess.
+#[allow(clippy::too_many_arguments)]
+fn uncarried(
+	shared: &Shared,
+	pool: &Pool,
+	root: &Path,
+	stem: &str,
+	format: &str,
+	target: &Path,
+	id: &JobId,
+	batch: Option<&str>,
+	parsed: &intent::Intent,
+	requested: Option<String>,
+	problems: Diagnoses,
+	policy: &Policy,
+	resolved: Option<&Resolved>,
+) -> Verdict {
+	let reason = reason_of(&problems);
+	let corrected = corrected(&shared.registry, parsed, format, policy);
+
+	if let Some(verdict) = repair(
+		shared,
+		pool,
+		stem,
+		format,
+		target,
+		id,
+		batch,
+		reason,
+		requested.as_deref(),
+		corrected.as_ref(),
+	) {
+		return verdict;
+	}
+
+	park(
+		shared,
+		stem,
+		root,
+		format,
+		target,
+		id,
+		batch,
+		reason,
+		Parking {
+			requested,
+			corrected,
+			diagnosis: Some(&problems),
+			resolved,
+			consume: true,
+			..Parking::default()
+		},
+	)
+}
+
 /// Whether the estimate crosses the threshold that applies, `docs/deferral.md` §3.
-fn cost_defers(shared: &Shared, estimate: &Option<Cost>, bytes: u64) -> bool {
+fn cost_defers(shared: &Shared, directory: &Policy, estimate: &Option<Cost>, bytes: u64) -> bool {
 	let Some(estimate) = estimate else {
 		// An unknown cost is not a reason to ask: turning "we do not know" into "you
 		// must answer" is worse than running.
 		return false;
 	};
 
+	let deferral = shared.registry.deferral();
+
+	if deferral.mode == Mode::Now {
+		return false;
+	}
+
 	let has_undo = keeps_a_record(shared, bytes);
-	shared
-		.registry
-		.deferral()
-		.defers(Duration::from_millis(estimate.ms), has_undo)
+
+	// A directory may suppress the ordinary confirmation, and may not remove the brake
+	// on a job whose source would be destroyed with no record, `docs/deferral.md` §5.
+	if has_undo && !directory.confirm {
+		return false;
+	}
+
+	Duration::from_millis(estimate.ms) > deferral.threshold(has_undo)
 }
 
 /// Whether an undo record could be kept for a file of this size, decided without
@@ -306,7 +342,7 @@ fn reason_of(problems: &Diagnoses) -> Reason {
 
 /// The request with the tokens that cannot be carried dropped, when what is left
 /// still resolves, `docs/deferral.md` §6.
-fn corrected(registry: &Registry, parsed: &intent::Intent, format: &str) -> Option<Correction> {
+fn corrected(registry: &Registry, parsed: &intent::Intent, format: &str, policy: &Policy) -> Option<Correction> {
 	let mut text = String::new();
 	let mut dropped = Vec::new();
 	let mut kept_any = false;
@@ -320,10 +356,16 @@ fn corrected(registry: &Registry, parsed: &intent::Intent, format: &str) -> Opti
 		text.push_str(target);
 
 		for token in &group.tokens {
-			let carries = registry
-				.resolve(&token.name)
-				.and_then(|found| found.op().cloned())
-				.is_some_and(|op| op.is_implemented() && op.applies_to(target));
+			let found = registry.resolve(&token.name);
+			let op = found.as_ref().and_then(|found| found.op());
+
+			// An operation the directory refuses is not carried either: offering to run
+			// it would be an offer the runner would refuse in turn.
+			let carries = op.is_some_and(|op| {
+				op.is_implemented()
+					&& op.applies_to(target)
+					&& !policy.deny.iter().any(|denied| *denied == op.name || *denied == op.key)
+			});
 
 			let mut written = token.name.clone();
 
@@ -349,7 +391,7 @@ fn corrected(registry: &Registry, parsed: &intent::Intent, format: &str) -> Opti
 	// The reduced request has to be one that runs, or offering it would be another
 	// promise the job cannot keep.
 	let reduced = intent::parse(&text).ok()?;
-	let resolved = resolve::resolve(
+	let mut resolved = resolve::resolve(
 		&reduced,
 		Origin {
 			format,
@@ -358,6 +400,10 @@ fn corrected(registry: &Registry, parsed: &intent::Intent, format: &str) -> Opti
 		registry,
 	)
 	.ok()?;
+
+	if !policy.apply(&mut resolved).is_empty() {
+		return None;
+	}
 
 	// A request that produces nothing is not a repair: `png` from a `png` is the noop
 	// the grammar refuses, and offering it would run a job with no outputs.
@@ -650,12 +696,20 @@ mod tests {
 		Registry::builtin().expect("the shipped registry loads")
 	}
 
+	/// A directory with no policy file, which narrows nothing.
+	fn nothing() -> (tempfile::TempDir, Policy) {
+		let dir = tempfile::tempdir().expect("a directory");
+		let policy = Policy::open(dir.path()).expect("a policy");
+		(dir, policy)
+	}
+
 	#[test]
 	fn a_request_that_cannot_be_carried_is_reduced_to_one_that_can() {
 		let registry = registry();
+		let (_dir, policy) = nothing();
 		let parsed = intent::parse("webp+quality80+zzz").expect("scans");
 
-		let correction = corrected(&registry, &parsed, "png").expect("a correction");
+		let correction = corrected(&registry, &parsed, "png", &policy).expect("a correction");
 
 		assert_eq!(correction.text, "webp+quality80");
 		assert_eq!(correction.dropped, vec!["zzz".to_string()]);
@@ -664,10 +718,11 @@ mod tests {
 	#[test]
 	fn a_request_whose_target_survives_nothing_has_no_correction() {
 		let registry = registry();
+		let (_dir, policy) = nothing();
 		let parsed = intent::parse("png+quality80").expect("scans");
 
 		// Dropping `quality80` leaves `png` from a `png`, which is the noop the grammar
 		// refuses, so there is nothing to offer.
-		assert!(corrected(&registry, &parsed, "png").is_none());
+		assert!(corrected(&registry, &parsed, "png", &policy).is_none());
 	}
 }

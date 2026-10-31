@@ -45,6 +45,9 @@ pub struct Shared {
 	pub dropped: AtomicU64,
 	/// What clients replay from, `docs/ipc.md` §7.
 	pub events: Mutex<crate::daemon::events::Events>,
+	/// Each directory's `.retype.toml`, read once per change rather than once per file,
+	/// `docs/config.md` §12.
+	pub policies: retype_core::policy::Cache,
 	/// This install's identity, recorded with every job and undo record.
 	pub machine: String,
 	/// Where the state lives, which is where undo records go.
@@ -225,6 +228,37 @@ fn spawn_worker(
 					continue;
 				}
 
+				// The directory has a say before anything else happens: a paused
+				// directory converts nothing, and `patterns` decides which files are
+				// considered at all, `docs/config.md` §12.
+				let directory = fact.target.parent().unwrap_or(&watched_root);
+				let cached = shared.policies.policy(&watched_root, directory);
+
+				let policy = match cached.as_ref() {
+					Ok(policy) => policy,
+					Err(problem) => {
+						eprintln!("retype: {problem}");
+						continue;
+					}
+				};
+
+				if policy.paused {
+					crate::verbose::detail(format!("{} is paused by its policy", directory.display()));
+					continue;
+				}
+
+				let name = fact
+					.source
+					.file_name()
+					.and_then(|name| name.to_str())
+					.unwrap_or_default();
+
+				let relative = fact.source.strip_prefix(&watched_root).unwrap_or(&fact.source);
+
+				if !policy.allows(name, relative) {
+					continue;
+				}
+
 				let Ok(id) = retype_core::job::JobId::now() else {
 					continue;
 				};
@@ -254,6 +288,7 @@ fn spawn_worker(
 					&fact.target,
 					&id,
 					parked_batch.as_deref(),
+					policy,
 				) {
 					crate::daemon::park::Verdict::Run => {}
 					crate::daemon::park::Verdict::Parked
@@ -406,7 +441,7 @@ pub fn convert(
 	id: &retype_core::job::JobId,
 	cancellation: &Cancellation,
 ) {
-	let Some(prepared) = prepare(shared, source, target) else {
+	let Some(prepared) = prepare(shared, root, source, target) else {
 		return;
 	};
 
@@ -427,7 +462,7 @@ pub fn convert_deferred(
 	id: &retype_core::job::JobId,
 	cancellation: &Cancellation,
 ) {
-	let Some(prepared) = prepare_from(shared, source, intent) else {
+	let Some(prepared) = prepare_from(shared, root, source, intent) else {
 		return;
 	};
 
@@ -435,7 +470,7 @@ pub fn convert_deferred(
 }
 
 /// Read a rename as a job, or say why it is not one.
-fn prepare<'a>(shared: &'a Shared, source: &Path, target: &Path) -> Option<Prepared<'a>> {
+fn prepare<'a>(shared: &'a Shared, root: &Path, source: &Path, target: &Path) -> Option<Prepared<'a>> {
 	let (source_name, target_name) = (
 		source.file_name().and_then(|name| name.to_str())?,
 		target.file_name().and_then(|name| name.to_str())?,
@@ -455,11 +490,11 @@ fn prepare<'a>(shared: &'a Shared, source: &Path, target: &Path) -> Option<Prepa
 		}
 	};
 
-	build(shared, stem, format, parsed, target)
+	build(shared, root, stem, format, parsed, target)
 }
 
 /// Read a recorded intent as a job, which is what a parked job carries.
-fn prepare_from<'a>(shared: &'a Shared, source: &Path, text: &str) -> Option<Prepared<'a>> {
+fn prepare_from<'a>(shared: &'a Shared, root: &Path, source: &Path, text: &str) -> Option<Prepared<'a>> {
 	let source_name = source.file_name().and_then(|name| name.to_str())?;
 	let (stem, format) = shared.registry.split(source_name)?;
 
@@ -471,19 +506,20 @@ fn prepare_from<'a>(shared: &'a Shared, source: &Path, text: &str) -> Option<Pre
 		}
 	};
 
-	build(shared, stem, format, parsed, source)
+	build(shared, root, stem, format, parsed, source)
 }
 
 /// Resolve and compile, which is the same work whether the request came from a name
 /// or from a journal record.
 fn build<'a>(
 	shared: &'a Shared,
+	root: &Path,
 	stem: &str,
 	format: &str,
 	parsed: intent::Intent,
 	reported: &Path,
 ) -> Option<Prepared<'a>> {
-	let resolved = match resolve::resolve(
+	let mut resolved = match resolve::resolve(
 		&parsed,
 		Origin {
 			format,
@@ -505,6 +541,18 @@ fn build<'a>(
 			return None;
 		}
 	};
+
+	// The directory has the last word on what this intent may ask for, `docs/config.md`
+	// §12. A refused operation is reported and the job does not run: the file keeps the
+	// name its bytes fit.
+	if let Ok(policy) = shared.policies.policy(root, reported.parent().unwrap_or(root)).as_ref() {
+		let problems = policy.apply(&mut resolved);
+
+		if !problems.is_empty() {
+			eprintln!("retype: {}: {problems}", reported.display());
+			return None;
+		}
+	}
 
 	Some(Prepared {
 		stem: stem.to_string(),

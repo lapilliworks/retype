@@ -16,7 +16,22 @@ pub fn run(state_dir: &Path, directories: &[String], recursive: bool, json: bool
 		return list(state_dir, json);
 	}
 
+	let mut refused = false;
+
 	for directory in directories {
+		// A directory can take itself out of use, and policy beats state: registering it
+		// anyway would be undone the next time the file is read, `docs/config.md` §12.
+		let policy = retype_core::policy::Policy::open(Path::new(directory))?;
+
+		if policy.paused {
+			eprintln!(
+				"retype: E_WATCH_PAUSED_BY_POLICY: {} sets paused = true, so {directory} stays unwatched",
+				policy.path.display()
+			);
+			refused = true;
+			continue;
+		}
+
 		let registration = watches::register(state_dir, Path::new(directory), recursive)?;
 
 		if json {
@@ -38,7 +53,10 @@ pub fn run(state_dir: &Path, directories: &[String], recursive: bool, json: bool
 		}
 	}
 
-	Ok(ExitCode::SUCCESS)
+	Ok(match refused {
+		true => ExitCode::from(3),
+		false => ExitCode::SUCCESS,
+	})
 }
 
 pub fn unwatch(state_dir: &Path, directories: &[String], json: bool) -> Result<ExitCode> {
@@ -100,30 +118,14 @@ fn describe(recursive: bool) -> &'static str {
 	}
 }
 
-/// What the directory's policy file allows, `docs/config.md` §9. A directory
-/// with none converts everything it can.
+/// What the directory's policy file allows, `docs/config.md` §12. A directory with
+/// none converts everything it can.
 fn summary(directory: &Path) -> String {
-	let Ok(text) = std::fs::read_to_string(directory.join(".retype.toml")) else {
-		return "all files".to_string();
-	};
-
-	match text
-		.parse::<toml::Table>()
-		.ok()
-		.and_then(|table| table.get("patterns").and_then(toml::Value::as_array).cloned())
-	{
-		Some(patterns) => {
-			let patterns: Vec<String> = patterns
-				.iter()
-				.filter_map(|pattern| pattern.as_str().map(str::to_string))
-				.collect();
-
-			match patterns.is_empty() {
-				true => "all files".to_string(),
-				false => patterns.join(" "),
-			}
-		}
-		None => "all files".to_string(),
+	match retype_core::policy::Policy::open(directory) {
+		Ok(policy) if policy.paused => "paused by its policy".to_string(),
+		Ok(policy) if policy.patterns.is_empty() => "all files".to_string(),
+		Ok(policy) => policy.patterns.join(" "),
+		Err(error) => format!("unreadable policy: {error}"),
 	}
 }
 

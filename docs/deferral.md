@@ -228,6 +228,4 @@ part of this document. Deferral is complete without it: the timer fires, and
 - Notification delivery, capability tiers and click routing
 - `retype://job/<id>` actions beyond `resolve` and `cancel`
 - The editor's view of a parked job
-- `confirm = false` in a directory file, which waits on directory policy files being read
-  at all, and which may suppress the cost trigger and nothing else, §5
 

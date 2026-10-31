@@ -75,6 +75,7 @@ impl Server {
 			recent: Default::default(),
 			dropped: AtomicU64::new(0),
 			events: Mutex::new(crate::daemon::events::Events::default()),
+			policies: Default::default(),
 		});
 
 		let pool = crate::daemon::queue::Pool::start(Arc::clone(&shared), crate::daemon::queue::runners());

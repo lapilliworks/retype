@@ -19,6 +19,7 @@ pub mod job;
 pub mod journal;
 pub mod output;
 pub mod plan;
+pub mod policy;
 pub mod print;
 pub mod provenance;
 pub mod registry;

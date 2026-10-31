@@ -150,15 +150,6 @@ impl Policy {
 			false => self.above_without_undo,
 		}
 	}
-
-	/// Whether a job of this cost is deferred at all, before reasons and tokens,
-	/// `docs/deferral.md` §3.
-	pub fn defers(&self, cost: Duration, has_undo: bool) -> bool {
-		match self.mode {
-			Mode::Now => false,
-			Mode::Ask => cost > self.threshold(has_undo),
-		}
-	}
 }
 
 #[cfg(test)]
@@ -182,27 +173,6 @@ mod tests {
 
 		assert_eq!(policy.threshold(true), Duration::from_secs(10));
 		assert_eq!(policy.threshold(false), Duration::from_secs(2));
-	}
-
-	#[test]
-	fn now_mode_defers_nothing() {
-		let policy = Policy {
-			mode: Mode::Now,
-			..Policy::default()
-		};
-
-		assert!(!policy.defers(Duration::from_secs(3_600), true));
-	}
-
-	#[test]
-	fn the_threshold_is_crossed_strictly() {
-		let policy = Policy::default();
-
-		assert!(
-			!policy.defers(Duration::from_secs(10), true),
-			"at the threshold it runs"
-		);
-		assert!(policy.defers(Duration::from_millis(10_001), true));
 	}
 
 	#[test]

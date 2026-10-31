@@ -16,7 +16,7 @@ What the daemon watches, what it ignores, and what it does at startup.
 
 ## 2. Directory configuration lookup
 
-`.retype.toml` is resolved by **nearest ancestor**, starting at the file's own directory and walking up no further than the registration root. Results are cached per directory, and the cache is invalidated by the configuration watcher rather than by re-scanning.
+`.retype.toml` is resolved by **nearest ancestor**, starting at the file's own directory and walking up no further than the registration root. Results are cached per directory and re-read when the file's modification time moves, which is the configuration watcher's job done without a second watcher; `docs/config.md` §12 says which keys are read.
 
 A file outside every registration root is never converted, so it has no directory configuration.
 

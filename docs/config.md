@@ -366,9 +366,17 @@ enabled = false
 preset = 'headshot'
 ```
 
-`deny` rejects an operation in that directory with `E_INAPPLICABLE`. `limits` clamps a parameter. `confirm = false` suppresses deferral for cheap jobs.
+| Key | Read today | Meaning |
+|---|---|---|
+| `patterns` | yes | Globs a file must match to be considered. A pattern without `/` matches the file name; one with it matches the path relative to this directory. Empty means everything |
+| `deny` | yes | Operations refused here, by name or alias. A job that asks for one is `E_INAPPLICABLE` and parks, `docs/deferral.md` |
+| `limits` | yes | Ceilings for a parameter, by operation name. A number is clamped and the derived name says the clamped value; a class with no ceiling is left alone |
+| `confirm` | yes | `false` suppresses the cost confirmation in this directory, and not the one that exists because a source would be destroyed with no record, `docs/deferral.md` §5 |
+| `paused` | yes | Whether the directory is watched at all. `retype watch` refuses it with `E_WATCH_PAUSED_BY_POLICY` naming the file, rather than accepting a registration that the next read would undo |
+| `debounce_ms` | no | How long a batch waits. Collection is per root rather than per directory, so this waits on a batch that can be split |
+| `[conversions]` | no | Named conversions with presets. A rule engine of its own |
 
-`paused = true` makes the directory unwatched by policy, and policy beats state: a later `retype watch --resume <dir>` is refused with `E_WATCH_PAUSED_BY_POLICY` naming the file, rather than being accepted and then quietly undone the next time the file is read.
+A file is read when it changes rather than on a second watcher: the answer is cached per directory and re-read when its modification time moves, which is the same answer `docs/watch.md` §2 asks for with less machinery.
 
 ## 13. Validation
 
