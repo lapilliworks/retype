@@ -280,9 +280,14 @@ impl Pool {
 	pub fn wait_until_idle(&self, timeout: std::time::Duration) {
 		let deadline = std::time::Instant::now() + timeout;
 
-		while !self.inflight.ids().is_empty() && std::time::Instant::now() < deadline {
+		while !self.idle() && std::time::Instant::now() < deadline {
 			thread::sleep(std::time::Duration::from_millis(20));
 		}
+	}
+
+	/// Whether nothing is running, which is what a draining stop is waiting for.
+	pub fn idle(&self) -> bool {
+		self.inflight.ids().is_empty()
 	}
 
 	/// Stop a job because a later rename replaced it, `docs/state.md` §5.3.

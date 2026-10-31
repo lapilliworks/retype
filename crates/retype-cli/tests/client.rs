@@ -26,7 +26,7 @@ impl Running {
 
 		let mut server = Server::open(dir.path()).unwrap();
 		server.set_endpoint(socket.to_str().unwrap());
-		let handle = std::thread::spawn(move || serve(listener, server).unwrap());
+		let handle = std::thread::spawn(move || serve(listener, &mut server).unwrap());
 
 		Self {
 			dir,

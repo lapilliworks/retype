@@ -18,6 +18,7 @@ pub mod queue;
 pub mod reconcile;
 pub mod resume;
 mod server;
+pub mod signals;
 pub mod supervision;
 pub mod timer;
 pub mod watcher;
@@ -66,7 +67,14 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 		eprintln!("retype: daemon listening on {endpoint} (pid {})", std::process::id());
 	}
 
-	let result = serve(listener, server);
+	// Before the loop that watches for them, so a stop signal is a drain rather than a
+	// death, `docs/ipc.md` §2.
+	signals::install();
+
+	let result = serve(listener, &mut server);
+
+	// A stop drains; a second signal does not wait for a twenty minute transcode.
+	signals::drain(&mut server);
 
 	timer.0.store(true, std::sync::atomic::Ordering::Relaxed);
 	let _ = timer.1.join();
@@ -111,6 +119,8 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	}
 
 	let result = pipe::serve(&name, &mut server);
+
+	signals::drain(&mut server);
 
 	timer.0.store(true, std::sync::atomic::Ordering::Relaxed);
 	let _ = timer.1.join();

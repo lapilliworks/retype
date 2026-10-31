@@ -22,8 +22,8 @@ impl Daemon {
 		let dir = tempfile::tempdir().unwrap();
 		let socket = dir.path().join("daemon.sock");
 		let listener = UnixListener::bind(&socket).unwrap();
-		let server = Server::open(dir.path()).unwrap();
-		let handle = std::thread::spawn(move || serve(listener, server).unwrap());
+		let mut server = Server::open(dir.path()).unwrap();
+		let handle = std::thread::spawn(move || serve(listener, &mut server).unwrap());
 
 		Self {
 			dir,

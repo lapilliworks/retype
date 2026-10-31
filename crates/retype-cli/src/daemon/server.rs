@@ -117,6 +117,11 @@ impl Server {
 		Arc::clone(&self.pool)
 	}
 
+	/// Whether the running jobs have finished, `docs/ipc.md` §2.
+	pub fn idle(&self) -> bool {
+		self.pool.idle()
+	}
+
 	pub fn journal_path(&self) -> PathBuf {
 		match self.shared.journal.lock() {
 			Ok(journal) => journal.path().to_path_buf(),
@@ -603,6 +608,19 @@ impl Server {
 			}
 		}
 
+		let cancelled = self.stop(now);
+
+		Ok(Response::ok(
+			request.id,
+			json!({"stopping": true, "cancelled": cancelled}),
+		)?)
+	}
+
+	/// Stop the way `daemon stop` does, and answer with what was cancelled.
+	///
+	/// Shared with the signal path, which cannot send itself a request: a `SIGTERM` is a
+	/// stop request whether or not a client made it, `docs/ipc.md` §2.
+	pub fn stop(&mut self, now: bool) -> usize {
 		let cancelled = match now {
 			true => {
 				let cancelled = self.cancel_everything();
@@ -619,10 +637,7 @@ impl Server {
 		};
 
 		self.stopped = true;
-		Ok(Response::ok(
-			request.id,
-			json!({"stopping": true, "cancelled": cancelled}),
-		)?)
+		cancelled
 	}
 
 	/// Stop every job and record the ones that never started, which is what a client
@@ -779,11 +794,47 @@ impl Server {
 
 /// Accept connections until the daemon is asked to stop.
 #[cfg(unix)]
-pub fn serve(listener: std::os::unix::net::UnixListener, mut server: Server) -> Result<()> {
+pub fn serve(listener: std::os::unix::net::UnixListener, server: &mut Server) -> Result<()> {
 	use std::io::BufReader;
 
-	for stream in listener.incoming() {
-		let mut stream = stream?;
+	// Polled rather than blocked, so a signal can be noticed while nothing is
+	// connecting. Fifty milliseconds of latency on a stop is not a stop that waits.
+	listener.set_nonblocking(true)?;
+
+	let mut signals = crate::daemon::signals::Seen::now();
+
+	loop {
+		let mut stream = match listener.accept() {
+			Ok((stream, _)) => stream,
+			Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+				let (asked, seen) = signals.asked();
+				signals = seen;
+
+				match asked {
+					crate::daemon::signals::Asked::Nothing => {}
+					crate::daemon::signals::Asked::Drain => {
+						server.stop(false);
+						eprintln!("retype: stopping after the running jobs finish; a second signal cancels them");
+					}
+					crate::daemon::signals::Asked::Now => {
+						// The waiting is done in `signals::drain`, which is where the
+						// escalation is decided; here the queue is emptied and the loop
+						// ends.
+						server.stop(true);
+					}
+				}
+
+				if server.stopped() {
+					break;
+				}
+
+				std::thread::sleep(crate::daemon::signals::POLL);
+				continue;
+			}
+			Err(error) => return Err(error.into()),
+		};
+
+		stream.set_nonblocking(false)?;
 
 		// The state directory's modes are the boundary; this is the second lock, for
 		// the day a backup or a stray `chmod` moved them, `docs/ipc.md` §4.

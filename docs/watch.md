@@ -110,7 +110,13 @@ Out of scope, per the Deferred table. The daemon detects an obvious network moun
 
 Event delivery on network mounts is unreliable in both directions, and identity is often synthetic. A user who registers a network path is choosing to rely on the `From` and `To` pair.
 
-## 10. Saying what happened
+## 10. Stopping
+
+A `SIGTERM` or `SIGINT` is a stop request, not an ending: the daemon stops accepting work and lets the running jobs finish before it exits, `docs/ipc.md` §2. A second signal cancels them instead, which is the difference between a supervisor stopping a unit and a person who wants it gone.
+
+The signal handler counts and nothing else, because that is all a handler may safely do; the accept loop polls for the count and the wait for the running jobs watches it too. When the daemon does exit it removes its socket and its endpoint file, so a missing endpoint means no daemon rather than an unknown one.
+
+## 11. Saying what happened
 
 The daemon notifies once per batch, when its last job settles, and the notification says what the batch produced rather than what it tried to, `docs/config.md` §17.
 
