@@ -245,3 +245,15 @@ The command runs the conversion each pair declares, records the tier, the backen
 `--write` reads that manifest, records what this run earned and writes it back; the file is a release artifact, not state, so the path is the caller's. `--manifest` compares against one without rewriting it. `--render` replaces the table between the `claims` markers in a document, which is how `docs/fidelity.md` §8 is filled.
 
 A claim that declares `exact` and is `unverified` exits 4 rather than silently downgrading a promise of no loss. Nothing earned at all exits 4 for the same reason.
+
+## 11. Support report
+
+```
+retype doctor --report [<path>]
+```
+
+One file, written locally, that a user can read and send: the build and every schema identifier it reads, the machine, the configuration in use with its contents, the tool table with each build's fingerprint, the watch registrations, what the state directory holds, the last forty journal records and the last three job logs.
+
+It is generated on the machine and goes nowhere unless the user sends it. The header says the file holds the configuration and the last records, because a log can hold anything a converter printed. Without a path it writes `retype-report-<UTC timestamp>.txt` in the current directory and says where it went.
+
+`--report` cannot be combined with `--emit` or `--write`: a report and a pinning snippet answer different questions, and one command that wrote both would write a file nobody asked for.

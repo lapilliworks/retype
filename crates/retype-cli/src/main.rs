@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use retype_cli::error::Result;
-use retype_cli::{bench, client, config, daemon, doctor, explain, fidelity, init, list, state, verbose, why};
+use retype_cli::{bench, client, config, daemon, doctor, explain, fidelity, init, list, report, state, verbose, why};
 use serde_json::Value;
 
 /// Automatic file format conversion on rename.
@@ -190,6 +190,10 @@ enum Command {
 		/// Write that snippet to the user configuration, which must be absent or empty
 		#[arg(long)]
 		write: bool,
+
+		/// Write a support report, here or to this path
+		#[arg(long, value_name = "PATH", num_args = 0..=1)]
+		report: Option<Option<PathBuf>>,
 
 		/// Require a specific tool, repeatable. Implies --check
 		#[arg(long = "require", value_name = "TOOL")]
@@ -517,9 +521,43 @@ fn main() -> ExitCode {
 		check,
 		emit,
 		write,
+		report,
 		require,
 	} = &cli.command
 	{
+		// A report and a snippet answer different questions, and one command that
+		// did both would write a file nobody asked for.
+		if report.is_some() && (*emit || *write) {
+			eprintln!("retype: --report cannot be combined with --emit or --write");
+			return ExitCode::from(2);
+		}
+
+		if let Some(path) = report {
+			let code = state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
+				config::load().and_then(|registry| {
+					config::report_warnings(&registry);
+
+					let written = report::write(&registry, &state_dir, path.as_deref())?;
+
+					if cli.json {
+						println!("{}", serde_json::json!({"path": written.display().to_string()}));
+					} else if !cli.quiet {
+						eprintln!("retype: wrote {}", written.display());
+					}
+
+					Ok(ExitCode::SUCCESS)
+				})
+			});
+
+			return match code {
+				Ok(code) => code,
+				Err(error) => {
+					eprintln!("retype: {error}");
+					ExitCode::from(error.exit_code())
+				}
+			};
+		}
+
 		let mode = match (emit, write) {
 			(false, false) => doctor::Emit::None,
 			(true, false) => doctor::Emit::Stdout,

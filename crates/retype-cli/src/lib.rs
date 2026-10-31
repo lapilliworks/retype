@@ -17,6 +17,7 @@ pub mod init;
 pub mod jobs;
 pub mod list;
 pub mod matrix;
+pub mod report;
 pub mod state;
 pub mod undo;
 pub mod verbose;
