@@ -187,7 +187,7 @@ retype why <path>
 
 Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the candidates printed.
 
-`jobs resolve` acts on a parked job, and `jobs --interactive` walks the parked ones with one key each; both are specified in `docs/deferral.md` §7, which is a draft until a later release begins.
+`jobs resolve` acts on a parked job, and `jobs --interactive` walks the parked ones with one key each; both are specified in `docs/deferral.md` §8, which is a draft until a later release begins.
 
 `jobs logs` prints what the tool printed. The full output is in `<state>/logs/<id>.log`, which is written as it arrives, and the journal keeps the last four kilobytes, because a converter can print megabytes while a failure needs the last ten lines. A job whose log file is gone answers from the record instead, and says which it used. `--follow` prints what arrives while the job runs and stops when the job reaches a terminal state, so it ends by itself rather than waiting to be interrupted.
 
