@@ -66,3 +66,40 @@ impl Error {
 		}
 	}
 }
+
+/// "Cannot be done here" and "cannot be done" are different answers,
+/// `docs/cli.md` §7. The categories are the ones `docs/errors.md` gives each code,
+/// restated here because a job carries its code as a string across the wire and the
+/// client is what turns it into a status.
+pub fn exit_code(code: &retype_core::error::Code) -> u8 {
+	use retype_core::error::Code;
+
+	match code {
+		// The environment refused, not the request.
+		Code::ToolMissing
+		| Code::ToolVersion
+		| Code::ToolFailed
+		| Code::ToolTimeout
+		| Code::JobCancelled
+		| Code::JobInterrupted
+		| Code::IoLocked => 4,
+		// Something to retry: the filesystem or the moment.
+		Code::IoFailed
+		| Code::IoPermission
+		| Code::IoSpace
+		| Code::IoNotFound
+		| Code::IoExists
+		| Code::IoCorruptJournal => 5,
+		// A daemon that cannot be reached is its own code, handled before this.
+		Code::IpcUnavailable | Code::IpcVersion | Code::IpcHandshake | Code::IpcAuth => 6,
+		_ => 3,
+	}
+}
+
+/// The same mapping, for a code that arrived as the string a job records.
+pub fn exit_code_of(raw: &str) -> u8 {
+	match retype_core::error::Code::parse(raw) {
+		Some(code) => exit_code(&code),
+		None => 4,
+	}
+}

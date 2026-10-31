@@ -14,12 +14,11 @@ use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::Duration;
 
-use retype_core::error::Code;
 use retype_core::registry::Registry;
 use serde_json::Value;
 
 use crate::client;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, exit_code, exit_code_of};
 
 pub struct Request<'a> {
 	pub input: &'a str,
@@ -181,40 +180,5 @@ fn wait(state_dir: &Path, allow_spawn: bool, id: &str) -> Result<Value> {
 		}
 
 		sleep(POLL);
-	}
-}
-
-/// "Cannot be done here" and "cannot be done" are different answers,
-/// `docs/cli.md` §7. The categories are the ones `docs/errors.md` gives each
-/// code, restated here because a job carries its code as a string across the
-/// wire and the client is what turns it into a status.
-fn exit_code(code: &Code) -> u8 {
-	match code {
-		// The environment refused, not the request.
-		Code::ToolMissing
-		| Code::ToolVersion
-		| Code::ToolFailed
-		| Code::ToolTimeout
-		| Code::JobCancelled
-		| Code::JobInterrupted
-		| Code::IoLocked => 4,
-		// Something to retry: the filesystem or the moment.
-		Code::IoFailed
-		| Code::IoPermission
-		| Code::IoSpace
-		| Code::IoNotFound
-		| Code::IoExists
-		| Code::IoCorruptJournal => 5,
-		// A daemon that cannot be reached is its own code, handled before this.
-		Code::IpcUnavailable | Code::IpcVersion | Code::IpcHandshake | Code::IpcAuth => 6,
-		_ => 3,
-	}
-}
-
-/// The same mapping, for a code that arrived as the string a job records.
-fn exit_code_of(code: &str) -> u8 {
-	match Code::parse(code) {
-		Some(code) => exit_code(&code),
-		None => 4,
 	}
 }

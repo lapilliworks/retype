@@ -451,6 +451,71 @@ impl Server {
 		}
 	}
 
+	/// Stop, unless a supervisor would only start us again.
+	///
+	/// `now` cancels everything instead of letting it drain: a stop that waits for a
+	/// twenty minute transcode is not a stop.
+	fn shutdown(&mut self, request: &Request) -> Result<Response> {
+		let force = request
+			.params
+			.get("force")
+			.and_then(serde_json::Value::as_bool)
+			.unwrap_or(false);
+		let now = request
+			.params
+			.get("now")
+			.and_then(serde_json::Value::as_bool)
+			.unwrap_or(false);
+
+		if !force {
+			if let Some(supervisor) = crate::daemon::supervision::supervisor() {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(
+						Code::IpcSupervised,
+						format!(
+							"this daemon was started by {supervisor}, which would start it again; \
+							 stop the {supervisor} unit, or pass --force"
+						),
+					),
+				));
+			}
+		}
+
+		let cancelled = match now {
+			true => {
+				let cancelled = self.cancel_everything();
+
+				// The runners write the cancellation record after the tool is killed, and
+				// a process that exits first would leave the job saying `running` for ever.
+				if cancelled > 0 {
+					self.pool.wait_until_idle(std::time::Duration::from_secs(5));
+				}
+
+				cancelled
+			}
+			false => 0,
+		};
+
+		self.stopped = true;
+		Ok(Response::ok(
+			request.id,
+			json!({"stopping": true, "cancelled": cancelled}),
+		)?)
+	}
+
+	/// Stop every job and record the ones that never started, which is what a client
+	/// would otherwise have to do one at a time, `jobs.cancel` per id.
+	fn cancel_everything(&self) -> usize {
+		let (running, waiting) = self.pool.stop_all();
+
+		for work in &waiting {
+			self.record_cancelled(&work.id, work);
+		}
+
+		running.len() + waiting.len()
+	}
+
 	/// What followed `since`, or `E_IPC_RESYNC` when the window no longer holds it,
 	/// `docs/ipc.md` §7.
 	fn events(&self, request: &Request) -> Result<Response> {
@@ -555,6 +620,7 @@ impl Server {
 					"journal": self.journal_path().display().to_string(),
 					"dropped": self.shared.dropped.load(Ordering::Relaxed),
 					"endpoint": self.endpoint,
+					"supervised": crate::daemon::supervision::supervisor(),
 				}),
 			)?,
 			"jobs.list" => Response::ok(
@@ -571,10 +637,7 @@ impl Server {
 			"jobs.submit" => self.submit(request)?,
 			"jobs.cancel" => self.cancel(request)?,
 			"jobs.resume" => self.resume(request)?,
-			"shutdown" => {
-				self.stopped = true;
-				Response::ok(request.id, json!({"stopping": true}))?
-			}
+			"shutdown" => self.shutdown(request)?,
 			other => Response::error(
 				request.id,
 				WireError::new(Code::IpcMethod, format!("no method '{other}'"))

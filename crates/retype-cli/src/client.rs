@@ -137,6 +137,14 @@ pub fn describe_status(status: &Value) -> Vec<(String, String)> {
 		("jobs".to_string(), field("jobs")),
 		("journal".to_string(), field("journal")),
 		("endpoint".to_string(), field("endpoint")),
+		(
+			"supervised".to_string(),
+			match &status["supervised"] {
+				Value::Null => "no".to_string(),
+				Value::String(name) => name.clone(),
+				other => other.to_string(),
+			},
+		),
 	]
 }
 

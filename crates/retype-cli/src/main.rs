@@ -252,7 +252,15 @@ enum DaemonAction {
 	/// Start a daemon in the background and wait until it answers
 	Start,
 	/// Stop the running daemon
-	Stop,
+	Stop {
+		/// Cancel what is running instead of letting it drain
+		#[arg(long)]
+		now: bool,
+
+		/// Stop even when a supervisor would start it again
+		#[arg(long)]
+		force: bool,
+	},
 	/// Report what the running daemon is doing
 	Status,
 }
@@ -581,7 +589,7 @@ fn main() -> ExitCode {
 
 	let outcome = match &cli.command {
 		Command::Daemon { action, detached } => match action {
-			None => daemon::run(cli.state_dir.clone(), !detached),
+			None => daemon::run(cli.state_dir.clone(), !detached).map(|()| ExitCode::SUCCESS),
 			Some(action) => control(&cli, action),
 		},
 		Command::Undo { .. }
@@ -601,7 +609,7 @@ fn main() -> ExitCode {
 	};
 
 	match outcome {
-		Ok(()) => ExitCode::SUCCESS,
+		Ok(code) => code,
 		Err(error) => {
 			eprintln!("retype: {error}");
 			ExitCode::from(error.exit_code())
@@ -659,7 +667,7 @@ fn announce(config: Option<&std::path::Path>) {
 	}
 }
 
-fn control(cli: &Cli, action: &DaemonAction) -> Result<()> {
+fn control(cli: &Cli, action: &DaemonAction) -> Result<ExitCode> {
 	let state_dir = retype_cli::state::resolve(cli.state_dir.clone())?;
 
 	match action {
@@ -667,33 +675,51 @@ fn control(cli: &Cli, action: &DaemonAction) -> Result<()> {
 			if let Ok(mut running) = client::connect(&state_dir) {
 				let status = running.call_without_params("status")?;
 				print_status(&status, cli.json);
-				return Ok(());
+				return Ok(ExitCode::SUCCESS);
 			}
 
 			let log = client::spawn_detached(&state_dir)?;
 			let mut client = client::wait_for(&state_dir, &log)?;
 			let status = client.call_without_params("status")?;
 			print_status(&status, cli.json);
-			Ok(())
+			Ok(ExitCode::SUCCESS)
 		}
-		DaemonAction::Stop => {
+		DaemonAction::Stop { now, force } => {
 			let mut client = client::connect_or_spawn(&state_dir, !cli.no_spawn)?;
-			client.call_without_params("shutdown")?;
+
+			let answer = match client.call("shutdown", serde_json::json!({"now": now, "force": force})) {
+				Ok(answer) => answer,
+				// A refusal is an answer, not a transport failure: the daemon is still
+				// there and said why, so the message and the code are the daemon's.
+				Err(retype_ipc::ClientError::Rpc(error)) => {
+					eprintln!("retype: {}: {}", error.code, error.message);
+					return Ok(ExitCode::from(retype_cli::error::exit_code(&error.code)));
+				}
+				Err(other) => return Err(other.into()),
+			};
 
 			if !client::wait_for_stop(&state_dir, std::time::Duration::from_secs(3)) {
 				return Err(retype_cli::error::Error::DaemonUnavailable);
 			}
 
-			if !cli.json {
-				println!("stopped");
+			let cancelled = answer.get("cancelled").and_then(Value::as_u64).unwrap_or(0);
+
+			if cli.json {
+				println!("{answer}");
+			} else {
+				match cancelled {
+					0 => println!("stopped"),
+					count => println!("stopped, {} job(s) cancelled", count),
+				}
 			}
-			Ok(())
+
+			Ok(ExitCode::SUCCESS)
 		}
 		DaemonAction::Status => {
 			let mut client = client::connect_or_spawn(&state_dir, !cli.no_spawn)?;
 			let status = client.call_without_params("status")?;
 			print_status(&status, cli.json);
-			Ok(())
+			Ok(ExitCode::SUCCESS)
 		}
 	}
 }

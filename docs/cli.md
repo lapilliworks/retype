@@ -13,7 +13,7 @@ retype <command> [arguments] [flags]
 | `convert <input> <intent>` | One-shot conversion. Alias `c` |
 | `watch [<dir>...]` | Register directories, or list registrations with no arguments |
 | `unwatch <dir>...` | Deregister directories |
-| `daemon [start\|stop\|status]` | Foreground by default |
+| `daemon [start\|stop [--now] [--force]\|status]` | Foreground by default. `stop` drains, `--now` cancels, `--force` overrides a supervisor's refusal |
 | `jobs list\|get\|cancel\|logs` | Queue inspection and control |
 | `undo <id\|--last>` | Reverse one job |
 | `why <path>` | Explain a file's conversion |

@@ -100,6 +100,10 @@ Request timeout defaults to 5 s. No method blocks on work that can outlive it.
 | Live | `events.subscribe` |
 | Config | `config.reload` |
 
+`shutdown` reads `force` and `now`. Without `force`, a daemon a supervisor started refuses with `E_IPC_SUPERVISED` and names the supervisor, §2. With `now`, running jobs are cancelled and waiting ones are recorded as cancelled, the runners are given a moment to write those records, and the answer carries how many were stopped.
+
+`status` reports `supervised`: `systemd`, `launchd`, or null, read from the environment the supervisor sets rather than from the process tree.
+
 `jobs.submit` takes `mode`:
 
 | Mode | Use | Admission |

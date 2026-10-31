@@ -148,6 +148,14 @@ impl Queue {
 		inner.waiting.remove(index)
 	}
 
+	/// Everything still waiting, taken out in one step so a stop cannot race a runner.
+	pub fn drain(&self) -> Vec<Work> {
+		match self.inner.lock() {
+			Ok(mut inner) => inner.waiting.drain(..).collect(),
+			Err(_) => Vec::new(),
+		}
+	}
+
 	/// The ids waiting to start, for prefix resolution.
 	pub fn ids(&self) -> Vec<JobId> {
 		self.inner
@@ -235,6 +243,36 @@ impl Pool {
 
 	pub fn dropped(&self) -> u64 {
 		self.queue.dropped()
+	}
+
+	/// Stop everything, waiting and running alike, which is what `daemon stop --now`
+	/// means. The work the waiting jobs stood for is returned so the
+	/// caller can record each one as cancelled.
+	pub fn stop_all(&self) -> (Vec<JobId>, Vec<Work>) {
+		let waiting = self.queue.drain();
+
+		let running = match self.inflight.tokens.lock() {
+			Ok(tokens) => tokens
+				.iter()
+				.map(|(id, token)| {
+					token.cancel();
+					id.clone()
+				})
+				.collect(),
+			Err(_) => Vec::new(),
+		};
+
+		(running, waiting)
+	}
+
+	/// Wait until nothing is running, so a stop that cancelled something has the
+	/// records written before the process ends.
+	pub fn wait_until_idle(&self, timeout: std::time::Duration) {
+		let deadline = std::time::Instant::now() + timeout;
+
+		while !self.inflight.ids().is_empty() && std::time::Instant::now() < deadline {
+			thread::sleep(std::time::Duration::from_millis(20));
+		}
 	}
 
 	/// Stop a job because a later rename replaced it, `docs/state.md` §5.3.

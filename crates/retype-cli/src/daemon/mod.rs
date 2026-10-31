@@ -13,6 +13,7 @@ mod pipe;
 pub mod queue;
 pub mod resume;
 mod server;
+pub mod supervision;
 pub mod watcher;
 
 pub use server::Server;
