@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use retype_core::correlate::Correlator;
 use retype_core::error::Code;
 use retype_core::execute::Cancellation;
-use retype_core::job::{Job, JobError, JobState, Output, OutputState, Source, now_ms};
+use retype_core::job::{Job, JobError, JobId, JobState, Output, OutputState, Source, now_ms};
 use retype_core::journal::Journal;
 use retype_core::plan::{self, Plan};
 use retype_core::registry::Registry;
@@ -48,6 +48,11 @@ pub struct Shared {
 	/// Each directory's `.retype.toml`, read once per change rather than once per file,
 	/// `docs/config.md` §12.
 	pub policies: retype_core::policy::Cache,
+	/// The jobs of each rename batch, so one notification answers for all of them,
+	///.
+	pub batches: crate::daemon::batches::Batches,
+	/// How this machine is told what happened, or nothing when the user turned it off.
+	pub notifier: Option<crate::notify::Channel>,
 	/// This install's identity, recorded with every job and undo record.
 	pub machine: String,
 	/// Where the state lives, which is where undo records go.
@@ -277,6 +282,13 @@ fn spawn_worker(
 					false => supersede(shared.as_ref(), pool.as_ref(), &earlier),
 				};
 
+				// Registered before anything is published, because the first thing
+				// published may be the last thing this batch does: a parked job settles
+				// immediately.
+				if let Some(batch) = parked_batch.as_deref() {
+					shared.batches.open(batch, &id);
+				}
+
  // A later rename replaces a parked job for the same file.
 				crate::daemon::park::superseded(shared.as_ref(), &source);
 
@@ -291,9 +303,15 @@ fn spawn_worker(
 					policy,
 				) {
 					crate::daemon::park::Verdict::Run => {}
-					crate::daemon::park::Verdict::Parked
-					| crate::daemon::park::Verdict::Repaired
-					| crate::daemon::park::Verdict::Ignore => continue,
+					crate::daemon::park::Verdict::Parked | crate::daemon::park::Verdict::Repaired => continue,
+					crate::daemon::park::Verdict::Ignore => {
+						// Not a job at all, so the batch must not wait for it.
+						if let Some(batch) = parked_batch.as_deref() {
+							shared.batches.forget(batch, &id);
+						}
+
+						continue;
+					}
 				}
 
 				let work = crate::daemon::queue::Work {
@@ -849,6 +867,50 @@ pub fn publish(shared: &Shared, job: &Job) {
 			None => jobs.push(job.clone()),
 		}
 	}
+
+	// The last job of a batch is the one that speaks for it.
+	if is_settled(job.state) {
+		if let Some(ids) = shared.batches.finish(&job.id) {
+			announce(shared, &ids);
+		}
+	}
+}
+
+/// Whether a job has reached a state a notification could describe. `running` and
+/// `queued` have not.
+fn is_settled(state: JobState) -> bool {
+	!matches!(state, JobState::Queued | JobState::Running)
+}
+
+/// Say what a finished batch did, without holding a lock while saying it.
+fn announce(shared: &Shared, ids: &[JobId]) {
+	let Some(channel) = shared.notifier else {
+		return;
+	};
+
+	let jobs: Vec<Job> = match shared.jobs.lock() {
+		Ok(jobs) => jobs.iter().filter(|job| ids.contains(&job.id)).cloned().collect(),
+		Err(_) => return,
+	};
+
+	let Some(message) = crate::notify::Message::of(&jobs, shared.registry.undo().enabled) else {
+		return;
+	};
+
+	// Undo runs in the same thread as the wait for the button, and the state directory
+	// is all it needs: the journal is a cache of history, the records are the truth.
+	let state_dir = shared.state_dir.clone();
+
+	std::thread::spawn(move || {
+		channel.send(&message, |ids| {
+			for id in ids {
+				match retype_core::undo::Store::open(&state_dir).restore(id) {
+					Ok(_) => eprintln!("retype: undid {id}"),
+					Err(error) => eprintln!("retype: cannot undo {id}: {error}"),
+				}
+			}
+		});
+	});
 }
 
 /// The record a job writes before it starts, so a client can see a job that is

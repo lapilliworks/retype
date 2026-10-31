@@ -105,3 +105,19 @@ A pause is state; `paused = true` in a directory file is policy. Policy wins, be
 Out of scope, per the Deferred table. The daemon detects an obvious network mount at registration, warns once, and does not refuse the registration, because a warning that turns out to be wrong is better than a refusal that blocks a legitimate setup.
 
 Event delivery on network mounts is unreliable in both directions, and identity is often synthetic. A user who registers a network path is choosing to rely on the `From` and `To` pair.
+
+## 10. Saying what happened
+
+The daemon notifies once per batch, when its last job settles, and the notification says what the batch produced rather than what it tried to, `docs/config.md` §17.
+
+Capability is a property of the platform, in three tiers:
+
+| Tier | How | Where |
+|---|---|---|
+| Actions | `notify-send --wait --action` | Linux, with a session bus and a libnotify build that has actions |
+| Plain | `notify-send` | Linux, with a session bus |
+| Log | a line on the daemon's own stderr | everywhere else, including Windows and macOS until the signed notifier bundle exists |
+
+The tier is decided once at startup, because the session is either there or it is not. A daemon with no notifier still converts: the tier is about being told, never about the work.
+
+Undo is the action, and it runs from the daemon rather than through a URI handler, because `notify-send --wait` answers on its own standard output and there is nothing else to listen to. The Windows toast and the macOS User Notifications centre need an AppUserModelID and a signed bundle; that bundle is the first signed artifact of a later release, not a library call.

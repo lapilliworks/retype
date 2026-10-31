@@ -303,6 +303,8 @@ pub struct Registry {
 	bench: Bench,
 	/// When a job is parked instead of run, `docs/config.md` §10.
 	deferral: crate::deferral::Policy,
+	/// Whether the daemon says what it did, `docs/config.md` §17.
+	notify: crate::notify::Policy,
 }
 
 impl Registry {
@@ -685,6 +687,18 @@ impl Registry {
 			}
 		}
 
+		let mut notify = crate::notify::Policy::default();
+
+		if let Some(entry) = &document.notify {
+			if let Some(enabled) = entry.enabled {
+				notify.enabled = enabled;
+			}
+
+			if let Some(actions) = entry.actions {
+				notify.actions = actions;
+			}
+		}
+
 		let bench = match &document.bench {
 			Some(entry) => {
 				problems.extend(validate_bench(entry, &formats, &tool_names, label));
@@ -719,6 +733,7 @@ impl Registry {
 			provenance,
 			bench,
 			deferral,
+			notify,
 			warnings: Vec::new(),
 		};
 
@@ -762,6 +777,11 @@ impl Registry {
 	/// When a job is parked instead of run, `docs/config.md` §10.
 	pub fn deferral(&self) -> &crate::deferral::Policy {
 		&self.deferral
+	}
+
+	/// Whether the daemon says what it did, `docs/config.md` §17.
+	pub fn notify(&self) -> crate::notify::Policy {
+		self.notify
 	}
 
 	pub fn preset(&self, name: &str) -> Option<&Preset> {
@@ -1677,6 +1697,8 @@ struct Document {
 	#[serde(default)]
 	deferral: Option<DeferralEntry>,
 	#[serde(default)]
+	notify: Option<NotifyEntry>,
+	#[serde(default)]
 	bench: Option<BenchEntry>,
 }
 
@@ -1692,6 +1714,14 @@ struct BenchEntry {
 struct ProvenanceEntry {
 	#[serde(default)]
 	xattr: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NotifyEntry {
+	#[serde(default)]
+	enabled: Option<bool>,
+	#[serde(default)]
+	actions: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1942,6 +1972,19 @@ mod tests {
 		assert_eq!(policy.above_without_undo, std::time::Duration::from_secs(5));
 		assert_eq!(policy.pause, std::time::Duration::from_secs(600));
 		assert_eq!(policy.repair, crate::deferral::Repair::Convert);
+	}
+
+	#[test]
+	fn the_notification_policy_defaults_on_and_reads_its_knobs() {
+		let registry = Registry::load(HEADER).unwrap();
+
+		assert!(registry.notify().enabled);
+		assert!(registry.notify().actions);
+
+		let registry = Registry::load(&format!("{HEADER}\n[notify]\nenabled = false\nactions = false\n")).unwrap();
+
+		assert!(!registry.notify().enabled);
+		assert!(!registry.notify().actions);
 	}
 
 	#[test]

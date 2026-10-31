@@ -4,6 +4,7 @@
 //! request and answer, and the event ring is read the same way: a client asks for
 //! what followed the last sequence it saw rather than holding a stream open.
 
+pub mod batches;
 pub mod events;
 pub mod immediate;
 mod lock;

@@ -58,7 +58,7 @@ impl Server {
  //: asking needs notifications, which land in. Until
 		// then the answer is the one a user would give when a conversion is waiting.
 		if registry.undo().on_overflow == retype_core::undo::Overflow::Ask {
-			eprintln!("retype: [undo] on_overflow = 'ask' behaves as 'evict' until notifications exist");
+			eprintln!("retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist");
 		}
 
 		// The log directory exists before any job runs, so a tool's output has
@@ -66,6 +66,15 @@ impl Server {
 		std::fs::create_dir_all(state_dir.join("logs"))?;
 
 		let machine = machine::load_or_create(state_dir)?;
+
+		// Decided once, at startup: the session is either there or it is not, and a
+		// daemon that re-asked on every batch would spawn a process to find out.
+		let policy = registry.notify();
+		let notifier = match policy.enabled {
+			true => Some(crate::notify::Channel::detect(policy.actions)),
+			false => None,
+		};
+
 		let shared = Arc::new(Shared {
 			registry,
 			machine: machine.clone(),
@@ -76,6 +85,8 @@ impl Server {
 			dropped: AtomicU64::new(0),
 			events: Mutex::new(crate::daemon::events::Events::default()),
 			policies: Default::default(),
+			batches: Default::default(),
+			notifier,
 		});
 
 		let pool = crate::daemon::queue::Pool::start(Arc::clone(&shared), crate::daemon::queue::runners());

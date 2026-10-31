@@ -17,6 +17,7 @@ pub mod fsx;
 pub mod intent;
 pub mod job;
 pub mod journal;
+pub mod notify;
 pub mod output;
 pub mod plan;
 pub mod policy;

@@ -449,3 +449,22 @@ A seed is a statement about which format a family is sampled in, not a promise t
 ## 16. Versioning
 
 Version identifier: `retype-config-1`, declared at file top level. The key is mandatory in user and directory files and implicit in `builtin.toml`. A file with an unknown major fails to load; a file with a lower major is upgraded through a declared migration when one exists. Keys are never reused for different meanings, and a renamed key stays accepted as an alias for at least one major version.
+
+## 17. Notifications
+
+Host-level, because whether a machine has somewhere to show a notification is a property of the session rather than of a directory.
+
+```toml
+[notify]
+enabled = true
+actions = true
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Whether the daemon says what a batch did. Off is a supported answer: it then says nothing except in its own log |
+| `actions` | `true` | Whether the notification carries an Undo button, on a platform that has buttons |
+
+One notification per rename batch, after its last job settles, so a directory of photographs is one interruption rather than twelve. It says what happened, not what was attempted: `3 converted`, or `1 converted, 1 failed (a.heic: magick is not installed)`, or `1 parked; retype jobs --interactive decides what happens`.
+
+The button is Undo, and it reverses every job of the batch that has a record. Tweak belongs to the editor and to the `retype://` handler, both of which are a later release's later half.
