@@ -195,11 +195,15 @@ fn scan_groups(body: &str, errors: &mut Vec<Error>) -> (Vec<Group>, usize) {
 
 	for (offset, group) in split(body, ',') {
 		if group.trim().is_empty() {
-			errors.push(Error::diagnostic(
-				Code::GroupEmpty,
-				"a group cannot be empty",
-				Span::new(offset, offset + group.len() + 1),
-			));
+			// Point at the separator that made the group empty: the one after it, or
+			// the one before when it is the last group, since a span may not run past
+			// the string it belongs to.
+			let span = match offset + group.len() < body.len() {
+				true => Span::new(offset, offset + group.len() + 1),
+				false => Span::new(offset.saturating_sub(1), offset),
+			};
+
+			errors.push(Error::diagnostic(Code::GroupEmpty, "a group cannot be empty", span));
 			continue;
 		}
 
@@ -504,6 +508,25 @@ mod tests {
 	fn empty_groups_are_diagnosed() {
 		assert_eq!(codes(&parse(",jpg")), vec![Code::GroupEmpty]);
 		assert_eq!(codes(&parse("jpg,,png")), vec![Code::GroupEmpty]);
+	}
+
+	#[test]
+	fn every_span_stays_inside_the_string_it_belongs_to() {
+		// A trailing comma used to be spanned past the end of the text, which is a
+		// pointer into nothing rather than at the comma that made the group empty.
+		for text in ["jpg,", ",jpg", "jpg,,png", ",", "jpg++quality80"] {
+			let errors = parse(text).unwrap_err();
+
+			for error in errors.iter() {
+				let span = error.span().expect("a grammar diagnostic names a span");
+				assert!(span.start <= span.end, "{text:?}: {span:?} is backwards");
+				assert!(span.end <= text.len(), "{text:?}: {span:?} runs past the string");
+				assert!(
+					text.get(span.start..span.end).is_some(),
+					"{text:?}: {span:?} is not on a character boundary"
+				);
+			}
+		}
 	}
 
 	#[test]
