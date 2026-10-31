@@ -315,8 +315,9 @@ lossy = false
 alpha = false
 tier = 'exact'
 
-# Quoted, because an unquoted dotted key would nest `gz` under `tar` and the format
-# would silently disappear.
+# Quoted, because this is the spelling that means what it says. An unquoted
+# `[formats.tar.gz]` is TOML for `gz` inside `tar`, which the loader restores to the
+# same format, `docs/config.md` §4; the shipped file writes the unambiguous form.
 [formats."tar.gz"]
 family = 'archive'
 direction = 'encode'

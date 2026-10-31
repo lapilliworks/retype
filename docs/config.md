@@ -165,14 +165,16 @@ args = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart']
 
 A pair whose source cannot be read or whose target cannot be written is `E_UNSUPPORTED` before a tool is chosen, because the honest answer is "not supported" rather than a tool that fails once the work has started. `retype list` prints the direction beside each format.
 
-A format name containing a dot must be quoted:
+A format name containing a dot is written either way:
 
 ```toml
-[formats."tar.gz"]
-family = 'archive'
+[formats."tar.gz"]      # the spelling the shipped file uses
+[formats.tar.gz]        # the same format, restored by the loader
 ```
 
-An unquoted `[formats.tar.gz]` is TOML for `gz` inside `tar`, which is a different document and used to drop the format without a word. Unknown keys are not refused yet, which is why the quotes matter; records that as a gap rather than as a rule.
+An unquoted `[formats.tar.gz]` is TOML for a table `gz` inside `tar`. A format entry has no nested tables except `argv`, and `family` is required of one, so the loader puts such a table back into the name `tar.gz` before anything else looks at it, and `tar.xz` needs no code when it arrives. A nested table that has no `family` is refused with the quoted spelling in the message, because it is a key of nothing and used to disappear without a word.
+
+Both layers are flattened before they are merged, so `enabled = false` removes a compound format in either spelling.
 
 ## 5. Watch policy
 

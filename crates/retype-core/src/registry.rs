@@ -337,13 +337,18 @@ impl Registry {
 			}
 		};
 
-		let over: toml::Value = match toml::from_str(user) {
+		let mut over: toml::Value = match toml::from_str(user) {
 			Ok(value) => value,
 			Err(error) => return Err(Diagnoses::one(fail(Code::CfgParse, format!("{label}: {error}")))),
 		};
 
 		let mut problems = Vec::new();
 		let mut warnings = Vec::new();
+
+		// Both layers are flattened before the merge, so `enabled = false` on either
+		// spelling removes the same format.
+		problems.extend(flatten_format_names(&mut base, "the built-in configuration"));
+		problems.extend(flatten_format_names(&mut over, label));
 
 		// A user file declares its version, `docs/config.md` §12: without it the
 		// merge would silently inherit the built-in one and hide a stale file.
@@ -387,7 +392,19 @@ impl Registry {
 	}
 
 	fn load_in(text: &str, label: &str) -> Result<Self, Diagnoses> {
-		let document: Document = match toml::from_str(text) {
+		let mut value: toml::Value = match toml::from_str(text) {
+			Ok(value) => value,
+			Err(error) => return Err(Diagnoses::one(fail(Code::CfgParse, format!("{label}: {error}")))),
+		};
+
+		let mut flattened = flatten_format_names(&mut value, label);
+
+		if !flattened.is_empty() {
+			flattened.shrink_to_fit();
+			return Err(Diagnoses::new(flattened));
+		}
+
+		let document: Document = match value.try_into() {
 			Ok(document) => document,
 			Err(error) => return Err(Diagnoses::one(fail(Code::CfgParse, format!("{label}: {error}")))),
 		};
@@ -1386,6 +1403,90 @@ fn prune_removed(before: &toml::Value, merged: &mut toml::Value) {
 	}
 }
 
+/// Put compound format names back into one key.
+///
+/// `[formats.tar.gz]` is TOML for a table `gz` inside the table `tar`, and a format
+/// entry has no nested tables except `argv`. A nested table that carries `family`
+/// is therefore a compound name written the ordinary way, and it is restored as
+/// `tar.gz`; a nested table without one is refused rather than left to vanish,
+/// which is what it did before this rule existed.
+///
+/// The discriminator is structural rather than a list of known compounds: `family` is
+/// required of a format entry, so nothing else can be meant by a nested table there,
+/// and `tar.xz` or `tar.zst` need no code when they arrive. A name with more than
+/// two parts is restored the same way, one layer at a time.
+fn flatten_format_names(document: &mut toml::Value, label: &str) -> Vec<Error> {
+	let Some(formats) = document.get_mut("formats").and_then(toml::Value::as_table_mut) else {
+		return Vec::new();
+	};
+
+	let mut problems = Vec::new();
+	let mut flat = toml::value::Table::new();
+
+	for (name, value) in std::mem::take(formats) {
+		let toml::Value::Table(entry) = value else {
+			flat.insert(name, value);
+			continue;
+		};
+
+		let (entry, compounds) = split_compounds(&name, entry, label, &mut problems);
+
+		flat.insert(name, toml::Value::Table(entry));
+		for (compound, entry) in compounds {
+			flat.insert(compound, toml::Value::Table(entry));
+		}
+	}
+
+	*formats = flat;
+	problems
+}
+
+/// One entry's own keys, and the compound entries that were nested inside it.
+fn split_compounds(
+	prefix: &str,
+	mut entry: toml::value::Table,
+	label: &str,
+	problems: &mut Vec<Error>,
+) -> (toml::value::Table, Vec<(String, toml::value::Table)>) {
+	let mut compounds: Vec<(String, toml::value::Table)> = Vec::new();
+
+	// `argv` is the one table a format entry has, and an `enabled = false` the merge
+	// has not consumed yet is a scalar, not a table.
+	let nested: Vec<String> = entry
+		.iter()
+		.filter(|(key, value)| key.as_str() != "argv" && value.is_table())
+		.map(|(key, _)| key.clone())
+		.collect();
+
+	for key in nested {
+		let Some(toml::Value::Table(inner)) = entry.remove(&key) else {
+			continue;
+		};
+
+		let name = format!("{prefix}.{key}");
+
+		// `family` is what makes a table a format entry; `enabled` is what makes one a
+		// removal, and `enabled = false` on a compound name has to reach the same key
+		// as the declaration it is removing.
+		if !inner.contains_key("family") && !inner.contains_key("enabled") {
+			problems.push(fail(
+				Code::CfgValidation,
+				format!(
+					"{label}: '{prefix}' has a nested table '{key}', which is neither a format nor a key of one; \
+					 a format named '{name}' is written [formats.\"{name}\"]"
+				),
+			));
+			continue;
+		}
+
+		let (inner, deeper) = split_compounds(&name, inner, label, problems);
+		compounds.push((name, inner));
+		compounds.extend(deeper);
+	}
+
+	(entry, compounds)
+}
+
 /// Merge `over` into `base`, key by key for tables, whole for arrays and scalars,
 /// with `enabled = false` removing an entry, `docs/config.md` §2.
 fn merge(base: &mut toml::Value, over: &toml::Value) {
@@ -1837,6 +1938,74 @@ tier = 'converted'
 		assert!(!Direction::Encode.can_decode());
 		assert!(Direction::Encode.can_encode());
 		assert!(!Direction::Decode.can_encode());
+	}
+
+	const COMPOUND: &str = "\
+[formats.tar]
+family = 'archive'
+native = 'tar'
+lossy = false
+alpha = false
+tier = 'exact'
+
+[formats.tar.gz]
+family = 'archive'
+native = 'tar.gz'
+lossy = false
+alpha = false
+tier = 'exact'
+";
+
+	#[test]
+	fn a_dotted_format_name_toml_reads_as_nesting_is_restored() {
+		// `[formats.tar.gz]` is TOML for `gz` inside `tar`. A format entry has no
+		// nested tables but `argv`, so the table can only be a compound name.
+		let registry = Registry::load(&format!("{HEADER}\n{COMPOUND}")).unwrap();
+
+		assert_eq!(
+			registry.format("tar.gz").unwrap().native,
+			Some(Native::TarGz),
+			"the compound format is declared under its whole name"
+		);
+		assert_eq!(registry.split("archive.tar.gz"), Some(("archive", "tar.gz")));
+		assert_eq!(
+			registry.format("tar").unwrap().native,
+			Some(Native::Tar),
+			"and the entry it was nested in is untouched"
+		);
+	}
+
+	#[test]
+	fn the_quoted_spelling_declares_the_same_format() {
+		let registry = Registry::load(&format!(
+			"{HEADER}\n[formats.\"tar.gz\"]\nfamily = 'archive'\nnative = 'tar.gz'\nlossy = false\nalpha = false\ntier = 'exact'\n"
+		))
+		.unwrap();
+
+		assert_eq!(registry.format("tar.gz").unwrap().native, Some(Native::TarGz));
+	}
+
+	#[test]
+	fn a_compound_format_is_disabled_in_either_spelling() {
+		// The shipped file writes the quoted spelling and the user writes the dotted
+		// one, which is the case that would silently do nothing if the two were merged
+		// before they were flattened.
+		let registry = merged("version = 'retype-config-1'\n\n[formats.tar.gz]\nenabled = false\n").expect("loads");
+
+		assert!(registry.format("tar.gz").is_none());
+		assert!(registry.format("tar").is_some());
+	}
+
+	#[test]
+	fn a_nested_table_that_is_not_a_format_is_refused() {
+		// A mis-spelled key used to disappear with no diagnostic, which is the failure
+		// the flattening exists to prevent. A table without `family` is a key of
+		// nothing, so it says so.
+		let codes = codes(&format!(
+			"{HEADER}\n[formats.jpg]\nfamily = 'image'\nlossy = true\nalpha = false\ntier = 'converted'\n\n[formats.jpg.argvs.magick]\nargs = ['-quality', '92']\n"
+		));
+
+		assert_eq!(codes, vec![Code::CfgValidation]);
 	}
 
 	#[test]
