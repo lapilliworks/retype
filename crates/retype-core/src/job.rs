@@ -301,6 +301,42 @@ impl JobError {
 	}
 }
 
+/// A job that is parked rather than running, `docs/deferral.md` §2.
+///
+/// Absent from every record for a job that was never deferred or repaired.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Parked {
+	/// One of `ask`, `cost`, `intent`, `inapplicable`, `backend`.
+	pub reason: String,
+	/// Unix milliseconds at which a `pending` job runs anyway.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub deadline: Option<i64>,
+	/// Shared by the jobs parked in one daemon tick, so one notification can answer
+	/// for all of them.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub batch: Option<String>,
+	/// What the job was expected to cost, when the estimator had an answer.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub estimate: Option<Cost>,
+	/// The intent exactly as the new name carried it, when the canonical form differs.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub requested: Option<String>,
+	/// The intent that would run after the tokens that could not be carried are
+	/// dropped, when the target format survives that.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub corrected: Option<String>,
+	/// The tokens a repair dropped, in written order.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub dropped: Vec<String>,
+}
+
+/// What a job is expected to cost, `docs/state.md` §7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cost {
+	pub ms: u64,
+	pub bytes: u64,
+}
+
 /// One job, at one moment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Job {
@@ -320,6 +356,9 @@ pub struct Job {
 	pub engine: Option<Engine>,
 	pub machine: String,
 	pub error: Option<JobError>,
+	/// Present when the job is parked or was repaired, `docs/deferral.md` §11.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub parked: Option<Parked>,
 }
 
 impl Job {
@@ -345,6 +384,7 @@ impl Job {
 			engine: None,
 			machine: machine.into(),
 			error: None,
+			parked: None,
 		})
 	}
 
@@ -521,6 +561,48 @@ mod tests {
 				Value::String(expected.to_string())
 			);
 		}
+	}
+
+	#[test]
+	fn a_parked_job_carries_why_and_until_when() {
+		let mut job = job();
+		job.state = JobState::Pending;
+		job.parked = Some(Parked {
+			reason: "cost".to_string(),
+			deadline: Some(1_793_380_889_377),
+			batch: Some(format!("01J{:023}", 9)),
+			estimate: Some(Cost {
+				ms: 2_400,
+				bytes: 1_200_000,
+			}),
+			requested: None,
+			corrected: None,
+			dropped: Vec::new(),
+		});
+
+		let line = job.to_line().expect("a record");
+
+		assert!(line.contains("\"reason\":\"cost\""), "{line}");
+		assert!(line.contains("\"deadline\":1793380889377"), "{line}");
+		assert!(line.contains("\"estimate\":{\"ms\":2400,\"bytes\":1200000}"), "{line}");
+
+		// The line is the record, and reading it back gives the same job.
+		let read: Job = serde_json::from_str(&line).expect("a job");
+		assert_eq!(read, job);
+	}
+
+	#[test]
+	fn a_job_that_was_never_parked_has_no_parked_object() {
+		let line = job().to_line().expect("a record");
+
+		assert!(!line.contains("\"parked\""), "{line}");
+
+		// And a record written before the field existed still reads.
+		let old = r#"{"id":"01J00000000000000000000001","created":0,"updated":0,
+			"source":{"path":"a.heic","format":"heic","size":0,"mtime_ns":0},
+			"intent":"jpg","outputs":[],"state":"done","backend":null,"machine":"m","error":null}"#;
+		let read: Job = serde_json::from_str(old).expect("a job from an older journal");
+		assert!(read.parked.is_none());
 	}
 
 	#[test]

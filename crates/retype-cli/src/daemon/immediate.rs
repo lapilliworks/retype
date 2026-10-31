@@ -142,6 +142,7 @@ pub fn queued(shared: &Shared, prepared: &Prepared<'_>, id: &JobId) -> Job {
 			.map(|(name, candidate)| retype_core::job::Engine { name, candidate }),
 		machine: shared.machine.clone(),
 		error: None,
+		parked: None,
 	}
 }
 
@@ -305,5 +306,6 @@ fn unsatisfied(shared: &Shared, request: &Request, problems: Diagnoses, id: &Job
 			code: code.to_string(),
 			message: problems.to_string(),
 		}),
+		parked: None,
 	}
 }

@@ -597,6 +597,7 @@ impl Server {
 			engine: None,
 			machine: self.machine.clone(),
 			error: None,
+			parked: None,
 		};
 
 		crate::daemon::watcher::publish(&self.shared, &job);

@@ -347,6 +347,7 @@ fn retire(shared: &Shared, work: &crate::daemon::queue::Work, state: JobState) {
 			code: Code::JobSuperseded.to_string(),
 			message: "replaced by a later rename before it started".to_string(),
 		}),
+		parked: None,
 	};
 
 	job.outputs[0].state = OutputState::Skipped;
@@ -579,6 +580,7 @@ pub fn convert(
 			.map(|(name, candidate)| retype_core::job::Engine { name, candidate }),
 		machine: shared.machine.clone(),
 		error: None,
+		parked: None,
 	};
 
 	publish(shared, &job);
@@ -672,6 +674,7 @@ fn running(
 		engine: None,
 		machine: shared.machine.clone(),
 		error: None,
+		parked: None,
 	};
 
 	if let Ok(mut journal) = shared.journal.lock() {

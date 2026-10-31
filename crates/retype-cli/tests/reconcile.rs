@@ -83,6 +83,7 @@ fn record(id: &JobId, source: &Path, output: &Path, state: JobState) -> Job {
 		engine: None,
 		machine: "test".to_string(),
 		error: None,
+		parked: None,
 	}
 }
 

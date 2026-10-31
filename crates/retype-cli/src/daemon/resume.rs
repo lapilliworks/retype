@@ -132,6 +132,7 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 			.map(|(name, candidate)| retype_core::job::Engine { name, candidate }),
 		machine: machine.to_string(),
 		error: None,
+		parked: None,
 	};
 
 	if let Ok(mut journal) = shared.journal.lock() {

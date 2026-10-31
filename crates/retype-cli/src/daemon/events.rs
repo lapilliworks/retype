@@ -91,6 +91,7 @@ mod tests {
 			engine: None,
 			machine: "machine".to_string(),
 			error: None,
+			parked: None,
 		}
 	}
 
