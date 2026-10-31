@@ -153,7 +153,7 @@ fn measure(
 fn version(plan: &Plan<'_>) -> String {
 	match plan.backend {
 		// A native backend is this build, and its version is the product's.
-		plan::Backend::Native(_) => env!("CARGO_PKG_VERSION").to_string(),
+		plan::Backend::Native { .. } => env!("CARGO_PKG_VERSION").to_string(),
 		plan::Backend::Tool(tool) => tools::probe(tool)
 			.version
 			.map(|version| version.to_string())

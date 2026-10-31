@@ -41,6 +41,8 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [dev-dependencies]
+flate2 = "1.1.10"
+tar = "0.4.46"
 tempfile = "3"
 zip = { version = "5.1.1", default-features = false, features = ["deflate"] }
 

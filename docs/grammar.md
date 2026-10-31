@@ -327,7 +327,7 @@ Valid, with canonical form:
 | `clip.mp4+trim1:00-2:30` | `clip.mp4+trim1m-2m30s` | Clock form read, tagged form printed |
 | `photo.webp+q80+` | `photo.webp+quality80+ask` | Editor prefilled |
 | `scan.pdf` -> `scan.png+page2-5+dpi300` | unchanged | Page range rendered |
-| `Photos` -> `Photos.folder,zip` | unchanged | Keep the directory, add an archive |
+| `notes.tar.gz` -> `notes.zip` | unchanged | Repack an archive into another container |
 
 Invalid:
 

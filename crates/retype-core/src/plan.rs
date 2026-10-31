@@ -59,7 +59,11 @@ impl Presence for crate::tools::Machine {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend<'a> {
 	Tool(&'a Tool),
-	Native(Native),
+	/// A container this build repacks: the codec it reads and the codec it writes.
+	Native {
+		from: Native,
+		to: Native,
+	},
 }
 
 impl Backend<'_> {
@@ -67,13 +71,15 @@ impl Backend<'_> {
 	pub fn name(&self) -> &str {
 		match self {
 			Self::Tool(tool) => &tool.name,
-			Self::Native(codec) => codec.name(),
+			// The target codec names the conversion: the source is in the record's
+			// `source` field, and `zip` to `tar.gz` is a `tar.gz` job.
+			Self::Native { to, .. } => to.name(),
 		}
 	}
 
 	/// Whether this backend is this build rather than a tool on the machine.
 	pub fn is_native(&self) -> bool {
-		matches!(self, Self::Native(_))
+		matches!(self, Self::Native { .. })
 	}
 }
 
@@ -174,8 +180,10 @@ fn plan_group<'a>(
 
 	let pipeline = group.pipeline();
 
-	// A format this build handles itself needs no tool and no argv.
-	if let Some(native) = registry.format(&group.format).and_then(|format| format.native) {
+	// A format this build handles itself needs no tool and no argv. It needs
+	// another archive to read, because a container is repacked rather than made from
+	// loose files: a directory is not a conversion.
+	if let Some(to) = registry.format(&group.format).and_then(|format| format.native) {
 		if !pipeline.is_empty() {
 			return Err(vec![Error::Diagnostic(Diagnostic::global(
 				Code::Unsupported,
@@ -183,10 +191,20 @@ fn plan_group<'a>(
 			))]);
 		}
 
+		let Some(from) = registry.format(origin).and_then(|format| format.native) else {
+			return Err(vec![Error::Diagnostic(Diagnostic::global(
+				Code::Unsupported,
+				format!(
+					"{} is not an archive, so it cannot be repacked into {}: this build converts archives into archives",
+					origin, group.format
+				),
+			))]);
+		};
+
 		return Ok(Plan {
 			group: index,
 			format: group.format.clone(),
-			backend: Backend::Native(native),
+			backend: Backend::Native { from, to },
 			// Nothing to run, which is what `explain` prints and what the recorder
 			// stores as an empty command rather than as a tool that was not found.
 			command: String::new(),

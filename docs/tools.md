@@ -58,26 +58,28 @@ WeasyPrint emits CSS warnings on stderr while succeeding, for example about prop
 
 ## 7. Archives
 
-Archives are not one format and are not one tool. Each format uses the backend that fits it.
+Archives are not one format and are not one tool. Each format is a container, and converting one into another is a conversion like any other: the entries keep their names, their bytes and their permissions, and only the container changes.
 
 | Format | Backend | Notes |
 |---|---|---|
-| `zip` | Native | Written, with explicit zip64, symlink and permission rules below. Reading is not expressible yet, because the grammar has no target that names a directory |
-| `tar` | Native | Written, as above |
-| `tar.gz` | Native | Written: a tar stream through gzip |
-| `gz`, `bz2`, `xz`, `zst`, `br`, `lz4` | Native | Codec crates or the system C library where the crate is a thin binding. Not declared yet |
-| `7z` | `7zz`, `7z` or `7za` | The only archive format that needs an external tool |
-| `rar` | `unrar` or a `7zz` build with the unRAR code | Read-only, user-supplied, never distributed |
+| `zip` | Native | Repacked, with explicit zip64 and permission rules below |
+| `tar` | Native | Repacked |
+| `tar.gz` | Native | Repacked: a tar stream through gzip |
+| `7z` | `7zz`, `7z` or `7za` | Not declared yet: the only archive format that needs an external tool, and a repack through it needs a staging directory |
+| `gz`, `bz2`, `xz`, `zst`, `br`, `lz4` | Native | Not declared, and not planned: those are compression, not conversion |
+| `rar` | `unrar` | Read-only, user-supplied, never distributed |
 
-Native handling is not only fewer dependencies. Path traversal, symlink escape, decompression bombs, permission restoration, overwrite policy and cancellation are decisions that belong in our code, not in another tool's argv. It also removes the one tool whose layout put its output before its input.
+What is not done, and is not a gap: an archive is never unpacked into a directory and a loose file is never compressed on its own. Both are operations a file manager already offers with a right click, and both are destructive in a way a conversion is not: the source disappears and a tree appears. The gesture this product exists for is a name that says what the file contains, which is why `notes.zip` to `notes.tar.gz` is a conversion and `notes.zip` to `notes/` is not.
 
-The rules this build applies when writing one, measured 2026-10-31:
+Native handling is not only fewer dependencies. Entry names, symlinks, size limits, permissions and cancellation are decisions that belong in our code, not in another tool's argv. The rules this build applies when repacking, measured 2026-10-31:
 
-- Everything below the directory is stored, including dotfiles. The watch ignore list is about what is worth watching, not about what the user asked to package
-- A symbolic link refuses the archive and names the file. Storing what it points at misrepresents the tree, and storing the link is not portable through zip
-- Entries are sorted, so one directory produces the same archive twice
-- Permissions are stored from each file, and the mtime is zeroed: an archive is a copy of the bytes, not of the moment
-- The archive is staged and renamed into place, so a cancelled or failed run leaves no partial file
+- An entry name must be relative and free of `..`. A name that would escape the archive is refused rather than copied into another container
+- A symbolic link refuses the archive. Carrying one is how a repack becomes a traversal for whoever unpacks it next
+- Directories, files and their permission bits are carried; devices, FIFOs and anything else are refused by name
+- The declared size of every entry is checked against a budget before a byte is copied: 100,000 entries and 8 GiB of declared expansion. Both are fixed and documented as fixed
+- Names are written with `/` separators, so a zip made on Windows becomes a tarball a Unix can read
+- Entries keep the order the source lists them, so repacking one archive twice produces the same bytes
+- The output is staged and renamed into place, so a cancelled or failed repack leaves no partial archive
 
-`7zz` remains the declared backend and may be installed from the managed set; `7z` and `7za` are executable aliases, not separate backends. It is not used for `zip` or `tar`, where the native backend is more precise.
+`7zz` remains the declared backend for `.7z` and may be installed from the managed set; `7z` and `7za` are executable aliases, not separate backends.
 

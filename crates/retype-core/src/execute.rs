@@ -94,8 +94,8 @@ pub fn run_logged(
 ) -> Result<Report> {
 	// A format this build writes itself has nothing to run, so it goes to the
 	// archive writer rather than looking for a tool that was never planned.
-	if let Backend::Native(codec) = plan.backend {
-		return crate::archive::create(codec, input, output, cancellation);
+	if let Backend::Native { from, to } = plan.backend {
+		return crate::archive::repack(from, to, input, output, cancellation);
 	}
 
 	let Backend::Tool(tool) = plan.backend else {

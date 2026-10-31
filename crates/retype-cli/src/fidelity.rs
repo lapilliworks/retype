@@ -157,7 +157,7 @@ fn claim_of(plan: &Plan<'_>, source: &str, target: &str, samples: &Samples<'_>) 
 	let (version, fingerprint) = match plan.backend {
 		// This build is the backend, so the claim is earned by the release rather
 		// than by a tool on the machine.
-		plan::Backend::Native(_) => (env!("CARGO_PKG_VERSION").to_string(), String::new()),
+		plan::Backend::Native { .. } => (env!("CARGO_PKG_VERSION").to_string(), String::new()),
 		plan::Backend::Tool(tool) => {
 			let status = tools::probe(tool);
 			(
