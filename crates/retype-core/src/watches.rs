@@ -91,7 +91,14 @@ pub fn register(state_dir: &Path, directory: &Path, recursive: bool) -> Result<R
 
 /// Remove a registration by canonical path. Removing something absent succeeds.
 pub fn unregister(state_dir: &Path, directory: &Path) -> Result<bool> {
-	let canonical = canonical(directory)?;
+	// A path that no longer exists cannot match a registration, and removing
+	// something absent is a success, `docs/cli.md` §4.
+	let canonical = match std::fs::canonicalize(directory) {
+		Ok(path) => path,
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+		Err(error) => return Err(Error::Io(error)),
+	};
+
 	let mut registrations = load(state_dir)?;
 	let before = registrations.len();
 

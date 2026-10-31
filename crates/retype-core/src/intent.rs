@@ -6,6 +6,9 @@
 //! registry, which arrives with configuration, so tokens carry their value as
 //! written and nothing here guesses what it means.
 
+/// Schema identifier for the intent grammar.
+pub const GRAMMAR_VERSION: &str = "retype-grammar-1";
+
 pub use crate::error::Diagnoses;
 
 use crate::error::{Code, Diagnostic, Error, Span};

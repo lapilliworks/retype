@@ -176,3 +176,23 @@ fn a_cloud_mirror_is_refused_unless_allowed() {
 	);
 	assert!(state.join("watches.toml").exists(), "the registration was written");
 }
+
+#[test]
+fn unwatching_a_path_that_does_not_exist_succeeds() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+
+	let output = retype()
+		.args(["unwatch"])
+		.arg(dir.path().join("gone"))
+		.args(["--state-dir", state.to_str().unwrap()])
+		.output()
+		.unwrap();
+
+	assert_eq!(
+		output.status.code(),
+		Some(0),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+}

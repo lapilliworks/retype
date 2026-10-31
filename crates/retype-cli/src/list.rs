@@ -176,7 +176,10 @@ fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: boo
 	names.push("folder");
 
 	if !json {
-		println!("{:<8}{:<8}{:<12}{:<10}VERSION", "FROM", "TO", "TIER", "BACKEND");
+		println!(
+			"{:<8}{:<8}{:<12}{:<10}{:<12}{:<10}FINGERPRINT",
+			"FROM", "TO", "TIER", "BACKEND", "ENGINE", "VERSION"
+		);
 	}
 
 	for from in &names {
@@ -185,7 +188,7 @@ fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: boo
 				continue;
 			}
 
-			let (tier, backend, version) = claim(registry, probes, from, to);
+			let (tier, backend, engine, version, fingerprint) = claim(registry, probes, from, to);
 
 			if json {
 				println!(
@@ -196,17 +199,21 @@ fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: boo
 						"to": to,
 						"tier": tier,
 						"backend": backend,
+						"engine": engine,
 						"version": version,
+						"fingerprint": fingerprint,
 					})
 				);
 			} else {
 				println!(
-					"{:<8}{:<8}{:<12}{:<10}{}",
+					"{:<8}{:<8}{:<12}{:<10}{:<12}{:<10}{}",
 					from,
 					to,
 					tier,
 					backend.unwrap_or_default(),
-					version.unwrap_or_default()
+					engine.unwrap_or_default(),
+					version.unwrap_or_default(),
+					fingerprint.unwrap_or_default()
 				);
 			}
 		}
@@ -220,14 +227,11 @@ fn claim<'a>(
 	probes: &BTreeMap<&str, ToolStatus<'a>>,
 	from: &str,
 	to: &str,
-) -> (String, Option<String>, Option<String>) {
-	let tier = registry
-		.format(to)
-		.map(|format| tier_name(format.tier).to_string())
-		.unwrap_or_else(|| "unclaimed".to_string());
+) -> (String, Option<String>, Option<String>, Option<String>, Option<String>) {
+	let unclaimed = "unclaimed".to_string();
 
 	let Ok(parsed) = intent::parse(to) else {
-		return (tier, None, None);
+		return (unclaimed, None, None, None, None);
 	};
 
 	// A pair refused before any backend is chosen, such as a source that cannot be
@@ -241,27 +245,35 @@ fn claim<'a>(
 		registry,
 	) {
 		Ok(resolved) => resolved,
-		Err(problems) => return (tier, Some(refusal(&problems)), None),
+		Err(problems) => return (unclaimed, Some(refusal(&problems)), None, None, None),
 	};
 
 	match plan::compile(registry, &tools::Machine, &resolved) {
 		Ok(plans) => {
 			let Some(first) = plans.first() else {
-				return (tier, None, None);
+				return (unclaimed, None, None, None, None);
 			};
 
 			let name = first.backend.name().to_string();
-			let version = probes
-				.get(name.as_str())
+			let status = probes.get(name.as_str());
+			let engine = first.engine.as_ref().map(|(_, candidate)| candidate.clone());
+			let version = status
 				.and_then(|status| status.version.as_ref())
 				.map(ToString::to_string);
+			let fingerprint = status.and_then(ToolStatus::fingerprint);
 
-			(tier, Some(name), version)
+			(
+				tier_name(first.tier).to_string(),
+				Some(name),
+				engine,
+				version,
+				fingerprint,
+			)
 		}
 		// A pair nothing can carry is worth saying out loud rather than leaving
 		// blank, because it is the pair a user will try. The code is bracketed so
 		// it cannot be mistaken for a backend name.
-		Err(problems) => (tier, Some(refusal(&problems)), None),
+		Err(problems) => (unclaimed, Some(refusal(&problems)), None, None, None),
 	}
 }
 

@@ -7,9 +7,11 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use retype_core::error::{Code, code_for_io};
 use retype_core::watches;
 
 use crate::error::Result;
+use crate::output;
 
 pub fn run(
 	state_dir: &Path,
@@ -22,19 +24,38 @@ pub fn run(
 		return list(state_dir, json);
 	}
 
-	let mut refused = false;
+	let mut refused = 0u8;
 
 	for directory in directories {
+		// The unit is a directory, so a file path is a usage error rather than a
+		// registration the watcher has to discover it cannot use.
+		match std::fs::metadata(directory) {
+			Ok(metadata) if !metadata.is_dir() => {
+				refused = refused.max(output::fail(
+					&Code::UsageArgs,
+					format!("{directory} is not a directory"),
+				));
+				continue;
+			}
+			Ok(_) => {}
+			Err(error) => {
+				refused = refused.max(output::fail(&code_for_io(&error), format!("{directory}: {error}")));
+				continue;
+			}
+		}
+
 		// A directory can take itself out of use, and policy beats state: registering it
 		// anyway would be undone the next time the file is read, `docs/config.md` §12.
 		let policy = retype_core::policy::Policy::open(Path::new(directory))?;
 
 		if policy.paused {
-			eprintln!(
-				"retype: E_WATCH_PAUSED_BY_POLICY: {} sets paused = true, so {directory} stays unwatched",
-				policy.path.display()
-			);
-			refused = true;
+			refused = refused.max(output::fail(
+				&Code::WatchPausedByPolicy,
+				format!(
+					"{} sets paused = true, so {directory} stays unwatched",
+					policy.path.display()
+				),
+			));
 			continue;
 		}
 
@@ -47,26 +68,28 @@ pub fn run(
 		};
 
 		if let Some(provider) = provider {
-			eprintln!(
-				"retype: E_USAGE_ARGS: {directory} is inside {provider}, which can hold placeholders instead of files; \
-				 support for that is a separate stage, and [watch] allow_synced = true overrides this"
+			// The refusal is a diagnosis about this filesystem rather than a bad
+			// argument, so it keeps exit 3 even though the code is the invocation
+			// one `docs/watch.md` §5 names.
+			let _ = output::fail(
+				&Code::UsageArgs,
+				format!(
+					"{directory} is inside {provider}, which can hold placeholders instead of files; \
+					 support for that is a separate stage, and [watch] allow_synced = true overrides this"
+				),
 			);
-			refused = true;
+			refused = refused.max(3);
 			continue;
 		}
 
 		let registration = watches::register(state_dir, Path::new(directory), recursive)?;
 
 		if json {
-			println!(
-				"{}",
-				serde_json::json!({
-					"v": "retype-cli-json-1",
-					"path": registration.path.display().to_string(),
-					"recursive": registration.recursive,
-					"added": registration.added,
-				})
-			);
+			output::success(serde_json::json!({
+				"path": registration.path.display().to_string(),
+				"recursive": registration.recursive,
+				"added": registration.added,
+			}));
 		} else {
 			println!(
 				"{:<40}{}",
@@ -76,30 +99,28 @@ pub fn run(
 		}
 	}
 
-	Ok(match refused {
-		true => ExitCode::from(3),
-		false => ExitCode::SUCCESS,
-	})
+	Ok(ExitCode::from(refused))
 }
 
 pub fn unwatch(state_dir: &Path, directories: &[String], json: bool) -> Result<ExitCode> {
 	if directories.is_empty() {
-		eprintln!("retype: E_USAGE_ARGS: unwatch needs at least one directory");
-		return Ok(ExitCode::from(2));
+		return Ok(ExitCode::from(output::fail(
+			&Code::UsageArgs,
+			"unwatch needs at least one directory",
+		)));
 	}
 
 	for directory in directories {
-		let removed = watches::unregister(state_dir, Path::new(directory))?;
+		let removed = match watches::unregister(state_dir, Path::new(directory)) {
+			Ok(removed) => removed,
+			Err(error) => return Ok(ExitCode::from(output::fail(&error.code(), error.to_string()))),
+		};
 
 		if json {
-			println!(
-				"{}",
-				serde_json::json!({
-					"v": "retype-cli-json-1",
-					"path": directory,
-					"removed": removed,
-				})
-			);
+			output::success(serde_json::json!({
+				"path": directory,
+				"removed": removed,
+			}));
 		} else if !removed {
 			eprintln!("retype: {} was not registered", directory);
 		}

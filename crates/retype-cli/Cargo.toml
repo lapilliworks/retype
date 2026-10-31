@@ -24,6 +24,7 @@ retype-ipc = { path = "../retype-ipc" }
 retype-watch = { path = "../retype-watch" }
 serde_json.workspace = true
 toml.workspace = true
+tempfile = "3"
 thiserror.workspace = true
 clap_complete = "4"
 
@@ -41,9 +42,9 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [dev-dependencies]
+ed25519-dalek.workspace = true
 flate2 = "1.1.10"
 tar = "0.4.46"
-tempfile = "3"
 zip = { version = "5.1.1", default-features = false, features = ["deflate"] }
 
 [lints]

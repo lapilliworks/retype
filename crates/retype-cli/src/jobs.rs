@@ -7,19 +7,35 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use retype_core::error::Code;
 use retype_core::job::JobId;
 use serde_json::Value;
 
 use crate::client;
-use crate::error::{Result, exit_code};
+use crate::error::Result;
+use crate::output;
 
 pub fn list(
 	state_dir: &Path,
 	state: Option<&str>,
 	limit: Option<usize>,
+	since: Option<&str>,
 	json: bool,
 	allow_spawn: bool,
 ) -> Result<ExitCode> {
+	let since = match since {
+		Some(written) => match JobId::parse(written) {
+			Ok(id) => Some(id),
+			Err(_) => {
+				return Ok(ExitCode::from(output::fail(
+					&Code::UsageArgs,
+					format!("'{written}' is not a job id"),
+				)));
+			}
+		},
+		None => None,
+	};
+
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 	let answer = client.call_without_params("jobs.list")?;
 
@@ -33,6 +49,13 @@ pub fn list(
 
 	for job in jobs.iter().rev() {
 		let job_state = job.get("state").and_then(Value::as_str).unwrap_or_default();
+		let job_id = job.get("id").and_then(Value::as_str).unwrap_or_default();
+
+		if let Some(since) = &since {
+			if job_id <= since.as_str() {
+				continue;
+			}
+		}
 
 		if let Some(wanted) = state {
 			if job_state != wanted {
@@ -68,25 +91,12 @@ pub fn list(
 pub fn get(state_dir: &Path, prefix: &str, allow_spawn: bool) -> Result<ExitCode> {
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 
-	let candidates = matching(&mut client, prefix)?;
-	let id = match candidates.len() {
-		1 => candidates[0].clone(),
-		0 => {
-			eprintln!("retype: E_JOB_STATE: no job matches '{prefix}'");
-			return Ok(ExitCode::from(7));
-		}
-		_ => {
-			eprintln!("retype: E_IPC_AMBIGUOUS: '{prefix}' matches {} jobs", candidates.len());
-
-			for candidate in &candidates {
-				eprintln!("  {candidate}");
-			}
-
-			return Ok(ExitCode::from(7));
-		}
+	let id = match one(&mut client, prefix)? {
+		Ok(id) => id,
+		Err(code) => return Ok(code),
 	};
 
-	println!("{}", client.call("jobs.get", serde_json::json!({"id": id.as_str()}))?);
+	output::success(client.call("jobs.get", serde_json::json!({"id": id.as_str()}))?);
 
 	Ok(ExitCode::SUCCESS)
 }
@@ -97,51 +107,68 @@ pub fn get(state_dir: &Path, prefix: &str, allow_spawn: bool) -> Result<ExitCode
 /// gone — an older job, or one pruned with its undo record — still answers from
 /// the record. `--follow` prints what arrives while the job runs and stops when
 /// it finishes.
-pub fn logs(state_dir: &Path, prefix: &str, follow: bool, allow_spawn: bool) -> Result<ExitCode> {
+pub fn logs(state_dir: &Path, prefix: &str, follow: bool, json: bool, allow_spawn: bool) -> Result<ExitCode> {
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
-
-	let candidates = matching(&mut client, prefix)?;
-	let id = match candidates.len() {
-		1 => candidates[0].clone(),
-		0 => {
-			eprintln!("retype: E_JOB_STATE: no job matches '{prefix}'");
-			return Ok(ExitCode::from(7));
-		}
-		_ => {
-			eprintln!("retype: E_IPC_AMBIGUOUS: '{prefix}' matches {} jobs", candidates.len());
-
-			for candidate in &candidates {
-				eprintln!("  {candidate}");
-			}
-
-			return Ok(ExitCode::from(7));
-		}
+	let id = match one(&mut client, prefix)? {
+		Ok(id) => id,
+		Err(code) => return Ok(code),
 	};
 
 	let path = crate::state::log_path(state_dir, &id);
 	let mut printed = 0;
+	let mut held = String::new();
 
 	if let Some((text, read)) = read_from(&path, 0) {
-		print!("{text}");
+		held.push_str(&text);
 		printed = read;
 	}
+
+	let mut source = "file";
 
 	if !follow {
 		if printed == 0 {
 			// No file: the record's tail is what there is, and saying so is better
 			// than an empty screen.
-			for tail in recorded_tails(&mut client, &id)? {
-				eprintln!("{tail}");
+			source = "record";
+			held = recorded_tails(&mut client, &id)?.join("\n");
+		}
+
+		if json {
+			output::success(serde_json::json!({
+				"id": id.as_str(),
+				"source": source,
+				"log": held,
+			}));
+		} else if source == "record" {
+			eprintln!("retype: {} has no log file, answering from the record", id.as_str());
+			eprintln!("{held}");
+		} else {
+			print!("{held}");
+			if !held.ends_with('\n') && !held.is_empty() {
+				println!();
 			}
 		}
 
 		return Ok(ExitCode::SUCCESS);
 	}
 
+	if json {
+		if !held.is_empty() {
+			output::success(serde_json::json!({"id": id.as_str(), "source": source, "log": held}));
+		}
+	} else {
+		print!("{held}");
+	}
+
 	loop {
 		if let Some((text, read)) = read_from(&path, printed) {
-			print!("{text}");
 			printed = read;
+
+			if json {
+				output::success(serde_json::json!({"id": id.as_str(), "source": "file", "log": text}));
+			} else {
+				print!("{text}");
+			}
 		}
 
 		let job = client.call("jobs.get", serde_json::json!({"id": id.as_str()}))?;
@@ -149,9 +176,13 @@ pub fn logs(state_dir: &Path, prefix: &str, follow: bool, allow_spawn: bool) -> 
 
 		// One more read after the job ends, because the last write and the
 		// transition are not atomic with respect to each other.
-		if matches!(state, "done" | "failed" | "partial" | "cancelled") {
+		if terminal(state) {
 			if let Some((text, _)) = read_from(&path, printed) {
-				print!("{text}");
+				if json {
+					output::success(serde_json::json!({"id": id.as_str(), "source": "file", "log": text}));
+				} else {
+					print!("{text}");
+				}
 			}
 
 			return Ok(ExitCode::SUCCESS);
@@ -159,6 +190,12 @@ pub fn logs(state_dir: &Path, prefix: &str, follow: bool, allow_spawn: bool) -> 
 
 		std::thread::sleep(std::time::Duration::from_millis(100));
 	}
+}
+
+/// Whether a job state will not change again. `pending` and `needs-attention` are
+/// waiting states, and a superseded job is as finished as a cancelled one.
+pub fn terminal(state: &str) -> bool {
+	matches!(state, "done" | "failed" | "partial" | "cancelled" | "superseded")
 }
 
 /// Everything in `path` from `offset`, and the new offset.
@@ -216,28 +253,15 @@ fn recorded_tails(client: &mut retype_ipc::Client, id: &JobId) -> Result<Vec<Str
 pub fn resume(state_dir: &Path, prefix: &str, force: bool, json: bool, allow_spawn: bool) -> Result<ExitCode> {
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 
-	let candidates = matching(&mut client, prefix)?;
-	let id = match candidates.len() {
-		1 => candidates[0].clone(),
-		0 => {
-			eprintln!("retype: E_JOB_STATE: no job matches '{prefix}'");
-			return Ok(ExitCode::from(7));
-		}
-		_ => {
-			eprintln!("retype: E_IPC_AMBIGUOUS: '{prefix}' matches {} jobs", candidates.len());
-
-			for candidate in &candidates {
-				eprintln!("  {candidate}");
-			}
-
-			return Ok(ExitCode::from(7));
-		}
+	let id = match one(&mut client, prefix)? {
+		Ok(id) => id,
+		Err(code) => return Ok(code),
 	};
 
 	let answer = client.call("jobs.resume", serde_json::json!({"id": id.as_str(), "force": force}))?;
 
 	match json {
-		true => println!("{answer}"),
+		true => output::success(answer),
 		false => println!(
 			"{}  {}",
 			id.as_str(),
@@ -251,28 +275,15 @@ pub fn resume(state_dir: &Path, prefix: &str, force: bool, json: bool, allow_spa
 pub fn cancel(state_dir: &Path, prefix: &str, json: bool, allow_spawn: bool) -> Result<ExitCode> {
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 
-	let candidates = matching(&mut client, prefix)?;
-	let id = match candidates.len() {
-		1 => candidates[0].clone(),
-		0 => {
-			eprintln!("retype: E_JOB_STATE: no job matches '{prefix}'");
-			return Ok(ExitCode::from(7));
-		}
-		_ => {
-			eprintln!("retype: E_IPC_AMBIGUOUS: '{prefix}' matches {} jobs", candidates.len());
-
-			for candidate in &candidates {
-				eprintln!("  {candidate}");
-			}
-
-			return Ok(ExitCode::from(7));
-		}
+	let id = match one(&mut client, prefix)? {
+		Ok(id) => id,
+		Err(code) => return Ok(code),
 	};
 
 	let answer = client.call("jobs.cancel", serde_json::json!({"id": id.as_str()}))?;
 
 	match json {
-		true => println!("{answer}"),
+		true => output::success(answer),
 		false => println!(
 			"{}  {}",
 			id.as_str(),
@@ -291,11 +302,10 @@ pub fn interactive(state_dir: &Path, json: bool, allow_spawn: bool) -> Result<Ex
 	use std::io::{BufRead, IsTerminal, Write};
 
 	if !std::io::stdin().is_terminal() {
-		eprintln!(
-			"retype: E_USAGE_ARGS: --interactive needs a terminal; \
-			 `jobs list --state pending` and `jobs resolve` work without one"
-		);
-		return Ok(ExitCode::from(2));
+		return Ok(ExitCode::from(output::fail(
+			&Code::UsageArgs,
+			"--interactive needs a terminal; `jobs list --state pending` and `jobs resolve` work without one",
+		)));
 	}
 
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
@@ -485,14 +495,13 @@ pub fn resolve(
 	) {
 		Ok(answer) => answer,
 		Err(retype_ipc::ClientError::Rpc(error)) => {
-			eprintln!("retype: {}: {}", error.code, error.message);
-			return Ok(ExitCode::from(exit_code(&error.code)));
+			return Ok(ExitCode::from(output::fail(&error.code, &error.message)));
 		}
 		Err(other) => return Err(other.into()),
 	};
 
 	match json {
-		true => println!("{answer}"),
+		true => output::success(answer),
 		false => println!(
 			"{}  {}",
 			id.as_str(),
@@ -505,22 +514,29 @@ pub fn resolve(
 
 /// The one job a prefix names, or the exit code to answer with.
 fn single(client: &mut retype_ipc::Client, prefix: &str) -> Result<std::result::Result<JobId, ExitCode>> {
+	match one(client, prefix)? {
+		Ok(id) => Ok(Ok(id)),
+		Err(code) => Ok(Err(code)),
+	}
+}
+
+/// The one job a prefix names, or the exit code to answer with.
+fn one(client: &mut retype_ipc::Client, prefix: &str) -> Result<std::result::Result<JobId, ExitCode>> {
 	let candidates = matching(client, prefix)?;
 
 	match candidates.len() {
 		1 => Ok(Ok(candidates[0].clone())),
-		0 => {
-			eprintln!("retype: E_JOB_STATE: no job matches '{prefix}'");
-			Ok(Err(ExitCode::from(7)))
-		}
+		0 => Ok(Err(ExitCode::from(output::fail(
+			&Code::JobState,
+			format!("no job matches '{prefix}'"),
+		)))),
 		_ => {
-			eprintln!("retype: E_IPC_AMBIGUOUS: '{prefix}' matches {} jobs", candidates.len());
-
+			let mut message = format!("'{prefix}' matches {} jobs", candidates.len());
 			for candidate in &candidates {
-				eprintln!("  {candidate}");
+				message.push_str(&format!("\n  {candidate}"));
 			}
 
-			Ok(Err(ExitCode::from(7)))
+			Ok(Err(ExitCode::from(output::fail(&Code::IpcAmbiguous, message))))
 		}
 	}
 }

@@ -47,6 +47,7 @@ fn record(store: &Store, dir: &Path, index: usize, age_hours: i64) -> JobId {
 			bytes: bytes.clone(),
 			source_path: bytes,
 			source_ext: "heic".to_string(),
+			consume_source: true,
 			outputs: Vec::new(),
 		})
 		.unwrap();

@@ -169,7 +169,7 @@ fn an_output_path_needs_one_output() {
 
 	let output = fixture.convert(&["convert", input.to_str().unwrap(), "webp,bmp", "-o", "one.webp"]);
 
-	assert_eq!(output.status.code(), Some(3));
+	assert_eq!(output.status.code(), Some(2));
 	assert!(String::from_utf8_lossy(&output.stderr).contains("E_USAGE_OUTPUT_COUNT"));
 }
 
@@ -363,4 +363,161 @@ fn a_submitted_job_can_be_cancelled_while_it_runs() {
 		"the daemon this test started was not stopped: {}",
 		String::from_utf8_lossy(&stopped.stderr)
 	);
+}
+
+#[test]
+fn a_missing_source_is_a_filesystem_error_before_a_job_exists() {
+	let fixture = Fixture::new();
+	let missing = fixture.dir.path().join("absent.png");
+
+	let output = fixture.convert(&["convert", missing.to_str().unwrap(), "webp"]);
+
+	assert_eq!(output.status.code(), Some(5));
+	assert!(String::from_utf8_lossy(&output.stderr).contains("E_IO_NOT_FOUND"));
+	assert!(
+		!fixture.state.join("jobs.jsonl").exists() || {
+			let text = fs::read_to_string(fixture.state.join("jobs.jsonl")).unwrap_or_default();
+			!text.contains("absent.png")
+		}
+	);
+}
+
+#[test]
+fn a_dry_run_honours_the_output_path_and_checks_the_source() {
+	let fixture = Fixture::new();
+	let input = fixture.input();
+
+	let named = fixture.convert(&[
+		"convert",
+		input.to_str().unwrap(),
+		"webp",
+		"-o",
+		"holiday.webp",
+		"--dry-run",
+	]);
+	let stdout = String::from_utf8_lossy(&named.stdout);
+
+	assert_eq!(named.status.code(), Some(0));
+	assert!(stdout.contains("holiday.webp"), "{stdout}");
+	assert!(!fixture.dir.path().join("holiday.webp").exists());
+
+	let missing = fixture.convert(&["convert", "absent.png", "webp", "--dry-run"]);
+	assert_eq!(missing.status.code(), Some(5));
+}
+
+#[test]
+fn an_output_that_is_the_source_is_refused_even_with_force() {
+	let fixture = Fixture::new();
+	let input = fixture.input();
+
+	let output = fixture.convert(&[
+		"convert",
+		input.to_str().unwrap(),
+		"webp",
+		"-o",
+		input.to_str().unwrap(),
+		"--force",
+	]);
+
+	assert_eq!(output.status.code(), Some(2));
+	assert!(String::from_utf8_lossy(&output.stderr).contains("E_USAGE_CONFLICT"));
+	assert_eq!(fs::read(&input).unwrap(), b"pixels");
+}
+
+#[test]
+fn an_existing_target_stops_the_whole_conversion_before_writing() {
+	let fixture = Fixture::new();
+	let input = fixture.input();
+	let occupied = fixture.dir.path().join("photo.bmp");
+	fs::write(&occupied, b"older").unwrap();
+
+	let output = fixture.convert(&["convert", input.to_str().unwrap(), "bmp,webp"]);
+
+	assert_eq!(output.status.code(), Some(5));
+	assert!(!fixture.dir.path().join("photo.webp").exists());
+	assert_eq!(fs::read(&occupied).unwrap(), b"older");
+}
+
+#[test]
+fn a_convert_can_be_undone_and_leaves_its_source() {
+	let fixture = Fixture::new();
+	let input = fixture.input();
+	let before = fs::read(&input).unwrap();
+
+	let converted = fixture.convert(&["convert", input.to_str().unwrap(), "webp"]);
+	assert_eq!(converted.status.code(), Some(0));
+	assert!(fixture.dir.path().join("photo.webp").exists());
+
+	let undone = fixture.convert(&["undo", "--last"]);
+	assert_eq!(
+		undone.status.code(),
+		Some(0),
+		"{}",
+		String::from_utf8_lossy(&undone.stderr)
+	);
+	assert!(!fixture.dir.path().join("photo.webp").exists());
+	assert_eq!(fs::read(&input).unwrap(), before);
+}
+
+#[test]
+fn jobs_list_since_filters_older_records() {
+	let fixture = Fixture::new();
+	let input = fixture.input();
+
+	assert_eq!(
+		fixture
+			.convert(&["convert", input.to_str().unwrap(), "webp"])
+			.status
+			.code(),
+		Some(0)
+	);
+
+	let first = String::from_utf8_lossy(&fixture.convert(&["jobs", "list"]).stdout)
+		.lines()
+		.find(|line| line.contains("photo.png"))
+		.and_then(|line| line.split_whitespace().next())
+		.unwrap_or_default()
+		.to_string();
+	assert!(!first.is_empty());
+
+	assert_eq!(
+		fixture
+			.convert(&["convert", input.to_str().unwrap(), "bmp"])
+			.status
+			.code(),
+		Some(0)
+	);
+
+	let listed = fixture.convert(&["jobs", "list", "--since", &first]);
+	let stdout = String::from_utf8_lossy(&listed.stdout);
+
+	assert_eq!(listed.status.code(), Some(0));
+	assert!(!stdout.contains(&first), "since {first}: {stdout}");
+	assert_eq!(stdout.lines().count(), 1, "since {first}: {stdout}");
+}
+
+#[test]
+fn a_terminal_job_cannot_be_cancelled_or_resumed() {
+	let fixture = Fixture::new();
+	let input = fixture.input();
+
+	assert_eq!(
+		fixture
+			.convert(&["convert", input.to_str().unwrap(), "webp"])
+			.status
+			.code(),
+		Some(0)
+	);
+
+	let id = String::from_utf8_lossy(&fixture.convert(&["jobs", "list"]).stdout)
+		.split_whitespace()
+		.next()
+		.unwrap_or_default()
+		.to_string();
+
+	let cancelled = fixture.convert(&["jobs", "cancel", &id]);
+	assert_eq!(cancelled.status.code(), Some(7));
+
+	let resumed = fixture.convert(&["jobs", "resume", &id]);
+	assert_eq!(resumed.status.code(), Some(7));
 }

@@ -8,7 +8,7 @@ What the daemon watches, what it ignores, and what it does at startup.
 |---|---|
 | Unit | A directory, registered by absolute path |
 | Canonicalisation | Symlinks resolved; the canonical path is the identity of the registration |
-| Recursion | Always recursive. There is no depth limit and no non-recursive mode |
+| Recursion | Recursive by default, with no depth limit. `retype watch --non-recursive` registers one directory only |
 | Nesting | Allowed. A registration inside another is recorded, and its own `.retype.toml` applies to its subtree |
 | Persistence | `watches.toml` in the state directory, re-read on daemon start |
 | Missing path | A registration whose path is gone stays registered, is marked unavailable in `daemon status`, and is retried every 30 s |

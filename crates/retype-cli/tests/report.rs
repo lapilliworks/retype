@@ -43,6 +43,7 @@ fn state(dir: &Path) -> PathBuf {
 			bytes: source.clone(),
 			source_path: source,
 			source_ext: "heic".to_string(),
+			consume_source: true,
 			outputs: Vec::new(),
 		})
 		.unwrap();

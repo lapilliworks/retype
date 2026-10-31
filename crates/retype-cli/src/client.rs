@@ -24,7 +24,7 @@ const CLIENT_NAME: &str = concat!("retype-cli/", env!("CARGO_PKG_VERSION"));
 /// Connect to a running daemon. Never starts one.
 pub fn connect(state_dir: &Path) -> Result<Client> {
 	let endpoint = state::read_endpoint(state_dir)?;
-	crate::verbose::detail(format!("daemon at {endpoint}"));
+	crate::verbose::note(format!("daemon at {endpoint}"));
 	let mut client = Client::connect(Path::new(&endpoint))?;
 	client.hello(CLIENT_NAME)?;
 	Ok(client)
@@ -136,6 +136,9 @@ pub fn describe_status(status: &Value) -> Vec<(String, String)> {
 		),
 		("jobs".to_string(), field("jobs")),
 		("parked".to_string(), field("parked")),
+		("dropped".to_string(), field("dropped")),
+		("skipped".to_string(), field("skipped")),
+		("placeholders".to_string(), field("placeholders")),
 		("journal".to_string(), field("journal")),
 		("endpoint".to_string(), field("endpoint")),
 		(

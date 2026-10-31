@@ -298,6 +298,7 @@ impl Server {
 		if let Some(job) = answer.job {
 			fields["job"] = json!(job.id);
 			fields["intent"] = json!(job.intent);
+			fields["source"] = json!(job.source.format);
 			fields["backend"] = json!(job.backend);
 			fields["engine"] = json!(job.engine);
 			fields["created"] = json!(job.created);
@@ -314,6 +315,7 @@ impl Server {
 		}
 
 		if let Some(output) = answer.output {
+			fields["target"] = json!(output.format);
 			fields["tier"] = json!(output.tier);
 			fields["bytes"] = json!(output.bytes);
 		}

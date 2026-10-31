@@ -111,6 +111,9 @@ fn the_status_lines_are_what_a_human_needs() {
 			"uptime",
 			"jobs",
 			"parked",
+			"dropped",
+			"skipped",
+			"placeholders",
 			"journal",
 			"endpoint",
 			"supervised"

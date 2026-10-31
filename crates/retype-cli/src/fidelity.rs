@@ -24,6 +24,7 @@ use retype_core::tools;
 
 use crate::error::Result;
 use crate::matrix::{PairError, Samples, Selection, plan_for};
+use crate::output;
 
 pub struct Request<'a> {
 	pub pairs: &'a [String],
@@ -44,12 +45,15 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 	let work = state_dir.join("fidelity");
 	let mut samples = Samples::new(registry, &work)?;
 
-	let directory = request.fixtures.unwrap_or(Path::new("fixtures/fidelity"));
-	let fixtures = match Fixtures::open(directory) {
+	let directory = request
+		.fixtures
+		.map(Path::to_path_buf)
+		.or_else(|| find_fixtures(state_dir))
+		.unwrap_or_else(|| Path::new("fixtures/fidelity").to_path_buf());
+	let fixtures = match Fixtures::open(&directory) {
 		Ok(fixtures) => fixtures,
 		Err(error) => {
-			eprintln!("retype: {error}");
-			return Ok(ExitCode::from(3));
+			return Ok(ExitCode::from(output::fail(&error.code(), error.to_string())));
 		}
 	};
 
@@ -74,18 +78,24 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 	let pairs = match selection.pairs(registry) {
 		Ok(pairs) => pairs,
 		Err(PairError::Usage(message)) => {
-			eprintln!("retype: {message}");
-			return Ok(ExitCode::from(2));
+			return Ok(ExitCode::from(output::fail(
+				&retype_core::error::Code::UsageArgs,
+				message,
+			)));
 		}
 		Err(PairError::Format(message)) => {
-			eprintln!("retype: {message}");
-			return Ok(ExitCode::from(3));
+			return Ok(ExitCode::from(output::fail(
+				&retype_core::error::Code::FormatUnknown,
+				message,
+			)));
 		}
 	};
 
 	if pairs.is_empty() {
-		eprintln!("retype: no pair to check: declare [bench.seed] for a family, or name one with --pair");
-		return Ok(ExitCode::from(2));
+		return Ok(ExitCode::from(output::fail(
+			&retype_core::error::Code::UsageArgs,
+			"no pair to check: declare [bench.seed] for a family, or name one with --pair",
+		)));
 	}
 
 	if !request.json && !request.quiet {
@@ -121,7 +131,7 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 			continue;
 		}
 
-		let checks = check_axes(&fixtures, directory, source, &plan, &work);
+		let checks = check_axes(&fixtures, &directory, source, &plan, &work);
 		let mut claim = claim_of(&plan, source, target, &samples);
 		claim.axes = kept(&checks);
 		claim.lost = dropped(&checks);
@@ -187,6 +197,41 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 		true => ExitCode::from(4),
 		false => ExitCode::SUCCESS,
 	})
+}
+
+/// Where the checked-in fixtures live for this installation.
+///
+/// A source tree has them at `fixtures/fidelity`. An installed build looks beside
+/// its executable and in the state directory, so the command does not depend on
+/// the current directory.
+fn find_fixtures(state_dir: &Path) -> Option<std::path::PathBuf> {
+	if let Some(configured) = std::env::var_os("RETYPE_FIXTURES") {
+		let path = std::path::PathBuf::from(configured);
+		if path.is_dir() {
+			return Some(path);
+		}
+	}
+
+	let local = Path::new("fixtures/fidelity");
+	if local.is_dir() {
+		return Some(local.to_path_buf());
+	}
+
+	let beside_state = state_dir.join("fixtures/fidelity");
+	if beside_state.is_dir() {
+		return Some(beside_state);
+	}
+
+	if let Ok(executable) = std::env::current_exe() {
+		for ancestor in executable.ancestors().skip(1) {
+			let candidate = ancestor.join("share/retype/fixtures/fidelity");
+			if candidate.is_dir() {
+				return Some(candidate);
+			}
+		}
+	}
+
+	None
 }
 
 /// Run every fixture of the source format through the same plan and see what survives.

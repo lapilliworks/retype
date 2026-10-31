@@ -15,6 +15,24 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+
+/// Where `tools install` puts artifacts, set once by the CLI, `docs/tools.md` §2.
+static MANAGED: OnceLock<PathBuf> = OnceLock::new();
+
+/// Point bare commands at the managed directory before `PATH`, `docs/tools.md` §2.
+pub fn use_managed(path: PathBuf) {
+	let _ = MANAGED.set(path);
+}
+
+pub fn managed_dir() -> Option<&'static Path> {
+	MANAGED.get().map(PathBuf::as_path)
+}
+
+/// Whether a resolved executable came from the managed set rather than `PATH`.
+pub fn is_managed(path: &Path) -> bool {
+	managed_dir().is_some_and(|directory| path.starts_with(directory))
+}
 
 /// A tool as declared under `[tools]`, `docs/config.md` §3.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,7 +231,7 @@ fn probe_with<'a>(tool: &'a Tool, path_env: &OsStr) -> ToolStatus<'a> {
 }
 
 fn probe_command<'a>(tool: &'a Tool, command: &str, path_env: &OsStr) -> ToolStatus<'a> {
-	let Some(path) = find_in_path(path_env, command) else {
+	let Some(path) = find_command(path_env, command) else {
 		return ToolStatus {
 			tool,
 			command: command.to_string(),
@@ -340,7 +358,27 @@ pub fn resolve_engine<'a>(tool: &'a Tool, engine: &str) -> Option<&'a str> {
 	tool.candidates(engine)
 		.iter()
 		.map(String::as_str)
-		.find(|candidate| find_in_path(&path_env, candidate).is_some())
+		.find(|candidate| find_command(&path_env, candidate).is_some())
+}
+
+/// Look a command up managed-first, then in `PATH`, `docs/tools.md` §2.
+fn find_command(path_env: &OsStr, command: &str) -> Option<PathBuf> {
+	find_in_directory(managed_dir(), command).or_else(|| find_in_path(path_env, command))
+}
+
+/// A command inside one directory, including the executable suffix on Windows.
+fn find_in_directory(directory: Option<&Path>, command: &str) -> Option<PathBuf> {
+	let directory = directory?;
+	let names: Vec<String> = if cfg!(windows) {
+		vec![format!("{command}.exe"), command.to_string()]
+	} else {
+		vec![command.to_string()]
+	};
+
+	names
+		.into_iter()
+		.map(|name| directory.join(name))
+		.find(|candidate| is_executable(candidate))
 }
 
 /// Look a command up in a `PATH` value. Split out so it is testable without

@@ -6,6 +6,7 @@
 
 use std::io::BufReader;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -26,6 +27,20 @@ pub struct Client {
 	writer: Stream,
 	next_id: u64,
 	daemon: Option<HelloResult>,
+}
+
+/// A line of wire detail for `-vv`, set once by the CLI. A function pointer
+/// rather than a closure keeps the client free of a captured logger and its lock.
+static TRACE: OnceLock<fn(&str)> = OnceLock::new();
+
+pub fn trace_with(trace: fn(&str)) {
+	let _ = TRACE.set(trace);
+}
+
+fn trace(line: String) {
+	if let Some(trace) = TRACE.get() {
+		trace(&line);
+	}
 }
 
 impl Client {
@@ -79,6 +94,7 @@ impl Client {
 
 		let request = Request::new(id, method).with_params(params)?;
 
+		trace(format!("request {method} #{id}"));
 		write_frame(&mut self.writer, &request)?;
 
 		let frame = read_frame(&mut self.reader)?
@@ -94,8 +110,14 @@ impl Client {
 		}
 
 		match (response.ok, response.result, response.error) {
-			(true, Some(result), _) => Ok(result),
-			(false, _, Some(error)) => Err(ClientError::Rpc(error)),
+			(true, Some(result), _) => {
+				trace(format!("response {method} #{id}: ok"));
+				Ok(result)
+			}
+			(false, _, Some(error)) => {
+				trace(format!("response {method} #{id}: {}", error.code));
+				Err(ClientError::Rpc(error))
+			}
 			_ => Err(ClientError::Protocol(
 				"a reply that is neither a result nor an error".to_string(),
 			)),

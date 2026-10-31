@@ -48,15 +48,50 @@ pub enum Error {
 }
 
 impl Error {
+	/// The code a script sees, `docs/errors.md` §3.
+	pub fn code(&self) -> retype_core::error::Code {
+		use retype_core::error::Code;
+
+		match self {
+			Self::Core(error) => error.code(),
+			Self::Config(problems) => problems
+				.iter()
+				.next()
+				.map(retype_core::error::Error::code)
+				.unwrap_or(Code::CfgParse),
+			Self::Io(error) => retype_core::error::code_for_io(error),
+			Self::Frame(_) => Code::IpcFrame,
+			Self::Client(error) => match error {
+				retype_ipc::ClientError::Rpc(error) => error.code.clone(),
+				retype_ipc::ClientError::Connect(_) | retype_ipc::ClientError::Protocol(_) => Code::IpcUnavailable,
+				retype_ipc::ClientError::Frame(_) => Code::IpcFrame,
+			},
+			Self::AlreadyRunning(_) => Code::IoLocked,
+			Self::NoStateDirectory => Code::InternalUnexpected,
+			Self::SocketPathTooLong { .. } => Code::IoFailed,
+			Self::UnsupportedTransport => Code::IpcUnavailable,
+			Self::BadIdentity(_) => Code::IoFailed,
+			Self::DaemonUnavailable | Self::DaemonStartFailed(..) => Code::IpcUnavailable,
+		}
+	}
+
 	/// Exit codes are contract, `docs/cli.md` §7. The category decides, and this
 	/// layer narrows it where it knows more: a transport failure is a daemon
 	/// problem rather than a filesystem one, and a held lock is a state conflict.
 	pub fn exit_code(&self) -> u8 {
 		match self {
-			Self::Core(error) => error.exit_code(),
-			Self::Config(_) => retype_core::error::Category::Diagnosis.exit_code(),
+			Self::Core(error) => exit_code(&error.code()),
+			Self::Config(problems) => problems
+				.iter()
+				.next()
+				.map(|error| exit_code(&error.code()))
+				.unwrap_or(3),
 			Self::Io(error) => retype_core::error::category_for_io(error).exit_code(),
-			Self::Frame(_) | Self::Client(_) | Self::UnsupportedTransport => 6,
+			Self::Frame(_) => 6,
+			// A daemon's own refusal is classified by its code, not by the fact that it
+			// arrived over the wire.
+			Self::Client(retype_ipc::ClientError::Rpc(error)) => exit_code(&error.code),
+			Self::Client(_) | Self::UnsupportedTransport => 6,
 			Self::DaemonUnavailable | Self::DaemonStartFailed(..) => 6,
 			Self::AlreadyRunning(_) => 7,
 			Self::SocketPathTooLong { .. } | Self::BadIdentity(_) => {
@@ -75,13 +110,16 @@ pub fn exit_code(code: &retype_core::error::Code) -> u8 {
 	use retype_core::error::Code;
 
 	match code {
+		// The argument parser or the caller asked for something contradictory.
+		Code::UsageArgs | Code::UsageConflict | Code::UsageOutputCount => 2,
 		// The environment refused, not the request.
 		Code::ToolMissing
 		| Code::ToolVersion
 		| Code::ToolFailed
 		| Code::ToolTimeout
 		| Code::JobCancelled
-		| Code::JobInterrupted => 4,
+		| Code::JobInterrupted
+		| Code::JobResumeUnavailable => 4,
 		// A state conflict: the lock, an ambiguous prefix, or a job that is not in the
 		// state the request needs, `docs/cli.md` §7.
 		Code::IoLocked | Code::IpcAmbiguous | Code::JobState => 7,
@@ -94,6 +132,7 @@ pub fn exit_code(code: &retype_core::error::Code) -> u8 {
 		| Code::IoCorruptJournal => 5,
 		// A daemon that cannot be reached is its own code, handled before this.
 		Code::IpcUnavailable | Code::IpcVersion | Code::IpcHandshake | Code::IpcAuth => 6,
+		Code::InternalInvariant | Code::InternalPanic | Code::InternalUnexpected => 1,
 		_ => 3,
 	}
 }

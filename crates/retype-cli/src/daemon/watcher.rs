@@ -797,6 +797,7 @@ fn run(
 						// directory too high.
 						source_path: source.to_path_buf(),
 						source_ext: format.clone(),
+						consume_source: true,
 						outputs: derived
 							.iter()
 							.map(|derived| retype_core::undo::Output {

@@ -3,7 +3,9 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use retype_cli::error::Result;
-use retype_cli::{bench, client, config, daemon, doctor, explain, fidelity, init, list, report, state, verbose, why};
+use retype_cli::{
+	bench, client, config, daemon, doctor, explain, fidelity, init, list, output, report, state, tools, verbose, why,
+};
 use serde_json::Value;
 
 /// Automatic file format conversion on rename.
@@ -151,8 +153,8 @@ enum Command {
 		render: Option<std::path::PathBuf>,
 
 		/// The property fixtures to check each pair against
-		#[arg(long, value_name = "DIR", default_value = "fixtures/fidelity")]
-		fixtures: std::path::PathBuf,
+		#[arg(long, value_name = "DIR")]
+		fixtures: Option<std::path::PathBuf>,
 	},
 
 	/// Print the version, and the schemas this build reads
@@ -170,6 +172,12 @@ enum Command {
 		/// Add one line per pair, with the tier it claims and the backend that carries it
 		#[arg(long)]
 		tiers: bool,
+	},
+
+	/// Inspect, install and verify the managed toolchain
+	Tools {
+		#[command(subcommand)]
+		action: tools::Action,
 	},
 
 	/// Explain a file's conversion
@@ -220,6 +228,10 @@ enum JobsAction {
 		/// Show at most this many
 		#[arg(long)]
 		limit: Option<usize>,
+
+		/// Only jobs newer than this id
+		#[arg(long, value_name = "ID")]
+		since: Option<String>,
 	},
 
 	/// Show one job as the daemon recorded it
@@ -302,19 +314,15 @@ fn main() -> ExitCode {
 	let cli = Cli::parse();
 	config::use_path(cli.config.clone());
 	verbose::start(cli.verbose, cli.quiet);
+	output::start(cli.json);
+	retype_ipc::client::trace_with(|line| verbose::detail(line));
 	announce(cli.config.as_deref());
 
 	if let Command::Undo { job, last } = &cli.command {
 		let code = retype_cli::state::resolve(cli.state_dir.clone())
 			.and_then(|state_dir| retype_cli::undo::run(&state_dir, job.as_deref(), *last, cli.json));
 
-		return match code {
-			Ok(code) => code,
-			Err(error) => {
-				eprintln!("retype: {error}");
-				ExitCode::from(error.exit_code())
-			}
-		};
+		return finish(code);
 	}
 
 	if let Command::Jobs { action, interactive } = &cli.command {
@@ -322,27 +330,30 @@ fn main() -> ExitCode {
 			let code = retype_cli::state::resolve(cli.state_dir.clone())
 				.and_then(|state_dir| retype_cli::jobs::interactive(&state_dir, cli.json, !cli.no_spawn));
 
-			return match code {
-				Ok(code) => code,
-				Err(error) => {
-					eprintln!("retype: {error}");
-					ExitCode::from(error.exit_code())
-				}
-			};
+			return finish(code);
 		}
 
 		let Some(action) = action else {
-			eprintln!("retype: E_USAGE_ARGS: jobs needs a subcommand, or --interactive");
-			return ExitCode::from(2);
+			return ExitCode::from(output::usage(
+				retype_core::error::Code::UsageArgs,
+				"jobs needs a subcommand, or --interactive",
+			));
 		};
 
 		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| match action {
-			JobsAction::List { state, limit } => {
-				retype_cli::jobs::list(&state_dir, state.as_deref(), *limit, cli.json, !cli.no_spawn)
-			}
+			JobsAction::List { state, limit, since } => retype_cli::jobs::list(
+				&state_dir,
+				state.as_deref(),
+				*limit,
+				since.as_deref(),
+				cli.json,
+				!cli.no_spawn,
+			),
 			JobsAction::Cancel { job } => retype_cli::jobs::cancel(&state_dir, job, cli.json, !cli.no_spawn),
 			JobsAction::Get { job } => retype_cli::jobs::get(&state_dir, job, !cli.no_spawn),
-			JobsAction::Logs { job, follow } => retype_cli::jobs::logs(&state_dir, job, *follow, !cli.no_spawn),
+			JobsAction::Logs { job, follow } => {
+				retype_cli::jobs::logs(&state_dir, job, *follow, cli.json, !cli.no_spawn)
+			}
 			JobsAction::Resume { job, force } => {
 				retype_cli::jobs::resume(&state_dir, job, *force, cli.json, !cli.no_spawn)
 			}
@@ -351,24 +362,28 @@ fn main() -> ExitCode {
 				now,
 				convert,
 				force,
-			} => match (now, convert) {
-				(true, false) | (false, true) => {
+			} => match (now, convert, force) {
+				(true, false, _) | (false, true, false) => {
 					retype_cli::jobs::resolve(&state_dir, job, *convert, *force, cli.json, !cli.no_spawn)
 				}
+				(false, true, true) => {
+					let code = output::usage(
+						retype_core::error::Code::UsageConflict,
+						"--force belongs to --now; a reduced request does not overwrite what somebody else wrote",
+					);
+					Ok(ExitCode::from(code))
+				}
 				_ => {
-					eprintln!("retype: E_USAGE_ARGS: resolve needs exactly one of --now or --convert");
-					Ok(ExitCode::from(2))
+					let code = output::usage(
+						retype_core::error::Code::UsageConflict,
+						"resolve needs exactly one of --now or --convert",
+					);
+					Ok(ExitCode::from(code))
 				}
 			},
 		});
 
-		return match code {
-			Ok(code) => code,
-			Err(error) => {
-				eprintln!("retype: {error}");
-				ExitCode::from(error.exit_code())
-			}
-		};
+		return finish(code);
 	}
 
 	if let Command::Watch {
@@ -377,6 +392,8 @@ fn main() -> ExitCode {
 	} = &cli.command
 	{
 		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
+			tools::use_managed(state_dir.join("tools").join("bin"));
+
 			config::load().and_then(|registry| {
 				retype_cli::watch::run(
 					&state_dir,
@@ -388,26 +405,14 @@ fn main() -> ExitCode {
 			})
 		});
 
-		return match code {
-			Ok(code) => code,
-			Err(error) => {
-				eprintln!("retype: {error}");
-				ExitCode::from(error.exit_code())
-			}
-		};
+		return finish(code);
 	}
 
 	if let Command::Unwatch { directories } = &cli.command {
 		let code = retype_cli::state::resolve(cli.state_dir.clone())
 			.and_then(|state_dir| retype_cli::watch::unwatch(&state_dir, directories, cli.json));
 
-		return match code {
-			Ok(code) => code,
-			Err(error) => {
-				eprintln!("retype: {error}");
-				ExitCode::from(error.exit_code())
-			}
-		};
+		return finish(code);
 	}
 
 	if let Command::Convert {
@@ -419,6 +424,8 @@ fn main() -> ExitCode {
 	} = &cli.command
 	{
 		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
+			tools::use_managed(state_dir.join("tools").join("bin"));
+
 			config::load().and_then(|registry| {
 				config::report_warnings(&registry);
 
@@ -439,44 +446,43 @@ fn main() -> ExitCode {
 			})
 		});
 
-		return match code {
-			Ok(code) => code,
-			Err(error) => {
-				eprintln!("retype: {error}");
-				ExitCode::from(error.exit_code())
-			}
-		};
+		return finish(code);
 	}
 
 	if let Command::Explain { source, intent } = &cli.command {
-		let code = state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
-			config::load().and_then(|registry| {
-				config::report_warnings(&registry);
+		// An explanation does not need writable state; the estimate does, and is
+		// simply absent when the machine has no state directory.
+		let state_dir = state::resolve(cli.state_dir.clone()).ok();
 
-				explain::run(
-					&registry,
-					&explain::Request {
-						source,
-						intent,
-						state_dir: &state_dir,
-						json: cli.json,
-						quiet: cli.quiet,
-					},
-				)
-			})
+		if let Some(path) = &state_dir {
+			tools::use_managed(path.join("tools").join("bin"));
+		}
+
+		let code = config::load().and_then(|registry| {
+			config::report_warnings(&registry);
+
+			explain::run(
+				&registry,
+				&explain::Request {
+					source,
+					intent,
+					state_dir: state_dir.as_deref(),
+					json: cli.json,
+					quiet: cli.quiet,
+					output: None,
+					force: false,
+					dry_run: false,
+				},
+			)
 		});
 
-		return match code {
-			Ok(code) => code,
-			Err(error) => {
-				eprintln!("retype: {error}");
-				ExitCode::from(error.exit_code())
-			}
-		};
+		return finish(code);
 	}
 
 	if let Command::Bench { pairs, families } = &cli.command {
 		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
+			tools::use_managed(state_dir.join("tools").join("bin"));
+
 			config::load().and_then(|registry| {
 				config::report_warnings(&registry);
 
@@ -493,13 +499,7 @@ fn main() -> ExitCode {
 			})
 		});
 
-		return match code {
-			Ok(code) => code,
-			Err(error) => {
-				eprintln!("retype: {error}");
-				ExitCode::from(error.exit_code())
-			}
-		};
+		return finish(code);
 	}
 
 	if let Command::Fidelity {
@@ -512,6 +512,8 @@ fn main() -> ExitCode {
 	} = &cli.command
 	{
 		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
+			tools::use_managed(state_dir.join("tools").join("bin"));
+
 			config::load().and_then(|registry| {
 				config::report_warnings(&registry);
 
@@ -524,7 +526,7 @@ fn main() -> ExitCode {
 						write: write.as_deref(),
 						manifest: manifest.as_deref(),
 						render: render.as_deref(),
-						fixtures: Some(fixtures.as_path()),
+						fixtures: fixtures.as_deref(),
 						json: cli.json,
 						quiet: cli.quiet,
 					},
@@ -532,13 +534,20 @@ fn main() -> ExitCode {
 			})
 		});
 
-		return match code {
-			Ok(code) => code,
-			Err(error) => {
-				eprintln!("retype: {error}");
-				ExitCode::from(error.exit_code())
-			}
-		};
+		return finish(code);
+	}
+
+	if let Command::Tools { action } = &cli.command {
+		let code = state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
+			tools::use_managed(state_dir.join("tools").join("bin"));
+
+			config::load().and_then(|registry| {
+				config::report_warnings(&registry);
+				tools::run(&registry, &state_dir, action, cli.json, cli.quiet)
+			})
+		});
+
+		return finish(code);
 	}
 
 	if matches!(cli.command, Command::Version) {
@@ -555,43 +564,35 @@ fn main() -> ExitCode {
 	}
 
 	if let Command::List { tiers } = &cli.command {
+		if let Ok(state_dir) = state::resolve(cli.state_dir.clone()) {
+			tools::use_managed(state_dir.join("tools").join("bin"));
+		}
+
 		let code = config::load().and_then(|registry| {
 			config::report_warnings(&registry);
 			list::run(&registry, *tiers, cli.json)
 		});
 
-		return match code {
-			Ok(code) => code,
-			Err(error) => {
-				eprintln!("retype: {error}");
-				ExitCode::from(error.exit_code())
-			}
-		};
+		return finish(code);
 	}
 
 	if let Command::Why { path } = &cli.command {
-		let code = state::resolve(cli.state_dir.clone())
-			.and_then(|state_dir| why::run(path, cli.json, cli.quiet, &state_dir, !cli.no_spawn));
+		let code = state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
+			tools::use_managed(state_dir.join("tools").join("bin"));
 
-		return match code {
-			Ok(code) => code,
-			Err(error) => {
-				eprintln!("retype: {error}");
-				ExitCode::from(error.exit_code())
-			}
-		};
+			config::load().and_then(|registry| {
+				config::report_warnings(&registry);
+				why::run(&registry, path, cli.json, cli.quiet, &state_dir, !cli.no_spawn)
+			})
+		});
+
+		return finish(code);
 	}
 
 	if let Command::Init { output } = &cli.command {
-		let code = init::run(output.as_deref(), cli.quiet);
+		let code = init::run(output.as_deref(), cli.quiet, cli.json);
 
-		return match code {
-			Ok(code) => code,
-			Err(error) => {
-				eprintln!("retype: {error}");
-				ExitCode::from(error.exit_code())
-			}
-		};
+		return finish(code);
 	}
 
 	if let Command::Doctor {
@@ -605,8 +606,10 @@ fn main() -> ExitCode {
 		// A report and a snippet answer different questions, and one command that
 		// did both would write a file nobody asked for.
 		if report.is_some() && (*emit || *write) {
-			eprintln!("retype: --report cannot be combined with --emit or --write");
-			return ExitCode::from(2);
+			return ExitCode::from(output::usage(
+				retype_core::error::Code::UsageConflict,
+				"--report cannot be combined with --emit or --write",
+			));
 		}
 
 		if let Some(path) = report {
@@ -617,7 +620,7 @@ fn main() -> ExitCode {
 					let written = report::write(&registry, &state_dir, path.as_deref())?;
 
 					if cli.json {
-						println!("{}", serde_json::json!({"path": written.display().to_string()}));
+						output::success(serde_json::json!({"path": written.display().to_string()}));
 					} else if !cli.quiet {
 						eprintln!("retype: wrote {}", written.display());
 					}
@@ -626,13 +629,14 @@ fn main() -> ExitCode {
 				})
 			});
 
-			return match code {
-				Ok(code) => code,
-				Err(error) => {
-					eprintln!("retype: {error}");
-					ExitCode::from(error.exit_code())
-				}
-			};
+			return finish(code);
+		}
+
+		if *emit && *write {
+			return ExitCode::from(output::usage(
+				retype_core::error::Code::UsageConflict,
+				"--emit and --write answer the same question differently; choose one",
+			));
 		}
 
 		let mode = match (emit, write) {
@@ -641,19 +645,24 @@ fn main() -> ExitCode {
 			(false, true) | (true, true) => doctor::Emit::Write,
 		};
 
+		if let Ok(state_dir) = state::resolve(cli.state_dir.clone()) {
+			tools::use_managed(state_dir.join("tools").join("bin"));
+		}
+
 		let code = config::load().and_then(|registry| {
 			config::report_warnings(&registry);
 
-			doctor::run(&registry, *check || !require.is_empty(), require, mode)
+			doctor::run(
+				&registry,
+				*check || !require.is_empty(),
+				require,
+				mode,
+				cli.json,
+				cli.quiet,
+			)
 		});
 
-		return match code {
-			Ok(code) => code,
-			Err(error) => {
-				eprintln!("retype: {error}");
-				ExitCode::from(error.exit_code())
-			}
-		};
+		return finish(code);
 	}
 
 	let outcome = match &cli.command {
@@ -673,16 +682,20 @@ fn main() -> ExitCode {
 		| Command::Version
 		| Command::Completions { .. }
 		| Command::List { .. }
+		| Command::Tools { .. }
 		| Command::Init { .. }
 		| Command::Doctor { .. } => unreachable!("these are dispatched before the outcome is built"),
 	};
 
-	match outcome {
+	finish(outcome)
+}
+
+/// One error rendering for every command: human on stderr, an envelope on stdout
+/// when `--json` asked for one, `docs/errors.md` §7.
+fn finish(code: Result<ExitCode>) -> ExitCode {
+	match code {
 		Ok(code) => code,
-		Err(error) => {
-			eprintln!("retype: {error}");
-			ExitCode::from(error.exit_code())
-		}
+		Err(error) => ExitCode::from(output::fail_error(&error)),
 	}
 }
 
@@ -693,6 +706,7 @@ fn main() -> ExitCode {
 /// from.
 fn print_version(json: bool) {
 	const SCHEMAS: &[(&str, &str)] = &[
+		("grammar", retype_core::intent::GRAMMAR_VERSION),
 		("config", retype_core::registry::CONFIG_VERSION),
 		("ipc", retype_ipc::IPC_VERSION),
 		("journal", retype_core::job::JOURNAL_VERSION),
@@ -701,6 +715,7 @@ fn print_version(json: bool) {
 		("bench", retype_core::estimate::BENCH_VERSION),
 		("fidelity", retype_core::fidelity::FIDELITY_VERSION),
 		("fixtures", retype_core::axis::FIXTURES_VERSION),
+		("tools", retype_core::managed::TOOLS_VERSION),
 	];
 
 	if json {
@@ -713,6 +728,7 @@ fn print_version(json: bool) {
 			"{}",
 			serde_json::json!({
 				"v": "retype-cli-json-1",
+				"ok": true,
 				"name": "retype",
 				"version": env!("CARGO_PKG_VERSION"),
 				"schemas": schemas,
@@ -762,8 +778,7 @@ fn control(cli: &Cli, action: &DaemonAction) -> Result<ExitCode> {
 				// A refusal is an answer, not a transport failure: the daemon is still
 				// there and said why, so the message and the code are the daemon's.
 				Err(retype_ipc::ClientError::Rpc(error)) => {
-					eprintln!("retype: {}: {}", error.code, error.message);
-					return Ok(ExitCode::from(retype_cli::error::exit_code(&error.code)));
+					return Ok(ExitCode::from(output::fail(&error.code, &error.message)));
 				}
 				Err(other) => return Err(other.into()),
 			};
@@ -775,7 +790,7 @@ fn control(cli: &Cli, action: &DaemonAction) -> Result<ExitCode> {
 			let cancelled = answer.get("cancelled").and_then(Value::as_u64).unwrap_or(0);
 
 			if cli.json {
-				println!("{answer}");
+				output::success(answer);
 			} else {
 				match cancelled {
 					0 => println!("stopped"),
@@ -796,14 +811,11 @@ fn control(cli: &Cli, action: &DaemonAction) -> Result<ExitCode> {
 
 fn print_status(status: &Value, json: bool) {
 	if json {
-		println!(
-			"{}",
-			serde_json::to_string_pretty(status).unwrap_or_else(|_| status.to_string())
-		);
+		output::success(status.clone());
 		return;
 	}
 
 	for (name, text) in client::describe_status(status) {
-		println!("{name:<9}{text}");
+		println!("{name:<13}{text}");
 	}
 }

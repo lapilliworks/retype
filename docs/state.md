@@ -112,6 +112,7 @@ source_size = 2431002
 source_mode = 0o644
 source_mtime_ns = 1690000000000
 link = 'hard'
+consume_source = true
 
 [[outputs]]
 path = '/home/u/Pictures/a.jpg'
@@ -120,7 +121,7 @@ ext = 'jpg'
 
 The source is a hard link when the source and the store share a filesystem, detected by device id, and a copy otherwise. `link` records which.
 
-Undo restores the source path with `source_ext`, `source_mode` and `source_mtime_ns`, removes every output that was produced, and deletes the record. Undoing a `partial` job therefore removes the outputs that exist and leaves nothing behind. Restoring a copy sets mtime explicitly, so undo does not depend on the journal.
+`consume_source` is true for a rename-derived job and false for `retype convert`, whose source never moves. Undo restores the source path with `source_ext`, `source_mode` and `source_mtime_ns`, removes every output that was produced, and deletes the record. A record whose `consume_source` is false removes its outputs and leaves the source untouched. Undoing a `partial` job therefore removes the outputs that exist and leaves nothing behind. Restoring a copy sets mtime explicitly, so undo does not depend on the journal.
 
 Records are the durable truth for recoverability. The journal is a cache of history and progress: losing it costs listing and progress, never the ability to undo. Reconciliation therefore reads the undo store first.
 

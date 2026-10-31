@@ -11,7 +11,7 @@ retype <command> [arguments] [flags]
 | Command | Purpose |
 |---|---|
 | `convert <input> <intent>` | One-shot conversion. Alias `c` |
-| `watch [<dir>...]` | Register directories, or list registrations with no arguments |
+| `watch [<dir>...] [--non-recursive]` | Register directories, or list registrations with no arguments |
 | `unwatch <dir>...` | Deregister directories |
 | `daemon [start\|stop [--now] [--force]\|status]` | Foreground by default. `stop` drains, `--now` cancels, `--force` overrides a supervisor's refusal |
 | `jobs list\|get\|cancel\|logs` | Queue inspection and control |
@@ -47,7 +47,7 @@ retype convert <input> <intent> [-o <path>] [--force] [--dry-run]
 | `retype c a.heic webp+q80+nometa` | `a.webp`, quality 80, metadata stripped |
 | `retype c a.heic jpg+q80 -o holiday.jpg` | `holiday.jpg` |
 | `retype c Photos zip` | `Photos.zip` |
-| `retype c a.heic png,webp -o x.png` | `E_USAGE`: one path, several outputs |
+| `retype c a.heic png,webp -o x.png` | `E_USAGE_OUTPUT_COUNT`: one path, several outputs |
 | `retype c a.heic` | `E_USAGE`: nothing to do |
 | `retype c a.heic jpg --dry-run` | Prints what would happen, writes nothing |
 
@@ -63,7 +63,7 @@ The command submits an `immediate` job to the daemon and waits for it, `docs/ipc
 
 Everything that can fail before a byte moves fails at submission, with the code and the exit status the failure would have had locally, so a bad intent or a missing tool is reported without a job that only fails later. The client polls `jobs.get` while the job runs, which keeps the daemon free to answer anything else, including the cancel that stops it.
 
-A submitted conversion does not consume its source: `convert` was handed a path and leaves it where it is. Undo for one is therefore "remove the outputs and keep the source", which is not implemented; a rename in a watched directory is the undoable path today.
+A submitted conversion does not consume its source: `convert` was handed a path and leaves it where it is. Its undo record holds the outputs and no source bytes, so `retype undo` removes what it produced and leaves the source exactly where it was.
 
 A failure writes nothing and leaves nothing behind. The output is staged in its target directory and renamed into place only when the tool exits zero, so an output path is absent or complete, never empty and never half written.
 
@@ -132,7 +132,7 @@ retype unwatch <dir>...
 
 `--json` writes one object per line with a `kind` of `format`, `operation`, `preset`, `backend` or `pair`.
 
-`watch` with no arguments lists registrations as `<path>  <recursive>  <policy summary>`. With arguments it registers each directory; registration is idempotent, and the daemon re-reads the file so a running one picks the directory up within a second. `watch` starts nothing itself, so it can be scripted.
+`watch` with no arguments lists registrations as `<path>  <recursive>  <policy summary>`. With arguments it registers each directory; registration is idempotent, and the daemon re-reads the file so a running one picks the directory up within a second. `--non-recursive` registers only that directory rather than its subtree. `watch` starts nothing itself, so it can be scripted.
 
 The summary column is the directory's own `.retype.toml` policy, where it has one, because "what will happen here" is the question a listing is asked.
 

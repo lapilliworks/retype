@@ -9,6 +9,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use crate::error::{Error, Result};
+use crate::output;
 
 /// The starting configuration. It is validated by the tests, so a change that
 /// would not load fails the build rather than the user's first run.
@@ -32,8 +33,9 @@ retention = '1w'
 xattr = true
 ";
 
-pub fn run(output: Option<&Path>, quiet: bool) -> Result<ExitCode> {
+pub fn run(output: Option<&Path>, quiet: bool, json: bool) -> Result<ExitCode> {
 	match output {
+		None if json => output::success(serde_json::json!({"config": EXAMPLE})),
 		None => print!("{EXAMPLE}"),
 		Some(path) => {
 			// Overwriting a configuration that exists is the one thing this command
@@ -49,7 +51,9 @@ pub fn run(output: Option<&Path>, quiet: bool) -> Result<ExitCode> {
 
 			std::fs::write(path, EXAMPLE)?;
 
-			if !quiet {
+			if json {
+				output::success(serde_json::json!({"path": path.display().to_string()}));
+			} else if !quiet {
 				eprintln!("retype: wrote {}", path.display());
 			}
 		}

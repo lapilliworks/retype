@@ -74,6 +74,8 @@ pub fn prepare<'a>(registry: &'a Registry, request: &Request) -> std::result::Re
 	let plans = plan::compile(registry, &tools::Machine, &resolved)?;
 	let paths = targets(request, &plans, stem, format, &resolved)?;
 
+	validate(request, &paths)?;
+
 	Ok(Prepared {
 		input: request.input.clone(),
 		stem: stem.to_string(),
@@ -82,6 +84,86 @@ pub fn prepare<'a>(registry: &'a Registry, request: &Request) -> std::result::Re
 		plans,
 		paths,
 	})
+}
+
+/// Everything that can fail before a byte moves, `docs/cli.md` §2.
+///
+/// A `convert` is submitted, so a missing source or an occupied target has to be
+/// a diagnosis at submission rather than a job that fails once a runner reaches
+/// it. A rename is not checked here: its target is the name the user chose, and
+/// `docs/errors.md` §5 keeps its outputs independent.
+fn validate(request: &Request, paths: &[PathBuf]) -> std::result::Result<(), Diagnoses> {
+	let mut problems = Vec::new();
+
+	match std::fs::metadata(&request.input) {
+		Ok(metadata) if metadata.is_dir() => {
+			if let Err(error) = std::fs::read_dir(&request.input) {
+				problems.push(Error::Diagnostic(Diagnostic::global(
+					Code::IoPermission,
+					format!("{}: {error}", request.input.display()),
+				)));
+			}
+		}
+		Ok(_) => {
+			if let Err(error) = std::fs::File::open(&request.input) {
+				problems.push(Error::Diagnostic(Diagnostic::global(
+					retype_core::error::code_for_io(&error),
+					format!("{}: {error}", request.input.display()),
+				)));
+			}
+		}
+		Err(error) => problems.push(Error::Diagnostic(Diagnostic::global(
+			retype_core::error::code_for_io(&error),
+			format!("{}: {error}", request.input.display()),
+		))),
+	}
+
+	let input = std::path::absolute(&request.input).unwrap_or_else(|_| request.input.clone());
+
+	for path in paths {
+		let absolute = std::path::absolute(path).unwrap_or_else(|_| path.clone());
+
+		if absolute == input {
+			problems.push(Error::Diagnostic(Diagnostic::global(
+				Code::UsageConflict,
+				format!(
+					"{} is the source; converting into it would destroy the original",
+					path.display()
+				),
+			)));
+			continue;
+		}
+
+		if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+			if !parent.is_dir() {
+				problems.push(Error::Diagnostic(Diagnostic::global(
+					Code::IoNotFound,
+					format!(
+						"{} is not a directory, so {} cannot be written",
+						parent.display(),
+						path.display()
+					),
+				)));
+			}
+		}
+
+		if path.is_dir() {
+			problems.push(Error::Diagnostic(Diagnostic::global(
+				Code::IoExists,
+				format!("{} is a directory", path.display()),
+			)));
+		} else if !request.force && path.exists() {
+			problems.push(Error::Diagnostic(Diagnostic::global(
+				Code::IoExists,
+				format!("{} already exists", path.display()),
+			)));
+		}
+	}
+
+	match problems.is_empty() {
+		true => Ok(()),
+		false => Err(Diagnoses::new(problems)),
+	}
 }
 
 /// The paths the plans write to, in plan order, with `-o` applied.
@@ -158,6 +240,33 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 		}
 	};
 
+	// A convert is undoable too: the record removes the outputs and leaves the
+	// source where the request found it. The source bytes are not copied because
+	// the name never moves, `docs/state.md` §5.3.
+	let store = retype_core::undo::Store::open(&shared.state_dir);
+	let undo_record = store.save(retype_core::undo::Subject {
+		id: id.clone(),
+		intent: print::intent(&prepared.resolved, &shared.registry),
+		machine: shared.machine.clone(),
+		bytes: prepared.input.clone(),
+		source_path: prepared.input.clone(),
+		source_ext: prepared.format.clone(),
+		outputs: prepared
+			.plans
+			.iter()
+			.zip(&prepared.paths)
+			.map(|(plan, path)| retype_core::undo::Output {
+				path: path.clone(),
+				ext: plan.format.clone(),
+			})
+			.collect(),
+		consume_source: false,
+	});
+
+	if let Err(error) = &undo_record {
+		eprintln!("retype: cannot keep {} for undo: {error}", prepared.input.display());
+	}
+
 	let mut started = queued(shared, &prepared, id);
 	started.set_state(JobState::Running);
 	publish(shared, &started);
@@ -223,6 +332,12 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 	job.updated = now_ms();
 	publish(shared, &job);
 	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
+
+	// Nothing was produced, so there is nothing to undo; keeping the record would
+	// describe a file that never changed.
+	if !matches!(job.state, JobState::Done | JobState::Partial) && undo_record.is_ok() {
+		let _ = store.remove(id);
+	}
 }
 
 /// The stderr tail, when the tool said anything worth keeping.

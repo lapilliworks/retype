@@ -13,8 +13,16 @@ use retype_core::job::JobId;
 use retype_core::undo::{Record, Store};
 
 use crate::error::Result;
+use crate::output;
 
 pub fn run(state_dir: &Path, id: Option<&str>, last: bool, json: bool) -> Result<ExitCode> {
+	if last && id.is_some() {
+		return Ok(ExitCode::from(output::fail(
+			&Code::UsageConflict,
+			"undo takes an id or --last, not both",
+		)));
+	}
+
 	let store = Store::open(state_dir);
 	let records = store.list()?;
 
@@ -22,8 +30,10 @@ pub fn run(state_dir: &Path, id: Option<&str>, last: bool, json: bool) -> Result
 		(true, _) => match records.first() {
 			Some(record) => record.clone(),
 			None => {
-				eprintln!("retype: {}: there is nothing to undo", Code::JobState);
-				return Ok(ExitCode::from(7));
+				return Ok(ExitCode::from(output::fail(
+					&Code::JobState,
+					"there is nothing to undo",
+				)));
 			}
 		},
 		(false, Some(written)) => match resolve(&records, written) {
@@ -31,31 +41,31 @@ pub fn run(state_dir: &Path, id: Option<&str>, last: bool, json: bool) -> Result
 			Err(failure) => return Ok(failure),
 		},
 		(false, None) => {
-			eprintln!("retype: {}: undo needs an id or --last", Code::UsageArgs);
-			return Ok(ExitCode::from(2));
+			return Ok(ExitCode::from(output::fail(
+				&Code::UsageArgs,
+				"undo needs an id or --last",
+			)));
 		}
 	};
 
 	let restored = match store.restore(&record.id) {
 		Ok(restored) => restored,
 		Err(error) => {
-			eprintln!("retype: {error}");
-			return Ok(ExitCode::from(error.exit_code()));
+			return Ok(ExitCode::from(output::fail(&error.code(), error.to_string())));
 		}
 	};
 
 	if json {
-		println!(
-			"{}",
-			serde_json::json!({
-				"v": "retype-cli-json-1",
-				"id": restored.id,
-				"source": restored.source_path.display().to_string(),
-				"removed": restored.outputs.iter().map(|output| output.path.display().to_string()).collect::<Vec<_>>(),
-			})
-		);
-	} else {
+		output::success(serde_json::json!({
+			"id": restored.id,
+			"source": restored.source_path.display().to_string(),
+			"consume_source": restored.consume_source,
+			"removed": restored.outputs.iter().map(|output| output.path.display().to_string()).collect::<Vec<_>>(),
+		}));
+	} else if restored.consume_source {
 		println!("{}  restored", restored.source_path.display());
+	} else {
+		println!("{}  outputs removed, source kept", restored.source_path.display());
 	}
 
 	Ok(ExitCode::SUCCESS)
@@ -71,22 +81,17 @@ fn resolve(records: &[Record], written: &str) -> std::result::Result<Record, Exi
 
 	match matches.len() {
 		1 => Ok(matches[0].clone()),
-		0 => {
-			eprintln!("retype: {}: no undo record matches '{written}'", Code::JobState);
-			Err(ExitCode::from(7))
-		}
+		0 => Err(ExitCode::from(output::fail(
+			&Code::JobState,
+			format!("no undo record matches '{written}'"),
+		))),
 		_ => {
-			eprintln!(
-				"retype: {}: '{written}' matches {} records",
-				Code::IpcAmbiguous,
-				matches.len()
-			);
-
+			let mut message = format!("'{written}' matches {} records", matches.len());
 			for record in matches {
-				eprintln!("  {}", record.id.as_str());
+				message.push_str(&format!("\n  {}", record.id.as_str()));
 			}
 
-			Err(ExitCode::from(7))
+			Err(ExitCode::from(output::fail(&Code::IpcAmbiguous, message)))
 		}
 	}
 }

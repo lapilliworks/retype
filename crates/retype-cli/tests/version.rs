@@ -18,6 +18,7 @@ fn version_names_the_build_and_every_schema_it_reads() {
 	assert!(printed.starts_with("retype "), "{printed}");
 
 	for schema in [
+		"retype-grammar-1",
 		"retype-config-1",
 		"retype-ipc-1",
 		"retype-journal-1",
@@ -26,6 +27,7 @@ fn version_names_the_build_and_every_schema_it_reads() {
 		"retype-bench-1",
 		"retype-fidelity-1",
 		"retype-fixtures-1",
+		"retype-tools-1",
 	] {
 		assert!(printed.contains(schema), "{schema} is missing from: {printed}");
 	}

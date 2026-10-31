@@ -18,7 +18,8 @@ use retype_core::registry::Registry;
 use serde_json::Value;
 
 use crate::client;
-use crate::error::{Error, Result, exit_code, exit_code_of};
+use crate::error::{Error, Result, exit_code_of};
+use crate::output;
 
 pub struct Request<'a> {
 	pub input: &'a str,
@@ -43,9 +44,12 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 			&crate::explain::Request {
 				source: request.input,
 				intent: request.intent,
-				state_dir: request.state_dir,
+				state_dir: Some(request.state_dir),
 				json: request.json,
 				quiet: request.quiet,
+				output: request.output,
+				force: request.force,
+				dry_run: true,
 			},
 		);
 	}
@@ -67,8 +71,7 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 		// Everything that can fail before a byte moves fails at submission, with
 		// the code the same failure would have had locally, `docs/cli.md` §6.
 		Err(retype_ipc::ClientError::Rpc(error)) => {
-			eprintln!("retype: {}: {}", error.code, error.message);
-			return Ok(ExitCode::from(exit_code(&error.code)));
+			return Ok(ExitCode::from(output::fail(&error.code, &error.message)));
 		}
 		Err(other) => return Err(Error::Client(other)),
 	};
@@ -90,10 +93,10 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 		.and_then(Value::as_str)
 		.unwrap_or_default()
 		.to_string();
-	let job = wait(request.state_dir, request.allow_spawn, &id)?;
+	let job = wait(request.state_dir, request.allow_spawn, &id, request.quiet)?;
 
 	if request.json {
-		println!("{job}");
+		output::success(job.clone());
 	}
 
 	let outputs = job
@@ -166,7 +169,10 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 
 /// Ask until the job reaches a state that will not change, on a fresh connection
 /// each time so the daemon is never held.
-fn wait(state_dir: &Path, allow_spawn: bool, id: &str) -> Result<Value> {
+fn wait(state_dir: &Path, allow_spawn: bool, id: &str, quiet: bool) -> Result<Value> {
+	let started = std::time::Instant::now();
+	let mut announced = Duration::ZERO;
+
 	loop {
 		let job = {
 			let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
@@ -175,8 +181,17 @@ fn wait(state_dir: &Path, allow_spawn: bool, id: &str) -> Result<Value> {
 
 		let state = job.get("state").and_then(Value::as_str).unwrap_or_default();
 
-		if matches!(state, "done" | "failed" | "partial" | "cancelled") {
+		if crate::jobs::terminal(state) {
 			return Ok(job);
+		}
+
+		// A long encode should say it is still working rather than look hung. Two
+		// seconds is slow enough to stay out of a one-line pipeline, and frequent
+		// enough to be visible.
+		let elapsed = started.elapsed();
+		if !quiet && elapsed.saturating_sub(announced) >= Duration::from_secs(2) {
+			eprintln!("retype: job {id} still running ({}s)", elapsed.as_secs());
+			announced = elapsed;
 		}
 
 		sleep(POLL);

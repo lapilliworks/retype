@@ -22,6 +22,7 @@ use retype_core::{execute, print, tools};
 
 use crate::error::Result;
 use crate::matrix::{PairError, Samples, Selection, plan_for};
+use crate::output;
 
 pub struct Request<'a> {
 	/// Pairs to measure instead of a family sweep, written `source:target`.
@@ -53,18 +54,24 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 	let pairs = match selection.pairs(registry) {
 		Ok(pairs) => pairs,
 		Err(PairError::Usage(message)) => {
-			eprintln!("retype: {message}");
-			return Ok(ExitCode::from(2));
+			return Ok(ExitCode::from(output::fail(
+				&retype_core::error::Code::UsageArgs,
+				message,
+			)));
 		}
 		Err(PairError::Format(message)) => {
-			eprintln!("retype: {message}");
-			return Ok(ExitCode::from(3));
+			return Ok(ExitCode::from(output::fail(
+				&retype_core::error::Code::FormatUnknown,
+				message,
+			)));
 		}
 	};
 
 	if pairs.is_empty() {
-		eprintln!("retype: no pair to measure: declare [bench.seed] for a family, or name one with --pair");
-		return Ok(ExitCode::from(2));
+		return Ok(ExitCode::from(output::fail(
+			&retype_core::error::Code::UsageArgs,
+			"no pair to measure: declare [bench.seed] for a family, or name one with --pair",
+		)));
 	}
 
 	if !request.json && !request.quiet {
@@ -78,7 +85,7 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 
 	for (source, target) in &pairs {
 		let Some(plan) = plan_for(registry, source, target) else {
-			if !request.quiet {
+			if !request.quiet && !request.json {
 				eprintln!("retype: {source} to {target}: nothing can carry the pair");
 			}
 			continue;
@@ -98,7 +105,11 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 				report(&measurement, request);
 				calibration.measure(measurement);
 			}
-			Err(error) => eprintln!("retype: {source} to {target}: {error}"),
+			Err(error) => {
+				if !request.json {
+					eprintln!("retype: {source} to {target}: {error}");
+				}
+			}
 		}
 	}
 
@@ -113,7 +124,10 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 	}
 
 	Ok(match measured {
-		0 => ExitCode::from(4),
+		0 => ExitCode::from(output::fail(
+			&retype_core::error::Code::ToolFailed,
+			"nothing could be measured on this machine",
+		)),
 		_ => ExitCode::SUCCESS,
 	})
 }

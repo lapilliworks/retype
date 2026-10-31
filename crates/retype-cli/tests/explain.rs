@@ -136,3 +136,35 @@ fn quiet_still_reports_diagnostics() {
 	assert!(output.stdout.is_empty(), "nothing to say on stdout");
 	assert!(String::from_utf8_lossy(&output.stderr).contains("E_EXCLUSIVE"));
 }
+
+#[test]
+fn a_json_refusal_is_an_envelope_with_every_diagnostic() {
+	let output = retype()
+		.args(["--json", "explain", "holiday.heic", "zzz"])
+		.output()
+		.unwrap();
+	let stdout = String::from_utf8_lossy(&output.stdout);
+	let value: serde_json::Value = serde_json::from_str(stdout.trim()).expect("one object");
+
+	assert_eq!(output.status.code(), Some(3));
+	assert_eq!(value["v"], "retype-cli-json-1");
+	assert_eq!(value["ok"], false);
+	assert_eq!(value["error"]["code"], "E_FORMAT_UNKNOWN");
+	assert_eq!(value["diagnostics"][0]["code"], "E_FORMAT_UNKNOWN");
+	assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn explain_does_not_need_a_state_directory() {
+	let output = retype()
+		.args(["explain", "heic", "jpg"])
+		.env_remove("HOME")
+		.env_remove("XDG_STATE_HOME")
+		.env_remove("XDG_DATA_HOME")
+		.env_remove("XDG_CONFIG_HOME")
+		.output()
+		.unwrap();
+
+	assert!(matches!(output.status.code(), Some(0) | Some(4)));
+	assert!(!String::from_utf8_lossy(&output.stderr).contains("no state directory"));
+}

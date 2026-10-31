@@ -8,17 +8,32 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use retype_core::fidelity::{Claim, Manifest, State};
+use retype_core::registry::Registry;
+use retype_core::tools;
 use serde_json::Value;
 
 use crate::client;
 use crate::error::Result;
+use crate::output;
 
-pub fn run(path: &str, json: bool, quiet: bool, state_dir: &Path, allow_spawn: bool) -> Result<ExitCode> {
+pub fn run(
+	registry: &Registry,
+	path: &str,
+	json: bool,
+	quiet: bool,
+	state_dir: &Path,
+	allow_spawn: bool,
+) -> Result<ExitCode> {
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
-	let answer = client.call("why", serde_json::json!({"path": path}))?;
+	let mut answer = client.call("why", serde_json::json!({"path": path}))?;
+
+	if let Some(claim) = claim(registry, state_dir, &answer) {
+		answer["claim"] = claim;
+	}
 
 	if json {
-		println!("{answer}");
+		output::success(answer);
 		return Ok(ExitCode::SUCCESS);
 	}
 
@@ -65,6 +80,12 @@ pub fn run(path: &str, json: bool, quiet: bool, state_dir: &Path, allow_spawn: b
 		line("tier", &tier);
 	}
 
+	if let Some(claim) = answer.get("claim") {
+		if let Some(state) = claim.get("state").and_then(Value::as_str) {
+			line("claim", state);
+		}
+	}
+
 	if let Some(bytes) = answer.get("bytes").and_then(Value::as_u64) {
 		line("bytes", &bytes.to_string());
 	}
@@ -74,6 +95,79 @@ pub fn run(path: &str, json: bool, quiet: bool, state_dir: &Path, allow_spawn: b
 	}
 
 	Ok(ExitCode::SUCCESS)
+}
+
+/// The claim the release makes for this pair, and whether the installed build is
+/// the one it was earned with, `docs/fidelity.md` §5.
+fn claim(registry: &Registry, state_dir: &Path, answer: &Value) -> Option<Value> {
+	let source = answer.get("source").and_then(Value::as_str)?;
+	let target = answer.get("target").and_then(Value::as_str)?;
+	let backend = answer.get("backend").and_then(Value::as_str)?;
+	let manifest = find_manifest(state_dir).and_then(|path| Manifest::open(&path).ok())?;
+	let claim: &Claim = manifest.get(source, target, backend)?;
+
+	let (version, fingerprint) = match registry.tool(backend) {
+		Some(tool) => {
+			let status = tools::probe(tool);
+			(
+				status.version.as_ref().map(ToString::to_string).unwrap_or_default(),
+				status.fingerprint().unwrap_or_default(),
+			)
+		}
+		None => (env!("CARGO_PKG_VERSION").to_string(), String::new()),
+	};
+
+	let state = match claim.is_current(&version, &fingerprint) {
+		true => State::Earned,
+		false => State::Unverified,
+	};
+
+	Some(serde_json::json!({
+		"tier": tier(claim),
+		"state": state.as_str(),
+		"earned": claim.earned,
+		"version": claim.version,
+		"fingerprint": claim.fingerprint,
+		"engine": claim.engine,
+	}))
+}
+
+fn tier(claim: &Claim) -> &'static str {
+	match claim.tier {
+		retype_core::job::Tier::Exact => "exact",
+		retype_core::job::Tier::Converted => "converted",
+		retype_core::job::Tier::Delegated => "delegated",
+	}
+}
+
+/// The release manifest, when this installation has one.
+fn find_manifest(state_dir: &Path) -> Option<std::path::PathBuf> {
+	if let Some(configured) = std::env::var_os("RETYPE_FIDELITY_MANIFEST") {
+		let path = std::path::PathBuf::from(configured);
+		if path.is_file() {
+			return Some(path);
+		}
+	}
+
+	for candidate in [
+		state_dir.join("fidelity.toml"),
+		std::path::PathBuf::from("fidelity.toml"),
+	] {
+		if candidate.is_file() {
+			return Some(candidate);
+		}
+	}
+
+	if let Ok(executable) = std::env::current_exe() {
+		for ancestor in executable.ancestors().skip(1) {
+			let candidate = ancestor.join("share/retype/fidelity.toml");
+			if candidate.is_file() {
+				return Some(candidate);
+			}
+		}
+	}
+
+	None
 }
 
 /// How long ago a record was written, in the units a person reads. A date

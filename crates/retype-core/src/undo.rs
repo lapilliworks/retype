@@ -55,6 +55,14 @@ pub struct Record {
 	pub source_mtime_ns: i64,
 	pub link: Link,
 	pub outputs: Vec<Output>,
+	/// Whether the job removed the source when it committed. A rename does; a
+	/// `convert` does not, so its undo removes the outputs and leaves the source.
+	#[serde(default = "consumed_default")]
+	pub consume_source: bool,
+}
+
+fn consumed_default() -> bool {
+	true
 }
 
 impl Record {
@@ -72,6 +80,7 @@ impl Record {
 			source_mtime_ns: 0,
 			link: Link::Copy,
 			outputs: Vec::new(),
+			consume_source: true,
 		}
 	}
 
@@ -94,6 +103,8 @@ pub struct Subject {
 	pub source_path: PathBuf,
 	pub source_ext: String,
 	pub outputs: Vec<Output>,
+	/// True for a rename-derived job, false for `retype convert`.
+	pub consume_source: bool,
 }
 
 /// What to do when a record does not fit the quota.
@@ -220,21 +231,25 @@ impl Store {
 			&subject.source_ext,
 		);
 		record.outputs = subject.outputs;
+		record.consume_source = subject.consume_source;
 		record.source_size = metadata.len();
 		record.source_mode = mode_of(&metadata);
 		record.source_mtime_ns = mtime_ns(&metadata);
 
 		let held = directory.join(record.source_file());
 
-		// A hard link costs nothing and survives the original name going away,
-		// which is the normal case for a rename. A copy is the fallback for a store
-		// on another filesystem.
-		record.link = match fs::hard_link(&subject.bytes, &held) {
-			Ok(()) => Link::Hard,
-			Err(_) => {
-				fs::copy(&subject.bytes, &held)?;
-				Link::Copy
-			}
+		// A convert leaves its source where it is, so there are no bytes to keep:
+		// the record exists to remove the outputs. A rename needs them because its
+		// source name is gone.
+		record.link = match subject.consume_source {
+			true => match fs::hard_link(&subject.bytes, &held) {
+				Ok(()) => Link::Hard,
+				Err(_) => {
+					fs::copy(&subject.bytes, &held)?;
+					Link::Copy
+				}
+			},
+			false => Link::Copy,
 		};
 
 		write_manifest(&directory, &record)?;
@@ -315,6 +330,13 @@ impl Store {
 				Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
 				Err(error) => return Err(Error::Io(error)),
 			}
+		}
+
+		if !record.consume_source {
+			// The source never moved. Undo is the removal of what the job produced,
+			// and the record goes with it.
+			self.remove(id)?;
+			return Ok(record);
 		}
 
 		let held = self.directory(id).join(record.source_file());
@@ -547,6 +569,7 @@ mod tests {
 			bytes: bytes.clone(),
 			source_path: bytes,
 			source_ext: "heic".to_string(),
+			consume_source: true,
 			outputs: Vec::new(),
 		}
 	}
@@ -574,6 +597,7 @@ mod tests {
 			bytes: bytes.clone(),
 			source_path: bytes,
 			source_ext: "heic".to_string(),
+			consume_source: true,
 			outputs: Vec::new(),
 		}
 	}
@@ -734,6 +758,7 @@ mod tests {
 				bytes: source.clone(),
 				source_path: source.clone(),
 				source_ext: "heic".to_string(),
+				consume_source: true,
 				outputs: vec![Output {
 					path: state.path().join("photo.jpg"),
 					ext: "jpg".to_string(),
@@ -762,6 +787,7 @@ mod tests {
 				bytes: source.clone(),
 				source_path: source.clone(),
 				source_ext: "heic".to_string(),
+				consume_source: true,
 				outputs: vec![Output {
 					path: output.clone(),
 					ext: "jpg".to_string(),
@@ -794,6 +820,7 @@ mod tests {
 				bytes: source.clone(),
 				source_path: source.clone(),
 				source_ext: "heic".to_string(),
+				consume_source: true,
 				outputs: Vec::new(),
 			})
 			.unwrap();
@@ -829,6 +856,7 @@ mod tests {
 					bytes: source.clone(),
 					source_path: source.clone(),
 					source_ext: "heic".to_string(),
+					consume_source: true,
 					outputs: Vec::new(),
 				})
 				.unwrap();
@@ -860,6 +888,7 @@ mod tests {
 				bytes: source.clone(),
 				source_path: source.clone(),
 				source_ext: "heic".to_string(),
+				consume_source: true,
 				outputs: Vec::new(),
 			})
 			.unwrap();
