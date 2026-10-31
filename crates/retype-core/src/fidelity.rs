@@ -38,6 +38,13 @@ pub struct Claim {
 	pub fingerprint: String,
 	/// What the conversion was run on, so the claim can be reproduced.
 	pub fixture: String,
+	/// The properties the fixtures carried and the output kept, `docs/fidelity.md` §4.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub axes: Vec<crate::axis::Axis>,
+	/// The properties the fixtures carried and the output did not keep. A `converted`
+	/// pair may lose one; an `exact` pair that loses one is not exact.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub lost: Vec<crate::axis::Axis>,
 	/// Unix milliseconds, `docs/state.md` §3.
 	pub earned: i64,
 }
@@ -171,13 +178,13 @@ impl Manifest {
 		}
 
 		let mut text = String::from(
-			"| From | To | Tier | Backend | Engine | Version | Fingerprint | Fixture |\n\
-			 |---|---|---|---|---|---|---|\n",
+			"| From | To | Tier | Backend | Engine | Version | Fingerprint | Properties | Fixture |\n\
+			 |---|---|---|---|---|---|---|---|\n",
 		);
 
 		for claim in &self.claim {
 			text.push_str(&format!(
-				"| {} | {} | {} | {} | {} | {} | {} | {} |\n",
+				"| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
 				claim.source,
 				claim.target,
 				tier(claim.tier),
@@ -188,11 +195,34 @@ impl Manifest {
 					0 => String::new(),
 					_ => claim.fingerprint.chars().take(16).collect::<String>(),
 				},
+				properties(claim),
 				claim.fixture,
 			));
 		}
 
 		text
+	}
+}
+
+/// What the claim's fixtures kept, and what they lost.
+fn properties(claim: &Claim) -> String {
+	let kept: Vec<&str> = claim.axes.iter().map(|axis| axis.as_str()).collect();
+	let lost: Vec<&str> = claim.lost.iter().map(|axis| axis.as_str()).collect();
+
+	let mut text = kept.join(", ");
+
+	if !lost.is_empty() {
+		if !text.is_empty() {
+			text.push_str("; ");
+		}
+
+		text.push_str("lost ");
+		text.push_str(&lost.join(", "));
+	}
+
+	match text.is_empty() {
+		true => "-".to_string(),
+		false => text,
 	}
 }
 
@@ -247,6 +277,8 @@ mod tests {
 			version: "7.1.2-34".to_string(),
 			fingerprint: "0123456789abcdef0123456789abcdef".to_string(),
 			fixture: "image sample".to_string(),
+			axes: vec![crate::axis::Axis::Alpha],
+			lost: Vec::new(),
 			earned: 1_793_380_889_377,
 		}
 	}

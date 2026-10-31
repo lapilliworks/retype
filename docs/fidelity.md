@@ -43,7 +43,22 @@ A claim is earned by running the conversion.
 
 A fixture run converts a fixture per pair with the real tool, records the resolved engine, its reported version and its build fingerprint, and verifies the output is readable and of the target format. The result is a manifest, one record per claim, checked in and shipped with the release. `docs/tools.md` §5.1 records the same engine, version and fingerprint with every job, so a claim made two years ago can be compared against what is installed now.
 
-`retype fidelity` is that run, `docs/cli.md` §10. A pair is checked by converting the sample `[bench.sample]` declares for its source family, so a claim records what it was earned on rather than naming a fixture that may not exist yet. Checked-in fixtures per format, with alpha, ICC, bit depth, EXIF orientation, animation and palettes, are what turn "the tool produced a file" into "the tool preserved these properties", and they land with the fidelity axes. Until then a claim says the conversion succeeds and what it costs, which is the weaker half of the evidence and is labelled as such.
+`retype fidelity` is that run, `docs/cli.md` §10. A pair is checked by converting the sample `[bench.sample]` declares for its source family, so a claim records what it was earned on.
+
+That sample proves the conversion succeeds. What turns it into "the tool preserved these properties" is the fixtures in `fixtures/fidelity`: one tiny checked-in file per property, converted through the same plan and probed on both sides. `fixtures/fidelity/fixtures.toml` declares which property each file carries, and a test probes every one of them, so a fixture whose bytes stop carrying its axis fails rather than quietly weakening a claim.
+
+| Axis | Fixture | Preserved when |
+|---|---|---|
+| `alpha` | `alpha.png` | The output is not fully opaque |
+| `animation` | `anim.gif`, `anim.webp` | Every frame is still there |
+| `depth` | `depth.png` | Bits per channel do not shrink |
+| `icc` | `icc.png` | The embedded profile is still embedded |
+| `orientation` | `orient.jpg` | The EXIF rotation is baked into the pixels *or* kept as a tag, never both |
+| `palette` | `palette.png` | The output invents no colour the source did not have |
+
+A pair records both lists: the properties it kept and the ones it lost. A `converted` pair may lose one, and saying so is the point. An `exact` pair may not: a run that cannot show the property was kept has not earned the word, and exits 4, which is the same answer as a stale claim and for the same reason.
+
+The properties are read from the bytes where the decoder does not report them. ImageMagick surfaces geometry, depth, opacity, frame count and colour count; it does not surface the EXIF orientation tag or, reliably, an embedded profile, so both are read directly: APP1 and APP2 segments in JPEG, `iCCP` and `eXIf` chunks in PNG, `ICCP` in WebP, tag 34675 in TIFF. An axis that cannot be read cannot be checked, and guessing would be worse than saying nothing.
 
 Size and duration are separate: they come from `retype bench`, not from the manifest, because they depend on the machine and the claim does not, `docs/state.md` §4.
 

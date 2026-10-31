@@ -1,0 +1,40 @@
+# What each checked-in fixture is for, `docs/fidelity.md` §4.
+#
+# The bytes are the truth and this file is the claim about them: a test probes every
+# fixture and fails if it does not carry the axis it declares here.
+version = 'retype-fixtures-1'
+
+[[fixture]]
+file = 'alpha.png'
+format = 'png'
+axes = ['alpha']
+
+[[fixture]]
+file = 'depth.png'
+format = 'png'
+axes = ['depth']
+
+[[fixture]]
+file = 'icc.png'
+format = 'png'
+axes = ['icc']
+
+[[fixture]]
+file = 'palette.png'
+format = 'png'
+axes = ['palette']
+
+[[fixture]]
+file = 'orient.jpg'
+format = 'jpg'
+axes = ['orientation']
+
+[[fixture]]
+file = 'anim.gif'
+format = 'gif'
+axes = ['animation']
+
+[[fixture]]
+file = 'anim.webp'
+format = 'webp'
+axes = ['animation']

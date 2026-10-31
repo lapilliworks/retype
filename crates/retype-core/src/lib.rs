@@ -6,6 +6,7 @@
 //! and use it.
 
 pub mod archive;
+pub mod axis;
 pub mod convert;
 pub mod correlate;
 pub mod deferral;

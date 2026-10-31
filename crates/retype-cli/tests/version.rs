@@ -25,6 +25,7 @@ fn version_names_the_build_and_every_schema_it_reads() {
 		"retype-watches-1",
 		"retype-bench-1",
 		"retype-fidelity-1",
+		"retype-fixtures-1",
 	] {
 		assert!(printed.contains(schema), "{schema} is missing from: {printed}");
 	}

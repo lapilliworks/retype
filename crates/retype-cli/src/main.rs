@@ -149,6 +149,10 @@ enum Command {
 		/// Rewrite the claim table between the markers in this document
 		#[arg(long, value_name = "PATH")]
 		render: Option<std::path::PathBuf>,
+
+		/// The property fixtures to check each pair against
+		#[arg(long, value_name = "DIR", default_value = "fixtures/fidelity")]
+		fixtures: std::path::PathBuf,
 	},
 
 	/// Print the version, and the schemas this build reads
@@ -486,6 +490,7 @@ fn main() -> ExitCode {
 		write,
 		manifest,
 		render,
+		fixtures,
 	} = &cli.command
 	{
 		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
@@ -501,6 +506,7 @@ fn main() -> ExitCode {
 						write: write.as_deref(),
 						manifest: manifest.as_deref(),
 						render: render.as_deref(),
+						fixtures: Some(fixtures.as_path()),
 						json: cli.json,
 						quiet: cli.quiet,
 					},
@@ -676,6 +682,7 @@ fn print_version(json: bool) {
 		("watches", retype_core::watches::WATCHES_VERSION),
 		("bench", retype_core::estimate::BENCH_VERSION),
 		("fidelity", retype_core::fidelity::FIDELITY_VERSION),
+		("fixtures", retype_core::axis::FIXTURES_VERSION),
 	];
 
 	if json {

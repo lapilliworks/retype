@@ -70,6 +70,7 @@ struct Fixture {
 	config: PathBuf,
 	state: PathBuf,
 	manifest: PathBuf,
+	fixtures: PathBuf,
 }
 
 impl Fixture {
@@ -78,10 +79,33 @@ impl Fixture {
 		let sample = dir.path().join("pixels.png");
 		fs::write(&sample, vec![b'p'; 20_000]).unwrap();
 
+		// One fixture, copied by the backend like everything else, so the claim rests on
+		// a property that really was checked rather than on no fixture at all.
+		let fixtures = dir.path().join("fixtures");
+		fs::create_dir(&fixtures).unwrap();
+		fs::copy(
+			Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/fidelity/alpha.png"),
+			fixtures.join("alpha.png"),
+		)
+		.unwrap();
+		fs::write(
+			fixtures.join("fixtures.toml"),
+			"\
+version = 'retype-fixtures-1'
+
+[[fixture]]
+file = 'alpha.png'
+format = 'png'
+axes = ['alpha']
+",
+		)
+		.unwrap();
+
 		Self {
 			config: config(dir.path(), &sample),
 			state: dir.path().join("state"),
 			manifest: dir.path().join("fidelity.toml"),
+			fixtures,
 			dir,
 		}
 	}
@@ -90,6 +114,8 @@ impl Fixture {
 		let mut command = retype();
 		command
 			.args(["fidelity", "--pair", "png:bmp"])
+			.arg("--fixtures")
+			.arg(&self.fixtures)
 			.arg("--state-dir")
 			.arg(&self.state)
 			.env("RETYPE_CONFIG", &self.config);
