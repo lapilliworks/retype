@@ -197,10 +197,11 @@ job's requested target, and the journal says so.
 - The requested target name and the intent are recorded with the job, and the derived
   outputs are worked out again when it runs, because the request is read from the record
   rather than from a file name that has since changed
-- An output whose name appeared during the pause is overwritten, exactly as a
-  rename-derived job overwrites an output of the same name today. The undo record puts
-  the source back; the file that was there is not recoverable, which is the risk a
-  rename already carries and which deferral lengthens rather than introduces
+- An output whose name appeared during the pause is not overwritten for the job. It
+  fails that output with `E_IO_EXISTS` and the source stays under its own name, because
+  a file the person put there is theirs. `jobs resolve --now --force` is the deliberate
+  override and the only one. A rename-derived job still overwrites an output of the
+  same name; that is a gap of its own, recorded in
 - A second rename of the same source supersedes the parked job: the chain
   continues and the park is replaced rather than run later against a file that has
   moved on
@@ -223,8 +224,6 @@ part of this document. Deferral is complete without it: the timer fires, and
 
 ## 13. Not built yet
 
-- `jobs resolve --force`, which the `--now` form names for the case where an output has
-  appeared during the pause
 - Notification delivery, capability tiers and click routing
 - `retype://job/<id>` actions beyond `resolve` and `cancel`
 - The editor's view of a parked job

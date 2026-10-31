@@ -313,3 +313,59 @@ fn the_interactive_walk_refuses_a_pipe_rather_than_reading_a_script() {
 		String::from_utf8_lossy(&ran.stderr)
 	);
 }
+
+#[test]
+fn a_file_that_appeared_during_the_pause_is_not_overwritten() {
+	let fixture = Fixture::new("1h");
+	let small = fixture.photos.join("d.png");
+	fs::write(&small, b"pixels").unwrap();
+	fs::rename(&small, fixture.photos.join("d.webp+ask")).unwrap();
+
+	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");
+
+	// The person put something at the name the job would write while it waited.
+	let theirs = fixture.photos.join("d.webp");
+	fs::write(&theirs, b"mine").unwrap();
+
+	let ran = fixture
+		.command()
+		.args(["jobs", "resolve", &Fixture::id(&parked), "--now"])
+		.output()
+		.unwrap();
+	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+
+	let ended = fixture.wait_for(|record| {
+		Fixture::id(record) == Fixture::id(&parked) && record["state"] != "running" && record["state"] != "pending"
+	});
+
+	assert_eq!(ended["state"], "failed", "{ended}");
+	assert_eq!(ended["outputs"][0]["error"]["code"], "E_IO_EXISTS", "{ended}");
+
+	// Their file is untouched, and the source is still where they can find it.
+	assert_eq!(fs::read(&theirs).unwrap(), b"mine");
+	assert!(fixture.photos.join("d.png").exists(), "the source goes back");
+}
+
+#[test]
+fn force_replaces_a_file_that_appeared_during_the_pause() {
+	let fixture = Fixture::new("1h");
+	let small = fixture.photos.join("e.png");
+	fs::write(&small, b"pixels").unwrap();
+	fs::rename(&small, fixture.photos.join("e.webp+ask")).unwrap();
+
+	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");
+	let theirs = fixture.photos.join("e.webp");
+	fs::write(&theirs, b"mine").unwrap();
+
+	let ran = fixture
+		.command()
+		.args(["jobs", "resolve", &Fixture::id(&parked), "--now", "--force"])
+		.output()
+		.unwrap();
+	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+
+	let done = fixture.wait_for(|record| record["state"] == "done" && Fixture::id(record) == Fixture::id(&parked));
+	assert_eq!(done["state"], "done");
+	assert_eq!(fs::read(&theirs).unwrap(), b"pixels", "the output replaced it");
+	assert!(!fixture.photos.join("e.png").exists(), "the source is consumed");
+}

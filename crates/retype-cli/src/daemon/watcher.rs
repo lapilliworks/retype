@@ -467,7 +467,9 @@ pub fn convert(
 		renamed: bytes.to_path_buf(),
 	};
 
-	run(shared, root, source, target, prepared, input, id, cancellation);
+	// A rename's collisions are its own concern gap table: only a job a
+	// person re-runs can be told to overwrite.
+	run(shared, root, source, target, prepared, input, false, id, cancellation);
 }
 
 /// Run a job whose time has come, `docs/deferral.md` §7: the intent is the one the
@@ -477,6 +479,7 @@ pub fn convert_deferred(
 	root: &Path,
 	source: &Path,
 	intent: &str,
+	force: bool,
 	id: &retype_core::job::JobId,
 	cancellation: &Cancellation,
 ) {
@@ -484,7 +487,17 @@ pub fn convert_deferred(
 		return;
 	};
 
-	run(shared, root, source, source, prepared, Input::Named, id, cancellation);
+	run(
+		shared,
+		root,
+		source,
+		source,
+		prepared,
+		Input::Named,
+		force,
+		id,
+		cancellation,
+	);
 }
 
 /// Read a rename as a job, or say why it is not one.
@@ -589,6 +602,7 @@ fn run(
 	target: &Path,
 	prepared: Prepared<'_>,
 	input: Input,
+	force: bool,
 	id: &retype_core::job::JobId,
 	cancellation: &Cancellation,
 ) {
@@ -673,6 +687,10 @@ fn run(
 	// One job, one source: the bytes are relabelled and then read for every output,
 	//. Opening the source per output moved the bytes for the first one and
 	// left the rest with nothing to read.
+	// Whether this job came from a person rather than from a rename, decided before the
+	// input is consumed below.
+	let named = matches!(input, Input::Named);
+
 	let mut renamed = match input {
 		Input::Renamed { renamed } => match execute::Rename::open(&renamed, &stem, &format) {
 			Ok(renamed) => Some(renamed),
@@ -697,6 +715,26 @@ fn run(
 		};
 
 		let output = target.parent().unwrap_or(Path::new("")).join(&derived.path);
+
+		// An output that appeared while the job was parked is not overwritten for it:
+		// the file the person put there is theirs, `docs/deferral.md` §8.
+		if !force && named && output.exists() && output != read_from {
+			outputs.push(record(
+				&output,
+				plan,
+				OutputState::Failed,
+				None,
+				None,
+				Some((
+					Code::IoExists,
+					format!(
+						"{} already exists; `jobs resolve --now --force` replaces it",
+						output.display()
+					),
+				)),
+			));
+			continue;
+		}
 
 		shared.recent.note(source, &output);
 
@@ -726,7 +764,14 @@ fn run(
 					eprintln!("retype: {}: {error}", output.display());
 				}
 
-				outputs.push(record(&output, plan, state, None, None, Some(message)));
+				outputs.push(record(
+					&output,
+					plan,
+					state,
+					None,
+					None,
+					Some((Code::ToolFailed, message)),
+				));
 			}
 		}
 	}
@@ -974,7 +1019,7 @@ fn record(
 	state: OutputState,
 	bytes: Option<u64>,
 	stderr: Option<String>,
-	error: Option<String>,
+	error: Option<(Code, String)>,
 ) -> Output {
 	Output {
 		path: path.to_path_buf(),
@@ -989,8 +1034,8 @@ fn record(
 			_ => None,
 		},
 		stderr,
-		error: error.map(|message| JobError {
-			code: Code::ToolFailed.to_string(),
+		error: error.map(|(code, message)| JobError {
+			code: code.to_string(),
 			message,
 		}),
 	}

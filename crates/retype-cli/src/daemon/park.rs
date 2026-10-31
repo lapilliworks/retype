@@ -501,7 +501,7 @@ fn repair(
 
 	watcher::publish(shared, &job);
 
-	match crate::daemon::timer::start_job(pool, &job, Some(&correction.text)) {
+	match crate::daemon::timer::start_job(pool, &job, Some(&correction.text), false) {
 		true => Some(Verdict::Repaired),
 		// The queue is full, so the record says nothing ran: park it instead, and the
 		// timer will try again later.

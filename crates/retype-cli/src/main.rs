@@ -256,6 +256,10 @@ enum JobsAction {
 		/// Run the corrected intent, dropping the tokens that could not be carried
 		#[arg(long)]
 		convert: bool,
+
+		/// Overwrite an output that appeared while the job was parked
+		#[arg(long)]
+		force: bool,
 	},
 
 	/// Continue a partial job, running the outputs that did not succeed
@@ -342,9 +346,14 @@ fn main() -> ExitCode {
 			JobsAction::Resume { job, force } => {
 				retype_cli::jobs::resume(&state_dir, job, *force, cli.json, !cli.no_spawn)
 			}
-			JobsAction::Resolve { job, now, convert } => match (now, convert) {
+			JobsAction::Resolve {
+				job,
+				now,
+				convert,
+				force,
+			} => match (now, convert) {
 				(true, false) | (false, true) => {
-					retype_cli::jobs::resolve(&state_dir, job, *convert, cli.json, !cli.no_spawn)
+					retype_cli::jobs::resolve(&state_dir, job, *convert, *force, cli.json, !cli.no_spawn)
 				}
 				_ => {
 					eprintln!("retype: E_USAGE_ARGS: resolve needs exactly one of --now or --convert");

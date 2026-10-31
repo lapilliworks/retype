@@ -499,6 +499,15 @@ impl Server {
 			.and_then(|mode| mode.as_str())
 			.unwrap_or("now");
 
+		// Only `--now` can be asked to overwrite: `--convert` runs a reduced request,
+		// and a person who has not seen the output that appeared cannot have meant to
+		// replace it.
+		let force = request
+			.params
+			.get("force")
+			.and_then(serde_json::Value::as_bool)
+			.unwrap_or(false);
+
 		let Some(job) = self.find(written) else {
 			return Ok(Response::error(
 				request.id,
@@ -552,7 +561,7 @@ impl Server {
 			}
 		};
 
-		if !crate::daemon::timer::start_job(&self.pool, &job, intent.as_deref()) {
+		if !crate::daemon::timer::start_job(&self.pool, &job, intent.as_deref(), force) {
 			return Ok(Response::error(
 				request.id,
 				WireError::new(Code::JobState, "the queue is full, so nothing was started"),

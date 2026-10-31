@@ -33,7 +33,7 @@ pub fn start(shared: Arc<Shared>, pool: Arc<Pool>) -> (Arc<AtomicBool>, JoinHand
 	let handle = thread::spawn(move || {
 		while !worker_stop.load(Ordering::Relaxed) {
 			for job in due(&shared, &pool) {
-				start_job(&pool, &job, None);
+				start_job(&pool, &job, None, false);
 			}
 
 			thread::sleep(TICK);
@@ -72,7 +72,7 @@ fn due(shared: &Shared, pool: &Pool) -> Vec<Job> {
 /// The source is consumed when the job commits if it came from a rename, and left
 /// alone if it came from a client, which is the one thing the parked record has to
 /// remember.
-pub fn start_job(pool: &Pool, job: &Job, intent: Option<&str>) -> bool {
+pub fn start_job(pool: &Pool, job: &Job, intent: Option<&str>, force: bool) -> bool {
 	let Some(intent) = intent.map(str::to_string).or_else(|| job.intent.clone()) else {
 		return false;
 	};
@@ -84,6 +84,7 @@ pub fn start_job(pool: &Pool, job: &Job, intent: Option<&str>) -> bool {
 			root: job.source.path.parent().unwrap_or(Path::new("")).to_path_buf(),
 			source: job.source.path.clone(),
 			intent,
+			force,
 		},
 		false => Kind::Immediate(immediate::Request {
 			input: job.source.path.clone(),
@@ -92,7 +93,7 @@ pub fn start_job(pool: &Pool, job: &Job, intent: Option<&str>) -> bool {
 				[single] => Some(single.path.to_string_lossy().into_owned()),
 				_ => None,
 			},
-			force: false,
+			force,
 		}),
 	};
 

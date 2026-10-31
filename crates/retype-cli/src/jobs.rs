@@ -460,7 +460,14 @@ fn answer(answer: Value) {
 
 /// Act on a parked job, `docs/deferral.md` §8: run it now, or run what a repair
 /// produced.
-pub fn resolve(state_dir: &Path, prefix: &str, convert: bool, json: bool, allow_spawn: bool) -> Result<ExitCode> {
+pub fn resolve(
+	state_dir: &Path,
+	prefix: &str,
+	convert: bool,
+	force: bool,
+	json: bool,
+	allow_spawn: bool,
+) -> Result<ExitCode> {
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 	let id = match single(&mut client, prefix)? {
 		Ok(id) => id,
@@ -472,7 +479,10 @@ pub fn resolve(state_dir: &Path, prefix: &str, convert: bool, json: bool, allow_
 		false => "now",
 	};
 
-	let answer = match client.call("jobs.resolve", serde_json::json!({"id": id.as_str(), "mode": mode})) {
+	let answer = match client.call(
+		"jobs.resolve",
+		serde_json::json!({"id": id.as_str(), "mode": mode, "force": force}),
+	) {
 		Ok(answer) => answer,
 		Err(retype_ipc::ClientError::Rpc(error)) => {
 			eprintln!("retype: {}: {}", error.code, error.message);

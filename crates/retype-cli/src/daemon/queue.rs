@@ -73,6 +73,8 @@ pub enum Kind {
 		root: PathBuf,
 		source: PathBuf,
 		intent: String,
+		/// Overwrite an output that appeared while the job was parked.
+		force: bool,
 	},
 }
 
@@ -372,8 +374,13 @@ fn serve(shared: &Shared, queue: &Queue, inflight: &Inflight) {
 					Kind::Immediate(request) => {
 						crate::daemon::immediate::run(shared, request, &work.id, &cancellation);
 					}
-					Kind::Deferred { root, source, intent } => {
-						convert_deferred(shared, root, source, intent, &work.id, &cancellation);
+					Kind::Deferred {
+						root,
+						source,
+						intent,
+						force,
+					} => {
+						convert_deferred(shared, root, source, intent, *force, &work.id, &cancellation);
 					}
 				}
 
