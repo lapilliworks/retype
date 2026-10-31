@@ -154,7 +154,8 @@ fn version(plan: &Plan<'_>) -> String {
 	match plan.backend {
 		// A native backend is this build, and its version is the product's.
 		plan::Backend::Native { .. } => env!("CARGO_PKG_VERSION").to_string(),
-		plan::Backend::Tool(tool) => tools::probe(tool)
+		// A repack through a tool is the tool's work whatever the rules around it are.
+		plan::Backend::SevenZip { tool, .. } | plan::Backend::Tool(tool) => tools::probe(tool)
 			.version
 			.map(|version| version.to_string())
 			.unwrap_or_default(),

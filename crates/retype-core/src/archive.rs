@@ -20,9 +20,11 @@
 //! - Entries are written in the order the source lists them, so a repack of the same
 //!   archive twice produces the same bytes
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::convert::StagedOutput;
 use crate::error::{Code, Diagnostic, Error, Result};
@@ -38,15 +40,39 @@ pub const MAX_ENTRIES: usize = 100_000;
 pub const MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 /// Convert the archive at `input` into the archive format `to` at `output`.
-pub fn repack(from: Native, to: Native, input: &Path, output: &Path, cancellation: &Cancellation) -> Result<Report> {
+///
+/// `tool` is the executable that carries a codec this build does not write, and it is
+/// `Some` exactly when one side of the repack is `7z`, `docs/tools.md` §7.
+pub fn repack(
+	tool: Option<&str>,
+	from: Native,
+	to: Native,
+	input: &Path,
+	output: &Path,
+	cancellation: &Cancellation,
+) -> Result<Report> {
+	// Absolute, because a repack through a tool changes the child's working directory:
+	// a relative path would then mean something else to the tool than it did here.
+	let input = &std::path::absolute(input)?;
+	let output_path = std::path::absolute(output)?;
+	let output = output_path.as_path();
+
 	let staged = StagedOutput::new(output)?;
 
-	let mut source = Source::open(from, input)?;
-	let mut sink = Sink::open(to, staged.temp())?;
+	let stderr = match tool {
+		Some(tool) if from.needs_tool() || to.needs_tool() => {
+			through(tool, from, to, input, staged.temp(), cancellation)?
+		}
+		_ => {
+			let mut source = Source::open(from, input)?;
+			let mut sink = Sink::open(to, staged.temp())?;
 
-	let mut budget = MAX_BYTES;
-	source.each(&mut sink, cancellation, &mut budget)?;
-	sink.commit()?;
+			let mut budget = MAX_BYTES;
+			source.each(&mut sink, cancellation, &mut budget)?;
+			sink.commit()?;
+			String::new()
+		}
+	};
 
 	// The staged file is the archive, so its length is the answer; committing first
 	// would only move it.
@@ -56,14 +82,68 @@ pub fn repack(from: Native, to: Native, input: &Path, output: &Path, cancellatio
 	Ok(Report {
 		output: output.to_path_buf(),
 		bytes,
-		stderr: String::new(),
+		stderr,
 	})
+}
+
+/// Repack a container that needs a tool, `docs/tools.md` §7.
+///
+/// The rules are the same ones the native path applies, and they are applied here
+/// rather than by the tool: the container's bytes are 7-Zip's, the decisions are ours.
+/// A tree is the only shape both sides understand, so a repack through a tool
+/// materialises into a staged directory and then out of it, and the directory never
+/// outlives the job.
+fn through(
+	tool: &str,
+	from: Native,
+	to: Native,
+	input: &Path,
+	target: &Path,
+	cancellation: &Cancellation,
+) -> Result<String> {
+	let staged = StagedTree::new(target)?;
+	let tree = staged.path();
+	let mut notes = String::new();
+
+	// In: the source as a tree.
+	match from {
+		Native::SevenZip => notes = extract(tool, input, tree, cancellation)?,
+		other => {
+			let mut source = Source::open(other, input)?;
+			let mut sink = Sink::Tree(TreeSink::new(tree)?);
+
+			let mut budget = MAX_BYTES;
+			source.each(&mut sink, cancellation, &mut budget)?;
+			sink.commit()?;
+		}
+	}
+
+	// Out: the tree as the target.
+	match to {
+		Native::SevenZip => notes = create(tool, tree, target, cancellation)?,
+		other => {
+			let mut source = Source::tree(tree)?;
+			let mut sink = Sink::open(other, target)?;
+
+			let mut budget = MAX_BYTES;
+			source.each(&mut sink, cancellation, &mut budget)?;
+			sink.commit()?;
+		}
+	}
+
+	Ok(notes)
 }
 
 /// The source archive, opened for reading.
 enum Source {
 	Zip(zip::ZipArchive<File>),
 	Tar(Box<tar::Archive<TarSource>>),
+	/// A checked directory produced by a tool, listed in the order it will be written.
+	Tree {
+		entries: Vec<TreeEntry>,
+		root: PathBuf,
+		at: usize,
+	},
 }
 
 enum TarSource {
@@ -92,7 +172,29 @@ impl Source {
 			Native::TarGz => Ok(Self::Tar(Box::new(tar::Archive::new(TarSource::Gzip(Box::new(
 				flate2::read::GzDecoder::new(file),
 			)))))),
+			// A codec with no reader here is always on the other side of a tool, and
+			// `through` is what handles it, `docs/tools.md` §7.
+			Native::SevenZip => Err(Error::Diagnostic(Diagnostic::global(
+				Code::InternalInvariant,
+				"a 7z source reached the native reader",
+			))),
 		}
+	}
+
+	/// Open a tree that a tool wrote, ready to be written into another container.
+	fn tree(root: &Path) -> Result<Self> {
+		let mut entries = Vec::new();
+		walk(root, root, &mut entries)?;
+
+		// The order is the tree's own, sorted by name, so repacking the same archive
+		// twice produces the same bytes.
+		entries.sort_by(|left, right| left.name.cmp(&right.name));
+
+		Ok(Self::Tree {
+			entries,
+			root: root.to_path_buf(),
+			at: 0,
+		})
 	}
 
 	/// Hand every entry to `sink`, in the order the source lists them.
@@ -154,6 +256,26 @@ impl Source {
 					sink.file(&name, mode, size, &mut entry)?;
 				}
 			}
+			Self::Tree { entries, root, at } => {
+				while *at < entries.len() {
+					stop_if_cancelled(cancellation)?;
+
+					let entry = entries[*at].clone();
+					*at += 1;
+
+					if entry.directory {
+						sink.directory(&entry.name, entry.mode)?;
+						continue;
+					}
+
+					spend(&entry.name, entry.size, budget)?;
+
+					let mut file = File::open(root.join(&entry.name))
+						.map_err(|error| unreadable(&root.join(&entry.name), &error))?;
+
+					sink.file(&entry.name, entry.mode, entry.size, &mut file)?;
+				}
+			}
 		}
 
 		Ok(())
@@ -164,6 +286,8 @@ impl Source {
 enum Sink {
 	Zip(Box<zip::ZipWriter<File>>),
 	Tar(Box<tar::Builder<TarSink>>),
+	/// Write the entries into a directory a tool can archive from.
+	Tree(TreeSink),
 }
 
 enum TarSink {
@@ -198,6 +322,10 @@ impl Sink {
 			Native::TarGz => Ok(Self::Tar(Box::new(tar::Builder::new(TarSink::Gzip(Box::new(
 				flate2::write::GzEncoder::new(file, flate2::Compression::default()),
 			)))))),
+			Native::SevenZip => Err(Error::Diagnostic(Diagnostic::global(
+				Code::InternalInvariant,
+				"a 7z target reached the native writer",
+			))),
 		}
 	}
 
@@ -220,6 +348,7 @@ impl Sink {
 					.append_data(&mut header, format!("{name}/"), std::io::empty())
 					.map_err(|error| unwritable(&error))
 			}
+			Self::Tree(tree) => tree.directory(&name, mode),
 		}
 	}
 
@@ -252,6 +381,7 @@ impl Sink {
 					.append_data(&mut header, &name, bytes.take(size))
 					.map_err(|error| unwritable(&error))
 			}
+			Self::Tree(tree) => tree.file(&name, mode, size, bytes),
 		}
 	}
 
@@ -270,10 +400,324 @@ impl Sink {
 					encoder.finish().map_err(|error| unwritable(&error))?;
 				}
 			}
+			Self::Tree(_) => {}
 		}
 
 		Ok(())
 	}
+}
+
+/// One checked entry of a tree a tool wrote or will read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TreeEntry {
+	/// Relative, with `/` separators, and already through `archive_name`.
+	name: String,
+	directory: bool,
+	mode: u32,
+	size: u64,
+}
+
+/// Write archive entries into a directory, keeping their names and modes.
+struct TreeSink {
+	root: PathBuf,
+}
+
+impl TreeSink {
+	fn new(root: &Path) -> Result<Self> {
+		fs::create_dir_all(root)?;
+		Ok(Self {
+			root: root.to_path_buf(),
+		})
+	}
+
+	fn directory(&self, name: &str, mode: u32) -> Result<()> {
+		let path = self.root.join(name);
+		fs::create_dir_all(&path)?;
+		set_mode(&path, mode);
+		Ok(())
+	}
+
+	fn file(&self, name: &str, mode: u32, size: u64, bytes: &mut dyn Read) -> Result<()> {
+		let path = self.root.join(name);
+
+		if let Some(parent) = path.parent() {
+			fs::create_dir_all(parent)?;
+		}
+
+		let mut file = File::create(&path)?;
+		let copied = std::io::copy(&mut bytes.take(size), &mut file).map_err(|error| unwritable(&error))?;
+
+		if copied != size {
+			return Err(short(name, size, copied));
+		}
+
+		set_mode(&path, mode);
+		Ok(())
+	}
+}
+
+/// Collect every entry of a tree, refusing what the native path refuses.
+fn walk(root: &Path, at: &Path, entries: &mut Vec<TreeEntry>) -> Result<()> {
+	let mut children: Vec<PathBuf> = fs::read_dir(at)?
+		.map(|entry| entry.map(|entry| entry.path()))
+		.collect::<std::io::Result<Vec<_>>>()?;
+
+	children.sort();
+
+	for path in children {
+		let relative = path.strip_prefix(root).unwrap_or(&path);
+		let name = relative
+			.components()
+			.map(|component| component.as_os_str().to_string_lossy().into_owned())
+			.collect::<Vec<_>>()
+			.join("/");
+
+		let metadata = fs::symlink_metadata(&path)?;
+
+		if metadata.file_type().is_symlink() {
+			return Err(link_refused(&name));
+		}
+
+		if metadata.is_dir() {
+			entries.push(TreeEntry {
+				name,
+				directory: true,
+				mode: mode_of(&metadata),
+				size: 0,
+			});
+			walk(root, &path, entries)?;
+			continue;
+		}
+
+		if !metadata.is_file() {
+			return Err(Error::Diagnostic(Diagnostic::global(
+				Code::Unsupported,
+				format!("'{name}' is not a file or a directory, which is all an archive carries"),
+			)));
+		}
+
+		entries.push(TreeEntry {
+			name,
+			directory: false,
+			mode: mode_of(&metadata),
+			size: metadata.len(),
+		});
+	}
+
+	Ok(())
+}
+
+fn mode_of(metadata: &fs::Metadata) -> u32 {
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		metadata.permissions().mode() & 0o7777
+	}
+	#[cfg(not(unix))]
+	{
+		let _ = metadata;
+		0o644
+	}
+}
+
+fn set_mode(path: &Path, mode: u32) {
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode & 0o7777));
+	}
+	#[cfg(not(unix))]
+	{
+		let _ = (path, mode);
+	}
+}
+
+/// A directory staged beside the output for a repack that needs a tree.
+///
+/// It is removed when the job ends, whether it succeeded or not, so a failed repack
+/// leaves nothing behind in the user's directory.
+struct StagedTree {
+	path: PathBuf,
+}
+
+impl StagedTree {
+	fn new(target: &Path) -> Result<Self> {
+		let parent = target.parent().ok_or_else(|| Error::NoParent(target.to_path_buf()))?;
+		let name = target
+			.file_name()
+			.ok_or_else(|| Error::NoFileName(target.to_path_buf()))?;
+
+		static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+		let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+		let path = parent.join(format!(
+			"{}tree-{}-{unique}",
+			crate::convert::TEMP_PREFIX,
+			name.to_string_lossy()
+		));
+
+		// A leftover from a process that was killed must not be read as this job's tree.
+		let _ = fs::remove_dir_all(&path);
+		fs::create_dir_all(&path)?;
+
+		Ok(Self { path })
+	}
+
+	fn path(&self) -> &Path {
+		&self.path
+	}
+}
+
+impl Drop for StagedTree {
+	fn drop(&mut self) {
+		let _ = fs::remove_dir_all(&self.path);
+	}
+}
+
+/// List a 7z archive, and refuse it before a byte is extracted.
+///
+/// The listing is where the rules are applied: `docs/tools.md` §7 wants the declared
+/// sizes checked against the budget before anything is copied, and wants names and
+/// entry kinds judged by this build rather than by the tool that will unpack them.
+fn listing(tool: &str, input: &Path, cancellation: &Cancellation) -> Result<Vec<TreeEntry>> {
+	let text = seven(tool, &["l", "-slt", "-ba", "--"], Some(input), None, cancellation)?;
+
+	parse_listing(&text)
+}
+
+/// The rules, applied to a listing rather than to a running tool.
+///
+/// Split out because these are the decisions a repack through a tool exists to keep:
+/// names, entry kinds and the budget are judged here, and a listing is the whole input
+/// they need, `docs/tools.md` §7.
+fn parse_listing(text: &str) -> Result<Vec<TreeEntry>> {
+	let mut entries = Vec::new();
+	let mut budget = MAX_BYTES;
+	let mut fields: BTreeMap<String, String> = BTreeMap::new();
+
+	for line in text.lines().chain(std::iter::once("")) {
+		match line.split_once(" = ") {
+			Some((key, value)) => {
+				fields.insert(key.trim().to_string(), value.trim().to_string());
+			}
+			None => {
+				if fields.is_empty() {
+					continue;
+				}
+
+				let Some(path) = fields.remove("Path") else {
+					fields.clear();
+					continue;
+				};
+
+				let attributes = fields.remove("Attributes").unwrap_or_default();
+				let mode_text = attributes.split_whitespace().nth(1).unwrap_or_default().to_string();
+				let kind = mode_text.chars().next().unwrap_or('-');
+
+				// A directory keeps its entry; anything else that is not a regular file
+				// is refused by name, because carrying it is how a repack of an archive
+				// becomes a traversal for whoever unpacks it next.
+				let directory = kind == 'd' || attributes.starts_with('D');
+
+				if !directory && kind != '-' {
+					return Err(Error::Diagnostic(Diagnostic::global(
+						Code::Unsupported,
+						format!(
+							"'{path}' is '{}', and an archive of files and directories is all this carries",
+							mode_text
+						),
+					)));
+				}
+
+				let name = archive_name(&path)?;
+				let size = fields
+					.remove("Size")
+					.and_then(|size| size.parse::<u64>().ok())
+					.unwrap_or(0);
+
+				if !directory {
+					spend(&name, size, &mut budget)?;
+				}
+
+				entries.push(TreeEntry {
+					name,
+					directory,
+					mode: octal_mode(&mode_text),
+					size,
+				});
+
+				fields.clear();
+			}
+		}
+	}
+
+	Ok(entries)
+}
+
+/// `-rwxr-xr-x` as a number, which is what a container and a file both want.
+fn octal_mode(text: &str) -> u32 {
+	let mut mode = 0;
+
+	for character in text.chars().skip(1).take(9) {
+		mode <<= 1;
+
+		if character != '-' {
+			mode |= 1;
+		}
+	}
+
+	// rwx rwx rwx is the low nine bits; the setuid and sticky bits are not carried by
+	// this listing, so a setuid file comes back as an ordinary executable.
+	mode & 0o777
+}
+
+/// Unpack a 7z archive into `tree`, after its listing has been refused or accepted.
+fn extract(tool: &str, input: &Path, tree: &Path, cancellation: &Cancellation) -> Result<String> {
+	// The listing is the check; the extraction follows it, so an archive that fails a
+	// rule is refused before it writes anything.
+	let _ = listing(tool, input, cancellation)?;
+
+	let destination = format!("-o{}", tree.display());
+
+	seven(
+		tool,
+		&["x", "-bd", "-bso0", "-bsp0", "-y", &destination, "--"],
+		Some(input),
+		None,
+		cancellation,
+	)
+}
+
+/// Create a 7z archive from a tree that has already been checked.
+fn create(tool: &str, tree: &Path, target: &Path, cancellation: &Cancellation) -> Result<String> {
+	let name = target.to_string_lossy().into_owned();
+
+	// The tool expands the wildcard itself, so no shell is involved and no argument
+	// list grows with the number of entries.
+	seven(
+		tool,
+		&["a", "-t7z", "-bd", "-bso0", "-bsp0", "-r", "--", &name, "*"],
+		None,
+		Some(tree),
+		cancellation,
+	)
+}
+
+/// Run the tool, answering with its stderr tail.
+fn seven(
+	tool: &str,
+	args: &[&str],
+	input: Option<&Path>,
+	cwd: Option<&Path>,
+	cancellation: &Cancellation,
+) -> Result<String> {
+	let mut argv: Vec<OsString> = args.iter().map(OsString::from).collect();
+
+	if let Some(input) = input {
+		argv.push(input.as_os_str().to_owned());
+	}
+
+	crate::execute::run_child(tool, Path::new(tool), &argv, cwd, None, cancellation)
 }
 
 fn zip_options(mode: u32) -> zip::write::SimpleFileOptions {
@@ -456,7 +900,7 @@ mod tests {
 		let input = zip_of(&tree);
 		let output = dir.path().join("tree.tar.gz");
 
-		let report = repack(Native::Zip, Native::TarGz, &input, &output, &cost()).expect("repacks");
+		let report = repack(None, Native::Zip, Native::TarGz, &input, &output, &cost()).expect("repacks");
 
 		let entries = entries(Native::TarGz, &output);
 		let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
@@ -477,7 +921,7 @@ mod tests {
 		tar_of_tree(&tarball);
 
 		let output = dir.path().join("tree.zip");
-		repack(Native::Tar, Native::Zip, &tarball, &output, &cost()).expect("repacks");
+		repack(None, Native::Tar, Native::Zip, &tarball, &output, &cost()).expect("repacks");
 
 		let entries = zip_entries(&output);
 		let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
@@ -518,7 +962,7 @@ mod tests {
 		writer.finish().unwrap();
 
 		let output = dir.path().join("evil.tar");
-		let error = repack(Native::Zip, Native::Tar, &input, &output, &cost()).unwrap_err();
+		let error = repack(None, Native::Zip, Native::Tar, &input, &output, &cost()).unwrap_err();
 
 		assert_eq!(error.code(), Code::Unsupported);
 		assert!(error.to_string().contains(".."), "{error}");
@@ -540,7 +984,7 @@ mod tests {
 		builder.finish().unwrap();
 
 		let output = dir.path().join("link.zip");
-		let error = repack(Native::Tar, Native::Zip, &input, &output, &cost()).unwrap_err();
+		let error = repack(None, Native::Tar, Native::Zip, &input, &output, &cost()).unwrap_err();
 
 		assert_eq!(error.code(), Code::Unsupported);
 		assert!(error.to_string().contains("symbolic link"), "{error}");
@@ -551,7 +995,7 @@ mod tests {
 		let (dir, tree) = tree();
 		let output = dir.path().join("tree.zip");
 
-		let error = repack(Native::Zip, Native::Zip, &tree, &output, &cost()).unwrap_err();
+		let error = repack(None, Native::Zip, Native::Zip, &tree, &output, &cost()).unwrap_err();
 
 		assert_eq!(error.code(), Code::IoFailed);
 	}
@@ -565,7 +1009,7 @@ mod tests {
 		let cancellation = Cancellation::default();
 		cancellation.cancel();
 
-		let error = repack(Native::Zip, Native::TarGz, &input, &output, &cancellation).unwrap_err();
+		let error = repack(None, Native::Zip, Native::TarGz, &input, &output, &cancellation).unwrap_err();
 
 		assert_eq!(error.code(), Code::JobCancelled);
 		assert!(!output.exists(), "the staged file is discarded");
@@ -583,5 +1027,119 @@ mod tests {
 		}
 
 		assert!(archive_name("tree/one.txt").is_ok());
+	}
+}
+
+#[cfg(test)]
+mod seven_tests {
+	use super::*;
+
+	#[test]
+	fn zip_into_seven_zip_through_the_tool() {
+		let dir = std::env::temp_dir().join(format!("retype-7z-{}", std::process::id()));
+		let _ = fs::remove_dir_all(&dir);
+		fs::create_dir_all(&dir).unwrap();
+
+		let zip_path = dir.join("in.zip");
+		{
+			let file = File::create(&zip_path).unwrap();
+			let mut writer = zip::ZipWriter::new(file);
+			writer
+				.start_file("a.txt", zip::write::SimpleFileOptions::default())
+				.unwrap();
+			writer.write_all(b"hello").unwrap();
+			writer
+				.add_directory("sub", zip::write::SimpleFileOptions::default())
+				.unwrap();
+			writer
+				.start_file("sub/b.bin", zip::write::SimpleFileOptions::default())
+				.unwrap();
+			writer.write_all(b"x").unwrap();
+			writer.finish().unwrap();
+		}
+
+		let out = dir.join("out.7z");
+		let cancellation = Cancellation::default();
+
+		let report = repack(
+			Some("7z"),
+			Native::Zip,
+			Native::SevenZip,
+			&zip_path,
+			&out,
+			&cancellation,
+		);
+
+		match report {
+			Ok(report) => {
+				assert!(report.bytes > 0);
+				assert!(out.exists());
+			}
+			Err(error) => panic!("{error:?}"),
+		}
+
+		let _ = fs::remove_dir_all(&dir);
+	}
+}
+
+#[cfg(test)]
+mod seven_rule_tests {
+	use super::*;
+
+	fn entry(path: &str, attributes: &str, size: u64) -> String {
+		format!("Path = {path}\nSize = {size}\nAttributes = {attributes}\n\n")
+	}
+
+	#[test]
+	fn a_listing_is_read_into_entries_with_their_modes() {
+		let text = entry("a.txt", "A -rwxr-xr-x", 6) + &entry("sub", "D drwxr-xr-x", 0);
+
+		let entries = parse_listing(&text).expect("a listing");
+
+		assert_eq!(entries.len(), 2);
+		assert_eq!(entries[0].name, "a.txt");
+		assert_eq!(entries[0].mode, 0o755);
+		assert_eq!(entries[0].size, 6);
+		assert!(entries[1].directory);
+		assert_eq!(entries[1].mode, 0o755);
+	}
+
+	#[test]
+	fn a_name_that_would_escape_is_refused_from_a_listing() {
+		let error = parse_listing(&entry("../evil.txt", "A -rw-r--r--", 6)).unwrap_err();
+
+		assert_eq!(error.code(), Code::Unsupported);
+	}
+
+	#[test]
+	fn an_absolute_name_is_refused_from_a_listing() {
+		let error = parse_listing(&entry("/etc/passwd", "A -rw-r--r--", 6)).unwrap_err();
+
+		assert_eq!(error.code(), Code::Unsupported);
+	}
+
+	#[test]
+	fn a_symbolic_link_in_a_listing_is_refused_by_name() {
+		let error = parse_listing(&entry("link", "A lrwxrwxrwx", 5)).unwrap_err();
+
+		assert_eq!(error.code(), Code::Unsupported);
+		assert!(format!("{error}").contains("link"), "{error}");
+	}
+
+	#[test]
+	fn a_listing_that_expands_beyond_the_budget_is_refused_before_anything_is_copied() {
+		let text = entry("big.bin", "A -rw-r--r--", MAX_BYTES) + &entry("more.bin", "A -rw-r--r--", 1);
+
+		let error = parse_listing(&text).unwrap_err();
+
+		assert_eq!(error.code(), Code::Unsupported);
+		assert!(format!("{error}").contains("limit"), "{error}");
+	}
+
+	#[test]
+	fn a_device_entry_is_refused() {
+		let error = parse_listing(&entry("dev/null", "A crw-rw-rw-", 0)).unwrap_err();
+
+		assert_eq!(error.code(), Code::Unsupported);
 	}
 }

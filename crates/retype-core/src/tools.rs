@@ -294,6 +294,12 @@ fn not_found(tool: &Tool) -> ToolStatus<'_> {
 	}
 }
 
+/// The name this build looks for when a container needs a tool, `docs/tools.md` §7.
+///
+/// Not a guess at a command: it is the declaration in the shipped configuration, and a
+/// machine with `7z` or `7za` resolves through that tool's aliases.
+pub const SEVEN_ZIP: &str = "7zz";
+
 /// How much probe output is kept. A delegate list is a few kilobytes; a tool that
 /// prints more than this is not describing itself and is not worth remembering
 /// past the version line.

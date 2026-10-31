@@ -6,6 +6,7 @@
 //! because nothing was moved: the source is still where it was, which is why
 //! `convert` needs none of the restoration a rename does.
 
+use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -95,7 +96,13 @@ pub fn run_logged(
 	// A format this build writes itself has nothing to run, so it goes to the
 	// archive writer rather than looking for a tool that was never planned.
 	if let Backend::Native { from, to } = plan.backend {
-		return crate::archive::repack(from, to, input, output, cancellation);
+		return crate::archive::repack(None, from, to, input, output, cancellation);
+	}
+
+	// A container this build cannot write is still repacked by our rules, with the
+	// tool given a tree that has already been checked, `docs/tools.md` §7.
+	if let Backend::SevenZip { from, to, .. } = plan.backend {
+		return crate::archive::repack(Some(&plan.command), from, to, input, output, cancellation);
 	}
 
 	let Backend::Tool(tool) = plan.backend else {
@@ -118,101 +125,7 @@ pub fn run_logged(
 	let staged = StagedOutput::new(output)?;
 	let argv = plan.argv(input, staged.temp());
 
-	let mut child = {
-		let mut command_line = Command::new(&path);
-		command_line
-			.args(&argv)
-			.stdin(Stdio::null())
-			.stdout(Stdio::null())
-			.stderr(Stdio::piped());
-
-		// A tool that forks a helper is the normal case, so the group is what gets
-		// killed rather than the process we happen to know about.
-		#[cfg(unix)]
-		{
-			use std::os::unix::process::CommandExt;
-			command_line.process_group(0);
-		}
-
-		command_line.spawn().map_err(|error| {
-			Error::Diagnostic(Diagnostic::global(
-				Code::ToolFailed,
-				format!("{command} could not run: {error}"),
-			))
-		})?
-	};
-
-	// Drain stderr while the tool runs: a chatty tool would otherwise block on a
-	// full pipe, and we would be waiting for it to exit.
-	let stderr_pipe = child.stderr.take();
-	let journal = log.map(Path::to_path_buf);
-	let reader = thread::spawn(move || {
-		let mut kept = Vec::new();
-
-		// A log that cannot be opened is not a reason to fail a conversion; the tail
-		// in the journal is what a report depends on.
-		let mut file = journal.and_then(|path| std::fs::OpenOptions::new().create(true).append(true).open(path).ok());
-
-		if let Some(mut pipe) = stderr_pipe {
-			let mut buffer = [0u8; 8 * 1024];
-			while let Ok(read) = pipe.read(&mut buffer) {
-				if read == 0 {
-					break;
-				}
-
-				kept.extend_from_slice(&buffer[..read]);
-				if kept.len() > STDERR_TAIL * 4 {
-					let excess = kept.len() - STDERR_TAIL * 4;
-					kept.drain(..excess);
-				}
-
-				if let Some(file) = file.as_mut() {
-					use std::io::Write;
-					let _ = file.write_all(&buffer[..read]);
-					let _ = file.flush();
-				}
-			}
-		}
-
-		kept
-	});
-
-	let status = loop {
-		if cancellation.is_cancelled() {
-			kill(&mut child);
-			let _ = reader.join();
-			return Err(Error::Diagnostic(Diagnostic::global(
-				Code::JobCancelled,
-				format!("{command} was cancelled"),
-			)));
-		}
-
-		match child.try_wait() {
-			Ok(Some(status)) => break status,
-			Ok(None) => thread::sleep(POLL),
-			Err(error) => {
-				kill(&mut child);
-				let _ = reader.join();
-
-				return Err(Error::Diagnostic(Diagnostic::global(
-					Code::ToolFailed,
-					format!("{command} could not be waited for: {error}"),
-				)));
-			}
-		}
-	};
-
-	let stderr = tail(&reader.join().unwrap_or_default());
-
-	if !status.success() {
-		return Err(Error::Diagnostic(Diagnostic::global(
-			Code::ToolFailed,
-			match stderr.is_empty() {
-				true => format!("{command} exited {status}"),
-				false => format!("{command} exited {status}: {stderr}"),
-			},
-		)));
-	}
+	let stderr = run_child(&command, &path, &argv, None, log, cancellation)?;
 
 	if !staged.temp().exists() {
 		return Err(Error::Diagnostic(Diagnostic::global(
@@ -354,6 +267,124 @@ fn executable(command: &str) -> Option<PathBuf> {
 fn tail(stderr: &[u8]) -> String {
 	let start = stderr.len().saturating_sub(STDERR_TAIL);
 	String::from_utf8_lossy(&stderr[start..]).trim().to_string()
+}
+
+/// Run a program to completion, killing it if the job is cancelled.
+///
+/// One process, one place: the runner and the archive writer both start tools, and two
+/// copies of "spawn in its own group, drain stderr, kill on cancel" would drift apart.
+///
+/// `log` receives the stderr stream as it arrives, and the tail is returned whatever the
+/// exit status was, because a tool can succeed and still say something worth reading.
+pub fn run_child(
+	command: &str,
+	path: &Path,
+	argv: &[OsString],
+	cwd: Option<&Path>,
+	log: Option<&Path>,
+	cancellation: &Cancellation,
+) -> Result<String> {
+	let mut child = {
+		let mut command_line = Command::new(path);
+		command_line
+			.args(argv)
+			.stdin(Stdio::null())
+			.stdout(Stdio::null())
+			.stderr(Stdio::piped());
+
+		if let Some(cwd) = cwd {
+			command_line.current_dir(cwd);
+		}
+
+		// A tool that forks a helper is the normal case, so the group is what gets
+		// killed rather than the process we happen to know about.
+		#[cfg(unix)]
+		{
+			use std::os::unix::process::CommandExt;
+			command_line.process_group(0);
+		}
+
+		command_line.spawn().map_err(|error| {
+			Error::Diagnostic(Diagnostic::global(
+				Code::ToolFailed,
+				format!("{command} could not run: {error}"),
+			))
+		})?
+	};
+
+	// Drain stderr while the tool runs: a chatty tool would otherwise block on a
+	// full pipe, and we would be waiting for it to exit.
+	let stderr_pipe = child.stderr.take();
+	let journal = log.map(Path::to_path_buf);
+	let reader = thread::spawn(move || {
+		let mut kept = Vec::new();
+
+		// A log that cannot be opened is not a reason to fail a conversion; the tail
+		// in the journal is what a report depends on.
+		let mut file = journal.and_then(|path| std::fs::OpenOptions::new().create(true).append(true).open(path).ok());
+
+		if let Some(mut pipe) = stderr_pipe {
+			let mut buffer = [0u8; 8 * 1024];
+			while let Ok(read) = pipe.read(&mut buffer) {
+				if read == 0 {
+					break;
+				}
+
+				kept.extend_from_slice(&buffer[..read]);
+				if kept.len() > STDERR_TAIL * 4 {
+					let excess = kept.len() - STDERR_TAIL * 4;
+					kept.drain(..excess);
+				}
+
+				if let Some(file) = file.as_mut() {
+					use std::io::Write;
+					let _ = file.write_all(&buffer[..read]);
+					let _ = file.flush();
+				}
+			}
+		}
+
+		kept
+	});
+
+	let status = loop {
+		if cancellation.is_cancelled() {
+			kill(&mut child);
+			let _ = reader.join();
+			return Err(Error::Diagnostic(Diagnostic::global(
+				Code::JobCancelled,
+				format!("{command} was cancelled"),
+			)));
+		}
+
+		match child.try_wait() {
+			Ok(Some(status)) => break status,
+			Ok(None) => thread::sleep(POLL),
+			Err(error) => {
+				kill(&mut child);
+				let _ = reader.join();
+
+				return Err(Error::Diagnostic(Diagnostic::global(
+					Code::ToolFailed,
+					format!("{command} could not be waited for: {error}"),
+				)));
+			}
+		}
+	};
+
+	let stderr = tail(&reader.join().unwrap_or_default());
+
+	if !status.success() {
+		return Err(Error::Diagnostic(Diagnostic::global(
+			Code::ToolFailed,
+			match stderr.is_empty() {
+				true => format!("{command} exited {status}"),
+				false => format!("{command} exited {status}: {stderr}"),
+			},
+		)));
+	}
+
+	Ok(stderr)
 }
 
 #[cfg(test)]

@@ -886,23 +886,23 @@ fn run(
 			Err(error) => {
 				// A superseded job did not fail: the work was overtaken, so its output
 				// is skipped rather than failed, `docs/state.md` §5.3.
-				let (state, message) = match cancellation.is_superseded() {
-					true => (OutputState::Skipped, "replaced by a later rename".to_string()),
-					false => (OutputState::Failed, error.to_string()),
+				// The code the failure came with, not a generic one: an archive that
+				// was refused for its names is a diagnosis, and a caller's exit code
+				// should say so rather than "the tool failed".
+				let (state, message, code) = match cancellation.is_superseded() {
+					true => (
+						OutputState::Skipped,
+						"replaced by a later rename".to_string(),
+						Code::JobSuperseded,
+					),
+					false => (OutputState::Failed, error.to_string(), error.code()),
 				};
 
 				if state == OutputState::Failed {
 					eprintln!("retype: {}: {error}", output.display());
 				}
 
-				outputs.push(record(
-					&output,
-					plan,
-					state,
-					None,
-					None,
-					Some((Code::ToolFailed, message)),
-				));
+				outputs.push(record(&output, plan, state, None, None, Some((code, message))));
 			}
 		}
 	}

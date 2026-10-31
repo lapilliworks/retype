@@ -120,6 +120,11 @@ pub enum Native {
 	/// A tar stream through gzip.
 	#[serde(rename = "tar.gz")]
 	TarGz,
+	/// A 7z container, which is the one codec this build does not write itself: the
+	/// rules a repack applies are ours, the container's bytes are the tool's,
+	/// `docs/tools.md` §7.
+	#[serde(rename = "7z")]
+	SevenZip,
 }
 
 impl Native {
@@ -128,7 +133,13 @@ impl Native {
 			Self::Zip => "zip",
 			Self::Tar => "tar",
 			Self::TarGz => "tar.gz",
+			Self::SevenZip => "7z",
 		}
+	}
+
+	/// Whether carrying this codec needs a tool rather than this build.
+	pub fn needs_tool(self) -> bool {
+		matches!(self, Self::SevenZip)
 	}
 }
 
@@ -2352,8 +2363,8 @@ tier = 'exact'
 
 		assert!(registry.format("jpg").is_some());
 		// Nine image formats, four video containers, four audio ones, six documents
-		// and three archives.
-		assert_eq!(registry.formats().count(), 26);
+		// and four archives.
+		assert_eq!(registry.formats().count(), 27);
 		assert_eq!(registry.ops().count(), 30);
 
 		// Every shipped tool says which families it carries, because a tool without

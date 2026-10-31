@@ -156,7 +156,7 @@ args = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart']
 |---|---|
 | `family` | `image`, `audio`, `video`, `document`, `archive`, `folder` |
 | `direction` | `decode`, `encode` or `both`, default `both`. A format that is read and never written, such as `dng`, or written and never read, such as `pdf` |
-| `native` | `zip`, `tar` or `tar.gz`. The format is repacked by this build rather than by a tool. Only the `archive` family may name one, and a native target needs a native source, because a container is converted from another container |
+| `native` | `zip`, `tar`, `tar.gz` or `7z`. The format is repacked rather than converted. Only the `archive` family may name one, and a native target needs a native source, because a container is converted from another container. `7z` is repacked through the declared tool, `docs/tools.md` §7 |
 | `lossy` | Whether the format is lossy |
 | `alpha` | Whether the format carries alpha |
 | `tier` | Default fidelity tier for pairs targeting this format |

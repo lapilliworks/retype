@@ -64,6 +64,14 @@ pub enum Backend<'a> {
 		from: Native,
 		to: Native,
 	},
+	/// A repack carried by a tool, for the one container this build cannot write,
+	/// `docs/tools.md` §7. The rules are still ours: the tool is given a tree that has
+	/// already been checked.
+	SevenZip {
+		tool: &'a Tool,
+		from: Native,
+		to: Native,
+	},
 }
 
 impl Backend<'_> {
@@ -73,13 +81,25 @@ impl Backend<'_> {
 			Self::Tool(tool) => &tool.name,
 			// The target codec names the conversion: the source is in the record's
 			// `source` field, and `zip` to `tar.gz` is a `tar.gz` job.
-			Self::Native { to, .. } => to.name(),
+			Self::Native { to, .. } | Self::SevenZip { to, .. } => to.name(),
 		}
 	}
 
 	/// Whether this backend is this build rather than a tool on the machine.
+	/// Whether this build runs the conversion itself, with no argv to show.
+	///
+	/// A repack carried by a tool over our rules is not this: it has a command and the
+	/// user is entitled to see it, `docs/tools.md` §7.
 	pub fn is_native(&self) -> bool {
 		matches!(self, Self::Native { .. })
+	}
+
+	/// The codecs of a repack, whatever carries it.
+	pub fn repack(&self) -> Option<(crate::registry::Native, crate::registry::Native)> {
+		match self {
+			Self::Native { from, to } | Self::SevenZip { from, to, .. } => Some((*from, *to)),
+			Self::Tool(_) => None,
+		}
 	}
 }
 
@@ -200,6 +220,36 @@ fn plan_group<'a>(
 				),
 			))]);
 		};
+
+		// One container needs a tool to write it, and the plan says which one rather
+		// than leaving the runner to look for a command it never recorded.
+		if from.needs_tool() || to.needs_tool() {
+			let tool = registry.tool(crate::tools::SEVEN_ZIP).ok_or_else(|| {
+				vec![Error::Diagnostic(Diagnostic::global(
+					Code::CfgMissing,
+					format!("{} needs {}, which is not declared", to.name(), crate::tools::SEVEN_ZIP),
+				))]
+			})?;
+
+			// The name that resolved, not the one that was declared: `7z` and `7za` are
+			// aliases of the same tool, `docs/tools.md` §7.
+			let Some(command) = presence.command(tool) else {
+				return Err(vec![Error::Diagnostic(Diagnostic::global(
+					Code::ToolMissing,
+					format!("{} is not installed, and it carries {}", tool.name, to.name()),
+				))]);
+			};
+
+			return Ok(Plan {
+				group: index,
+				format: group.format.clone(),
+				backend: Backend::SevenZip { tool, from, to },
+				command,
+				argv: Vec::new(),
+				tier: tier_of(registry, &group.format),
+				engine: None,
+			});
+		}
 
 		return Ok(Plan {
 			group: index,

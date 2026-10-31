@@ -269,7 +269,7 @@ fn claim_of(plan: &Plan<'_>, source: &str, target: &str, samples: &Samples<'_>) 
 		// This build is the backend, so the claim is earned by the release rather
 		// than by a tool on the machine.
 		plan::Backend::Native { .. } => (env!("CARGO_PKG_VERSION").to_string(), String::new()),
-		plan::Backend::Tool(tool) => {
+		plan::Backend::SevenZip { tool, .. } | plan::Backend::Tool(tool) => {
 			let status = tools::probe(tool);
 			(
 				status.version.as_ref().map(ToString::to_string).unwrap_or_default(),

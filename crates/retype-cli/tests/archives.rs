@@ -160,3 +160,145 @@ fn repacking_an_archive_into_its_own_format_is_a_no_op() {
 		String::from_utf8_lossy(&ran.stderr)
 	);
 }
+
+/// Whether a 7z binary is on this machine. It is the one archive codec this build
+/// does not carry, so the tests below are about the tool when there is one.
+fn seven_zip() -> Option<&'static str> {
+	["7zz", "7z", "7za"].into_iter().find(|candidate| {
+		std::process::Command::new(candidate)
+			.arg("i")
+			.stdout(std::process::Stdio::null())
+			.stderr(std::process::Stdio::null())
+			.status()
+			.is_ok_and(|status| status.success())
+	})
+}
+
+/// A 7z made by the tool itself, because writing the container here is the one thing
+/// this build does not do.
+fn seven_zip_archive(tool: &str, dir: &Path, entries: &[(&str, &[u8])]) -> std::path::PathBuf {
+	let tree = dir.join("tree");
+	fs::create_dir_all(&tree).unwrap();
+
+	for (name, bytes) in entries {
+		let path = tree.join(name);
+
+		if let Some(parent) = path.parent() {
+			fs::create_dir_all(parent).unwrap();
+		}
+
+		fs::write(&path, bytes).unwrap();
+	}
+
+	let archive = dir.join("notes.7z");
+	let status = std::process::Command::new(tool)
+		.current_dir(&tree)
+		.args(["a", "-t7z", "-bd", "-bso0", "-bsp0", "-r", "--"])
+		.arg(&archive)
+		.arg("*")
+		.status()
+		.unwrap();
+	assert!(status.success());
+
+	archive
+}
+
+#[test]
+fn a_seven_zip_becomes_a_tarball_and_back_through_the_tool() {
+	let Some(tool) = seven_zip() else {
+		eprintln!("no 7z on this machine, so this test proves nothing");
+		return;
+	};
+
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let _daemon = Autostarted { state: state.clone() };
+
+	let input = seven_zip_archive(
+		tool,
+		dir.path(),
+		&[("notes/one.txt", b"first"), ("notes/sub/two.txt", b"second")],
+	);
+
+	let ran = convert(&input, "tar.gz", &state);
+	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+
+	let tarball = dir.path().join("notes.tar.gz");
+	let bytes = fs::read(&tarball).unwrap();
+	assert_eq!(&bytes[..2], &[0x1f, 0x8b], "a gzip stream");
+
+	let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes.as_slice()));
+	let mut names = Vec::new();
+
+	for entry in archive.entries().unwrap() {
+		let entry = entry.unwrap();
+		names.push(entry.path().unwrap().display().to_string());
+	}
+
+	assert!(names.contains(&"notes/one.txt".to_string()), "{names:?}");
+	assert!(names.contains(&"notes/sub/two.txt".to_string()), "{names:?}");
+
+	// And back: the tarball becomes a 7z, which the tool has to accept.
+	let made = dir.path().join("again.7z");
+	let ran = retype()
+		.args(["convert"])
+		.arg(&tarball)
+		.arg("7z")
+		.arg("--output")
+		.arg(&made)
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+
+	let listing = std::process::Command::new(tool)
+		.args(["l", "-slt", "-ba", "--"])
+		.arg(&made)
+		.output()
+		.unwrap();
+	let listing = String::from_utf8_lossy(&listing.stdout);
+
+	assert!(listing.contains("notes/one.txt"), "{listing}");
+	assert!(listing.contains("notes/sub/two.txt"), "{listing}");
+}
+
+#[test]
+#[cfg(unix)]
+fn a_seven_zip_holding_a_symlink_is_refused_whole() {
+	let Some(tool) = seven_zip() else {
+		eprintln!("no 7z on this machine, so this test proves nothing");
+		return;
+	};
+
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let _daemon = Autostarted { state: state.clone() };
+
+	// A symlink is how a repack becomes a traversal for whoever unpacks it next, so
+	// the archive is refused rather than carried, `docs/tools.md` §7.
+	let tree = dir.path().join("tree");
+	fs::create_dir_all(&tree).unwrap();
+	fs::write(tree.join("one.txt"), b"first").unwrap();
+	std::os::unix::fs::symlink("one.txt", tree.join("link")).unwrap();
+
+	let archive = dir.path().join("linked.7z");
+	let status = std::process::Command::new(tool)
+		.current_dir(&tree)
+		.args(["a", "-snl", "-t7z", "-bd", "-bso0", "-bsp0", "-r", "--"])
+		.arg(&archive)
+		.arg("*")
+		.status()
+		.unwrap();
+	assert!(status.success());
+
+	let ran = convert(&archive, "zip", &state);
+
+	assert_eq!(ran.status.code(), Some(3), "a refusal, not a crash");
+	let stderr = String::from_utf8_lossy(&ran.stderr);
+	assert!(stderr.contains("link"), "{stderr}");
+	assert!(
+		!dir.path().join("linked.zip").exists(),
+		"nothing was written for a refused archive"
+	);
+}

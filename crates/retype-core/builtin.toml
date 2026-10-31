@@ -324,6 +324,16 @@ lossy = false
 alpha = false
 tier = 'exact'
 
+# The one container this build does not write itself, `docs/tools.md` §7: the rules a
+# repack applies are ours and the container is the tool's. An archive converts into an
+# archive, never into a directory and never from one.
+[formats.7z]
+family = 'archive'
+native = '7z'
+lossy = false
+alpha = false
+tier = 'exact'
+
 [ops.quality]
 aliases = ['q']
 slot = 50

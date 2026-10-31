@@ -189,9 +189,11 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 				None,
 			)),
 			Err(error) => {
+				// The failure's own code, so a refusal reads as a refusal rather than as
+				// a tool that fell over.
 				let code = match cancellation.is_cancelled() {
 					true => Code::JobCancelled,
-					false => Code::ToolFailed,
+					false => error.code(),
 				};
 
 				let state = match cancellation.is_superseded() {

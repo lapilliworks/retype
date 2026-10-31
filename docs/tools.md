@@ -65,7 +65,7 @@ Archives are not one format and are not one tool. Each format is a container, an
 | `zip` | Native | Repacked, with explicit zip64 and permission rules below |
 | `tar` | Native | Repacked |
 | `tar.gz` | Native | Repacked: a tar stream through gzip |
-| `7z` | `7zz`, `7z` or `7za` | Not declared yet: the only archive format that needs an external tool, and a repack through it needs a staging directory |
+| `7z` | `7zz`, `7z` or `7za` | Repacked through a staged tree: the only archive format that needs an external tool, and the rules below still apply |
 | `gz`, `bz2`, `xz`, `zst`, `br`, `lz4` | Native | Not declared, and not planned: those are compression, not conversion |
 | `rar` | `unrar` | Read-only, user-supplied, never distributed |
 
@@ -80,6 +80,13 @@ Native handling is not only fewer dependencies. Entry names, symlinks, size limi
 - Names are written with `/` separators, so a zip made on Windows becomes a tarball a Unix can read
 - Entries keep the order the source lists them, so repacking one archive twice produces the same bytes
 - The output is staged and renamed into place, so a cancelled or failed repack leaves no partial archive
+
+A repack through a tool keeps the same rules, and where the rules cannot be kept, it says so:
+
+- The source is listed before it is unpacked, so names, entry kinds and the byte budget are judged on the listing rather than after the extraction has already written something
+- The entries are materialised into a staged directory beside the output, which is removed when the job ends, succeeded or not
+- Through a tool, the entry order is the tree's own, sorted by name, rather than the source's: the tool decides what order it writes, and pretending otherwise would be a claim the container cannot keep
+- Modes survive because the staged tree carries them on disk and the listing carries them in the archive
 
 `7zz` remains the declared backend for `.7z` and may be installed from the managed set; `7z` and `7za` are executable aliases, not separate backends.
 
