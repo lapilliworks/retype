@@ -195,6 +195,8 @@ max_source_size = '4GiB'
 | `allow_synced` | bool | `false` | Convert inside placeholder-capable cloud providers instead of refusing with the provider named |
 | `max_source_size` | size | `4GiB` | Largest source for automatic conversion. `retype convert` ignores it |
 
+All four are read. `allow_synced` is the exception in effect rather than in parsing: placeholder detection is not built on any platform yet, so nothing refuses a synced folder for it to allow. `docs/watch.md` §5 and the gap table say so.
+
 Three things are deliberately not configurable, so that nobody tunes them and then wonders why behaviour differs between machines:
 
 - The built-in ignore list, `docs/watch.md` §4. It is lifted only by registering a directory inside one of its entries, because naming a directory is intent
@@ -378,9 +380,13 @@ preset = 'headshot'
 
 A file is read when it changes rather than on a second watcher: the answer is cached per directory and re-read when its modification time moves, which is the same answer `docs/watch.md` §2 asks for with less machinery.
 
+An undeclared key here is ignored rather than refused, unlike the host file: every key that could widen something is refused by name, and a key nothing reads cannot change a decision. The host file has no such excuse, so it refuses one.
+
 ## 13. Validation
 
 Loading fails, naming the file and key, on any of:
+
+A key the entry does not declare is refused as `E_CFG_UNKNOWN_KEY` before any rule below is reached, so `qaulity = 3` under `[formats.jpg]` is an error rather than a silent no-op.
 
 | Rule | Condition |
 |---|---|

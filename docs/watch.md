@@ -41,6 +41,8 @@ Evaluated in order, first match wins.
 
 `ignore` adds to the built-in list and cannot remove an entry from it. The only way past a built-in entry is to register a directory inside it explicitly, because naming a directory is intent.
 
+A glob with a separator matches the path relative to the registered root, and one without matches the file name, the same rule `patterns` follows. A rename is matched under both names it has, because they describe the same bytes: `ignore = ['*.tmp']` stops `a.tmp` being renamed to `a.webp`, and `**/Caches/**` stops anything inside a cache directory.
+
 Ignoring a directory prunes the whole subtree, including identity priming. Ignoring a file pattern only skips conversion; the file is still primed.
 
 A directory whose name does not match user globs is not skipped, only the paths that match.
@@ -48,6 +50,8 @@ A directory whose name does not match user globs is not skipped, only the paths 
 ## 5. Synced folders
 
 A cloud provider that can leave a file as a placeholder is a network filesystem with a proprietary protocol. The file looks local, its contents are elsewhere, and reading it triggers a download. That is the deferred network stage, so it is refused rather than half-supported.
+
+Not built yet: the detection below is specified and no platform implements it, so `allow_synced` is read and changes nothing, and a placeholder-capable provider is watched like any other directory. A dataless file read by a conversion therefore downloads itself rather than being skipped. The gap table carries the row.
 
 Registration is refused with `E_USAGE_ARGS` when the path is inside a known placeholder-capable provider:
 
@@ -70,7 +74,7 @@ Dataless and recall-on-access files encountered inside an ordinary registration 
 | Source size for automatic conversion | 4 GiB, `watch.max_source_size` | Skipped, logged, counted. `retype convert` is unaffected |
 | Batch size per debounce window | 64 files, fixed | Queue admission is delayed until the next window |
 
-The size limit exists because a rename is a fast gesture and a 40 GiB video is not. Automatic conversion of something that large needs to be asked for, which is what `retype convert` is for.
+The size limit exists because a rename is a fast gesture and a 40 GiB video is not. Automatic conversion of something that large needs to be asked for, which is what `retype convert` is for. It is enforced before a job exists, by reading the renamed file's size: an oversized source keeps its name, the daemon says so on its own output, and the counter is `skipped` in the `status` answer.
 
 ## 7. Event handling
 

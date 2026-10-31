@@ -171,6 +171,7 @@ pub enum Scalar {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Param {
 	pub class: Class,
 	#[serde(default)]
@@ -305,6 +306,8 @@ pub struct Registry {
 	deferral: crate::deferral::Policy,
 	/// Whether the daemon says what it did, `docs/config.md` §17.
 	notify: crate::notify::Policy,
+	/// What the daemon considers at all, `docs/config.md` §5.
+	watch: crate::watch::Policy,
 }
 
 impl Registry {
@@ -410,7 +413,17 @@ impl Registry {
 
 		let document: Document = match value.try_into() {
 			Ok(document) => document,
-			Err(error) => return Err(Diagnoses::one(fail(Code::CfgParse, format!("{label}: {error}")))),
+			// The only signal a serde error gives about its kind is its text, and an
+			// unknown key is worth its own code because the fix is to spell it right
+			// rather than to read the schema again.
+			Err(error) => {
+				let code = match error.message().contains("unknown field") {
+					true => Code::CfgUnknownKey,
+					false => Code::CfgParse,
+				};
+
+				return Err(Diagnoses::one(fail(code, format!("{label}: {error}"))));
+			}
 		};
 
 		let mut problems = Vec::new();
@@ -687,6 +700,32 @@ impl Registry {
 			}
 		}
 
+		let mut watch = crate::watch::Policy::default();
+
+		if let Some(entry) = &document.watch {
+			if let Some(ignore) = &entry.ignore {
+				watch.ignore = ignore.clone();
+			}
+
+			if let Some(hidden) = entry.watch_hidden {
+				watch.watch_hidden = hidden;
+			}
+
+			if let Some(synced) = entry.allow_synced {
+				watch.allow_synced = synced;
+			}
+
+			if let Some(text) = &entry.max_source_size {
+				match bytes(text) {
+					Ok(bytes) => watch.max_source_size = bytes,
+					Err(fault) => problems.push(fail(
+						Code::CfgValidation,
+						format!("[watch] max_source_size {}: {text}", fault.message),
+					)),
+				}
+			}
+		}
+
 		let mut notify = crate::notify::Policy::default();
 
 		if let Some(entry) = &document.notify {
@@ -734,6 +773,7 @@ impl Registry {
 			bench,
 			deferral,
 			notify,
+			watch,
 			warnings: Vec::new(),
 		};
 
@@ -782,6 +822,11 @@ impl Registry {
 	/// Whether the daemon says what it did, `docs/config.md` §17.
 	pub fn notify(&self) -> crate::notify::Policy {
 		self.notify
+	}
+
+	/// What the daemon considers at all, `docs/config.md` §5.
+	pub fn watch(&self) -> &crate::watch::Policy {
+		&self.watch
 	}
 
 	pub fn preset(&self, name: &str) -> Option<&Preset> {
@@ -1678,6 +1723,7 @@ fn is_name(text: &str) -> bool {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Document {
 	version: String,
 	#[serde(default)]
@@ -1699,10 +1745,13 @@ struct Document {
 	#[serde(default)]
 	notify: Option<NotifyEntry>,
 	#[serde(default)]
+	watch: Option<WatchEntry>,
+	#[serde(default)]
 	bench: Option<BenchEntry>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BenchEntry {
 	#[serde(default)]
 	seed: BTreeMap<String, String>,
@@ -1711,12 +1760,27 @@ struct BenchEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ProvenanceEntry {
 	#[serde(default)]
 	xattr: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WatchEntry {
+	#[serde(default)]
+	ignore: Option<Vec<String>>,
+	#[serde(default)]
+	watch_hidden: Option<bool>,
+	#[serde(default)]
+	allow_synced: Option<bool>,
+	#[serde(default)]
+	max_source_size: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct NotifyEntry {
 	#[serde(default)]
 	enabled: Option<bool>,
@@ -1725,6 +1789,7 @@ struct NotifyEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DeferralEntry {
 	#[serde(default)]
 	mode: Option<String>,
@@ -1739,6 +1804,7 @@ struct DeferralEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct UndoEntry {
 	#[serde(default)]
 	enabled: Option<bool>,
@@ -1751,6 +1817,7 @@ struct UndoEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PresetEntry {
 	#[serde(default)]
 	name: Option<String>,
@@ -1771,11 +1838,13 @@ impl PresetEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BackendsEntry {
 	prefer: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ToolEntry {
 	command: String,
 	#[serde(default)]
@@ -1825,6 +1894,7 @@ impl ToolEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FormatEntry {
 	family: String,
 	#[serde(default)]
@@ -1841,6 +1911,7 @@ struct FormatEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FragmentEntry {
 	#[serde(default)]
 	args: Vec<String>,
@@ -1874,6 +1945,7 @@ impl FormatEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OpEntry {
 	#[serde(default)]
 	name: Option<String>,
@@ -1972,6 +2044,52 @@ mod tests {
 		assert_eq!(policy.above_without_undo, std::time::Duration::from_secs(5));
 		assert_eq!(policy.pause, std::time::Duration::from_secs(600));
 		assert_eq!(policy.repair, crate::deferral::Repair::Convert);
+	}
+
+	#[test]
+	fn a_mis_spelled_key_is_refused_and_named() {
+		let refused = Registry::load(&format!(
+			"{HEADER}\n[formats.jpg]\nfamily = 'image'\nlossy = true\nalpha = false\ntier = 'converted'\nqaulity = 3\n"
+		))
+		.unwrap_err();
+
+		assert_eq!(refused.codes(), vec![Code::CfgUnknownKey]);
+		assert!(format!("{refused}").contains("qaulity"), "{refused}");
+	}
+
+	#[test]
+	fn a_mis_spelled_key_inside_an_operation_is_refused_too() {
+		let refused = Registry::load(&format!("{HEADER}\n[ops.quality]\nslot = 1\nclaas = 'int'\n")).unwrap_err();
+
+		assert_eq!(refused.codes(), vec![Code::CfgUnknownKey]);
+	}
+
+	#[test]
+	fn the_watch_policy_defaults_and_reads_its_knobs() {
+		let registry = Registry::load(HEADER).unwrap();
+
+		assert!(registry.watch().ignore.is_empty());
+		assert!(!registry.watch().watch_hidden);
+		assert!(!registry.watch().allow_synced);
+		assert_eq!(registry.watch().max_source_size, 4 * 1024 * 1024 * 1024);
+
+		let registry = Registry::load(&format!(
+			"{HEADER}\n[watch]\nignore = ['*.tmp']\nwatch_hidden = true\nallow_synced = true\nmax_source_size = '250mb'\n"
+		))
+		.unwrap();
+
+		assert_eq!(registry.watch().ignore, vec!["*.tmp".to_string()]);
+		assert!(registry.watch().watch_hidden);
+		assert!(registry.watch().allow_synced);
+		assert_eq!(registry.watch().max_source_size, 250_000_000);
+	}
+
+	#[test]
+	fn a_size_that_does_not_parse_is_a_validation_error_naming_the_key() {
+		let refused = Registry::load(&format!("{HEADER}\n[watch]\nmax_source_size = 'big'\n")).unwrap_err();
+
+		assert_eq!(refused.codes(), vec![Code::CfgValidation]);
+		assert!(format!("{refused}").contains("max_source_size"), "{refused}");
 	}
 
 	#[test]

@@ -43,6 +43,9 @@ pub struct Shared {
 	pub recent: Recent,
 	/// Automatic jobs refused because the queue was full, `docs/watch.md` §8.
 	pub dropped: AtomicU64,
+	/// Sources passed over because they were too large to convert unasked,
+	/// `docs/watch.md` §6.
+	pub skipped: AtomicU64,
 	/// What clients replay from, `docs/ipc.md` §7.
 	pub events: Mutex<crate::daemon::events::Events>,
 	/// Each directory's `.retype.toml`, read once per change rather than once per file,
@@ -230,6 +233,34 @@ fn spawn_worker(
 				}
 
 				if shared.recent.is_echo(&fact.source, &fact.target) {
+					continue;
+				}
+
+				// What the daemon considers at all comes before a directory's own
+				// policy: a `.git` directory cannot be opted back in by the file inside
+				// it, `docs/watch.md` §4.
+				// Both names a rename has, because they describe the same bytes: a glob
+				// that names the source is about the file being converted.
+				if !shared.registry.watch().considers(&watched_root, &fact.target)
+					|| !shared.registry.watch().considers(&watched_root, &fact.source)
+				{
+					crate::verbose::detail(format!("{} is not considered", fact.target.display()));
+					continue;
+				}
+
+				// A rename is a fast gesture and a forty gigabyte video is not, so an
+				// oversized source is passed over rather than converted, `docs/watch.md`
+				// §6.
+				let size = std::fs::metadata(&fact.target).map(|meta| meta.len()).unwrap_or(0);
+
+				if !shared.registry.watch().admits(size) {
+					shared.skipped.fetch_add(1, Ordering::Relaxed);
+					eprintln!(
+						"retype: {} is {} and the automatic limit is {}; `retype convert` converts it",
+						fact.target.display(),
+						retype_core::print::size(size),
+						retype_core::print::size(shared.registry.watch().max_source_size),
+					);
 					continue;
 				}
 
@@ -613,10 +644,6 @@ fn run(
 		plans,
 	} = prepared;
 
-	let Some(source_name) = source.file_name().and_then(|name| name.to_str()) else {
-		return;
-	};
-
 	let id = id.clone();
 	let now = now_ms();
 	let mut outputs = Vec::new();
@@ -653,7 +680,10 @@ fn run(
 						intent: print::intent(&resolved, &shared.registry),
 						machine: shared.machine.clone(),
 						bytes: bytes.clone(),
-						source_path: root.join(source_name),
+						// The path the bytes belong to, which is not `root` plus the
+						// name: a file inside a subdirectory would be restored one
+						// directory too high.
+						source_path: source.to_path_buf(),
 						source_ext: format.clone(),
 						outputs: derived
 							.iter()
@@ -827,7 +857,7 @@ fn run(
 		created: now,
 		updated: now_ms(),
 		source: Source {
-			path: root.join(source_name),
+			path: source.to_path_buf(),
 			format: format.clone(),
 			size: 0,
 			mtime_ns: 0,
