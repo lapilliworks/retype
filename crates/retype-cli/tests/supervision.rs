@@ -69,6 +69,11 @@ fn start(state: &Path, config: &Path, supervised: bool) -> Daemon {
 		.arg("--state-dir")
 		.arg(state)
 		.env("RETYPE_CONFIG", config)
+		// A Konsole session on a systemd desktop and a launchd-launched app set
+		// these for every process in the session, so the test says which it wants
+		// rather than inheriting whatever started it.
+		.env_remove("INVOCATION_ID")
+		.env_remove("XPC_SERVICE_NAME")
 		.stdout(Stdio::null())
 		.stderr(Stdio::null());
 
