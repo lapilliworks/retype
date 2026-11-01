@@ -6,10 +6,8 @@
 //! is the common case: an editor's save, a sync client's write, a copy that never
 //! finished.
 //!
-//! Conversions run in the watcher thread for now, one at a time. The queue is what
-//! makes them cancellable and concurrent, and it is the next thing to land; until
-//! then a slow conversion delays the next rename rather than losing it, because
-//! events queue in the channel while the thread is busy.
+//! Conversions are submitted to the runner pool, so a slow job does not hold the
+//! event thread. The queue is what makes them cancellable and concurrent.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -692,7 +690,7 @@ pub fn convert(
 
 	// A rename's collisions are its own concern gap table: only a job a
 	// person re-runs can be told to overwrite.
-	run(shared, root, source, target, prepared, input, false, id, cancellation);
+	run(shared, source, target, prepared, input, false, id, cancellation);
 }
 
 /// Run a job whose time has come, `docs/deferral.md` §7: the intent is the one the
@@ -710,17 +708,7 @@ pub fn convert_deferred(
 		return;
 	};
 
-	run(
-		shared,
-		root,
-		source,
-		source,
-		prepared,
-		Input::Named,
-		force,
-		id,
-		cancellation,
-	);
+	run(shared, source, source, prepared, Input::Named, force, id, cancellation);
 }
 
 /// Read a rename as a job, or say why it is not one.
@@ -823,7 +811,6 @@ fn build(
 #[allow(clippy::too_many_arguments)]
 fn run(
 	shared: &Shared,
-	root: &Path,
 	source: &Path,
 	target: &Path,
 	prepared: Prepared,
@@ -843,7 +830,7 @@ fn run(
 	let now = now_ms();
 	let mut outputs = Vec::new();
 
-	running(shared, &id, root, source, &format, target, &resolved);
+	running(shared, &id, source, &format, target, &resolved);
 
 	// The rename names the request; the file is called what the tokens say, the
 	// same way `convert` derives its paths.
@@ -1194,23 +1181,28 @@ fn announce(shared: &Shared, ids: &[JobId]) {
 fn running(
 	shared: &Shared,
 	id: &retype_core::job::JobId,
-	root: &Path,
 	source: &Path,
 	source_format: &str,
 	target: &Path,
 	resolved: &resolve::Resolved,
 ) {
-	let name = source.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+	let metadata = std::fs::metadata(source).ok();
+	let mtime_ns = metadata
+		.as_ref()
+		.and_then(|metadata| metadata.modified().ok())
+		.and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+		.map(|elapsed| elapsed.as_nanos() as i64)
+		.unwrap_or_default();
 
 	let job = Job {
 		id: id.clone(),
 		created: now_ms(),
 		updated: now_ms(),
 		source: Source {
-			path: root.join(name),
+			path: source.to_path_buf(),
 			format: source_format.to_string(),
-			size: 0,
-			mtime_ns: 0,
+			size: metadata.map(|metadata| metadata.len()).unwrap_or_default(),
+			mtime_ns,
 		},
 		intent: Some(print::intent(resolved, &shared.registry())),
 		outputs: vec![Output {
@@ -1228,21 +1220,16 @@ fn running(
 		engine: None,
 		machine: shared.machine.clone(),
 		error: None,
-		parked: None,
+		// A parked job keeps the reason it waited when its running snapshot
+		// replaces the parked one.
+		parked: carried(shared, id),
 		consume_source: true,
 	};
 
-	if let Ok(mut journal) = shared.journal.lock() {
-		if let Err(error) = journal.append(&job) {
-			eprintln!("retype: cannot journal {}: {error}", target.display());
-		}
-	}
-
-	// Visible while it runs, which is what makes it cancellable by a client that
-	// has to find its id first.
-	if let Ok(mut jobs) = shared.jobs.lock() {
-		jobs.push(job);
-	}
+	// One publish path for every transition: a deferred job already has a record,
+	// and pushing a second one would leave `jobs.get` answering from the old
+	// `running` snapshot after the job had finished.
+	publish(shared, &job);
 }
 
 fn record(

@@ -217,6 +217,23 @@ fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
 	let done = fixture.wait_for(|record| record["state"] == "done" && Fixture::id(record) == Fixture::id(&parked));
 	assert_eq!(done["state"], "done");
 	assert!(fixture.photos.join("b.webp").exists());
+
+	// The resolved job had a parked record before it ran. Its running snapshot must
+	// replace that record rather than becoming a second one, or `jobs get` keeps
+	// answering from a job that has already finished.
+	let id = Fixture::id(&done);
+	let asked = fixture.command().args(["jobs", "get", &id]).output().unwrap();
+	assert!(asked.status.success(), "{}", String::from_utf8_lossy(&asked.stderr));
+	let record: serde_json::Value = serde_json::from_slice(&asked.stdout).unwrap();
+	assert_eq!(record["state"], "done", "{record}");
+
+	let listing = fixture.command().args(["jobs", "list"]).output().unwrap();
+	let listed = String::from_utf8_lossy(&listing.stdout);
+	assert_eq!(
+		listed.lines().filter(|line| line.starts_with(&id)).count(),
+		1,
+		"the job has one record, not a parked one and a running one: {listed}"
+	);
 }
 
 #[test]
