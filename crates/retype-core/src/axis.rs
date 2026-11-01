@@ -161,14 +161,19 @@ impl Probe {
 fn decoder() -> Command {
 	let path = std::env::var_os("PATH").unwrap_or_default();
 
-	if let Some(tool) = crate::tools::find_in_path(&path, "magick") {
-		let mut command = Command::new(tool);
-		command.arg("identify");
+	let mut command = match crate::tools::find_in_path(&path, "magick") {
+		Some(tool) => {
+			let mut command = Command::new(tool);
+			command.arg("identify");
+			command
+		}
+		None => {
+			Command::new(crate::tools::find_in_path(&path, "identify").unwrap_or_else(|| PathBuf::from("identify")))
+		}
+	};
 
-		return command;
-	}
-
-	Command::new(crate::tools::find_in_path(&path, "identify").unwrap_or_else(|| PathBuf::from("identify")))
+	crate::process::hide_console(&mut command);
+	command
 }
 
 /// How one fixture turned out through one pair.

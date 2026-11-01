@@ -238,7 +238,10 @@ fn generate(registry: &Registry, family: &str, path: &Path) -> Result<PathBuf> {
 			.map(|argument| argument.replace("{output}", &path.to_string_lossy()))
 			.collect();
 
-		let ran = Command::new(command)
+		let mut command_line = Command::new(command);
+		retype_core::process::hide_console(&mut command_line);
+
+		let ran = command_line
 			.args(&argv)
 			.stdin(Stdio::null())
 			.stdout(Stdio::null())

@@ -69,7 +69,7 @@ Directory configuration is not re-read only on registration. The daemon watches 
 
 A Windows pipe can only be impersonated after its client has written, so the first frame is read before the check and handed to the connection loop rather than read twice. A client that connects and sends nothing therefore holds the daemon's single connection slot until it writes or goes away, which is a self-inflicted stall: the DACL admits only the user whose daemon it is.
 
-Windows also hands a child every inheritable handle in its parent, and the pipes a caller uses to read the CLI's output are inheritable by construction. The CLI clears that flag on its own standard handles before it spawns a daemon, so a daemon cannot keep a caller's pipe open after the command exits.
+Windows also hands a child every inheritable handle in its parent, and the pipes a caller uses to read the CLI's output are inheritable by construction. The CLI clears that flag on its own standard handles before it spawns a daemon, so a daemon cannot keep a caller's pipe open after the command exits. The daemon is detached and has no console, and every tool it runs is a console program, so each spawn carries `CREATE_NO_WINDOW`: without it Windows would give every conversion a console window of its own.
 
 `<user>` is a short stable per-user token, derived from the user SID where one exists. Windows is usually single-user, and the suffix costs nothing while removing a class of surprises on machines that are not.
 

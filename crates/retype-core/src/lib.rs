@@ -23,6 +23,7 @@ pub mod output;
 pub mod plan;
 pub mod policy;
 pub mod print;
+pub mod process;
 pub mod provenance;
 pub mod registry;
 pub mod resolve;

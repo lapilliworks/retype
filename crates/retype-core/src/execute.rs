@@ -286,6 +286,7 @@ pub fn run_child(
 ) -> Result<String> {
 	let mut child = {
 		let mut command_line = Command::new(path);
+		crate::process::hide_console(&mut command_line);
 		command_line
 			.args(argv)
 			.stdin(Stdio::null())
