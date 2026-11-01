@@ -364,6 +364,15 @@ trial_supersede() {
 		sleep 0.1
 	done
 
+	# The test expects the chain to finish, not only the first job to be replaced.
+	local done=no
+	deadline=$((SECONDS + 30))
+	while [ $SECONDS -lt $deadline ]; do
+		grep -q '"state":"done"' "$state/jobs.jsonl" 2>/dev/null && done=yes && break
+		sleep 0.1
+	done
+	say "chain" "$([ "$done" = yes ] && echo 'the chained job finished' || echo 'no done record')"
+
 	say "journal" "$(journal_states "$tree")"
 
 	if grep -q '"code":"E_TOOL_FAILED"' "$state/jobs.jsonl" 2>/dev/null; then
