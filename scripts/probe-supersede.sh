@@ -101,7 +101,7 @@ stop_daemon() {
 report_log() {
 	local log=$1 lines
 
-	lines=$(grep -E '^retype: (batch:|rename |watching |stopped watching|[0-9]+ job)' "$log" 2>/dev/null)
+	lines=$(grep -E '^retype: (batch:|rename |watching |stopped watching|events were dropped|[0-9]+ job)' "$log" 2>/dev/null)
 	if [ -n "$lines" ]; then
 		while IFS= read -r line; do
 			printf '    %s\n' "${line#retype: }"
