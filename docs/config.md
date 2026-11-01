@@ -474,6 +474,6 @@ actions = true
 | `enabled` | `true` | Whether the daemon says what a batch did. Off is a supported answer: it then says nothing except in its own log |
 | `actions` | `true` | Whether the notification carries an Undo button, on a platform that has buttons |
 
-One notification per rename batch, after its last job settles, so a directory of photographs is one interruption rather than twelve. It says what happened, not what was attempted: `3 converted`, or `1 converted, 1 failed (a.heic: magick is not installed)`, or `1 parked; retype jobs --interactive decides what happens`.
+One notification per rename batch, after its last job settles, so a directory of photographs is one interruption rather than twelve. It says what happened, not what was attempted, and it names the files: `3 converted (a.heic → a.jpg, b.heic → b.jpg, c.heic → c.jpg)`, or `1 converted (d.heic → d.jpg), 1 failed (e.heic: magick is not installed)`, or `1 parked; retype jobs --interactive decides what happens`. A batch with more than three conversions says `and N more` rather than growing without bound.
 
 The button is Undo, and it reverses every job of the batch that has a record. Tweak belongs to the editor and to the `retype://` handler, both of which are a later release's later half.

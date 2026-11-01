@@ -179,7 +179,7 @@ fn a_batch_that_converted_a_file_is_one_notification_with_an_undo_button() {
 	assert!(recorded.contains("--app-name"), "{recorded}");
 	assert!(recorded.contains("--wait"), "{recorded}");
 	assert!(recorded.contains("undo=Undo"), "{recorded}");
-	assert!(recorded.contains("1 converted"), "{recorded}");
+	assert!(recorded.contains("1 converted (a.png → a.webp)"), "{recorded}");
 	assert!(fixture.photos.join("a.webp").exists(), "the conversion stands");
 }
 

@@ -108,7 +108,7 @@ Capability per platform, matching:
 | Platform | Actions | Owner |
 |---|---|---|
 | Linux | libnotify actions | Daemon |
-| Windows | Toast with protocol activation; the log fallback until the signed notifier exists | Daemon, via the Start-menu shortcut identity |
+| Windows | Toast without buttons now; protocol activation and the signed notifier later | Daemon, with an AppUserModelID registered under the user's hive |
 | macOS | User Notifications with categories; `osascript` plain fallback now | Notifier bundle |
 
 When the GUI is installed it registers `retype://` and the notifier bundle defers. When the daemon is not running, the scheme handler performs undo in-process where possible, and otherwise reports that the daemon is unavailable.

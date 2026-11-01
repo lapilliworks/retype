@@ -128,8 +128,9 @@ Capability is a property of the platform, in three tiers:
 | Actions | `notify-send --wait --action` | Linux, with a session bus and a libnotify build that has actions |
 | Plain | `notify-send` | Linux, with a session bus |
 | Plain, macOS | `osascript` | macOS until the signed notifier bundle exists |
-| Log | a line on the daemon's own stderr | Windows until the toast and AppUserModelID exist, or no session at all |
+| Plain, Windows | a toast through `powershell.exe` | Windows, with the AppUserModelID the script registers under the user's own hive |
+| Log | a line on the daemon's own stderr | no session, or no notifier |
 
 The tier is decided once at startup, because the session is either there or it is not. A daemon with no notifier still converts: the tier is about being told, never about the work.
 
-Undo is the action, and it runs from the daemon rather than through a URI handler, because `notify-send --wait` answers on its own standard output and there is nothing else to listen to. The CLI handles `retype://job/<id>` undo, cancel and resolve. The Windows toast and the macOS User Notifications centre need an AppUserModelID and a signed bundle; that bundle is the first signed artifact of a later release, not a library call.
+Undo is the action, and it runs from the daemon rather than through a URI handler, because `notify-send --wait` answers on its own standard output and there is nothing else to listen to. The CLI handles `retype://job/<id>` undo, cancel and resolve. The Windows toast needs no bundle: the script registers `com.lapilliworks.retype` under `HKCU\Software\Classes\AppUserModelId` and falls back to PowerShell's own identifier when the shell refuses that one. Buttons on Windows, and the macOS User Notifications centre, need the signed notifier bundle; that bundle is the first signed artifact of a later release, not a library call.

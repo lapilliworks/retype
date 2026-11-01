@@ -12,16 +12,24 @@
 //! |---|---|---|
 //! | Actions | `notify-send --wait --action` | Linux with a session bus and a libnotify build that has actions |
 //! | Plain | `notify-send` | Linux with a session bus |
-//! | Log | a line on the daemon's stderr | everywhere else, including Windows and macOS for now |
+//! | Plain | `osascript` | macOS |
+//! | Plain | a toast through `powershell.exe` | Windows |
+//! | Log | a line on the daemon's stderr | anywhere the platform has no notifier |
 //!
-//! The Windows toast with an AppUserModelID and the macOS User Notifications centre need
-//! a signed bundle and a protocol handler, which is the first artifact of rather
-//! than a library call; until then those platforms get the log line and nothing pretends
-//! otherwise.
+//! The Windows toast has no button, and does not need a signed bundle: it needs an
+//! AppUserModelID the shell can resolve, which the script registers under
+//! `HKCU\Software\Classes\AppUserModelId` before the first toast. Protocol activation
+//! through a Start-menu shortcut, and the macOS User Notifications centre with its
+//! categories, still need the signed notifier bundle, the first artifact of.
 
+use std::path::Path;
 use std::process::{Command, Stdio};
 
-use retype_core::job::{Job, JobId, JobState};
+use retype_core::job::{Job, JobId, JobState, Output, OutputState};
+
+/// How many conversions a message names before it counts the rest. A notification is a
+/// glance, not a listing; `retype jobs` is the listing.
+const NAMED: usize = 3;
 
 /// What the daemon tells the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,14 +49,20 @@ impl Message {
 
 		let count = |state: JobState| jobs.iter().filter(|job| job.state == state).count();
 
-		let done = count(JobState::Done) + count(JobState::Partial);
+		let converted: Vec<&Job> = jobs
+			.iter()
+			.filter(|job| matches!(job.state, JobState::Done | JobState::Partial))
+			.collect();
+
 		let failed = count(JobState::Failed);
 		let cancelled = count(JobState::Cancelled) + count(JobState::Superseded);
 		let parked = count(JobState::Pending) + count(JobState::NeedsAttention);
 
 		let mut parts = Vec::new();
-		if done > 0 {
-			parts.push(format!("{done} converted"));
+		if !converted.is_empty() {
+			// A count alone leaves the user guessing what became of what, so the names
+			// and the formats follow it.
+			parts.push(format!("{} converted ({})", converted.len(), conversions(&converted)));
 		}
 		if failed > 0 {
 			parts.push(format!("{failed} failed"));
@@ -70,7 +84,7 @@ impl Message {
 		// are what the user needs to act.
 		let detail = jobs.iter().find_map(|job| {
 			let error = job.error.as_ref()?;
-			let path = job.source.path.file_name()?.to_string_lossy().into_owned();
+			let path = file_name(&job.source.path);
 
 			Some(format!("{path}: {}", error.message))
 		});
@@ -84,11 +98,7 @@ impl Message {
 		};
 
 		let undo = match undo_enabled {
-			true => jobs
-				.iter()
-				.filter(|job| matches!(job.state, JobState::Done | JobState::Partial))
-				.map(|job| job.id.clone())
-				.collect(),
+			true => converted.iter().map(|job| job.id.clone()).collect(),
 			false => Vec::new(),
 		};
 
@@ -98,6 +108,52 @@ impl Message {
 			undo,
 		})
 	}
+}
+
+/// Name each conversion and its product, up to `NAMED`, then count the rest.
+fn conversions(jobs: &[&Job]) -> String {
+	let mut names: Vec<String> = jobs.iter().take(NAMED).map(|job| conversion(job)).collect();
+
+	if jobs.len() > NAMED {
+		names.push(format!("and {} more", jobs.len() - NAMED));
+	}
+
+	names.join(", ")
+}
+
+/// `a.heic → a.jpg`, or `a.heic → a.webp, a.jpg` when the intent made several files.
+fn conversion(job: &Job) -> String {
+	let source = file_name(&job.source.path);
+	let written = outputs(job);
+
+	if written.is_empty() {
+		return source;
+	}
+
+	let targets: Vec<String> = written.iter().map(|output| file_name(&output.path)).collect();
+
+	format!("{source} → {}", targets.join(", "))
+}
+
+/// The outputs that were written, falling back to every output the job declared when no
+/// state says otherwise.
+fn outputs(job: &Job) -> Vec<&Output> {
+	let written: Vec<&Output> = job
+		.outputs
+		.iter()
+		.filter(|output| output.state == OutputState::Done)
+		.collect();
+
+	match written.is_empty() {
+		true => job.outputs.iter().collect(),
+		false => written,
+	}
+}
+
+fn file_name(path: &Path) -> String {
+	path.file_name()
+		.map(|name| name.to_string_lossy().into_owned())
+		.unwrap_or_else(|| path.display().to_string())
 }
 
 /// The best way this machine can say something.
@@ -125,7 +181,18 @@ impl Channel {
 			return Self::Log;
 		}
 
-		#[cfg(not(target_os = "macos"))]
+		// Windows has a notifier wherever the shell does: the toast API is part of the
+		// OS, and `powershell.exe` is what displays one from a process without a bundle.
+		#[cfg(target_os = "windows")]
+		{
+			let _ = actions;
+			match has_command("powershell") {
+				true => Self::Plain,
+				false => Self::Log,
+			}
+		}
+
+		#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 		{
 			if !has_session() || !has_notifier() {
 				return Self::Log;
@@ -189,7 +256,12 @@ fn plain(message: &Message) -> Option<String> {
 		return output.status.success().then(String::new);
 	}
 
-	#[cfg(not(target_os = "macos"))]
+	#[cfg(target_os = "windows")]
+	{
+		toast(message)
+	}
+
+	#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 	{
 		notify_send(message, false)
 	}
@@ -216,7 +288,120 @@ fn notify_send(message: &Message, with_action: bool) -> Option<String> {
 	(!answer.is_empty()).then_some(answer)
 }
 
+/// The AppUserModelID the toast is shown under, in the publisher's reverse-DNS form.
+#[cfg(any(target_os = "windows", test))]
+const APP_ID: &str = "com.lapilliworks.retype";
+
+/// Show a toast through PowerShell, which is the only notifier an unpackaged Windows
+/// process has without the signed bundle.
+#[cfg(target_os = "windows")]
+fn toast(message: &Message) -> Option<String> {
+	let mut command = Command::new("powershell.exe");
+	command
+		.args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+		.arg(encoded_command(&toast_script(message)))
+		.stdin(Stdio::null())
+		.stdout(Stdio::null())
+		.stderr(Stdio::null());
+
+	// The daemon has no console, so the child must not be given one.
+	retype_core::process::hide_console(&mut command);
+
+	let output = command.output().ok()?;
+
+	output.status.success().then(String::new)
+}
+
+/// The PowerShell that raises the toast, as `-EncodedCommand` expects it.
+///
+/// The identifier is registered under the user's own hive first, because the shell
+/// refuses a toast whose AppUserModelID it cannot resolve. If that registration or the
+/// toast fails, the fallback is PowerShell's own registered identifier: the toast then
+/// says `Windows PowerShell` rather than `retype`, which is worse than nothing only if
+/// nothing is the alternative.
+#[cfg(any(target_os = "windows", test))]
+fn toast_script(message: &Message) -> String {
+	let xml = format!(
+		"<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
+		xml_escape(&message.title),
+		xml_escape(&message.body)
+	);
+
+	format!(
+		r#"$ErrorActionPreference = 'Stop'
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+$document = New-Object Windows.Data.Xml.Dom.XmlDocument
+$document.LoadXml('{xml}')
+$toast = New-Object -TypeName Windows.UI.Notifications.ToastNotification -ArgumentList $document
+$app = '{APP_ID}'
+try {{
+	$key = 'HKCU:\Software\Classes\AppUserModelId\' + $app
+	if (-not (Test-Path -LiteralPath $key)) {{
+		New-Item -Path $key -Force | Out-Null
+		New-ItemProperty -LiteralPath $key -Name 'DisplayName' -Value 'retype' -PropertyType String -Force | Out-Null
+	}}
+	[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show($toast)
+}} catch {{
+	$fallback = '{{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}}\WindowsPowerShell\v1.0\powershell.exe'
+	[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($fallback).Show($toast)
+}}"#
+	)
+}
+
+/// `-EncodedCommand` takes the script in base64 over UTF-16LE, so no quoting and no
+/// console code page stands between a file name and the toast.
+#[cfg(any(target_os = "windows", test))]
+fn encoded_command(script: &str) -> String {
+	base64(&script.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>())
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn base64(bytes: &[u8]) -> String {
+	const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+	let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);
+
+	for chunk in bytes.chunks(3) {
+		let triple = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+		let bits = u32::from_be_bytes([0, triple[0], triple[1], triple[2]]);
+
+		text.push(ALPHABET[(bits >> 18) as usize & 63] as char);
+		text.push(ALPHABET[(bits >> 12) as usize & 63] as char);
+		text.push(match chunk.len() > 1 {
+			true => ALPHABET[(bits >> 6) as usize & 63] as char,
+			false => '=',
+		});
+		text.push(match chunk.len() > 2 {
+			true => ALPHABET[bits as usize & 63] as char,
+			false => '=',
+		});
+	}
+
+	text
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn xml_escape(text: &str) -> String {
+	let mut escaped = String::with_capacity(text.len());
+
+	for character in text.chars() {
+		match character {
+			'&' => escaped.push_str("&amp;"),
+			'<' => escaped.push_str("&lt;"),
+			'>' => escaped.push_str("&gt;"),
+			'"' => escaped.push_str("&quot;"),
+			'\'' => escaped.push_str("&apos;"),
+			_ => escaped.push(character),
+		}
+	}
+
+	escaped
+}
+
 /// Whether there is a session to appear in at all.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn has_session() -> bool {
 	["DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY"]
 		.iter()
@@ -225,6 +410,7 @@ fn has_session() -> bool {
 
 /// Whether a notifier command exists. `notify-send` is libnotify's own client and the
 /// one every desktop session ships.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn has_notifier() -> bool {
 	has_command("notify-send")
 }
@@ -236,7 +422,7 @@ fn has_command(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use retype_core::job::{Job, JobError, Output, Source, Tier};
+	use retype_core::job::{Job, JobError, Source, Tier};
 
 	fn job(id: usize, state: JobState) -> Job {
 		let mut job = Job::new(
@@ -258,17 +444,52 @@ mod tests {
 
 		job.id = JobId::parse(&format!("01J{:023}", id)).expect("an id");
 		job.state = state;
+
+		if matches!(state, JobState::Done | JobState::Partial) {
+			for output in &mut job.outputs {
+				output.state = OutputState::Done;
+			}
+		}
+
 		job
 	}
 
 	#[test]
-	fn a_batch_of_conversions_is_one_line_and_an_undo() {
+	fn a_batch_of_conversions_names_what_became_what() {
 		let jobs = vec![job(1, JobState::Done), job(2, JobState::Done)];
 
 		let message = Message::of(&jobs, true).expect("a message");
 
-		assert_eq!(message.body, "2 converted");
+		assert_eq!(message.body, "2 converted (1.heic → 1.jpg, 2.heic → 2.jpg)");
 		assert_eq!(message.undo.len(), 2);
+	}
+
+	#[test]
+	fn a_long_batch_names_a_few_and_counts_the_rest() {
+		let jobs: Vec<Job> = (1..=5).map(|id| job(id, JobState::Done)).collect();
+
+		let message = Message::of(&jobs, true).expect("a message");
+
+		assert_eq!(
+			message.body,
+			"5 converted (1.heic → 1.jpg, 2.heic → 2.jpg, 3.heic → 3.jpg, and 2 more)"
+		);
+	}
+
+	#[test]
+	fn several_outputs_of_one_job_are_all_named() {
+		let mut job = job(1, JobState::Done);
+		job.outputs = ["webp", "jpg"]
+			.iter()
+			.map(|format| Output::pending(format!("/photos/1.{format}").into(), *format, Tier::Converted))
+			.collect();
+		for output in &mut job.outputs {
+			output.state = OutputState::Done;
+		}
+
+		let message = Message::of(&[job], true).expect("a message");
+
+		assert_eq!(message.body, "1 converted (1.heic → 1.webp, 1.jpg)");
 	}
 
 	#[test]
@@ -281,7 +502,10 @@ mod tests {
 
 		let message = Message::of(&[job(2, JobState::Done), failed], true).expect("a message");
 
-		assert_eq!(message.body, "1 converted, 1 failed (1.heic: magick is not installed)");
+		assert_eq!(
+			message.body,
+			"1 converted (2.heic → 2.jpg), 1 failed (1.heic: magick is not installed)"
+		);
 	}
 
 	#[test]
@@ -305,5 +529,40 @@ mod tests {
 	#[test]
 	fn a_batch_with_nothing_to_say_says_nothing() {
 		assert!(Message::of(&[], true).is_none());
+	}
+
+	#[test]
+	fn a_command_is_encoded_as_utf16_little_endian() {
+		assert_eq!(encoded_command(""), "");
+		assert_eq!(encoded_command("A"), "QQA=");
+		assert_eq!(encoded_command("AB"), "QQBCAA==");
+	}
+
+	#[test]
+	fn the_encoding_pads_the_tail() {
+		assert_eq!(base64(b""), "");
+		assert_eq!(base64(b"f"), "Zg==");
+		assert_eq!(base64(b"fo"), "Zm8=");
+		assert_eq!(base64(b"foo"), "Zm9v");
+		assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+	}
+
+	#[test]
+	fn a_toast_carries_both_lines_and_registers_the_identifier() {
+		let message = Message {
+			title: "retype".to_string(),
+			body: "1 converted (a&b<c>.heic → a.jpg)".to_string(),
+			undo: Vec::new(),
+		};
+
+		let script = toast_script(&message);
+
+		assert!(script.contains("<text>retype</text>"), "{script}");
+		assert!(
+			script.contains("<text>1 converted (a&amp;b&lt;c&gt;.heic → a.jpg)</text>"),
+			"{script}"
+		);
+		assert!(script.contains(APP_ID), "{script}");
+		assert!(script.contains("AppUserModelId"), "{script}");
 	}
 }
