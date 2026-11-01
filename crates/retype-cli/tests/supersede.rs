@@ -92,6 +92,7 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 		.output()
 		.unwrap();
 
+	let err = photos.join("daemon.err");
 	let _daemon = Daemon(
 		retype()
 			.args(["daemon", "--detached"])
@@ -99,7 +100,7 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 			.arg(&state)
 			.env("RETYPE_CONFIG", &config)
 			.stdout(Stdio::null())
-			.stderr(Stdio::null())
+			.stderr(Stdio::from(fs::File::create(&err).unwrap()))
 			.spawn()
 			.unwrap(),
 	);
@@ -128,7 +129,11 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 	while !fs::read_to_string(&journal_path).unwrap_or_default().contains("\"state\":\"running\"")
 		|| photos.join("photo.webp").exists()
 	{
-		assert!(Instant::now() < deadline, "the job never started");
+		assert!(
+			Instant::now() < deadline,
+			"the job never started\ndaemon: {}",
+			fs::read_to_string(&err).unwrap_or_default()
+		);
 		std::thread::sleep(Duration::from_millis(50));
 	}
 
@@ -144,7 +149,11 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 			break recorded;
 		}
 
-		assert!(Instant::now() < deadline, "no supersession: {recorded}");
+		assert!(
+			Instant::now() < deadline,
+			"no supersession: {recorded}\ndaemon: {}",
+			fs::read_to_string(&err).unwrap_or_default()
+		);
 		std::thread::sleep(Duration::from_millis(100));
 	};
 

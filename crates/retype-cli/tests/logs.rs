@@ -9,18 +9,42 @@ fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
 
-/// A tool that says something and fails, which is the case a log exists for.
-fn failing_config(dir: &Path) -> PathBuf {
+/// The tool's command and layout: a shell script on Unix, and on Windows a batch
+/// file run through `cmd`, because Windows cannot start a script directly.
+#[cfg(not(windows))]
+fn failing_tool(dir: &Path) -> (String, String) {
+	use std::os::unix::fs::PermissionsExt;
+
 	let script = dir.join("failing.sh");
 	fs::write(&script, "#!/bin/sh\necho 'cannot read the input' >&2\nexit 3\n").unwrap();
 
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::PermissionsExt;
-		let mut permissions = fs::metadata(&script).unwrap().permissions();
-		permissions.set_mode(0o755);
-		fs::set_permissions(&script, permissions).unwrap();
-	}
+	let mut permissions = fs::metadata(&script).unwrap().permissions();
+	permissions.set_mode(0o755);
+	fs::set_permissions(&script, permissions).unwrap();
+
+	(
+		script.display().to_string(),
+		"layout = ['{input}', '{ops}', '{output}']".to_string(),
+	)
+}
+
+#[cfg(windows)]
+fn failing_tool(dir: &Path) -> (String, String) {
+	let script = dir.join("failing.cmd");
+	fs::write(&script, "@echo off\r\necho cannot read the input 1>&2\r\nexit /b 3\r\n").unwrap();
+
+	(
+		"cmd".to_string(),
+		format!(
+			"layout = ['/c', '{}', '{{input}}', '{{ops}}', '{{output}}']",
+			script.display()
+		),
+	)
+}
+
+/// A tool that says something and fails, which is the case a log exists for.
+fn failing_config(dir: &Path) -> PathBuf {
+	let (command, layout) = failing_tool(dir);
 
 	let config = dir.join("retype.toml");
 	fs::write(
@@ -33,8 +57,8 @@ version = 'retype-config-1'
 prefer = ['failing']
 
 [tools.failing]
-command = '{}'
-layout = ['{{input}}', '{{ops}}', '{{output}}']
+command = '{command}'
+{layout}
 
 [formats.png]
 family = 'image'
@@ -47,8 +71,7 @@ family = 'image'
 lossy = true
 alpha = true
 tier = 'converted'
-",
-			script.display()
+"
 		),
 	)
 	.unwrap();

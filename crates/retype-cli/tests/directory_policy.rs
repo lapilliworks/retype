@@ -89,6 +89,7 @@ struct Fixture {
 	photos: PathBuf,
 	state: PathBuf,
 	config: PathBuf,
+	err: PathBuf,
 	_daemon: Daemon,
 }
 
@@ -116,6 +117,7 @@ impl Fixture {
 			.output()
 			.unwrap();
 
+		let err = dir.path().join("daemon.err");
 		let daemon = Daemon(
 			retype()
 				.args(["daemon", "--detached"])
@@ -123,7 +125,7 @@ impl Fixture {
 				.arg(&state)
 				.env("RETYPE_CONFIG", &config)
 				.stdout(Stdio::null())
-				.stderr(Stdio::null())
+				.stderr(Stdio::from(fs::File::create(&err).unwrap()))
 				.spawn()
 				.unwrap(),
 		);
@@ -148,8 +150,13 @@ impl Fixture {
 			photos,
 			state,
 			config,
+			err,
 			_daemon: daemon,
 		}
+	}
+
+	fn daemon(&self) -> String {
+		fs::read_to_string(&self.err).unwrap_or_default()
 	}
 
 	fn rename(&self, from: &str, to: &str, bytes: &[u8]) {
@@ -332,7 +339,7 @@ fn debounce_ms_holds_a_rename_until_the_file_stops_changing() {
 
 	let done = fixture
 		.wait_for(|record| record["state"] == "done")
-		.unwrap_or_else(|| panic!("a settled job: {:?}", fixture.records()));
+		.unwrap_or_else(|| panic!("a settled job: {:?}\ndaemon: {}", fixture.records(), fixture.daemon()));
 
 	// One job, asked for what the last name asked for, and named after it.
 	assert_eq!(done["intent"], "webp+quality75", "{done:?}");

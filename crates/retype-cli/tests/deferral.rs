@@ -82,6 +82,7 @@ struct Fixture {
 	photos: PathBuf,
 	state: PathBuf,
 	config: PathBuf,
+	err: PathBuf,
 	_daemon: Daemon,
 }
 
@@ -104,6 +105,7 @@ impl Fixture {
 			.output()
 			.unwrap();
 
+		let err = dir.path().join("daemon.err");
 		let daemon = Daemon(
 			retype()
 				.args(["daemon", "--detached"])
@@ -111,7 +113,7 @@ impl Fixture {
 				.arg(&state)
 				.env("RETYPE_CONFIG", &config)
 				.stdout(Stdio::null())
-				.stderr(Stdio::null())
+				.stderr(Stdio::from(fs::File::create(&err).unwrap()))
 				.spawn()
 				.unwrap(),
 		);
@@ -128,6 +130,7 @@ impl Fixture {
 			photos,
 			state,
 			config,
+			err,
 			_daemon: daemon,
 		}
 	}
@@ -161,7 +164,12 @@ impl Fixture {
 				return record;
 			}
 
-			assert!(Instant::now() < deadline, "no record appeared: {:?}", self.records());
+			assert!(
+				Instant::now() < deadline,
+				"no record appeared: {:?}\ndaemon: {}",
+				self.records(),
+				fs::read_to_string(&self.err).unwrap_or_default()
+			);
 			std::thread::sleep(Duration::from_millis(50));
 		}
 	}
