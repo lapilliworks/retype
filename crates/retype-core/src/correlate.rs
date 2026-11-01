@@ -90,6 +90,37 @@ pub struct Sighting {
 	pub links: u64,
 }
 
+impl Sighting {
+	/// The sighting this platform reports for the file at `path`, or nothing when
+	/// the path is gone or is not a regular file.
+	pub fn of(path: &Path) -> Option<Self> {
+		let metadata = std::fs::symlink_metadata(path).ok()?;
+
+		// Directories appear in the stream, Windows reports the parent on a move, and
+		// a symlink is not a file we may convert. Recording them as absent forgets them
+		// instead of correlating them: without this a directory named `a.heic` renamed
+		// to `a.jpg` is a conversion.
+		if !metadata.is_file() {
+			return None;
+		}
+
+		#[cfg(unix)]
+		let links = {
+			use std::os::unix::fs::MetadataExt;
+			metadata.nlink()
+		};
+
+		#[cfg(not(unix))]
+		let links = 1;
+
+		Some(Self {
+			path: path.to_path_buf(),
+			identity: Identity::of(path)?,
+			links,
+		})
+	}
+}
+
 /// Bounded identity map with insertion-order eviction.
 #[derive(Debug)]
 pub struct Correlator {

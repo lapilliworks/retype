@@ -60,7 +60,11 @@ pub struct Shared {
 	/// `docs/watch.md` §7. A job restores a renamed file to its source name before
 	/// converting it, and a platform that does not report its own process's renames
 	/// would leave the identity under the name the file no longer has.
-	pub own_renames: Mutex<Vec<PathBuf>>,
+	///
+	/// The sighting is taken when the move happens, not when the watcher next looks:
+	/// the file may be renamed again before then, and asking the filesystem later
+	/// would find nothing to record.
+	pub own_renames: Mutex<Vec<retype_core::correlate::Sighting>>,
 	/// What clients replay from, `docs/dev/architecture/ipc.md` §7.
 	pub events: Mutex<crate::daemon::events::Events>,
 	/// Each directory's `.retype.toml`, read once per change rather than once per file,
@@ -114,13 +118,17 @@ impl Recent {
 impl Shared {
 	/// Note a path this process moved itself, for the watcher to record.
 	pub fn note_own_rename(&self, path: &Path) {
+		let Some(sighting) = retype_core::correlate::Sighting::of(path) else {
+			return;
+		};
+
 		if let Ok(mut moved) = self.own_renames.lock() {
-			moved.push(path.to_path_buf());
+			moved.push(sighting);
 		}
 	}
 
 	/// Take the paths this process moved since the last look.
-	fn take_own_renames(&self) -> Vec<PathBuf> {
+	fn take_own_renames(&self) -> Vec<retype_core::correlate::Sighting> {
 		match self.own_renames.lock() {
 			Ok(mut moved) => std::mem::take(&mut *moved),
 			Err(_) => Vec::new(),
@@ -358,7 +366,7 @@ fn spawn_worker(
 			// performed, and the identity has to be under the name the bytes now have
 			// before a batch that mentions that name is decided.
 			for moved in shared.take_own_renames() {
-				retype_watch::observe_path(&mut correlator, &moved);
+				correlator.observe(moved);
 			}
 
 			let observed: u64 = batch.events.iter().map(|event| event.paths.len() as u64).sum();
