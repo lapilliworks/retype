@@ -97,7 +97,7 @@ A system tool is supported but not pinned. Its version and build fingerprint are
 | Toolchain, macOS | Developer ID, hardened runtime, and a notarised archive containing the signed Mach-O files | With the first managed artifact |
 | Toolchain, Linux | Detached minisign or Sigstore signature, beside the checksum | With the first managed artifact |
 
-Publisher identity is fixed: Lapilli Works LLC, `com.lapilliworks.retype`. Reputation is bound to that identity, so it is never changed casually.
+Publisher identity is fixed: Lapilli Works LLC, `com.lapilliworks.retype`. The bundle and display name are both `retype`. Reputation is bound to that identity, so it is never changed casually.
 
 The distribution manifest has its own Ed25519 key, kept offline and separate from the platform code-signing certificate. Its public key is embedded in the GUI that manages the set. Rotation dual-signs one release, so an old client accepts the new key before it is the only key.
 

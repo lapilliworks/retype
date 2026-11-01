@@ -26,7 +26,7 @@ Suppression:
 | Control | Effect |
 |---|---|
 | `--no-spawn` on any command | Fail instead of starting a daemon |
-| `RETYPE_NO_AUTOSTART=1` | Global suppression, for scripts and CI |
+| `RETYPE_NO_SPAWN=1` | Global suppression, for scripts and CI |
 | `retype daemon stop` | Stops the daemon. Any later client that needs one starts it again |
 
 Supervision:
@@ -115,7 +115,7 @@ Request timeout defaults to 5 s. No method blocks on work that can outlive it.
 
 `jobs.resume` continues a `partial` job, skipping outputs that still match their recorded identity, and reports `E_JOB_RESUME_UNAVAILABLE` when neither the source path nor the undo record holds the source bytes.
 
-`jobs.get`, `undo` and `jobs.resume` accept a full ULID or a unique prefix. A prefix matching two jobs is `E_IPC_AMBIGUOUS` with the candidates.
+`jobs.get`, `undo` and `jobs.resume` accept a full ULID or a unique prefix. A prefix matching two jobs is `E_JOB_AMBIGUOUS` with the candidates; a prefix shorter than four characters is `E_USAGE_ARGS`.
 
 ## 7. Events
 
@@ -137,7 +137,7 @@ events {"since": 90}  ->  {"events": [...], "seq": 91}
 ## 8. Errors
 
 ```json
-{"id":7,"ok":false,"error":{"code":"E_JOB_STATE","message":"job 01J8Z is done","detail":{"state":"done"}}}
+{"id":7,"ok":false,"error":{"code":"E_JOB_STATE","message":"job 01j8z is done","detail":{"state":"done"}}}
 ```
 
 One error type in `retype-core`, shared by daemon, CLI and GUI. IPC codes are namespaced `E_IPC_*`; domain codes keep their specification names.

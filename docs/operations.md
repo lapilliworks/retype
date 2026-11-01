@@ -144,9 +144,9 @@ Archives take no operations at all: `zip`, `tar` and `tar.gz` store the bytes th
 A preset is a named token sequence and occupies the same name space. See `docs/config.md`.
 
 ```toml
-[presets.thumb]
+[presets.thumbnail]
 param = { class = 'int', min = 16, max = 4096 }
-tokens = ['resize={value}x0', 'quality75']
+tokens = ['cap={value}', 'quality85']
 
 [presets.headshot]
 tokens = ['crop1x1', 'cap1024', 'quality80', 'nometa']

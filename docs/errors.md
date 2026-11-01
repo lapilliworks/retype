@@ -61,18 +61,24 @@ Everything else is namespaced, and the table lists every code in full so that a 
 
 | Category | Meaning | Exit | Retryable | Notification action | Journal state |
 |---|---|---|---|---|---|
+| `usage` | The invocation itself is malformed | 2 | No | Correct | none |
 | `diagnosis` | The request cannot be satisfied as written | 3 | No | Tweak | `needs-attention` |
 | `environment` | This machine cannot satisfy it | 4 | After a fix | Open doctor | `failed` |
-| `transient` | Try again | 5, 6 | Yes | Retry | `failed`, marked retryable |
+| `transient` | Try again | 5 | Yes | Retry | `failed` |
+| `daemon` | The daemon cannot be reached | 6 | Yes | Start retype | none |
+| `state` | The job or the store is in a state that refuses this | 7 | No | Open jobs | unchanged |
 | `internal` | A bug | 1 | No | Report | `failed`, with a report id |
 
-Exit codes are the ones in `docs/cli.md` §6. A category maps to one code, so a script can branch on the category without parsing messages.
+Exit codes are the ones in `docs/cli.md` §6. The category is text on the wire and the exit code is derived from it, so a script can branch on either without parsing messages. A code belongs to exactly one category; `docs/cli.md` §6 lists the codes behind each number.
 
 Rules:
 
+- A usage error never reaches the domain; it is refused before a job exists
 - A diagnosis never retries on its own. Retrying an invalid intent produces the same invalid intent
 - A transient failure is retried at most once, with backoff, and then reported
 - An environment failure is not retried automatically. It needs a human to install something
+- A state failure is not retried; the job or the lock needs a decision first
+- The daemon being unreachable is retried by the next invocation rather than by the one that failed
 - An internal failure is not retried, always carries a report id, and is logged at error level
 
 ## 5. Partial completion and resume
@@ -102,7 +108,7 @@ The product's invariant is about paths, not jobs: a path never carries a format 
 |---|---|
 | CLI stdout | Success lines only |
 | CLI stderr | Errors, warnings, progress |
-| `--json` | `{v, ok, error:{code, category, message, detail, hint, span, report}}` |
+| `--json` | `{v, ok, error:{code, category, message}}`, plus a `diagnostics` array when the failure carries more than one; each diagnostic adds `span` and `hint` |
 | Journal | `state` plus `error:{code, message}` |
 | Notification | Category-specific action, one sentence |
 | IPC | The same `code`, `category` and `detail` |

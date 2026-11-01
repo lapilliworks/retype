@@ -13,20 +13,22 @@ retype <command> [arguments] [flags]
 | `convert <input> <intent>` | One-shot conversion. Alias `c` |
 | `watch [<dir>...] [--non-recursive] [--pause\|--resume]` | Register directories, or list registrations with no arguments |
 | `unwatch <dir>...` | Deregister directories |
-| `daemon [start\|stop [--now] [--force]\|status]` | Foreground by default. `stop` drains, `--now` cancels, `--force` overrides a supervisor's refusal |
+| `daemon [--detached] [start\|stop [--now] [--force]\|status]` | Foreground by default. `stop` drains, `--now` cancels, `--force` overrides a supervisor's refusal |
 | `jobs list\|get\|cancel\|resume\|resolve\|logs` | Queue inspection and control |
 | `undo <id\|--last>` | Reverse one job |
 | `why <path>` | Explain a file's conversion |
-| `explain <name> <intent>` | Parse, plan, backend, estimate and diagnostics without a file |
+| `explain <source> <intent>` | Parse, plan, backend, estimate and diagnostics without a file |
 | `list [--tiers]` | Configured pairs. `--tiers` adds one line per claim with its engine and version, `docs/fidelity.md` |
-| `doctor [--emit\|--write\|--report]` | Tool probing, availability, support bundle |
+| `doctor [--check] [--require <tool>] [--emit\|--write\|--report]` | Tool probing, availability, support bundle |
 | `bench [--pair <from>:<to>] [--family <name>]` | Measure this machine, so estimates are about it |
-| `fidelity [--pair <from>:<to>] [--family <name>] [--write <path>] [--render <path>]` | Earn the fidelity claims for this machine and record the build that earned them |
+| `fidelity [--pair <from>:<to>] [--family <name>] [--write <path>] [--manifest <path>] [--render <path>] [--fixtures <dir>]` | Earn the fidelity claims for this machine and record the build that earned them |
 | `init [--output <path>]` | Write the example configuration |
 | `version` | The build and every schema identifier it reads |
 | `completions <shell>` | A completion script for bash, zsh, fish, elvish or PowerShell |
 
 Global flags, valid on every command: `--config <path>`, `--state-dir <path>`, `--json`, `--quiet`, `--verbose`, `--no-spawn`, `--help`, `--version`.
+
+`retype uri <retype://job/<id>[?action=undo|cancel|resolve]>` is the scheme handler a notification or desktop entry calls. It is hidden from help because it is not typed by a person, and it is the CLI half of the actions `docs/watch.md` §11 names. The default action is `undo`.
 
 The CLI does not install, update or verify external tools. A CLI user acquires them with the platform's package manager or manually, and the CLI uses the result on `PATH`, an absolute path in configuration, or a managed set the GUI installed, `docs/tools.md` §2. `retype doctor` reports what the machine provides.
 
@@ -58,6 +60,8 @@ Shell quoting is rarely needed: the intent character set excludes every shell me
 `--force` overwrites existing outputs. Without it, an existing target is an error and nothing is written.
 
 `--dry-run` is `explain` with a real file: same output, including the estimate from the file's actual size and the resolved backend.
+
+Under `--json`, the result is `{v, ok, job}`: the envelope identifies the CLI shape, and the job is the journal record with its own `v`, `docs/dev/architecture/state.md` §3.
 
 The command submits an `immediate` job to the daemon and waits for it, `docs/dev/architecture/ipc.md` §6. Immediate means it does not queue behind a directory's renames: it is journalled, visible in `jobs list`, cancellable with `jobs cancel`, and shares the pool, so parallelism is bounded the same way for a person and a watcher.
 
@@ -94,14 +98,14 @@ output    holiday-quality80-cap1080-rotate90.webp
 
 The sentence is fixed rather than generated: each operation declares how it reads, in `say`, with `{value}` where its parameter goes, so the wording is the same every time and a user-declared operation describes itself. Actions appear in the order they run, outputs are separated by a semicolon, `ask` and `now` close the sentence, and an operation without a phrase falls back to its canonical token rather than leaving a gap.
 
-The name is read three ways, in this order:
+The source is read two ways, in this order:
 
-| Name | Read as |
+| Source | Read as |
 |---|---|
 | `holiday.heic` | A file, stem `holiday`, format `heic` |
 | `heic` | A source format with no file, stem `input`, which is how a user asks about a pair without having a file in hand |
 
-A name that has a suffix this build has no format for is a diagnosis, because retype does not convert what it does not know. A directory is not a conversion source.
+A source that has a suffix this build has no format for is a diagnosis, because retype does not convert what it does not know. A directory is not a conversion source.
 
 `source` echoes the argument as written. The sentence and the outputs use the format's canonical spelling, so `explain photo.jpeg png` says `convert from jpg to png` and writes `photo.png`.
 
@@ -129,7 +133,9 @@ retype unwatch <dir>...
 
 `--tiers` prints one line per pair instead: the tier the pair claims and the backend that would carry it, with that backend's installed version. A pair nothing can carry prints the diagnostic code where a backend would go, in brackets, because a blank column would read as "not declared" rather than "not possible here". A tier here is a declaration, not evidence: a claim is earned by a fixture run, `docs/fidelity.md` §4, and until a run has happened the version beside it is what is installed now rather than what the claim was earned with.
 
-`--json` writes one object per line with a `kind` of `format`, `operation`, `preset`, `backend` or `pair`.
+`--json` writes one object per line with a `kind` of `format`, `operation`, `preset`, `backend` or `pair`. A pair that cannot be carried has a null `backend` and a separate `error` field naming the code; the human line brackets the same code where a backend would go, because a blank column would read as "not declared" rather than "not possible here".
+
+`watch --json` writes one object per registration with a `kind` of `watch`; a registration result and an `unwatch` result carry the envelope and a `kind`. The `added` field is Unix milliseconds.
 
 `watch` with no arguments lists registrations as `<path>  <recursive>  <policy summary>`. With arguments it registers each directory; registration is idempotent, and the daemon re-reads the file so a running one picks the directory up within a second. `--non-recursive` registers only that directory rather than its subtree. `--pause` stops converting renames in a registration until `--resume`; a directory file with `paused = true` outranks a resume and is refused with `E_WATCH_PAUSED_BY_POLICY`. `watch` starts nothing itself, so it can be scripted.
 
@@ -159,17 +165,17 @@ retype undo <id|prefix|--last>
 retype why <path>
 ```
 
-`jobs list`, `jobs get`, `jobs cancel`, `jobs resume`, `jobs logs`, `undo` and `why` exist today. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled.
+`jobs list`, `jobs get`, `jobs cancel`, `jobs resume`, `jobs logs`, `undo` and `why` exist today. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled. `--state` accepts `pending`, `queued`, `running`, `done`, `partial`, `failed`, `cancelled`, `superseded` or `needs-attention`; any other value is a usage error. `--since` takes a full id, because a prefix is not an ordering boundary.
 
-`jobs get` answers with the whole record: the outputs, their bytes, their tier and their errors. It is the form a bug report or a script wants, so it prints JSON rather than a rendering of it.
+`jobs get` answers with the whole record: its own `v`, the outputs, their bytes, their tier and their errors. It is the form a bug report or a script wants, so it prints JSON rather than a rendering of it. The record is not enveloped, because its `v` is `retype-journal-1` and an envelope would overwrite it.
 
-`why` takes a file and answers what produced it, naming the store that answered: `journal-identity` when the file is the one a record produced, which survives the rename that usually follows a conversion, `journal-path` when only the name matched, and `unknown` when nothing did. Identity alone is not trusted, because file ids are recycled, so the size has to agree as well. A file nothing produced is not an error: the command says so, and the record expires at twice the undo retention.
+`why` takes a file and answers what produced it, naming the store that answered: `journal-identity` when the file is the one a record produced, which survives the rename that usually follows a conversion, `journal-path` when only the name matched, `xattr` when the intent came from the file's attribute, and `unknown` when nothing did. Its `confidence` is `exact`, `path-only` or `none`, `docs/provenance.md` §8. Identity alone is not trusted, because file ids are recycled, so the size has to agree as well. A file nothing produced is not an error: the command says so, and the record expires at twice the undo retention.
 
 `undo` reads the undo store rather than the journal, so it answers even when the journal is gone, and it removes the record it used: one record, one restore target.
 
 `jobs resume` continues a `partial` job: an output that still carries the identity and size the job recorded is skipped, and the rest are run again from the source bytes, which come from the source path or from the undo record when a rename consumed the name. An occupied output that does not carry the recorded identity is `E_IO_EXISTS`; `--force` re-runs every output and replaces it. `jobs list --state partial` finds the candidates, and a job with neither source nor record is `E_JOB_RESUME_UNAVAILABLE`.
 
-Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the candidates printed.
+Ids accept a unique prefix of at least four characters; an ambiguous prefix is `E_JOB_AMBIGUOUS` with the candidates printed, and a shorter one is a usage error. Listings print the shortest unambiguous prefix so copy-paste is short by default.
 
 `jobs resolve` acts on a parked job, and `jobs --interactive` walks the parked ones with one key each; both are specified in `docs/deferral.md` §8.
 
@@ -192,16 +198,17 @@ Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the ca
 | 4 | Backend missing or failed |
 | 5 | Filesystem error: permission, space, vanished path |
 | 6 | Daemon unavailable: spawn failed, or `--no-spawn` |
-| 7 | State conflict: lock held, ambiguous prefix, wrong job state |
+| 7 | State conflict: lock held, ambiguous handle, cancelled or interrupted job, wrong job state |
 
-3 means the request cannot be satisfied. 4 means the machine cannot satisfy it. 6 means try again.
+3 means the request cannot be satisfied. 4 means the machine cannot satisfy it. 5 means try again. 6 means the daemon is not there. 7 means the job or the store is in a state the request cannot move.
 
 ## 7. Output
 
 - Results go to stdout, diagnostics and progress to stderr, so a successful conversion in a pipeline emits one line and nothing else
 - Human output is column-aligned. Nothing colours it yet: `NO_COLOR`, `CLICOLOR` and `--no-color` arrive with the first coloured output, and are not accepted as flags until then, so a script cannot pass one that does nothing
-- `--json` writes one object per result to stdout; list commands write one object per line
-- Envelope responses carry `"v": "retype-cli-json-1"`. Individual list items do not
+- `--json` writes one object per result to stdout; list commands write one object per line. A parser error and `--version` honour it too
+- Envelope responses carry `"v": "retype-cli-json-1"`. Individual list items do not; they carry a `kind` instead
+- `jobs get` is the exception: it prints the journal record as it is, so the record keeps `"v": "retype-journal-1"`
 - `--quiet` suppresses everything below errors
 - `--verbose` is a count, not a filter language: `-v` reports what the command decided, such as which configuration file it read and which daemon it reached; `-vv` adds what it asked and got. `RETYPE_LOG` sets the same number, as a digit or as `error`, `warn`, `info`, `debug`, `trace`, so a wrapper can turn it on without rewriting arguments
 
@@ -213,7 +220,7 @@ retype c clip.mov mp4+cap1080+mute
 retype c photo.heic jpg,png
 retype watch ~/Pictures ~/Documents
 retype jobs list --state needs-attention
-retype jobs get 01J8Z
+retype jobs get 01j8z
 retype undo --last
 retype why photo.webp
 retype explain clip.mov 'mp4+cap1080+at10s+mute+now'

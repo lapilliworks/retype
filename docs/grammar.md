@@ -190,7 +190,7 @@ Rules:
 - R5 A value on an operation that declares no parameter is `E_VALUE_UNEXPECTED`; an absent value on an operation that declares one is `E_VALUE_MISSING`
 - R6 `=` forces an exact name match and exists to disambiguate R2
 
-Presets occupy the same name space and declare zero or one parameter, of any class. A preset with a parameter accepts a positional value: `+thumb200` and `+thumb=200` are equivalent.
+Presets occupy the same name space and declare zero or one parameter, of any class. A preset with a parameter accepts a positional value: `+thumbnail200` and `+thumbnail=200` are equivalent.
 
 ## 9. Aliases
 

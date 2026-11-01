@@ -16,6 +16,8 @@ retype/
   daemon.sock                 IPC endpoint on Unix; a named pipe on Windows
   watches.toml                registered directories
   bench.toml                  estimator calibration
+  logs/
+    <id>.log                  what the job's tool printed
   tools/
     manifest.toml             signed distribution list, as accepted
     manifest.toml.sig         detached signature over the manifest bytes
@@ -53,7 +55,7 @@ User-facing handle: a prefix of at least 4 characters. Resolution requires a uni
 One JSON object per line. Every line is self-contained and carries its own version.
 
 ```json
-{"v":"retype-journal-1","kind":"job","id":"01J8Z...","created":1690000000123,"updated":1690000000456,
+{"v":"retype-journal-1","kind":"job","id":"01j8z...","created":1690000000123,"updated":1690000000456,
  "source":{"path":"/home/u/Pictures/a.heic","format":"heic","size":2431002,"mtime_ns":1690000000000},
  "intent":"jpg+quality85",
  "outputs":[{"path":"/home/u/Pictures/a.jpg","format":"jpg","state":"done","bytes":812345,"tier":"converted",
@@ -75,7 +77,7 @@ One JSON object per line. Every line is self-contained and carries its own versi
 | `state` | `pending`, `queued`, `running`, `done`, `partial`, `failed`, `cancelled`, `superseded`, `needs-attention` |
 | `backend` | Backend name that ran or will run the job: a tool's name, or the codec's, such as `zip`, when this build wrote the file itself |
 | `machine` | Per-install identity |
-| `error` | Null, or `{code, message}` with a journal-level code such as `E_INTERRUPTED`, `E_BACKEND_FAILED`, `E_DIAGNOSIS` |
+| `error` | Null, or `{code, message}` with a journal-level code such as `E_JOB_INTERRUPTED`, `E_JOB_SUPERSEDED` or `E_TOOL_FAILED` |
 | `parked` | Absent, or why the job is waiting and until when: `reason`, `deadline`, `batch`, `estimate`, `requested`, `corrected` and `dropped`, `docs/deferral.md` §11 |
 | `consume_source` | Whether committing removes the source: true for a rename, false for `retype convert`, `docs/dev/architecture/state.md` §5 |
 
@@ -103,7 +105,7 @@ undo/<id>/meta.toml
 
 ```toml
 version = 'retype-undo-1'
-id = '01J8Z...'
+id = '01j8z...'
 intent = 'jpg+quality85'
 created = 1690000000123
 machine = '7f3c1a2b'
@@ -217,8 +219,8 @@ Accounting is source bytes, which is what a hard link actually costs, `docs/conf
 
 1. Acquire the lock. Failure means another daemon owns the state directory, and the process exits with that message
 2. Load `bench.toml`, then the journal, then the undo record index
-3. For every journal job in `queued`: nothing ran, so nothing was written. If the source still exists and its ext and mtime match, put it back in the queue with the request the journal recorded, including the output path, which is the only place an explicit `-o` survives. Otherwise mark it `failed` with `E_INTERRUPTED`
-4. For every journal job in `running`: mark it `failed` with `E_INTERRUPTED`. A job that was running may have committed some of its outputs, so running it again would either overwrite them or fail on them: `retype jobs resume` is the path that skips the outputs whose recorded identity still matches, §5.2
+3. For every journal job in `queued`: nothing ran, so nothing was written. If the source still exists and its ext and mtime match, put it back in the queue with the request the journal recorded, including the output path, which is the only place an explicit `-o` survives. Otherwise mark it `failed` with `E_JOB_INTERRUPTED`
+4. For every journal job in `running`: mark it `failed` with `E_JOB_INTERRUPTED`. A job that was running may have committed some of its outputs, so running it again would either overwrite them or fail on them: `retype jobs resume` is the path that skips the outputs whose recorded identity still matches, §5.2
 5. For every journal job in `pending`: it is parked, so it keeps its deadline and its timer is re-armed rather than run, `docs/deferral.md` §7
 6. For every undo record without a journal entry, keep it and rebuild a `done` record from `meta.toml`
 7. For every journal job whose record directory is missing, leave the state as recorded and mark undoing it as unavailable

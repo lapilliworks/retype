@@ -34,12 +34,14 @@ Environment variables, all optional:
 |---|---|
 | `RETYPE_STATE_DIR` | State directory, overriding platform defaults |
 | `RETYPE_CONFIG` | User configuration path, instead of the platform default. A daemon started by a client inherits the path the client used, so both read the same file |
+| `RETYPE_NO_SPAWN` | Clients never start the daemon; the command-line spelling is `--no-spawn` |
+| `RETYPE_LOG` | Verbosity, the same number `--verbose` counts, as a digit or a word: `error`, `warn`, `info`, `debug`, `trace` |
+| `RETYPE_FIXTURES` | Property fixtures for `retype fidelity`, instead of `fixtures/fidelity`; `--fixtures` wins |
+| `RETYPE_FIDELITY_MANIFEST` | Manifest `retype why` and `retype fidelity` read when no path is given; `retype fidelity`'s flags win |
 
 `--config <path>` names the user file for one invocation and wins over `RETYPE_CONFIG`. A file named that way has to exist: falling back to the built-in table would answer a different question than the one asked, so a missing one is `E_CFG_MISSING` rather than silence.
 
 Without either, the user file is `$XDG_CONFIG_HOME/retype/retype.toml` on Unix and `%APPDATA%\retype\retype.toml` on Windows; `XDG_CONFIG_HOME` defaults to `~/.config`. macOS is Unix here: the user file lives in `~/.config` and not in `~/Library/Application Support`, so configuration, state and data share one tree on the one platform where the two conventions disagree. There is no alternate path and no symlink between them.
-| `RETYPE_NO_AUTOSTART` | Clients never start the daemon |
-| `RETYPE_LOG` | Verbosity, the same number `--verbose` counts, as a digit or a word: `error`, `warn`, `info`, `debug`, `trace` |
 
 Merge rules per key type:
 
@@ -404,7 +406,7 @@ A key the entry does not declare is refused as `E_CFG_UNKNOWN_KEY` before any ru
 | V9 | A format or tool referenced by an operation, fragment or `backends.prefer` but not declared |
 | V10 | A tier outside `exact`, `converted`, `delegated`, `docs/fidelity.md` |
 | V11 | `version_min` that does not parse as a version |
-| V13 | A per-directory file defining `tools`, `formats`, `ops`, `presets`, or any key of the `[watch]` table |
+| V13 | A per-directory file defining `tools`, `formats`, `ops`, `presets`, `backends`, `undo`, or any key of the `[watch]` table |
 | V16 | `components` declared by a tool that declares no `probe` |
 | V17 | `version_min` declared by a tool that declares no `probe`, since the floor could then never be met |
 | V18 | A `families` entry naming a family that does not exist |
@@ -412,7 +414,7 @@ A key the entry does not declare is refused as `E_CFG_UNKNOWN_KEY` before any ru
 | V20 | A `[bench.sample]` naming a family with no `[bench.seed]`, or a tool that is not declared |
 | V21 | A sample argv naming a placeholder other than `{output}` |
 | V22 | A `native` codec on a format whose family is not `archive` |
-| V23 | A `[deferral]` key in a directory file, other than `confirm` |
+| V23 | A `[deferral]` key in a directory file, other than `confirm`, which is the same key as the top-level spelling |
 | V24 | A `pause` of zero, a deferral value that is not a duration, or a `mode` or `repair` outside the two it accepts |
 
 V12 named an in-process backend and was retired with it. The number is not reused, so that a configuration error reported against an older build stays identifiable.
