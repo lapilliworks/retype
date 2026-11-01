@@ -116,13 +116,17 @@ pub fn exit_code(code: &retype_core::error::Code) -> u8 {
 		Code::ToolMissing
 		| Code::ToolVersion
 		| Code::ToolFailed
-		| Code::ToolTimeout
+		| Code::ToolTimeout => 4,
+		// A state conflict: the lock, an ambiguous prefix, or a job that is not in
+		// the state the request needs, `docs/cli.md` §6. A cancellation or an
+		// interruption is a state the user or the daemon put the job in, not a
+		// capability this machine lacks.
+		Code::IoLocked
+		| Code::IpcAmbiguous
+		| Code::JobState
 		| Code::JobCancelled
 		| Code::JobInterrupted
-		| Code::JobResumeUnavailable => 4,
-		// A state conflict: the lock, an ambiguous prefix, or a job that is not in the
-		// state the request needs, `docs/cli.md` §6.
-		Code::IoLocked | Code::IpcAmbiguous | Code::JobState => 7,
+		| Code::JobResumeUnavailable => 7,
 		// Something to retry: the filesystem or the moment.
 		Code::IoFailed
 		| Code::IoPermission
@@ -142,5 +146,28 @@ pub fn exit_code_of(raw: &str) -> u8 {
 	match retype_core::error::Code::parse(raw) {
 		Some(code) => exit_code(&code),
 		None => 4,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use retype_core::error::Code;
+
+	#[test]
+	fn job_lifecycle_failures_are_state_conflicts() {
+		for code in [
+			Code::JobCancelled,
+			Code::JobInterrupted,
+			Code::JobResumeUnavailable,
+			Code::JobState,
+		] {
+			assert_eq!(exit_code(&code), 7, "{code}");
+		}
+	}
+
+	#[test]
+	fn a_missing_tool_is_an_environment_failure() {
+		assert_eq!(exit_code(&Code::ToolMissing), 4);
 	}
 }
