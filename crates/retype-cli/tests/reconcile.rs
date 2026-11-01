@@ -1,4 +1,4 @@
-//! Startup reconciliation, `docs/state.md` §6.
+//! Startup reconciliation, `docs/dev/architecture/state.md` §6.
 //!
 //! A `queued` job never ran, so it goes back in the queue; a `running` job may have
 //! committed some of its outputs, so it is declared interrupted and `jobs resume` is

@@ -59,7 +59,7 @@ Shell quoting is rarely needed: the intent character set excludes every shell me
 
 `--dry-run` is `explain` with a real file: same output, including the estimate from the file's actual size and the resolved backend.
 
-The command submits an `immediate` job to the daemon and waits for it, `docs/ipc.md` §6. Immediate means it does not queue behind a directory's renames: it is journalled, visible in `jobs list`, cancellable with `jobs cancel`, and shares the pool, so parallelism is bounded the same way for a person and a watcher.
+The command submits an `immediate` job to the daemon and waits for it, `docs/dev/architecture/ipc.md` §6. Immediate means it does not queue behind a directory's renames: it is journalled, visible in `jobs list`, cancellable with `jobs cancel`, and shares the pool, so parallelism is bounded the same way for a person and a watcher.
 
 Everything that can fail before a byte moves fails at submission, with the code and the exit status the failure would have had locally, so a bad intent or a missing tool is reported without a job that only fails later. The client polls `jobs.get` while the job runs, which keeps the daemon free to answer anything else, including the cancel that stops it.
 
@@ -111,7 +111,7 @@ The estimate is a line per output, under the plan:
   estimate 0.4s  291.42kb  (measured)
 ```
 
-It needs a file to size, so `explain` prints none when the name does not exist rather than guessing, and `convert --dry-run` prints one because it has the file. `measured` means this machine converted this pair when `retype bench` last ran; `family` means no measurement exists and the family constant is standing in, which is a guess with a provenance and is labelled as one, `docs/state.md` §7.
+It needs a file to size, so `explain` prints none when the name does not exist rather than guessing, and `convert --dry-run` prints one because it has the file. `measured` means this machine converted this pair when `retype bench` last ran; `family` means no measurement exists and the family constant is standing in, which is a guess with a provenance and is labelled as one, `docs/dev/architecture/state.md` §7.
 
 A backend that the plan needs and the machine lacks is reported in the plan and exits 4, rather than failing without an explanation: the string was understood, the machine cannot carry it out.
 

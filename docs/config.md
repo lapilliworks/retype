@@ -296,15 +296,15 @@ on_overflow = 'ask'
 | `enabled` | `true` | Keep records at all. Taking effect for future jobs, because a record has to exist at conversion time |
 | `retention` | `1w` | Age after which a record is dropped |
 | `quota` | `5gb` | Upper bound for the store, counted in source bytes |
-| `on_overflow` | `ask` | `ask`, `evict` or `skip`, `docs/state.md` §5.5 |
+| `on_overflow` | `ask` | `ask`, `evict` or `skip`, `docs/dev/architecture/state.md` §5.5 |
 
 `retention` is read as the grammar's duration class, so it is spelled the way an intent spells one: `w`, `d`, `h`, `m` and `s`, in that order, and a unit may be skipped. Months are not a unit, because a month is not a fixed number of seconds. `quota` is read as the size class, so `gb` is decimal and `gib` binary, `docs/grammar.md` §7.
 
-Retention decides two things at once, deliberately rather than incidentally: how long an undo record survives, and therefore how long the job it describes can be resumed, `docs/state.md` §5.2. Records are dropped at startup and never during a conversion.
+Retention decides two things at once, deliberately rather than incidentally: how long an undo record survives, and therefore how long the job it describes can be resumed, `docs/dev/architecture/state.md` §5.2. Records are dropped at startup and never during a conversion.
 
 The quota is a second, independent bound: retention bounds records by age and the quota bounds them by size. `ask` is the intended answer and behaves as `evict` until notifications exist to ask with.
 
-The journal outlives them. It is compacted at startup when it earns it, dropping records past twice the retention with a floor of thirty days, `docs/state.md` §4.
+The journal outlives them. It is compacted at startup when it earns it, dropping records past twice the retention with a floor of thirty days, `docs/dev/architecture/state.md` §4.
 
 ## 10. Deferral
 
@@ -430,7 +430,7 @@ retype doctor --emit      # a [tools] snippet reflecting what is installed
 
 ## 15. Benchmark samples
 
-What `retype bench` converts, `docs/state.md` §7. Host-level.
+What `retype bench` converts, `docs/dev/architecture/state.md` §7. Host-level.
 
 ```toml
 [bench.seed]

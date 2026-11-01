@@ -1,4 +1,4 @@
-//! The daemon: one per user session, the only writer of state, `docs/ipc.md`.
+//! The daemon: one per user session, the only writer of state, `docs/dev/architecture/ipc.md`.
 //!
 //! Connections are served one at a time, which is enough while every method is a
 //! request and answer, and the event ring is read the same way: a client asks for
@@ -35,7 +35,7 @@ use crate::state;
 use lock::Lock;
 
 /// Run in the foreground, which is what a user unit or a launchd agent
-/// executes, `docs/ipc.md` §1.
+/// executes, `docs/dev/architecture/ipc.md` §1.
 #[cfg(unix)]
 pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	use std::os::unix::net::UnixListener;
@@ -71,7 +71,7 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	}
 
 	// Before the loop that watches for them, so a stop signal is a drain rather than a
-	// death, `docs/ipc.md` §2.
+	// death, `docs/dev/architecture/ipc.md` §2.
 	signals::install();
 
 	let result = serve(listener, &mut server);

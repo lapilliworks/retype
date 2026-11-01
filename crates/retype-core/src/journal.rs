@@ -1,6 +1,6 @@
 //! The journal: an append-only file of job snapshots.
 //!
-//! Rules are in `docs/state.md` §4. The ones that shape this module: records are
+//! Rules are in `docs/dev/architecture/state.md` §4. The ones that shape this module: records are
 //! never edited, a snapshot is written per transition, replay is last wins per
 //! id, a torn trailing line is a write that was interrupted and is dropped,
 //! anything unparseable before the end is corruption and the file is moved
@@ -18,7 +18,7 @@ use serde::Deserialize;
 use crate::error::{Error, Result};
 use crate::job::{JOURNAL_VERSION, Job, JobId, JobState, now_ms};
 
-/// When compaction is worth doing, `docs/state.md` §4.
+/// When compaction is worth doing, `docs/dev/architecture/state.md` §4.
 const MAX_LINES: usize = 10_000;
 
 /// The journal outlives undo, because a record of a conversion from long ago is
@@ -173,7 +173,7 @@ impl Journal {
 }
 
 /// Transitions that are synced. The rest are best effort because reconciliation
-/// covers the gap, `docs/state.md` §4.
+/// covers the gap, `docs/dev/architecture/state.md` §4.
 fn is_durable(state: JobState) -> bool {
 	// A parked job has a deadline to survive a crash, a queued one has a queue entry
 	// that reconciliation rebuilds, and a finished one is the record itself.

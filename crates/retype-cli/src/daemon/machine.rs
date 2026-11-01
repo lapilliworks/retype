@@ -1,4 +1,4 @@
-//! Per-install identity, `docs/state.md` §2.
+//! Per-install identity, `docs/dev/architecture/state.md` §2.
 //!
 //! The identity lives in `bench.toml` beside the calibration, because the two
 //! travel together: calibration earned on one machine is not calibration for

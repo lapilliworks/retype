@@ -1,4 +1,4 @@
-//! The runner pool, `docs/ipc.md` §6 and `docs/watch.md` §8.
+//! The runner pool, `docs/dev/architecture/ipc.md` §6 and `docs/watch.md` §8.
 //!
 //! Watchers submit work; runners take one job each, run it, and come back for the
 //! next. Nobody holds a batch: a runner that finishes the last queued job waits
@@ -40,7 +40,7 @@ pub fn runners() -> usize {
 /// Wait this long for work before checking whether to stop.
 const IDLE: Duration = Duration::from_millis(200);
 
-/// One conversion, identified before it starts, `docs/state.md` §2: a deferred job
+/// One conversion, identified before it starts, `docs/dev/architecture/state.md` §2: a deferred job
 /// is addressable immediately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Work {
@@ -64,7 +64,7 @@ pub enum Kind {
 		source: PathBuf,
 		target: PathBuf,
 	},
-	/// A conversion a client asked for, `docs/ipc.md` §6.
+	/// A conversion a client asked for, `docs/dev/architecture/ipc.md` §6.
 	Immediate(crate::daemon::immediate::Request),
 	/// A parked rename whose time has come, `docs/deferral.md` §7. The bytes are
 	/// already under the source name, so nothing is relabelled, and the source is
@@ -290,7 +290,7 @@ impl Pool {
 		self.inflight.ids().is_empty()
 	}
 
-	/// Stop a job because a later rename replaced it, `docs/state.md` §5.3.
+	/// Stop a job because a later rename replaced it, `docs/dev/architecture/state.md` §5.3.
 	pub fn supersede(&self, id: &JobId) -> (Cancelled, Option<Work>) {
 		if let Some(work) = self.queue.take_back(id) {
 			return (Cancelled::Queued, Some(work));

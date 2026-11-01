@@ -60,7 +60,7 @@ A pair records both lists: the properties it kept and the ones it lost. A `conve
 
 The properties are read from the bytes where the decoder does not report them. ImageMagick surfaces geometry, depth, opacity, frame count and colour count; it does not surface the EXIF orientation tag or, reliably, an embedded profile, so both are read directly: APP1 and APP2 segments in JPEG, `iCCP` and `eXIf` chunks in PNG, `ICCP` in WebP, tag 34675 in TIFF. An axis that cannot be read cannot be checked, and guessing would be worse than saying nothing.
 
-Size and duration are separate: they come from `retype bench`, not from the manifest, because they depend on the machine and the claim does not, `docs/state.md` §4.
+Size and duration are separate: they come from `retype bench`, not from the manifest, because they depend on the machine and the claim does not, `docs/dev/architecture/state.md` §4.
 
 `delegated` is the answer for a pair no manifest describes: a converter we did not write, or a format offered because a tool accepts it. There is no fixture to convert and nothing to claim, so the tier says what is true, which is that a valid file of the target format was produced.
 

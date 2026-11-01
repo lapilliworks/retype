@@ -13,7 +13,7 @@ cost, and the reason it is waiting.
 | `pending` | The job can run as asked, once the timer expires or the user says so | The deadline, `jobs resolve --now`, `jobs cancel`, or the source being renamed or removed |
 | `needs-attention` | The job cannot run as asked, and only the user can decide what to do instead | `jobs resolve --convert`, `jobs cancel`, or the source being renamed or removed |
 
-Both are journal states, `docs/state.md` §3. `needs-attention` has no deadline: there
+Both are journal states, `docs/dev/architecture/state.md` §3. `needs-attention` has no deadline: there
 is nothing to expire into.
 
 ## 2. The reason
@@ -68,7 +68,7 @@ Two rules follow from the list rather than from a special case:
   and deferring it would answer a question with a question. It still parks on the
   `needs-attention` reasons, under the repair policy like everything else, and it
   still parks when the intent says `ask`
-- "No undo record can be kept" is decided by `docs/state.md` §5.5 before the job is
+- "No undo record can be kept" is decided by `docs/dev/architecture/state.md` §5.5 before the job is
   parked: `[undo] enabled = false`, `on_overflow = skip` with a full quota, or a
   source larger than the whole quota. That is the "destructive target" of: consuming a source with no way back, and it is why the threshold is lower
  in that case 
@@ -158,7 +158,7 @@ unconditional: it does not depend on a notification, a client, a terminal or a w
 - The deadline is `parked + pause`, stored in the journal record
 - The daemon owns the timer. Nothing else has to be running for it to fire
 - At startup, a `pending` job whose deadline has passed runs immediately, and one
-  whose deadline is ahead has its timer re-armed, `docs/state.md` §6
+  whose deadline is ahead has its timer re-armed, `docs/dev/architecture/state.md` §6
 - `pause = '0s'` is refused at load rather than read as "never" or "at once"
 - The timer is a chance to regret and to act first. It is not a promise that the job
   will be wanted: refusing it with `jobs cancel` before the deadline is the whole
@@ -180,13 +180,13 @@ retype jobs cancel <id|prefix>
 | `--interactive` | Walk the parked jobs oldest first and read one key each: now, convert where it applies, refuse, skip, quit. Without a terminal it refuses rather than reading a script's stdin |
 | `jobs cancel` | Refuse it. Nothing was written, so nothing is undone |
 
-All four accept a unique prefix, `docs/state.md` §2. A job that is no longer parked
+All four accept a unique prefix, `docs/dev/architecture/state.md` §2. A job that is no longer parked
 answers `E_JOB_STATE`, so a second `--now` on the same id is an error rather than a
 second conversion.
 
 ## 9. The file while it is parked
 
-The source name is restored before the job is parked, `docs/state.md` §5.4. A path
+The source name is restored before the job is parked, `docs/dev/architecture/state.md` §5.4. A path
 never holds a format its name denies, and that rule does not bend because a decision
 is pending.
 

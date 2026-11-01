@@ -1,5 +1,5 @@
 //! Watching the registered directories and converting what a rename asks for,
-//! `docs/watch.md` and `docs/events.md`.
+//! `docs/watch.md` and `docs/dev/measurement/events.md`.
 //!
 //! One thread per root, each collecting a window of events and handing the batch
 //! to the correlator. A batch that produces no rename fact produces no work, which
@@ -53,7 +53,7 @@ pub struct Shared {
 	pub placeholders: AtomicU64,
 	/// Identities recorded by the startup walk, `docs/watch.md` §3.
 	pub primed: AtomicU64,
-	/// What clients replay from, `docs/ipc.md` §7.
+	/// What clients replay from, `docs/dev/architecture/ipc.md` §7.
 	pub events: Mutex<crate::daemon::events::Events>,
 	/// Each directory's `.retype.toml`, read once per change rather than once per file,
 	/// `docs/config.md` §12.
@@ -241,7 +241,7 @@ fn supervise(shared: &Arc<Shared>, pool: &Arc<Pool>, state_dir: &Path, stop: &At
 }
 
 /// The user configuration's modification stamp, so an edit takes effect without
-/// restarting the daemon, `docs/ipc.md` §3.
+/// restarting the daemon, `docs/dev/architecture/ipc.md` §3.
 fn config_stamp() -> Option<std::time::SystemTime> {
 	crate::config::user_path().and_then(|path| std::fs::metadata(path).and_then(|meta| meta.modified()).ok())
 }
@@ -285,7 +285,7 @@ fn spawn_worker(
 
 		// Prime before the first batch is decided: a file that existed before the
 		// daemon started has no identity otherwise, and on macOS identity is the
-		// only correlation mechanism, `docs/watch.md` §3 and `docs/events.md` §3.
+		// only correlation mechanism, `docs/watch.md` §3 and `docs/dev/measurement/events.md` §3.
 		let registry = shared.registry();
 		let primed = retype_watch::prime(
 			&mut correlator,
@@ -436,11 +436,11 @@ fn decide(
 
 	// A rename chain that spans two batches: the file being renamed is
 	// what an earlier job is writing, so the earlier job is spent and the
-	// chain becomes one conversion, `docs/state.md` §5.3.
+	// chain becomes one conversion, `docs/dev/architecture/state.md` §5.3.
 	// The rename just put the bytes at the target, so that is where they
 	// are. What the chain changes is the *source* name: after two renames
 	// the file is not what its intermediate name claimed, it is what the
-	// job that was overtaken was reading, `docs/state.md` §5.3.
+	// job that was overtaken was reading, `docs/dev/architecture/state.md` §5.3.
 	let earlier = producers(shared, pool, &fact.source);
 
 	let source = match earlier.is_empty() {
@@ -519,7 +519,7 @@ impl Held {
 ///
 /// The facts are coalesced before they are decided, so a rename chain that arrived
 /// inside the hold is one job from the first name to the last, the same collapse a
-/// single window gets, `docs/state.md` §5.3.
+/// single window gets, `docs/dev/architecture/state.md` §5.3.
 fn release(shared: &Shared, pool: &Pool, watched_root: &Path, held: &mut std::collections::BTreeMap<PathBuf, Held>) {
 	let now = std::time::Instant::now();
 
@@ -567,7 +567,7 @@ fn less_than(held: &std::collections::BTreeMap<PathBuf, Held>, window: Window) -
 /// rename of the *source* name is the same decision taken a moment later, and it
 /// is the one people make in practice: while a job converts, the file shows its
 /// source name again, because that is the name its bytes belong under,
-/// `docs/state.md` §5.4.
+/// `docs/dev/architecture/state.md` §5.4.
 fn producers(shared: &Shared, pool: &Pool, path: &Path) -> Vec<Job> {
 	let Ok(jobs) = shared.jobs.lock() else {
 		return Vec::new();
@@ -984,7 +984,7 @@ fn run(
 			)),
 			Err(error) => {
 				// A superseded job did not fail: the work was overtaken, so its output
-				// is skipped rather than failed, `docs/state.md` §5.3.
+				// is skipped rather than failed, `docs/dev/architecture/state.md` §5.3.
 				// The code the failure came with, not a generic one: an archive that
 				// was refused for its names is a diagnosis, and a caller's exit code
 				// should say so rather than "the tool failed".
@@ -1007,7 +1007,7 @@ fn run(
 	}
 
 	// A cancelled job is its own outcome: nothing was converted and nothing is
-	// wrong with the file, `docs/state.md` §4.
+	// wrong with the file, `docs/dev/architecture/state.md` §4.
 	let cancelled = cancellation.is_cancelled()
 		|| outputs.iter().any(|output| {
 			output
@@ -1132,7 +1132,7 @@ pub fn publish(shared: &Shared, job: &Job) {
 	}
 
 	// One event per snapshot, so a client polling `events` sees the same
-	// transitions the journal records, `docs/ipc.md` §7.
+	// transitions the journal records, `docs/dev/architecture/ipc.md` §7.
 	if let Ok(mut events) = shared.events.lock() {
 		events.push(job);
 	}
@@ -1190,7 +1190,7 @@ fn announce(shared: &Shared, ids: &[JobId]) {
 }
 
 /// The record a job writes before it starts, so a client can see a job that is
-/// running rather than only one that finished, `docs/state.md` §3.
+/// running rather than only one that finished, `docs/dev/architecture/state.md` §3.
 fn running(
 	shared: &Shared,
 	id: &retype_core::job::JobId,

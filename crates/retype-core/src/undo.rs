@@ -1,4 +1,4 @@
-//! Undo records, `docs/state.md` §5.
+//! Undo records, `docs/dev/architecture/state.md` §5.
 //!
 //! One directory per job under `undo/`, holding the source bytes and a manifest.
 //! The record is the durable truth for recoverability: the journal is a cache of
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Code, Diagnostic, Error, Result};
 use crate::job::JobId;
 
-/// Schema identifier, `docs/state.md` §5.
+/// Schema identifier, `docs/dev/architecture/state.md` §5.
 pub const UNDO_VERSION: &str = "retype-undo-1";
 
 /// One produced file.
@@ -213,7 +213,7 @@ impl Store {
 		self.root.join(id.as_str())
 	}
 
-	/// Keep the source bytes and a manifest before converting, `docs/state.md` §5.
+	/// Keep the source bytes and a manifest before converting, `docs/dev/architecture/state.md` §5.
 	///
 	/// `bytes` is the file as it is now: after a rename that is the source content
 	/// under the target's name, which is exactly what an undo has to put back.
@@ -315,7 +315,7 @@ impl Store {
 		Ok(records)
 	}
 
-	/// Put the source back and remove what the job produced, `docs/state.md` §5.
+	/// Put the source back and remove what the job produced, `docs/dev/architecture/state.md` §5.
 	pub fn restore(&self, id: &JobId) -> Result<Record> {
 		let Some(record) = self.load(id)? else {
 			return Err(Error::Diagnostic(Diagnostic::global(
@@ -376,7 +376,7 @@ impl Store {
 	}
 
 	/// Drop every record older than `retention`, and report what went. Called at
-	/// startup, `docs/state.md` §6, and never during a conversion.
+	/// startup, `docs/dev/architecture/state.md` §6, and never during a conversion.
 	pub fn sweep(&self, retention: Duration) -> Result<Vec<JobId>> {
 		let now = SystemTime::now();
 		let mut dropped = Vec::new();

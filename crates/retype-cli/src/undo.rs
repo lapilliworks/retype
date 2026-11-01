@@ -1,4 +1,4 @@
-//! `retype undo`, `docs/cli.md` §5 and `docs/state.md` §5.
+//! `retype undo`, `docs/cli.md` §5 and `docs/dev/architecture/state.md` §5.
 //!
 //! Undo works from the record rather than from the journal, so it answers even
 //! when the journal is gone. It puts the source back under the name its bytes
@@ -24,7 +24,7 @@ pub fn run(state_dir: &Path, id: Option<&str>, last: bool, json: bool) -> Result
 	}
 
 	// A reachable daemon owns the undo store. Asking it is what keeps an undo from
-	// racing a conversion that still has the record open, `docs/ipc.md` §1.
+	// racing a conversion that still has the record open, `docs/dev/architecture/ipc.md` §1.
 	if let Ok(mut client) = crate::client::connect(state_dir) {
 		let answer = client.call("undo", serde_json::json!({"id": id, "last": last}));
 

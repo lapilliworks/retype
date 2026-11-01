@@ -5,7 +5,7 @@
 //! creates, so `convert` cannot drift from what a rename does. This module is the
 //! client half, which submits and waits.
 //!
-//! Waiting is polling because the connection is request and answer, `docs/ipc.md`
+//! Waiting is polling because the connection is request and answer, `docs/dev/architecture/ipc.md`
 //! §5. One `jobs.get` per tenth of a second is nothing next to an encode, and it
 //! keeps the daemon free to answer everyone else, including a cancel.
 
@@ -79,7 +79,7 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	// The submission connection ends here: a client that held it for the whole
 	// conversion would monopolise the daemon's connection slot, and then the
 	// `jobs cancel` that should be able to stop this job could not get in,
-	// `docs/ipc.md` §5.
+	// `docs/dev/architecture/ipc.md` §5.
 	drop(client);
 
 	crate::verbose::note(format!(

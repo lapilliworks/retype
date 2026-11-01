@@ -1,4 +1,4 @@
-//! Continuing a `partial` job, `docs/state.md` §5.2.
+//! Continuing a `partial` job, `docs/dev/architecture/state.md` §5.2.
 //!
 //! A partial job is one where at least one output succeeded and at least one did
 //! not. Resume runs the ones that are missing, skips the ones that are still what
@@ -156,7 +156,7 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 	Ok(state)
 }
 
-/// Where the source bytes still are, in the order `docs/state.md` §5.2 gives.
+/// Where the source bytes still are, in the order `docs/dev/architecture/state.md` §5.2 gives.
 fn source_bytes(shared: &Shared, job: &Job) -> Result<PathBuf> {
 	if job.source.path.exists() {
 		return Ok(job.source.path.clone());

@@ -1,4 +1,4 @@
-//! The event ring a client replays from, `docs/ipc.md` §7.
+//! The event ring a client replays from, `docs/dev/architecture/ipc.md` §7.
 //!
 //! A conversion is submitted, and the ring is read the way a client reads it: ask
 //! for what followed the last sequence seen.

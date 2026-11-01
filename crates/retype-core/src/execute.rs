@@ -24,13 +24,13 @@ use crate::plan::{Backend, Plan};
 const POLL: Duration = Duration::from_millis(50);
 
 /// A job's cancel flag, shared between the runner that owns the child process and
-/// whoever asks for it to stop, `docs/ipc.md` §6.
+/// whoever asks for it to stop, `docs/dev/architecture/ipc.md` §6.
 #[derive(Debug, Clone, Default)]
 pub struct Cancellation {
 	cancelled: Arc<AtomicBool>,
 	/// Set when the job is stopped because a later rename replaced it, which is a
 	/// different outcome from a user cancelling: nothing failed, the work was
-	/// overtaken, `docs/state.md` §5.3.
+	/// overtaken, `docs/dev/architecture/state.md` §5.3.
 	superseded: Arc<AtomicBool>,
 }
 

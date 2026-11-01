@@ -1,6 +1,6 @@
 //! What a conversion is, and what happened to it.
 //!
-//! One record is a full snapshot of one job at one transition, `docs/state.md`
+//! One record is a full snapshot of one job at one transition, `docs/dev/architecture/state.md`
 //! §3, so replay is last wins per id and no record depends on another. The file
 //! that stores them is `journal.rs`; this module owns the vocabulary.
 
@@ -32,7 +32,7 @@ pub fn now_ms() -> i64 {
 
 /// A ULID: 48 bits of milliseconds then 80 bits of randomness, in Crockford
 /// base32. Lexicographic order is creation order, and no registry is needed to
-/// keep ids unique, `docs/state.md` §2. The form is lowercase, which is what a
+/// keep ids unique, `docs/dev/architecture/state.md` §2. The form is lowercase, which is what a
 /// person types and what sorting and `grep` agree on.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -204,7 +204,7 @@ pub enum OutputState {
 	Running,
 	Done,
 	Failed,
-	/// Not attempted because the job was replaced, `docs/state.md` §5.3.
+	/// Not attempted because the job was replaced, `docs/dev/architecture/state.md` §5.3.
 	Skipped,
 }
 
@@ -334,7 +334,7 @@ pub struct Parked {
 	pub consume: bool,
 }
 
-/// What a job is expected to cost, `docs/state.md` §7.
+/// What a job is expected to cost, `docs/dev/architecture/state.md` §7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cost {
 	pub ms: u64,
@@ -364,7 +364,7 @@ pub struct Job {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub parked: Option<Parked>,
 	/// Whether the job removes its source when it commits: true for a rename,
-	/// false for a client submission, `docs/state.md` §5.
+	/// false for a client submission, `docs/dev/architecture/state.md` §5.
 	#[serde(default)]
 	pub consume_source: bool,
 }
@@ -416,7 +416,7 @@ impl Job {
 		)
 	}
 
-	/// The journal line for this snapshot, `docs/state.md` §3.
+	/// The journal line for this snapshot, `docs/dev/architecture/state.md` §3.
 	pub fn to_line(&self) -> Result<String> {
 		serde_json::to_string(&Record {
 			v: JOURNAL_VERSION,
@@ -433,7 +433,7 @@ pub enum JobState {
 	/// Parked by deferral: the job could run, and is waiting for its timer or for a
 	/// person, `docs/deferral.md`.
 	Pending,
-	/// Submitted, or requeued at startup, and not started yet, `docs/state.md` §6.
+	/// Submitted, or requeued at startup, and not started yet, `docs/dev/architecture/state.md` §6.
 	Queued,
 	Running,
 	Done,

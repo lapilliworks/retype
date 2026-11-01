@@ -17,46 +17,8 @@ Transformations ride on the same gesture: `photo.heic` becomes `photo.webp+q80`.
 
 ## Documentation
 
-| Document | Contents |
-|---|---|
-| `docs/grammar.md` | The intent grammar |
-| `docs/operations.md` | Operations and their semantics |
-| `docs/quality.md` | Per format meaning of quality and size dials |
-| `docs/config.md` | Configuration schema and precedence |
-| `docs/cli.md` | Command line surface and exit codes |
-| `docs/ipc.md` | Daemon and client protocol |
-| `docs/state.md` | Journal, undo store, identifiers |
-| `docs/watch.md` | What is watched, ignored and primed |
-| `docs/tools.md` | External tool support matrix |
-| `docs/errors.md` | Error taxonomy |
-| `docs/provenance.md` | What is recorded about a conversion |
-| `docs/platforms.md` | Supported targets and delivery tiers |
-| `docs/events.md` | Filesystem event behaviour per platform (generated) |
-| `docs/fidelity.md` | Per pair fidelity claims (generated) |
-| `docs/deferral.md` | When a job is parked instead of run |
+[`docs/`](docs/README.md) is the user manual: the intent grammar, operations, configuration, command line, and what each conversion preserves. [`docs/dev/`](docs/dev/README.md) holds the internal contracts, filesystem measurements, and the commands for building and testing.
 
-## Development
-
-Four checks, and the last two need a toolchain other than the default one.
-
-```
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-
-# the floor, which is not what `rustup` installs by default
-rustup toolchain install 1.85.0 --profile minimal --component clippy
-cargo +1.85.0 clippy --workspace --all-targets -- -D warnings
-cargo +1.85.0 test --workspace
-
-# the platforms we do not build on here
-rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin x86_64-unknown-freebsd
-cargo check --workspace --all-targets --target x86_64-pc-windows-msvc
-cargo check --workspace --all-targets --target aarch64-apple-darwin
-cargo check --workspace --all-targets --target x86_64-unknown-freebsd
-```
-
-`cargo check` is enough for a foreign target: no linker is involved, and it is what CI does. Clippy at the floor matters as much as clippy on stable, because a lint that exists in 1.85.0 and not in a later release fails only there.
 
 ## Installation tiers
 

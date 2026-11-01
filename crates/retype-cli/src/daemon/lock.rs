@@ -1,5 +1,5 @@
 //! One daemon per state directory, enforced by the file system rather than by
-//! convention, `docs/ipc.md` §1.
+//! convention, `docs/dev/architecture/ipc.md` §1.
 //!
 //! The lock is advisory and released by the kernel when the process dies, so a
 //! kill leaves nothing to clean up.

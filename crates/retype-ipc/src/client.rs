@@ -141,7 +141,7 @@ pub enum ClientError {
 	/// caller consider spawning a daemon.
 	Connect(std::io::Error),
 	Frame(crate::FrameError),
-	/// The daemon answered with a code, `docs/ipc.md` §8.
+	/// The daemon answered with a code, `docs/dev/architecture/ipc.md` §8.
 	Rpc(WireError),
 	Protocol(String),
 }
@@ -180,7 +180,7 @@ impl ClientError {
 }
 
 /// The version refusal is worth recognising on its own, because a client that
-/// guesses past it is worse than one that stops, `docs/ipc.md` §9.
+/// guesses past it is worse than one that stops, `docs/dev/architecture/ipc.md` §9.
 pub fn is_version_refusal(error: &ClientError) -> bool {
 	error.code() == Some(&Code::IpcVersion)
 }

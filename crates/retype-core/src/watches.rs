@@ -1,4 +1,4 @@
-//! Watch registrations, `docs/state.md` §5.1.
+//! Watch registrations, `docs/dev/architecture/state.md` §5.1.
 //!
 //! The daemon owns `watches.toml`: `watch` appends, `unwatch` removes, and the
 //! daemon re-reads it on start so registrations survive a reboot. The file is
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Code, Diagnostic, Error, Result};
 use crate::job::now_ms;
 
-/// Schema identifier, `docs/state.md` §5.1.
+/// Schema identifier, `docs/dev/architecture/state.md` §5.1.
 pub const WATCHES_VERSION: &str = "retype-watches-1";
 
 /// One registered directory.

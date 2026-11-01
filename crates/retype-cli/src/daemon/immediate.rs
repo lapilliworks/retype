@@ -1,4 +1,4 @@
-//! `retype convert` as a daemon job, `docs/ipc.md` §6 `jobs.submit`.
+//! `retype convert` as a daemon job, `docs/dev/architecture/ipc.md` §6 `jobs.submit`.
 //!
 //! A conversion asked for at a terminal is an `immediate` job: it skips the queue
 //! so a person does not wait behind a directory's renames, and shares everything
@@ -6,7 +6,7 @@
 //!
 //! The source is never consumed. A rename moved the file, so the job that answers
 //! it replaces the name; `convert` was handed a path and leaves it where it is.
-//! That difference is the whole of `consume_source`, `docs/state.md` §5.3.
+//! That difference is the whole of `consume_source`, `docs/dev/architecture/state.md` §5.3.
 
 use std::path::{Path, PathBuf};
 
@@ -243,7 +243,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 
 	// A convert is undoable too: the record removes the outputs and leaves the
 	// source where the request found it. The source bytes are not copied because
-	// the name never moves, `docs/state.md` §5.3.
+	// the name never moves, `docs/dev/architecture/state.md` §5.3.
 	let store = retype_core::undo::Store::open(&shared.state_dir);
 	let undo_record = store.save(retype_core::undo::Subject {
 		id: id.clone(),

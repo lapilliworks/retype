@@ -1,7 +1,7 @@
 //! Measures what the filesystem actually reports for a rename, and what each
 //! correlation strategy concludes from it.
 //!
-//! Not a test: a probe. Its output becomes `docs/events.md`. It answers two
+//! Not a test: a probe. Its output becomes `docs/dev/measurement/events.md`. It answers two
 //! questions per platform: which rename events arrive at all, and whether
 //! identity correlation recovers the cases where the pair of names does not.
 //!

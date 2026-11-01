@@ -84,15 +84,15 @@ The size limit exists because a rename is a fast gesture and a 40 GiB video is n
 | Batching | Renames arriving within one window are collected into one job batch and one notification |
 | Ordering | Queue order follows the earliest event in the batch, not arrival order of the last |
 | Self-inflicted events | Recognised by temp prefix and by identity, and never treated as user intent |
-| Batch order | Within one debounced batch, observe paths that exist before forgetting paths that are gone. Reversed, identity correlation loses every rename, which is invisible on Linux and fatal elsewhere. Measured in `docs/events.md` §1.5 |
+| Batch order | Within one debounced batch, observe paths that exist before forgetting paths that are gone. Reversed, identity correlation loses every rename, which is invisible on Linux and fatal elsewhere. Measured in `docs/dev/measurement/events.md` §1.5 |
 | Existence check | A rename fact is dispatched only if the target still exists and is a regular file. A symlink is not followed and a directory is not a candidate, because a directory whose name carries an extension is still a directory and following a link would write outside the tree. The identity strategy produces no fact for a rename followed by a delete, which is the correct answer |
 | Data events | A write to a renamed file is not a second trigger. Only rename observations are fed to the correlator |
 | Event shape | A platform may report a rename as one event with two paths, as two events with one path each, or both. The feeder handles all three; splitting is not an error |
 | Duplicates | Linux reports the same rename as `From`, `To` and `Both`. Facts are deduped by source and target within a batch |
 | Unmatched source | A `From` with no `To` by the end of the batch is a file that left the tree, not a rename |
 | Chains, same batch | A rename chain inside one batch, `a.heic` to `a.jpg` to `a.webp`, collapses to one job from the first source to the last target, keeping the last intent. Converting the intermediate would re-encode twice and produce a file nobody asked for |
-| Visible name during conversion | The file is renamed back to its source extension before converting, so a slow job shows the old name until it commits. Documented rather than surprising; `docs/state.md` §5.4 |
-| Chains, later batch | The chain is resolved against the job that already exists: queued or running work is cancelled and retargeted to the original source, finished work is left alone. Sequence in `docs/state.md` §5.3 |
+| Visible name during conversion | The file is renamed back to its source extension before converting, so a slow job shows the old name until it commits. Documented rather than surprising; `docs/dev/architecture/state.md` §5.4 |
+| Chains, later batch | The chain is resolved against the job that already exists: queued or running work is cancelled and retargeted to the original source, finished work is left alone. Sequence in `docs/dev/architecture/state.md` §5.3 |
 
 ## 8. Churn protection
 
@@ -111,7 +111,7 @@ Event delivery on network mounts is unreliable in both directions, and identity 
 
 ## 10. Stopping
 
-A `SIGTERM` or `SIGINT` is a stop request, not an ending: the daemon stops accepting work and lets the running jobs finish before it exits, `docs/ipc.md` §2. A second signal cancels them instead, which is the difference between a supervisor stopping a unit and a person who wants it gone.
+A `SIGTERM` or `SIGINT` is a stop request, not an ending: the daemon stops accepting work and lets the running jobs finish before it exits, `docs/dev/architecture/ipc.md` §2. A second signal cancels them instead, which is the difference between a supervisor stopping a unit and a person who wants it gone.
 
 The signal handler counts and nothing else, because that is all a handler may safely do; the accept loop polls for the count and the wait for the running jobs watches it too. When the daemon does exit it removes its socket and its endpoint file, so a missing endpoint means no daemon rather than an unknown one.
 

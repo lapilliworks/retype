@@ -55,7 +55,7 @@ Everything else is namespaced, and the table lists every code in full so that a 
 | Transport | `E_IPC_VERSION`, `E_IPC_HANDSHAKE`, `E_IPC_FRAME`, `E_IPC_METHOD`, `E_IPC_UNAVAILABLE`, `E_IPC_AMBIGUOUS`, `E_IPC_RESYNC`, `E_IPC_SUPERVISED`, `E_IPC_AUTH`, `E_IPC_INTERNAL` |
 | Bugs | `E_INTERNAL_INVARIANT`, `E_INTERNAL_PANIC`, `E_INTERNAL_UNEXPECTED` |
 
-`docs/ipc.md` §8 defines the transport codes; they are listed here as well so that one table answers "what can this build emit". `E_CFG_SHADOWED` is the one configuration code that is a warning rather than a failure: a user preset replacing a shipped one is allowed and reported. A test compares this document against the enum in both directions, so a code that exists without documentation, or is documented without existing, fails the build.
+`docs/dev/architecture/ipc.md` §8 defines the transport codes; they are listed here as well so that one table answers "what can this build emit". `E_CFG_SHADOWED` is the one configuration code that is a warning rather than a failure: a user preset replacing a shipped one is allowed and reported. A test compares this document against the enum in both directions, so a code that exists without documentation, or is documented without existing, fails the build.
 
 ## 4. Categories
 
@@ -87,7 +87,7 @@ Rules:
 - Resume skips outputs whose recorded identity still matches a file on disk, and re-runs the rest. `--force` re-runs everything
 - Resume needs the source bytes, which come from the path itself while it still holds them, otherwise from the undo record. When neither is available the answer is `E_JOB_RESUME_UNAVAILABLE`, and the message says which two things are missing
 
-The product's invariant is about paths, not jobs: a path never carries a format it does not contain. It holds at every instant, not only after commit: the source is renamed back to its own extension before a conversion starts (`docs/state.md` §5.4), and each output is written to a temporary file and renamed only when complete. The single case that could break it is a job in which no output succeeded, because then the renamed source still holds the original format. That case restores the source extension and fails the job, so the invariant holds in every branch.
+The product's invariant is about paths, not jobs: a path never carries a format it does not contain. It holds at every instant, not only after commit: the source is renamed back to its own extension before a conversion starts (`docs/dev/architecture/state.md` §5.4), and each output is written to a temporary file and renamed only when complete. The single case that could break it is a job in which no output succeeded, because then the renamed source still holds the original format. That case restores the source extension and fails the job, so the invariant holds in every branch.
 
 ## 6. Diagnostics
 

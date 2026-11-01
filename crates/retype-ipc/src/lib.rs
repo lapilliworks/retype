@@ -1,6 +1,6 @@
 //! The wire between the daemon and its clients.
 //!
-//! Contract: `docs/ipc.md`. This crate holds only what both sides have to agree
+//! Contract: `docs/dev/architecture/ipc.md`. This crate holds only what both sides have to agree
 //! on, the frames, the handshake and the error codes. Transport, locking and
 //! process lifecycle belong to the daemon, and the client's copy of those rules
 //! belongs to the CLI.
@@ -17,7 +17,7 @@ use retype_core::error::Code;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Protocol identifier, `docs/ipc.md`.
+/// Protocol identifier, `docs/dev/architecture/ipc.md`.
 pub const IPC_VERSION: &str = "retype-ipc-1";
 
 /// Largest frame accepted. A bigger one closes the connection rather than being
@@ -129,7 +129,7 @@ pub struct HelloResult {
 }
 
 /// Whether two protocol identifiers can talk. Only the major differs in
-/// meaning, and only a different major is refused, `docs/ipc.md` §5.
+/// meaning, and only a different major is refused, `docs/dev/architecture/ipc.md` §5.
 pub fn same_major(left: &str, right: &str) -> bool {
 	major(left) == major(right)
 }

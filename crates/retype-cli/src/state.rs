@@ -1,4 +1,4 @@
-//! Where state lives, `docs/state.md` §1.
+//! Where state lives, `docs/dev/architecture/state.md` §1.
 
 use std::fs;
 use std::path::{Path, PathBuf};

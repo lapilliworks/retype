@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 use crate::state;
 
-/// How long a client waits for a daemon it just started, `docs/ipc.md` §2.
+/// How long a client waits for a daemon it just started, `docs/dev/architecture/ipc.md` §2.
 const START_TIMEOUT: Duration = Duration::from_secs(3);
 const FIRST_DELAY: Duration = Duration::from_millis(20);
 const MAX_DELAY: Duration = Duration::from_millis(250);
@@ -100,7 +100,7 @@ pub fn wait_for(state_dir: &Path, log: &Path) -> Result<Client> {
 }
 
 /// Wait until the daemon has removed its endpoint, which it does after the
-/// journal is flushed and the socket is gone, `docs/ipc.md` §2.
+/// journal is flushed and the socket is gone, `docs/dev/architecture/ipc.md` §2.
 pub fn wait_for_stop(state_dir: &Path, timeout: Duration) -> bool {
 	let deadline = Instant::now() + timeout;
 
@@ -118,7 +118,7 @@ fn autostart_suppressed() -> bool {
 	std::env::var_os("RETYPE_NO_AUTOSTART").is_some_and(|value| value != "0" && !value.is_empty())
 }
 
-/// `docs/ipc.md` §1: the daemon's own account of itself, minus what a human does
+/// `docs/dev/architecture/ipc.md` §1: the daemon's own account of itself, minus what a human does
 /// not need on one line.
 pub fn describe_status(status: &Value) -> Vec<(String, String)> {
 	let field = |name: &str| match &status[name] {

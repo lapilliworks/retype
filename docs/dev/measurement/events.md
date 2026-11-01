@@ -8,7 +8,7 @@ cargo run -p retype-watch --example probe_events
 
 The translation it measures is the one that ships: `retype-watch` holds the collection and translation, `retype-core` holds only the correlator and knows nothing about `notify`.
 
-Raw transcripts are kept in `docs/probe/`, named `<platform>-<date>.txt`, so every claim below can be checked against the run that produced it. CI uploads the same output as an artifact.
+Raw transcripts are kept in `docs/dev/measurement/probe/`, named `<platform>-<date>.txt`, so every claim below can be checked against the run that produced it. CI uploads the same output as an artifact.
 
 Each run creates a temporary directory, watches it, and replays a scenario suite. Scenarios are split into a setup and an action so the correlation starts from a primed state, the way it does in the daemon when a file has existed for a while. For each action it prints the raw events, then what the name-pair strategy concluded, then what the identity strategy concluded.
 
@@ -16,7 +16,7 @@ A conclusion is a fact, which says only that this name became that name in the s
 
 ## 1. Linux (inotify, notify 8)
 
-Measured 2026-10-29, transcript `docs/probe/linux-2026-10-29.txt`.
+Measured 2026-10-29, transcript `docs/dev/measurement/probe/linux-2026-10-29.txt`.
 
 ### 1.1 Raw events
 
@@ -70,7 +70,7 @@ Getting this backwards is invisible on Linux, because inotify also reports both 
 
 ## 2. Windows (ReadDirectoryChangesW, notify 8)
 
-Measured 2026-10-29, transcript `docs/probe/windows-2026-10-29.txt`, from the probe that ships. Two earlier runs are in the history and neither describes the platform: the first predated cross-event pairing, so its empty pairing column described the probe, and the second predated chain coalescing, so it showed a double rename as two facts.
+Measured 2026-10-29, transcript `docs/dev/measurement/probe/windows-2026-10-29.txt`, from the probe that ships. Two earlier runs are in the history and neither describes the platform: the first predated cross-event pairing, so its empty pairing column described the probe, and the second predated chain coalescing, so it showed a double rename as two facts.
 
 ### 2.1 Raw events
 
@@ -111,7 +111,7 @@ Three rules were written because of this platform, not guessed from it: cross-ev
 
 ## 3. macOS (FSEvents, notify 8)
 
-Measured 2026-10-29, transcript `docs/probe/macos-2026-10-29.txt`. Paths in the transcript are normalised to `<tmp>`.
+Measured 2026-10-29, transcript `docs/dev/measurement/probe/macos-2026-10-29.txt`. Paths in the transcript are normalised to `<tmp>`.
 
 ### 3.1 Raw events
 

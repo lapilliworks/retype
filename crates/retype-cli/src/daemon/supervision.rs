@@ -1,4 +1,4 @@
-//! Whether a supervisor started this daemon, `docs/ipc.md` §6.
+//! Whether a supervisor started this daemon, `docs/dev/architecture/ipc.md` §6.
 //!
 //! A daemon under systemd or launchd is restarted when it exits, so a `stop` that
 //! obeyed would be undone a second later and the user would see the daemon come

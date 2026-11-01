@@ -1,4 +1,4 @@
-//! Who is on the other end of the socket, `docs/ipc.md` §4.
+//! Who is on the other end of the socket, `docs/dev/architecture/ipc.md` §4.
 //!
 //! The boundary is the state directory: `0700` with the socket at `0600` inside it.
 //! This is the second lock, for the case where the first one is wrong because a

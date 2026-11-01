@@ -45,7 +45,7 @@ pub struct Claim {
 	/// pair may lose one; an `exact` pair that loses one is not exact.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub lost: Vec<crate::axis::Axis>,
-	/// Unix milliseconds, `docs/state.md` §3.
+	/// Unix milliseconds, `docs/dev/architecture/state.md` §3.
 	pub earned: i64,
 }
 

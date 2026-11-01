@@ -1,4 +1,4 @@
-//! The event ring, `docs/ipc.md` §7.
+//! The event ring, `docs/dev/architecture/ipc.md` §7.
 //!
 //! Every published job snapshot becomes one event, numbered from one. The last
 //! thousand or so are kept so a client that has been away can catch up by asking
@@ -14,7 +14,7 @@ use std::collections::VecDeque;
 use retype_core::job::Job;
 use serde_json::{Value, json};
 
-/// How many events are kept for replay, `docs/ipc.md` §7.
+/// How many events are kept for replay, `docs/dev/architecture/ipc.md` §7.
 pub const RETAINED: usize = 1024;
 
 /// The ring and the sequence it hands out.
@@ -44,7 +44,7 @@ impl Events {
 	///
 	/// `since = 0` asks for everything retained. A client that has fallen out of the
 	/// window gets nothing, which is what `E_IPC_RESYNC` is made of: a gap cannot be
-	/// filled, so the client reloads with `jobs.list`, `docs/ipc.md` §7.
+	/// filled, so the client reloads with `jobs.list`, `docs/dev/architecture/ipc.md` §7.
 	pub fn since(&self, since: u64) -> Option<(Vec<Value>, u64)> {
 		let oldest = self
 			.retained

@@ -1,4 +1,4 @@
-//! Stopping on a signal, `docs/ipc.md` §2: `SIGTERM` drains, a second one cancels.
+//! Stopping on a signal, `docs/dev/architecture/ipc.md` §2: `SIGTERM` drains, a second one cancels.
 //!
 //! The tool sleeps for a moment and then copies, so a job can be caught in flight, and
 //! a drain has something to wait for.

@@ -1,4 +1,4 @@
-//! The estimator and its calibration and `docs/state.md` §7.
+//! The estimator and its calibration and `docs/dev/architecture/state.md` §7.
 //!
 //! A conversion costs time and produces bytes, and both are predictable enough to
 //! be worth predicting: the deferral threshold asks whether a job is expensive,
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Code, Diagnostic, Error, Result};
 
-/// Schema identifier, `docs/state.md` §7.
+/// Schema identifier, `docs/dev/architecture/state.md` §7.
 pub const BENCH_VERSION: &str = "retype-bench-1";
 
 /// One measured conversion, and what it cost.
@@ -41,7 +41,7 @@ pub struct Measurement {
 	/// The tool's own version string, because a rate is evidence about a build.
 	#[serde(default)]
 	pub tool_version: String,
-	/// Unix milliseconds, `docs/state.md` §3.
+	/// Unix milliseconds, `docs/dev/architecture/state.md` §3.
 	#[serde(default)]
 	pub measured: i64,
 }
@@ -215,7 +215,7 @@ impl Calibration {
 	}
 }
 
-/// The per-install identity, created on first use and kept, `docs/state.md` §2.
+/// The per-install identity, created on first use and kept, `docs/dev/architecture/state.md` §2.
 ///
 /// It lives in `bench.toml` because the two travel together: calibration earned on
 /// one machine is not calibration for another, so a file with no machine would be

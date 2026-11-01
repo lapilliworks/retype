@@ -86,7 +86,7 @@ pub enum Code {
 	JobSuperseded,
 	JobResumeUnavailable,
 
-	// Transport, `docs/ipc.md` §8.
+	// Transport, `docs/dev/architecture/ipc.md` §8.
 	IpcVersion,
 	IpcHandshake,
 	IpcFrame,

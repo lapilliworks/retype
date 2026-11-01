@@ -41,7 +41,7 @@ impl Server {
 			);
 		}
 
-		// Startup step 6, `docs/state.md` §6: retention before compaction, so the
+		// Startup step 6, `docs/dev/architecture/state.md` §6: retention before compaction, so the
 		// records a rewrite would have dropped are already gone. Nothing here is
 		// a conversion, so it never blocks one.
 		let retention = registry.undo().retention;
@@ -98,7 +98,7 @@ impl Server {
 
 		// Before anything watches a directory or answers a client: a job that was in
 		// flight when the last daemon died is finished or declared, not left hanging,
-		// `docs/state.md` §6.
+		// `docs/dev/architecture/state.md` §6.
 		crate::daemon::reconcile::run(&shared, &pool);
 
 		Ok(Self {
@@ -121,7 +121,7 @@ impl Server {
 		Arc::clone(&self.pool)
 	}
 
-	/// Whether the running jobs have finished, `docs/ipc.md` §2.
+	/// Whether the running jobs have finished, `docs/dev/architecture/ipc.md` §2.
 	pub fn idle(&self) -> bool {
 		self.pool.idle()
 	}
@@ -159,7 +159,7 @@ impl Server {
 	/// The same, with a frame that was already read. A Windows pipe can only be
 	/// impersonated after its client has written, so the first frame is read
 	/// before authentication and handed over rather than read twice,
-	/// `docs/ipc.md` §4.
+	/// `docs/dev/architecture/ipc.md` §4.
 	pub fn serve_connection_from(
 		&mut self,
 		reader: &mut impl BufRead,
@@ -240,7 +240,7 @@ impl Server {
 		}
 	}
 
-	/// Stop a job that is waiting or running, `docs/ipc.md` §6. A job that has
+	/// Stop a job that is waiting or running, `docs/dev/architecture/ipc.md` §6. A job that has
 	/// finished is not cancellable, which is a state error rather than a silent
 	/// success.
 	/// One job in full, which is what a client polling a submitted conversion
@@ -326,7 +326,7 @@ impl Server {
 		Ok(Response::ok(request.id, fields)?)
 	}
 
-	/// `retype convert` is a job like any other, `docs/ipc.md` §6: submitted,
+	/// `retype convert` is a job like any other, `docs/dev/architecture/ipc.md` §6: submitted,
 	/// journalled and run by a runner, so it shares cancellation and the queue's
 	/// accounting.
 	fn submit(&self, request: &Request) -> Result<Response> {
@@ -454,7 +454,7 @@ impl Server {
 		Ok(response)
 	}
 
-	/// Continue a `partial` job, `docs/ipc.md` §6: outputs that still carry the
+	/// Continue a `partial` job, `docs/dev/architecture/ipc.md` §6: outputs that still carry the
 	/// recorded identity are skipped, the rest run again.
 	fn resume(&self, request: &Request) -> Result<Response> {
 		let Some(written) = request.params.get("id").and_then(|id| id.as_str()) else {
@@ -625,7 +625,7 @@ impl Server {
 	/// Stop the way `daemon stop` does, and answer with what was cancelled.
 	///
 	/// Shared with the signal path, which cannot send itself a request: a `SIGTERM` is a
-	/// stop request whether or not a client made it, `docs/ipc.md` §2.
+	/// stop request whether or not a client made it, `docs/dev/architecture/ipc.md` §2.
 	pub fn stop(&mut self, now: bool) -> usize {
 		let cancelled = match now {
 			true => {
@@ -659,7 +659,7 @@ impl Server {
 	}
 
 	/// What followed `since`, or `E_IPC_RESYNC` when the window no longer holds it,
-	/// `docs/ipc.md` §7.
+	/// `docs/dev/architecture/ipc.md` §7.
 	fn events(&self, request: &Request) -> Result<Response> {
 		let since = request
 			.params
@@ -1081,7 +1081,7 @@ pub fn serve(listener: std::os::unix::net::UnixListener, server: &mut Server) ->
 		stream.set_nonblocking(false)?;
 
 		// The state directory's modes are the boundary; this is the second lock, for
-		// the day a backup or a stray `chmod` moved them, `docs/ipc.md` §4.
+		// the day a backup or a stray `chmod` moved them, `docs/dev/architecture/ipc.md` §4.
 		let peer = crate::daemon::peer::peer_uid(&stream);
 
 		if !crate::daemon::peer::accepts(peer, crate::daemon::peer::our_uid()) {

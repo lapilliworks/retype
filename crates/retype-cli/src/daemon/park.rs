@@ -283,7 +283,7 @@ fn cost_defers(shared: &Shared, directory: &Policy, estimate: &Option<Cost>, byt
 }
 
 /// Whether an undo record could be kept for a file of this size, decided without
-/// dropping anything, `docs/state.md` §5.5.
+/// dropping anything, `docs/dev/architecture/state.md` §5.5.
 fn keeps_a_record(shared: &Shared, bytes: u64) -> bool {
 	let registry = shared.registry();
 	let policy = registry.undo();

@@ -5,7 +5,7 @@
 //! vocabulary, a [`retype_core::correlate::RenameFact`].
 //!
 //! The platform differences absorbed here are measured rather than assumed, and
-//! recorded in `docs/events.md`: one event with both paths on Linux, two events
+//! recorded in `docs/dev/measurement/events.md`: one event with both paths on Linux, two events
 //! with one path each on Windows, and a single-path event with no rename kind at
 //! all on macOS.
 
@@ -248,7 +248,7 @@ fn observe_names(correlator: &mut Correlator, batch: &Batch) -> Vec<RenameFact> 
 ///
 /// The order is not defensive. A path that was renamed away and a path that
 /// arrived can carry the same identity, so observing before forgetting is what
-/// turns a pair of single-path events into a fact, `docs/events.md` §1.5.
+/// turns a pair of single-path events into a fact, `docs/dev/measurement/events.md` §1.5.
 fn observe_identity(correlator: &mut Correlator, batch: &Batch) -> Vec<RenameFact> {
 	let mut facts = Vec::new();
 
@@ -316,7 +316,7 @@ fn identity(meta: &fs::Metadata) -> Option<retype_core::correlate::Identity> {
 
 #[cfg(not(unix))]
 fn identity(_meta: &fs::Metadata) -> Option<retype_core::correlate::Identity> {
-	// `std` exposes no file identifier on Windows: `docs/events.md` §2.
+	// `std` exposes no file identifier on Windows: `docs/dev/measurement/events.md` §2.
 	None
 }
 
@@ -462,7 +462,10 @@ mod tests {
 			]),
 		);
 
-		assert!(facts.is_empty(), "macOS reports renames this way: docs/events.md §3");
+		assert!(
+			facts.is_empty(),
+			"macOS reports renames this way: docs/dev/measurement/events.md §3"
+		);
 	}
 
 	#[test]

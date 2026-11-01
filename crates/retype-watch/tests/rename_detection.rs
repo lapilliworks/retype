@@ -3,7 +3,7 @@
 //! The unit tests in the library cover how each platform's event shape is
 //! translated. This covers delivery: that a watcher sees a rename at all, and
 //! that the batch it produces still yields the fact the user asked for. It is
-//! the regression test for `docs/events.md`, and it is deliberately three
+//! the regression test for `docs/dev/measurement/events.md`, and it is deliberately three
 //! scenarios rather than all nine measured ones, because the rest are covered
 //! by synthetic events and repeating them against a real watcher buys flake
 //! rather than confidence.
@@ -41,7 +41,7 @@ impl Scene {
 	fn new() -> Self {
 		let dir = tempfile::tempdir().unwrap();
 		// Canonicalised for the same reason the daemon does it: macOS reports
-		// resolved paths, `docs/events.md` §3.3.
+		// resolved paths, `docs/dev/measurement/events.md` §3.3.
 		let root = dir.path().canonicalize().unwrap();
 		let (watcher, receiver) = watch(&root).unwrap();
 

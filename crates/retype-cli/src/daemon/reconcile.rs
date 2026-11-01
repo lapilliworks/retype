@@ -1,4 +1,4 @@
-//! Startup reconciliation, `docs/state.md` §6.
+//! Startup reconciliation, `docs/dev/architecture/state.md` §6.
 //!
 //! A daemon that dies leaves the journal holding jobs that were in flight. Two
 //! things can be true of them, and they are different:

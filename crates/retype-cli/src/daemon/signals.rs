@@ -1,4 +1,4 @@
-//! Draining on a signal, `docs/ipc.md` §2.
+//! Draining on a signal, `docs/dev/architecture/ipc.md` §2.
 //!
 //! The first `SIGTERM` or `SIGINT` asks the daemon to stop the way `daemon stop` does:
 //! refuse new work and let the running jobs finish. A second one is a person in a

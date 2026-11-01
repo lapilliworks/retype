@@ -1,4 +1,4 @@
-//! The named-pipe transport, `docs/ipc.md` §4.
+//! The named-pipe transport, `docs/dev/architecture/ipc.md` §4.
 //!
 //! One instance at a time, created before each client and closed after it, which
 //! is what allows while every method is a request and an answer.
@@ -36,7 +36,7 @@ const SDDL_REVISION_1: u32 = 1;
 const BUFFER_BYTES: u32 = 64 * 1024;
 const NUL: u16 = 0;
 
-/// `\\.\pipe\retype-<machine>-<user>`, `docs/ipc.md` §4.
+/// `\\.\pipe\retype-<machine>-<user>`, `docs/dev/architecture/ipc.md` §4.
 pub fn name(machine: &str) -> String {
 	format!(r"\\.\pipe\retype-{machine}-{}", user_token())
 }
@@ -102,7 +102,7 @@ fn serve_client(handle: HANDLE, server: &mut Server) -> Result<()> {
 	let mut writer = &file;
 
 	// Impersonation is the authentication, and a pipe can only be impersonated
-	// once its client has written, `docs/ipc.md` §4. So the first frame is read
+	// once its client has written, `docs/dev/architecture/ipc.md` §4. So the first frame is read
 	// first: a client that will not send one is not a client, and a client that
 	// sends one has given us something to impersonate.
 	let first = match retype_ipc::read_frame(&mut reader) {

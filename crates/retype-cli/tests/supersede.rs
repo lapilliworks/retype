@@ -1,4 +1,4 @@
-//! A rename chain that spans two batches, `docs/state.md` §5.3: the second rename
+//! A rename chain that spans two batches, `docs/dev/architecture/state.md` §5.3: the second rename
 //! overtakes the job the first one started, and the chain becomes one conversion.
 //!
 //! Unix only, because the tool is a shell script that sleeps.
@@ -118,7 +118,7 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 
 	// The first job is running by now and has not finished: the tool sleeps longer
 	// than this. While it runs the file shows its source name again, so that is the
-	// name a person renames, `docs/state.md` §5.4.
+	// name a person renames, `docs/dev/architecture/state.md` §5.4.
 	std::thread::sleep(Duration::from_millis(1200));
 	assert!(
 		!photos.join("photo.webp").exists(),
