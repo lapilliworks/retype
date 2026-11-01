@@ -64,45 +64,10 @@ Every conversion keeps what it needs in order to be reversed for a week by defau
 
 ## The manual
 
-<!-- toc:start -->
+Usage is the daily work: [Converting a file](usage/convert.md), [Quality, size and geometry](usage/dials.md), [Jobs, undo and history](usage/jobs.md), and [Watching a folder](usage/watch.md).
 
-### Usage
+In depth answers the longer questions: [Tools](advanced/converters.md) for which converter carries which format, [Deferral](advanced/deferral.md) for why a rename sometimes waits, [Fidelity](advanced/fidelity.md) for what a tier claims, and [Provenance](advanced/provenance.md) for how retype knows what it made.
 
-| Page | Contents |
-|---|---|
-| [Converting a file](usage/convert.md) | Several outputs at once, naming, overwriting, and what happens on failure |
-| [Quality, size and geometry](usage/dials.md) | The dials, the geometry operations, and the order they run in |
-| [Jobs, undo and history](usage/jobs.md) | The queue, logs, undo, and the jobs that wait for an answer |
-| [Watching a folder](usage/watch.md) | What is ignored, what is refused, pausing, and what you are told |
+Reference is the exhaustive part: [Command line](reference/cli.md) for every flag and exit status, [Retype intent grammar](reference/intents.md) for the tokens and their limits, [Operations](reference/operations.md) and [Quality and size dials](reference/dials.md) for what each format can be asked for, [Configuration schema](reference/config.md) for every key, [Errors](reference/errors.md) for the codes, and [Platforms](reference/platforms.md) for what is supported where.
 
-### In depth
-
-| Page | Contents |
-|---|---|
-| [Tools](advanced/converters.md) | Which program does which format, and what each one has to be |
-| [Deferral](advanced/deferral.md) | Why a rename sometimes parks a job instead of running it |
-| [Fidelity](advanced/fidelity.md) | The three tiers, and the evidence behind each claim |
-| [Provenance](advanced/provenance.md) | The record that answers `retype why` |
-
-### Reference
-
-| Page | Contents |
-|---|---|
-| [Command line](reference/cli.md) | Every command, its arguments, and its exit status |
-| [Retype intent grammar](reference/intents.md) | The tokens, the values they take, and the limits |
-| [Operations](reference/operations.md) | Every operation, where it applies, and the presets |
-| [Quality and size dials](reference/dials.md) | Quality, effort and compression ranges per format |
-| [Configuration schema](reference/config.md) | Every configuration key, and the policy a folder may set |
-| [Errors](reference/errors.md) | Codes, categories and message rules |
-| [Platforms](reference/platforms.md) | Supported systems, filesystems and delivery |
-
-### Development
-
-| Page | Contents |
-|---|---|
-| [Development documentation](dev/README.md) | How retype is built and verified, and the commands for both |
-| [Daemon and client protocol](dev/architecture/ipc.md) | The protocol between the two processes |
-| [State, journal and identifiers](dev/architecture/state.md) | State directory, journal, undo store, identifiers, calibration |
-| [Filesystem events](dev/measurement/events.md) | What each platform reports for a rename (generated) |
-
-<!-- toc:end -->
+Development is how retype is built and verified: [Development documentation](dev/README.md), the [Daemon and client protocol](dev/architecture/ipc.md), [State, journal and identifiers](dev/architecture/state.md), and the measured [Filesystem events](dev/measurement/events.md).
