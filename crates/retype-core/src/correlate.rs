@@ -162,9 +162,22 @@ impl Correlator {
 	/// last seen under a different path.
 	pub fn observe(&mut self, sighting: Sighting) -> Option<RenameFact> {
 		if sighting.links > 1 {
-			// Ambiguous between names; do not correlate by identity.
-			self.forget(&sighting.path);
-			return None;
+			// A hard link gives one identity more than one name, and that is ambiguous
+			// only while the name we knew is still there: a link created beside it must
+			// not read as a rename, while a rename leaves the old name gone.
+			//
+			// It matters more than it looks. The undo store keeps a rename's source as a
+			// hard link, so for the rest of that job's life the file has two names, and on
+			// macOS identity is the only way a rename is seen at all.
+			let crowded = self
+				.by_identity
+				.get(&sighting.identity)
+				.is_some_and(|previous| previous != &sighting.path && previous.exists());
+
+			if crowded {
+				self.forget(&sighting.path);
+				return None;
+			}
 		}
 
 		let fact = match self.by_identity.get(&sighting.identity) {
@@ -364,6 +377,7 @@ fn stem_prefix(name: &str) -> &str {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::fs;
 
 	fn id(inode: u64) -> Identity {
 		Identity {
@@ -466,22 +480,44 @@ mod tests {
 	}
 
 	#[test]
-	fn hard_link_is_not_correlated() {
-		let mut correlator = Correlator::new(16);
-		correlator.observe(Sighting {
-			path: PathBuf::from("/dir/photo.heic"),
-			identity: id(1),
-			links: 2,
-		});
-		assert!(correlator.is_empty());
+	fn a_hard_link_beside_the_known_name_is_not_a_rename() {
+		let dir = tempfile::tempdir().unwrap();
+		let source = dir.path().join("photo.heic");
+		let link = dir.path().join("photo.png");
+		fs::write(&source, b"heic").unwrap();
 
-		let mut linked = Correlator::new(16);
-		linked.observe(Sighting {
-			path: PathBuf::from("/dir/photo.heic"),
-			identity: id(1),
-			links: 2,
-		});
-		assert!(linked.observe(sighting("/dir/photo.jpg", 1)).is_none());
+		let mut correlator = Correlator::new(16);
+		correlator.observe(Sighting::of(&source).unwrap());
+
+		fs::hard_link(&source, &link).unwrap();
+		let linked = Sighting::of(&link).unwrap();
+		assert_eq!(linked.links, 2, "the fixture is a hard link");
+		assert!(correlator.observe(linked).is_none(), "a link is not a rename");
+	}
+
+	#[test]
+	fn a_hard_linked_file_that_moved_is_a_rename() {
+		let dir = tempfile::tempdir().unwrap();
+		let undo = dir.path().join("undo");
+		fs::create_dir(&undo).unwrap();
+		let source = dir.path().join("photo.png");
+		let target = dir.path().join("photo.jpg");
+		fs::write(&source, b"pixels").unwrap();
+
+		// The first sighting is before any link exists, as the watcher sees it.
+		let mut correlator = Correlator::new(16);
+		correlator.observe(Sighting::of(&source).unwrap());
+
+		// The undo record keeps the source as a hard link, `undo::Store::record`.
+		fs::hard_link(&source, undo.join("source.png")).unwrap();
+		fs::rename(&source, &target).unwrap();
+
+		let moved = Sighting::of(&target).unwrap();
+		assert_eq!(moved.links, 2, "the fixture has the undo link");
+		let fact = correlator.observe(moved).expect("the old name is gone, so nothing is ambiguous");
+
+		assert_eq!(fact.source, source);
+		assert_eq!(fact.target, target);
 	}
 
 	#[test]
