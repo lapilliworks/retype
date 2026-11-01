@@ -214,6 +214,11 @@ impl Correlator {
 		fact
 	}
 
+	/// Whether this identity is still recorded under some path.
+	pub fn knows_identity(&self, identity: &Identity) -> bool {
+		self.by_identity.contains_key(identity)
+	}
+
 	/// Forget a path that no longer exists.
 	///
 	/// The identity is dropped only when this path is still the one it belongs to.

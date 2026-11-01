@@ -111,6 +111,30 @@ pub fn feed(correlator: &mut Correlator, batch: &Batch) -> Vec<RenameFact> {
 	coalesce(dedupe(facts))
 }
 
+/// Feed a batch, keeping the sightings this process made itself current.
+///
+/// A job restores a renamed file to its source name before converting it, and records
+/// that move rather than trusting the platform to report it. By the time the restore's
+/// own batch is decided the file may have been renamed again, so the batch forgets the
+/// name the identity was recorded under. The identity is what carries the chain, so it
+/// is put back under the last name this process knows, and the rename that follows has
+/// something to correlate against.
+pub fn feed_with(correlator: &mut Correlator, batch: &Batch, own: &[Sighting]) -> Vec<RenameFact> {
+	for sighting in own {
+		correlator.observe(sighting.clone());
+	}
+
+	let facts = feed(correlator, batch);
+
+	for sighting in own {
+		if !correlator.knows_identity(&sighting.identity) {
+			correlator.observe(sighting.clone());
+		}
+	}
+
+	facts
+}
+
 /// Record the identity of every file under a root, so a file that existed
 /// before the daemon started can still be correlated by identity when it is
 /// renamed. Returns how many files were primed.
@@ -429,21 +453,34 @@ mod tests {
 		);
 		assert_eq!(sources(&facts), vec![(source.clone(), webp.clone())]);
 
-		// A job restores the bytes under the source name itself, and records the move
-		// at the moment it makes it, because the platform may not report it.
+		// A job restores the bytes under the source name and records the move at the
+		// moment it makes it, because the platform may not report it.
 		fs::rename(&webp, &source).unwrap();
-		correlator.observe(retype_core::correlate::Sighting::of(&source).unwrap());
+		let own = retype_core::correlate::Sighting::of(&source).unwrap();
 
-		// The user renames again. Whatever the platform reported about our own move,
-		// this has to correlate.
+		// The user renames again before the restore's own batch is decided, so that
+		// batch finds both names gone and forgets the identity it was recorded under.
 		let jpg = dir.path().join("photo.jpg");
 		fs::rename(&source, &jpg).unwrap();
-		let facts = feed(
+		let facts = feed_with(
+			&mut correlator,
+			&batch(vec![
+				rename(RenameMode::Any, &[&webp]),
+				rename(RenameMode::Any, &[&source]),
+			]),
+			&[own],
+		);
+		assert!(facts.is_empty(), "the restore's own batch is not a user rename");
+
+		// The user's rename still correlates, because the sighting this process made
+		// survived that batch.
+		let facts = feed_with(
 			&mut correlator,
 			&batch(vec![
 				rename(RenameMode::Any, &[&source]),
 				rename(RenameMode::Any, &[&jpg]),
 			]),
+			&[],
 		);
 		assert_eq!(sources(&facts), vec![(source.clone(), jpg.clone())]);
 	}

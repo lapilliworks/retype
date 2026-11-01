@@ -25,7 +25,7 @@ use retype_core::plan::{self, Plan};
 use retype_core::registry::Registry;
 use retype_core::resolve::{self, Resolved, Source as Origin};
 use retype_core::{execute, intent, print, watches};
-use retype_watch::{Window, feed};
+use retype_watch::Window;
 
 use crate::daemon::queue::Pool;
 use crate::error::Result;
@@ -362,20 +362,17 @@ fn spawn_worker(
 				continue;
 			}
 
-			// Our own renames first: a platform may not report a rename the process
-			// performed, and the identity has to be under the name the bytes now have
-			// before a batch that mentions that name is decided.
-			for moved in shared.take_own_renames() {
-				correlator.observe(moved);
-			}
-
 			let observed: u64 = batch.events.iter().map(|event| event.paths.len() as u64).sum();
 
 			// One batch per window, so the jobs parked in one tick can be answered
 			// together, `docs/deferral.md` §10.
 			let parked_batch = retype_core::job::JobId::now().ok().map(|id| id.as_str().to_string());
 
-			let facts = feed(&mut correlator, &batch);
+			// Our own renames are carried into the batch: a platform may not report a
+			// rename the process performed, and the file may have moved again by the
+			// time the batch is decided.
+			let own = shared.take_own_renames();
+			let facts = retype_watch::feed_with(&mut correlator, &batch, &own);
 
 			for fact in &facts {
 				crate::verbose::detail(format!(
