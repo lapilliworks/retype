@@ -82,10 +82,42 @@ pub fn spawn_detached(state_dir: &Path) -> Result<PathBuf> {
 		use std::os::windows::process::CommandExt;
 		const DETACHED_PROCESS: u32 = 0x0000_0008;
 		command.creation_flags(DETACHED_PROCESS);
+		detach_handles()?;
 	}
 
 	command.spawn()?;
 	Ok(log)
+}
+
+/// Stop the daemon from inheriting the standard handles this process was given.
+///
+/// Windows hands every inheritable handle to a child, and the handles a caller
+/// uses to read this process's output must be inheritable or they could not have
+/// been passed to it at all. A daemon holding one would keep that pipe open for
+/// as long as it lives: `retype convert | cat` would not see the end of the output
+/// until the daemon stopped, and a caller that waits for the end of the output
+/// before it stops the daemon would wait for itself. The daemon's own standard
+/// handles are the log file and the null device, set above, so it needs none of
+/// ours.
+#[cfg(windows)]
+fn detach_handles() -> std::io::Result<()> {
+	use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation};
+	use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+
+	for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+		let handle = unsafe { GetStdHandle(which) };
+
+		// A process with no console has no standard handles to clear.
+		if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+			continue;
+		}
+
+		if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+			return Err(std::io::Error::last_os_error());
+		}
+	}
+
+	Ok(())
 }
 
 /// Wait for a daemon that was just spawned to answer.

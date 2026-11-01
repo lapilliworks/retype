@@ -68,6 +68,8 @@ Directory configuration is not re-read only on registration. The daemon watches 
 
 A Windows pipe can only be impersonated after its client has written, so the first frame is read before the check and handed to the connection loop rather than read twice. A client that connects and sends nothing therefore holds the daemon's single connection slot until it writes or goes away, which is a self-inflicted stall: the DACL admits only the user whose daemon it is.
 
+Windows also hands a child every inheritable handle in its parent, and the pipes a caller uses to read the CLI's output are inheritable by construction. The CLI clears that flag on its own standard handles before it spawns a daemon, so a daemon cannot keep a caller's pipe open after the command exits.
+
 `<user>` is a short stable per-user token, derived from the user SID where one exists. Windows is usually single-user, and the suffix costs nothing while removing a class of surprises on machines that are not.
 
 Socket paths live in the state directory, with no runtime-directory fallback. Unix socket paths are length-limited (about 104 bytes), so an over-long path is a startup error with a remedy rather than a mystery: the message names the limit and points at `RETYPE_STATE_DIR`.
