@@ -1,41 +1,93 @@
-# Retype documentation
+# Start here
 
-Retype converts a file when you rename its extension. `photo.heic` becomes `photo.jpg`, and transformations ride on the same gesture: `photo.heic` becomes `photo.webp+q80`.
+Retype converts a file when its extension changes. Rename `photo.heic` to `photo.jpg` and the bytes follow the name.
 
-Status is pre-alpha, so some documented behaviour is specified but not built yet. The repository's records what has landed, and its README explains what the product is and how it is installed.
+Status is pre-alpha: part of what is described here is specified and not built yet.
 
-## Writing an intent
+## What you need
 
-| Document | Contents |
+- A terminal
+- `retype` itself. There is no signed installer yet, so it is built from source, which needs a Rust toolchain: `cargo install --git https://github.com/justretype/retype retype-cli`
+- A converter for each format you use. Retype converts nothing by itself; it drives programs that are already on the machine, ImageMagick for images, FFmpeg for audio and video, Pandoc for documents. `retype doctor` reports which it finds and which are missing
+
+## Convert one file
+
+```
+retype c photo.heic jpg
+```
+
+`photo.jpg` appears beside the source. `c` is short for `convert`, and the second argument is the rest of the new name, so the conversion is the same thing as the rename:
+
+```
+photo.heic  ->  photo.jpg
+```
+
+Quality rides on the same name:
+
+```
+retype c photo.heic webp+q80
+```
+
+That produces `photo-quality80.webp`. The tokens after the format are the same tokens that would be typed after a dot in a file name, which is why the two gestures are one grammar.
+
+## Ask what would happen
+
+```
+retype explain photo.heic 'webp+q80+cap1080'
+```
+
+That prints the name it would produce, the program it would run, and what the result is expected to weigh. With the file at hand, `--dry-run` on the conversion itself says the same thing, using the real source size:
+
+```
+retype c photo.heic webp+q80+cap1080 --dry-run
+```
+
+Neither writes anything.
+
+## Do it by renaming
+
+Register a folder once, then rename inside it as usual, from any file manager:
+
+```
+retype watch ~/Pictures
+```
+
+Nothing already in the folder is touched. From then on, renaming `photo.heic` to `photo.jpg` in that folder converts it, and renaming it to `photo.webp+q80` converts it with a quality setting. Registrations survive a restart.
+
+## Take it back
+
+```
+retype undo --last
+```
+
+Every conversion keeps what it needs in order to be reversed for a week by default, including the source bytes when the rename is what consumed the source name.
+
+## Where to go next
+
+| Page | Contents |
 |---|---|
-| [`grammar.md`](grammar.md) | The intent grammar: what a file name may carry |
-| [`operations.md`](operations.md) | Every operation, its parameter and where it applies |
-| [`quality.md`](quality.md) | What `quality`, `effort` and `compress` mean per format |
+| [Converting a file](usage/convert.md) | Several outputs at once, naming, overwriting, and what happens on failure |
+| [Quality, size and geometry](usage/dials.md) | The dials, the geometry operations, and the order they run in |
+| [Jobs, undo and history](usage/jobs.md) | The queue, logs, undo, and the jobs that wait for an answer |
+| [Watching a folder](usage/watch.md) | What is ignored, what is refused, pausing, and what you are told |
 
-## Running it
+Then, in depth:
 
-| Document | Contents |
+| Page | Contents |
 |---|---|
-| [`cli.md`](cli.md) | Commands, flags, output and exit codes |
-| [`config.md`](config.md) | User and directory configuration, precedence and validation |
-| [`watch.md`](watch.md) | What is watched, what is ignored, and what happens at startup |
-| [`deferral.md`](deferral.md) | When a job waits or asks for attention instead of running |
+| [Tools](advanced/converters.md) | Which program does which format, and what each one has to be |
+| [Deferral](advanced/deferral.md) | Why a rename sometimes parks a job instead of running it |
+| [Fidelity](advanced/fidelity.md) | The three tiers, and the evidence behind each claim |
+| [Provenance](advanced/provenance.md) | The record that answers `retype why` |
 
-## Results and failures
+Reference:
 
-| Document | Contents |
+| Page | Contents |
 |---|---|
-| [`fidelity.md`](fidelity.md) | Tiers, how a claim is earned, and the claims for this release |
-| [`provenance.md`](provenance.md) | What `retype why` can tell you, and how far the record travels |
-| [`errors.md`](errors.md) | Error codes, categories and diagnostics |
-
-## Tools and platforms
-
-| Document | Contents |
-|---|---|
-| [`tools.md`](tools.md) | External tools and the formats each build supports |
-| [`platforms.md`](platforms.md) | Supported targets, filesystems and delivery tiers |
-
-## Development
-
-[`dev/`](dev/README.md) holds the internal contracts, the filesystem measurements, and the commands for building and testing.
+| [Command line](reference/cli.md) | Every command, its arguments, and its exit status |
+| [Retype intent grammar](reference/intents.md) | The tokens, the values they take, and the limits |
+| [Operations](reference/operations.md) | Every operation, where it applies, and the presets |
+| [Quality and size dials](reference/dials.md) | Quality, effort and compression ranges per format |
+| [Configuration schema](reference/config.md) | Every configuration key, and the policy a folder may set |
+| [Errors](reference/errors.md) | Codes, categories and message rules |
+| [Platforms](reference/platforms.md) | Supported systems, filesystems and delivery |

@@ -1,6 +1,6 @@
 //! One error type, one set of codes, one category per code.
 //!
-//! `docs/errors.md` defines the shape: a code, a category, a message, and
+//! `docs/reference/errors.md` defines the shape: a code, a category, a message, and
 //! optionally detail, a hint and a span. Everything that fails in this crate
 //! passes through here, and the numbers a script branches on are derived from
 //! the category rather than decided per call site.
@@ -10,12 +10,12 @@ use std::path::PathBuf;
 
 use retype_macros::CodeName;
 
-/// Every code the product can emit, `docs/errors.md` §3.
+/// Every code the product can emit, `docs/reference/errors.md` §3.
 ///
 /// The variant name is the only place a code is written: `IoPermission` is
 /// `E_IO_PERMISSION` because the derive says so, and there is no second copy to
 /// keep in step. Renaming a variant therefore changes a code, which is a
-/// breaking change on the wire, so the comparison with `docs/errors.md` in the
+/// breaking change on the wire, so the comparison with `docs/reference/errors.md` in the
 /// tests is what makes that dangerous edit loud rather than silent.
 ///
 /// A code is text on the wire and a client must survive one it has never heard
@@ -123,7 +123,7 @@ impl From<Code> for String {
 	}
 }
 
-/// How a failure should be treated, `docs/errors.md` §4. A script branches on
+/// How a failure should be treated, `docs/reference/errors.md` §4. A script branches on
 /// this rather than on a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
@@ -456,7 +456,7 @@ mod tests {
 
 	#[test]
 	fn the_documented_codes_and_the_known_codes_are_the_same_set() {
-		const DOCS: &str = include_str!("../../../docs/errors.md");
+		const DOCS: &str = include_str!("../../../docs/reference/errors.md");
 
 		// Every backticked token that looks like a code and is not a bare
 		// namespace prefix, such as the `E_IO_` heading of a table row.

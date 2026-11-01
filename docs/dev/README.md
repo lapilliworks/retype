@@ -47,7 +47,7 @@ cargo check --workspace --all-targets --target x86_64-unknown-freebsd
 
 ## Generated documents
 
-`measurement/events.md` is produced by the probe, and the claims table in [`../fidelity.md`](../fidelity.md) is produced by a fidelity run:
+`measurement/events.md` is produced by the probe, and the claims table in [`fidelity.md`](../advanced/fidelity.md) is produced by a fidelity run:
 
 ```
 retype fidelity --write share/retype/fidelity.toml --render docs/fidelity.md
