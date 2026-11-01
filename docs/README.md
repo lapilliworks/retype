@@ -62,7 +62,11 @@ retype undo --last
 
 Every conversion keeps what it needs in order to be reversed for a week by default, including the source bytes when the rename is what consumed the source name.
 
-## Where to go next
+## The manual
+
+<!-- toc:start -->
+
+### Usage
 
 | Page | Contents |
 |---|---|
@@ -71,7 +75,7 @@ Every conversion keeps what it needs in order to be reversed for a week by defau
 | [Jobs, undo and history](usage/jobs.md) | The queue, logs, undo, and the jobs that wait for an answer |
 | [Watching a folder](usage/watch.md) | What is ignored, what is refused, pausing, and what you are told |
 
-Then, in depth:
+### In depth
 
 | Page | Contents |
 |---|---|
@@ -80,7 +84,7 @@ Then, in depth:
 | [Fidelity](advanced/fidelity.md) | The three tiers, and the evidence behind each claim |
 | [Provenance](advanced/provenance.md) | The record that answers `retype why` |
 
-Reference:
+### Reference
 
 | Page | Contents |
 |---|---|
@@ -91,3 +95,14 @@ Reference:
 | [Configuration schema](reference/config.md) | Every configuration key, and the policy a folder may set |
 | [Errors](reference/errors.md) | Codes, categories and message rules |
 | [Platforms](reference/platforms.md) | Supported systems, filesystems and delivery |
+
+### Development
+
+| Page | Contents |
+|---|---|
+| [Development documentation](dev/README.md) | How retype is built and verified, and the commands for both |
+| [Daemon and client protocol](dev/architecture/ipc.md) | The protocol between the two processes |
+| [State, journal and identifiers](dev/architecture/state.md) | State directory, journal, undo store, identifiers, calibration |
+| [Filesystem events](dev/measurement/events.md) | What each platform reports for a rename (generated) |
+
+<!-- toc:end -->
