@@ -12,16 +12,22 @@ fn retype() -> Command {
 }
 
 fn config(dir: &Path, sample: &Path) -> PathBuf {
-	let (command, layout, args) = match cfg!(windows) {
+	// The probe has to answer on every host: BSD `cp` has no `--version`, and a
+	// tool that declares a probe but reports no version is unusable, so the
+	// fixture found no backend at all on macOS. `sh` and `cmd` carry the copy and
+	// can answer with a version, which the claim also records as a fingerprint.
+	let (command, probe, layout, args) = match cfg!(windows) {
 		true => (
 			"cmd",
-			"layout = ['/c', 'copy', '{input}', '{ops}', '{output}']",
+			"['/c', 'echo retype-fidelity 1.0']",
+			"layout = ['/c', 'copy', '{input}', '{output}', '{ops}']",
 			format!("['/c', 'copy', '{}', '{{output}}']", sample.display()),
 		),
 		false => (
-			"cp",
-			"layout = ['{input}', '{ops}', '{output}']",
-			format!("['{}', '{{output}}']", sample.display()),
+			"sh",
+			"['-c', 'echo retype-fidelity 1.0']",
+			"layout = ['-c', 'cp \"$1\" \"$2\"', '-', '{input}', '{output}', '{ops}']",
+			format!("['-c', 'cp \"$1\" \"$2\"', '-', '{}', '{{output}}']", sample.display()),
 		),
 	};
 
@@ -37,7 +43,7 @@ prefer = ['copy']
 
 [tools.copy]
 command = '{command}'
-probe = ['--version']
+probe = {probe}
 {layout}
 
 [formats.png]
