@@ -1,2 +1,7 @@
 /target
 /worktrees
+/site/*/node_modules
+/site/*/dist
+/site/*/.vitepress/cache
+/site/*/.vitepress/dist
+/site/*/.astro
