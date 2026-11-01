@@ -1,4 +1,4 @@
-# Start here
+# Quickstart
 
 Retype converts a file when its extension changes. Rename `photo.heic` to `photo.jpg` and the bytes follow the name.
 
