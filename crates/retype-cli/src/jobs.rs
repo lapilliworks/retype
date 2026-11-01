@@ -96,7 +96,7 @@ pub fn get(state_dir: &Path, prefix: &str, allow_spawn: bool) -> Result<ExitCode
 		Err(code) => return Ok(code),
 	};
 
-	output::success(client.call("jobs.get", serde_json::json!({"id": id.as_str()}))?);
+	output::record(client.call("jobs.get", serde_json::json!({"id": id.as_str()}))?);
 
 	Ok(ExitCode::SUCCESS)
 }

@@ -255,7 +255,7 @@ impl Server {
 		};
 
 		match self.find(written) {
-			Some(job) => match serde_json::to_value(&job) {
+			Some(job) => match job.to_record() {
 				Ok(value) => Ok(Response::ok(request.id, value)?),
 				Err(error) => Ok(Response::error(
 					request.id,

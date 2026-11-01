@@ -41,6 +41,14 @@ pub fn success(value: Value) {
 	println!("{}", envelope(value));
 }
 
+/// Write a record exactly as the producer wrote it, without the CLI envelope.
+///
+/// `jobs get` answers with the journal record, which carries its own `v`; an
+/// envelope would overwrite it and lose the schema the record came from.
+pub fn record(value: Value) {
+	println!("{value}");
+}
+
 /// A human-readable category for a code, derived from the exit status it maps to.
 pub fn category_name(code: &Code) -> &'static str {
 	match exit_code(code) {

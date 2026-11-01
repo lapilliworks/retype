@@ -96,7 +96,8 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	let job = wait(request.state_dir, request.allow_spawn, &id, request.quiet)?;
 
 	if request.json {
-		output::success(job.clone());
+		// The job keeps its own `v`; the envelope names the CLI shape.
+		output::success(serde_json::json!({"job": job.clone()}));
 	}
 
 	let outputs = job

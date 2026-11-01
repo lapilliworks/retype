@@ -225,6 +225,7 @@ fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
 	let asked = fixture.command().args(["jobs", "get", &id]).output().unwrap();
 	assert!(asked.status.success(), "{}", String::from_utf8_lossy(&asked.stderr));
 	let record: serde_json::Value = serde_json::from_slice(&asked.stdout).unwrap();
+	assert_eq!(record["v"], "retype-journal-1", "{record}");
 	assert_eq!(record["state"], "done", "{record}");
 
 	let listing = fixture.command().args(["jobs", "list"]).output().unwrap();

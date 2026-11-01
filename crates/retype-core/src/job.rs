@@ -481,6 +481,19 @@ impl Job {
 		})
 		.map_err(|error| Error::Json(error.to_string()))
 	}
+
+	/// The same snapshot as an object, for a client asking over IPC.
+	///
+	/// It carries `v` and `kind` so a record read from the daemon is identified
+	/// the same way as one read from the journal.
+	pub fn to_record(&self) -> Result<serde_json::Value> {
+		serde_json::to_value(Record {
+			v: JOURNAL_VERSION,
+			kind: "job",
+			job: self,
+		})
+		.map_err(|error| Error::Json(error.to_string()))
+	}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
