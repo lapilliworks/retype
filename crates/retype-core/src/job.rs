@@ -238,11 +238,11 @@ impl FileIdentity {
 	/// an output so a resume can tell an existing output from a different file that
 	/// happens to have the same name.
 	pub fn of(path: &std::path::Path) -> Option<Self> {
-		let metadata = std::fs::metadata(path).ok()?;
-
 		#[cfg(unix)]
 		{
 			use std::os::unix::fs::MetadataExt;
+
+			let metadata = std::fs::metadata(path).ok()?;
 
 			Some(Self::Unix {
 				dev: metadata.dev(),
@@ -251,13 +251,69 @@ impl FileIdentity {
 			})
 		}
 
-		// A Windows file id comes from a handle, and the stable metadata API does not
-		// expose one. Identity-based skipping is therefore a Unix answer today; a
-		// resume on Windows runs the outputs again rather than guessing that a file
-		// with the right size and name is the one it produced.
-		#[cfg(not(unix))]
+		// The stable metadata API does not expose a Windows file id, so it comes
+		// from a handle. `FileIdInfo` carries the 128-bit id ReFS uses; the older
+		// `BY_HANDLE_FILE_INFORMATION` is the fallback for filesystems that do not
+		// answer it.
+		#[cfg(windows)]
 		{
-			let _ = metadata;
+			use std::ffi::c_void;
+			use std::mem::size_of;
+			use std::os::windows::fs::OpenOptionsExt;
+			use std::os::windows::io::AsRawHandle;
+
+			use windows_sys::Win32::Foundation::HANDLE;
+			use windows_sys::Win32::Storage::FileSystem::{
+				BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+				FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+			};
+
+			let file = std::fs::OpenOptions::new()
+				.read(true)
+				.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+				.open(path)
+				.ok()?;
+			let handle = file.as_raw_handle() as HANDLE;
+
+			let mut id: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+			let asked = unsafe {
+				GetFileInformationByHandleEx(
+					handle,
+					FileIdInfo,
+					std::ptr::from_mut(&mut id).cast::<c_void>(),
+					size_of::<FILE_ID_INFO>() as u32,
+				)
+			};
+
+			if asked != 0 {
+				let file = id
+					.FileId
+					.Identifier
+					.iter()
+					.map(|byte| format!("{byte:02x}"))
+					.collect::<String>();
+
+				return Some(Self::Windows {
+					volume: id.VolumeSerialNumber,
+					file,
+				});
+			}
+
+			let mut fallback: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+			if unsafe { GetFileInformationByHandle(handle, &mut fallback) } == 0 {
+				return None;
+			}
+
+			let file = (u64::from(fallback.nFileIndexHigh) << 32) | u64::from(fallback.nFileIndexLow);
+			Some(Self::Windows {
+				volume: u64::from(fallback.dwVolumeSerialNumber),
+				file: format!("{file:016x}"),
+			})
+		}
+
+		#[cfg(not(any(unix, windows)))]
+		{
+			let _ = path;
 			None
 		}
 	}

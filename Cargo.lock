@@ -673,6 +673,7 @@ dependencies = [
  "thiserror",
  "toml",
  "trash",
+ "windows-sys 0.59.0",
  "zip",
 ]
 
