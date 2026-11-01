@@ -11,6 +11,20 @@ fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
 
+/// Skip when this machine cannot check a fixture property, naming what is missing.
+///
+/// The axes come from ImageMagick, `docs/fidelity.md` §4, so a host without it can
+/// run the conversion but cannot say what the conversion kept.
+fn skip_if_no_decoder(fixtures: &Path) -> bool {
+	match retype_core::axis::Probe::read(&fixtures.join("alpha.png")) {
+		Ok(_) => false,
+		Err(error) => {
+			eprintln!("{error}, so this test proves nothing");
+			true
+		}
+	}
+}
+
 fn config(dir: &Path, sample: &Path) -> PathBuf {
 	// The probe has to answer on every host: BSD `cp` has no `--version`, and a
 	// tool that declares a probe but reports no version is unusable, so the
@@ -133,6 +147,10 @@ axes = ['alpha']
 #[test]
 fn a_run_earns_a_claim_and_records_the_build() {
 	let fixture = Fixture::new();
+	if skip_if_no_decoder(&fixture.fixtures) {
+		return;
+	}
+
 
 	let ran = fixture.run(&["--write", fixture.manifest.to_str().unwrap()]);
 	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
@@ -149,6 +167,10 @@ fn a_run_earns_a_claim_and_records_the_build() {
 #[test]
 fn a_stale_exact_claim_fails_the_run() {
 	let fixture = Fixture::new();
+	if skip_if_no_decoder(&fixture.fixtures) {
+		return;
+	}
+
 
 	let first = fixture.run(&["--write", fixture.manifest.to_str().unwrap()]);
 	assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
@@ -185,6 +207,10 @@ fn a_stale_exact_claim_fails_the_run() {
 #[test]
 fn the_claims_table_is_rendered_between_the_markers() {
 	let fixture = Fixture::new();
+	if skip_if_no_decoder(&fixture.fixtures) {
+		return;
+	}
+
 	let document = fixture.dir.path().join("fidelity.md");
 	fs::write(
 		&document,

@@ -1034,8 +1034,22 @@ mod tests {
 mod seven_tests {
 	use super::*;
 
+	/// The 7-Zip console build this host has, under whichever of its names it carries.
+	fn seven_zip() -> Option<&'static str> {
+		let path = std::env::var_os("PATH").unwrap_or_default();
+
+		["7zz", "7z", "7za"]
+			.into_iter()
+			.find(|name| crate::tools::find_in_path(&path, name).is_some())
+	}
+
 	#[test]
 	fn zip_into_seven_zip_through_the_tool() {
+		let Some(tool) = seven_zip() else {
+			eprintln!("no 7z on this machine, so this test proves nothing");
+			return;
+		};
+
 		let dir = std::env::temp_dir().join(format!("retype-7z-{}", std::process::id()));
 		let _ = fs::remove_dir_all(&dir);
 		fs::create_dir_all(&dir).unwrap();
@@ -1062,7 +1076,7 @@ mod seven_tests {
 		let cancellation = Cancellation::default();
 
 		let report = repack(
-			Some("7z"),
+			Some(tool),
 			Native::Zip,
 			Native::SevenZip,
 			&zip_path,

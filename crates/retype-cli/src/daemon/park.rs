@@ -701,6 +701,26 @@ mod tests {
 		Registry::builtin().expect("the shipped registry loads")
 	}
 
+	/// Whether this machine can carry the pair the reduced request asks for.
+	///
+	/// The correction is an offer to run something, so it compiles with the real
+	/// machine. A host with no usable image backend has nothing to offer, and the
+	/// test proves nothing there.
+	fn can_carry_png_to_webp(registry: &Registry) -> bool {
+		let parsed = intent::parse("webp+quality80").expect("scans");
+		let resolved = resolve::resolve(
+			&parsed,
+			Origin {
+				format: "png",
+				is_directory: false,
+			},
+			registry,
+		)
+		.expect("resolves");
+
+		plan::compile(registry, &retype_core::tools::Machine, &resolved).is_ok()
+	}
+
 	/// A directory with no policy file, which narrows nothing.
 	fn nothing() -> (tempfile::TempDir, Policy) {
 		let dir = tempfile::tempdir().expect("a directory");
@@ -711,6 +731,12 @@ mod tests {
 	#[test]
 	fn a_request_that_cannot_be_carried_is_reduced_to_one_that_can() {
 		let registry = registry();
+
+		if !can_carry_png_to_webp(&registry) {
+			eprintln!("no backend on this machine can carry png to webp, so this test proves nothing");
+			return;
+		}
+
 		let (_dir, policy) = nothing();
 		let parsed = intent::parse("webp+quality80+zzz").expect("scans");
 

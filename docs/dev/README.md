@@ -47,6 +47,8 @@ cargo check --workspace --all-targets --target x86_64-unknown-freebsd
 
 `cargo check` is enough for a foreign target: no linker is involved, and it is what CI does. Clippy at the floor matters as much as clippy on stable, because a lint that exists in 1.85.0 and not in a later release fails only there.
 
+A suite whose subject needs an external tool probes for it first and passes with a note when it is absent, naming what is missing. `cargo test` green therefore does not prove that vertical on that host: a run on a machine without 7-Zip, ImageMagick, an image backend or an FFmpeg encoder says so in the note rather than failing.
+
 ## Generated documents
 
 `measurement/events.md` is produced by the probe, and the claims table in [`../fidelity.md`](../fidelity.md) is produced by a fidelity run:
