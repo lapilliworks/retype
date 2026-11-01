@@ -911,7 +911,7 @@ impl Server {
 				let Some(written) = request.params.get("id").and_then(|id| id.as_str()) else {
 					return Ok(Response::error(
 						request.id,
-						WireError::new(Code::IpcMethod, "undo needs an id or last"),
+						WireError::new(Code::UsageArgs, "undo needs an id or --last"),
 					));
 				};
 				let wanted = written.to_ascii_lowercase();

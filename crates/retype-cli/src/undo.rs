@@ -23,6 +23,15 @@ pub fn run(state_dir: &Path, id: Option<&str>, last: bool, json: bool) -> Result
 		)));
 	}
 
+	// Validate before asking the daemon, so a usage mistake has the same code and
+	// message whether or not a daemon is reachable.
+	if !last && id.is_none() {
+		return Ok(ExitCode::from(output::fail(
+			&Code::UsageArgs,
+			"undo needs an id or --last",
+		)));
+	}
+
 	// A reachable daemon owns the undo store. Asking it is what keeps an undo from
 	// racing a conversion that still has the record open, `docs/dev/architecture/ipc.md` §1.
 	if let Ok(mut client) = crate::client::connect(state_dir) {
@@ -57,8 +66,8 @@ pub fn run(state_dir: &Path, id: Option<&str>, last: bool, json: bool) -> Result
 	let store = Store::open(state_dir);
 	let records = store.list()?;
 
-	let record = match (last, id) {
-		(true, _) => match records.first() {
+	let record = match last {
+		true => match records.first() {
 			Some(record) => record.clone(),
 			None => {
 				return Ok(ExitCode::from(output::fail(
@@ -67,16 +76,10 @@ pub fn run(state_dir: &Path, id: Option<&str>, last: bool, json: bool) -> Result
 				)));
 			}
 		},
-		(false, Some(written)) => match resolve(&records, written) {
+		false => match resolve(&records, id.expect("validated above")) {
 			Ok(record) => record,
 			Err(failure) => return Ok(failure),
 		},
-		(false, None) => {
-			return Ok(ExitCode::from(output::fail(
-				&Code::UsageArgs,
-				"undo needs an id or --last",
-			)));
-		}
 	};
 
 	let restored = match store.restore(&record.id) {
