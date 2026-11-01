@@ -10,7 +10,7 @@ fn doctor_lists_tools_and_succeeds() {
 	let stdout = String::from_utf8_lossy(&output.stdout);
 
 	assert!(output.status.success(), "doctor should succeed without --check");
-	assert!(stdout.contains("TOOL"), "header missing: {stdout}");
+	assert!(stdout.contains("tool"), "header missing: {stdout}");
 	assert!(stdout.contains("magick"));
 	assert!(stdout.contains("pdf"));
 }

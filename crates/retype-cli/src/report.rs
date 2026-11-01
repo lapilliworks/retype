@@ -77,6 +77,7 @@ fn build(text: &mut String) {
 	let _ = writeln!(text, "retype    {}", env!("CARGO_PKG_VERSION"));
 
 	for (name, version) in [
+		("grammar", retype_core::intent::GRAMMAR_VERSION),
 		("config", retype_core::registry::CONFIG_VERSION),
 		("ipc", retype_ipc::IPC_VERSION),
 		("journal", retype_core::job::JOURNAL_VERSION),
@@ -84,6 +85,7 @@ fn build(text: &mut String) {
 		("watches", retype_core::watches::WATCHES_VERSION),
 		("bench", retype_core::estimate::BENCH_VERSION),
 		("fidelity", retype_core::fidelity::FIDELITY_VERSION),
+		("fixtures", retype_core::axis::FIXTURES_VERSION),
 	] {
 		let _ = writeln!(text, "{name:<10}{version}");
 	}

@@ -38,8 +38,8 @@ pub fn run(registry: &Registry, tiers: bool, json: bool) -> Result<ExitCode> {
 fn describe(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: bool) {
 	if !json {
 		println!(
-			"{:<10}{:<10}{:<10}{:<10}{:<8}TIER",
-			"FORMAT", "FAMILY", "DIRECTION", "LOSS", "ALPHA"
+			"{:<10}{:<10}{:<10}{:<10}{:<8}tier",
+			"format", "family", "direction", "loss", "alpha"
 		);
 	}
 
@@ -82,7 +82,7 @@ fn describe(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: 
 
 	if !json {
 		println!();
-		println!("{:<6}{:<14}{:<10}FORMATS", "SLOT", "OPERATION", "PARAM");
+		println!("{:<6}{:<14}{:<10}formats", "slot", "operation", "param");
 	}
 
 	for (key, op) in ops {
@@ -117,7 +117,7 @@ fn describe(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: 
 
 	if !json {
 		println!();
-		println!("{:<14}TOKENS", "PRESET");
+		println!("{:<14}tokens", "preset");
 	}
 
 	for preset in registry.presets() {
@@ -137,7 +137,7 @@ fn describe(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: 
 
 	if !json {
 		println!();
-		println!("{:<10}STATUS", "BACKEND");
+		println!("{:<10}status", "backend");
 	}
 
 	for name in registry.backends() {
@@ -172,8 +172,8 @@ fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: boo
 
 	if !json {
 		println!(
-			"{:<8}{:<8}{:<12}{:<10}{:<12}{:<10}FINGERPRINT",
-			"FROM", "TO", "TIER", "BACKEND", "ENGINE", "VERSION"
+			"{:<8}{:<8}{:<12}{:<10}{:<12}{:<10}fingerprint",
+			"from", "to", "tier", "backend", "engine", "version"
 		);
 	}
 
@@ -183,7 +183,7 @@ fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: boo
 				continue;
 			}
 
-			let (tier, backend, engine, version, fingerprint) = claim(registry, probes, from, to);
+			let (tier, backend, error, engine, version, fingerprint) = claim(registry, probes, from, to);
 
 			if json {
 				println!(
@@ -194,6 +194,7 @@ fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: boo
 						"to": to,
 						"tier": tier,
 						"backend": backend,
+						"error": error,
 						"engine": engine,
 						"version": version,
 						"fingerprint": fingerprint,
@@ -205,7 +206,9 @@ fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: boo
 					from,
 					to,
 					tier,
-					backend.unwrap_or_default(),
+					backend
+						.or_else(|| error.map(|code| format!("({code})")))
+						.unwrap_or_default(),
 					engine.unwrap_or_default(),
 					version.unwrap_or_default(),
 					fingerprint.unwrap_or_default()
@@ -222,11 +225,11 @@ fn claim<'a>(
 	probes: &BTreeMap<&str, ToolStatus<'a>>,
 	from: &str,
 	to: &str,
-) -> (String, Option<String>, Option<String>, Option<String>, Option<String>) {
+) -> (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) {
 	let unclaimed = "unclaimed".to_string();
 
 	let Ok(parsed) = intent::parse(to) else {
-		return (unclaimed, None, None, None, None);
+		return (unclaimed, None, None, None, None, None);
 	};
 
 	// A pair refused before any backend is chosen, such as a source that cannot be
@@ -240,13 +243,13 @@ fn claim<'a>(
 		registry,
 	) {
 		Ok(resolved) => resolved,
-		Err(problems) => return (unclaimed, Some(refusal(&problems)), None, None, None),
+		Err(problems) => return (unclaimed, None, Some(refusal(&problems)), None, None, None),
 	};
 
 	match plan::compile(registry, &tools::Machine, &resolved) {
 		Ok(plans) => {
 			let Some(first) = plans.first() else {
-				return (unclaimed, None, None, None, None);
+				return (unclaimed, None, None, None, None, None);
 			};
 
 			let name = first.backend.name().to_string();
@@ -260,6 +263,7 @@ fn claim<'a>(
 			(
 				tier_name(first.tier).to_string(),
 				Some(name),
+				None,
 				engine,
 				version,
 				fingerprint,
@@ -268,17 +272,17 @@ fn claim<'a>(
 		// A pair nothing can carry is worth saying out loud rather than leaving
 		// blank, because it is the pair a user will try. The code is bracketed so
 		// it cannot be mistaken for a backend name.
-		Err(problems) => (unclaimed, Some(refusal(&problems)), None, None, None),
+		Err(problems) => (unclaimed, None, Some(refusal(&problems)), None, None, None),
 	}
 }
 
-/// The first code a refusal carries, in brackets so it cannot be read as a
-/// backend name.
+/// The first code a refusal carries. The human line brackets it so it cannot be
+/// read as a backend name; the JSON object carries it in its own field.
 fn refusal(problems: &retype_core::error::Diagnoses) -> String {
 	problems
 		.codes()
 		.first()
-		.map(|code| format!("({code})"))
+		.map(ToString::to_string)
 		.unwrap_or_default()
 }
 

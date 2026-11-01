@@ -165,6 +165,7 @@ fn registration_from(answer: &Value) -> watches::Registration {
 fn report(registration: &watches::Registration, json: bool) {
 	if json {
 		output::success(json!({
+			"kind": "watch",
 			"path": registration.path.display().to_string(),
 			"recursive": registration.recursive,
 			"added": registration.added,
@@ -196,6 +197,7 @@ pub fn unwatch(state_dir: &Path, directories: &[String], json: bool) -> Result<E
 
 		if json {
 			output::success(json!({
+				"kind": "unwatch",
 				"path": directory,
 				"removed": removed,
 			}));
@@ -227,6 +229,7 @@ fn list(state_dir: &Path, json: bool) -> Result<ExitCode> {
 			true => println!(
 				"{}",
 				json!({
+					"kind": "watch",
 					"path": registration.path.display().to_string(),
 					"recursive": registration.recursive,
 					"added": registration.added,
@@ -250,7 +253,7 @@ fn list(state_dir: &Path, json: bool) -> Result<ExitCode> {
 fn describe(recursive: bool) -> &'static str {
 	match recursive {
 		true => "recursive",
-		false => "this directory",
+		false => "non-recursive",
 	}
 }
 

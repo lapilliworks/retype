@@ -63,7 +63,7 @@ fn a_non_recursive_registration_says_so() {
 	run(&state, &["watch", photos.to_str().unwrap(), "--non-recursive"]);
 
 	let listing = run(&state, &["watch"]);
-	assert!(String::from_utf8_lossy(&listing.stdout).contains("this directory"));
+	assert!(String::from_utf8_lossy(&listing.stdout).contains("non-recursive"));
 }
 
 #[test]

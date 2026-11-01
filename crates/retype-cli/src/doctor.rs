@@ -77,8 +77,8 @@ pub fn run(
 		}
 	} else {
 		println!(
-			"{:<10}{:<24}{:<10}{:<18}PURPOSE",
-			"TOOL", "STATUS", "SOURCE", "FINGERPRINT"
+			"{:<10}{:<24}{:<10}{:<18}purpose",
+			"tool", "status", "source", "fingerprint"
 		);
 		for status in &statuses {
 			let source = match &status.path {

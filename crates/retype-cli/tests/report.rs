@@ -74,6 +74,9 @@ fn the_report_carries_the_build_the_tools_and_what_happened() {
 	}
 
 	assert!(written.contains("retype    0.1.0"), "{written}");
+	for schema in ["retype-grammar-1", "retype-fixtures-1"] {
+		assert!(written.contains(schema), "{schema} is missing from: {written}");
+	}
 	assert!(written.contains("Read it before sending it"), "{written}");
 	assert!(written.contains("magick"), "the probed tools: {written}");
 	assert!(written.contains("2 record(s), the last 2 below"), "{written}");

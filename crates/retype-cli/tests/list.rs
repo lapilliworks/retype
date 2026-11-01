@@ -62,11 +62,11 @@ fn list_names_the_formats_the_operations_and_the_backends() {
 	let config = config(dir.path());
 	let stdout = run(&config, &["list"]);
 
-	assert!(stdout.contains("FORMAT"), "{stdout}");
+	assert!(stdout.contains("format"), "{stdout}");
 	assert!(stdout.contains("png"), "{stdout}");
-	assert!(stdout.contains("OPERATION"), "{stdout}");
+	assert!(stdout.contains("operation"), "{stdout}");
 	assert!(stdout.contains("quality"), "{stdout}");
-	assert!(stdout.contains("BACKEND"), "{stdout}");
+	assert!(stdout.contains("backend"), "{stdout}");
 	assert!(stdout.contains("copy"), "{stdout}");
 }
 
@@ -76,8 +76,8 @@ fn tiers_claims_one_line_per_pair() {
 	let config = config(dir.path());
 	let stdout = run(&config, &["list", "--tiers"]);
 
-	assert!(stdout.contains("FROM"), "{stdout}");
-	assert!(stdout.contains("TIER"), "{stdout}");
+	assert!(stdout.contains("from"), "{stdout}");
+	assert!(stdout.contains("tier"), "{stdout}");
 
 	let pair = stdout
 		.lines()
@@ -154,7 +154,7 @@ fn verbose_says_which_configuration_was_read() {
 
 	// The listing itself is unchanged, so a pipeline reads the same bytes.
 	assert!(
-		String::from_utf8_lossy(&output.stdout).starts_with("FORMAT"),
+		String::from_utf8_lossy(&output.stdout).starts_with("format"),
 		"verbose must not touch stdout"
 	);
 }
@@ -218,4 +218,27 @@ fn a_pair_that_no_single_tool_carries_is_not_offered() {
 	assert!(pair("mp4", "mkv").contains("ffmpeg"), "{}", pair("mp4", "mkv"));
 	assert!(pair("png", "mp4").contains("E_UNSUPPORTED"), "{}", pair("png", "mp4"));
 	assert!(pair("mp4", "png").contains("E_UNSUPPORTED"), "{}", pair("mp4", "png"));
+}
+
+#[test]
+fn an_impossible_pair_keeps_the_code_out_of_the_backend_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let quiet = dir.path().join("quiet.toml");
+    let text = fs::read_to_string(config(dir.path())).unwrap();
+    fs::write(
+        &quiet,
+        text.replace("command = 'cp'", "command = 'cp-not-installed'")
+            .replace("command = 'cmd'", "command = 'cmd-not-installed'"),
+    )
+    .unwrap();
+
+    let stdout = run(&quiet, &["list", "--tiers", "--json"]);
+    let pair = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|pair| pair["from"] == "png" && pair["to"] == "webp")
+        .expect("a png to webp pair");
+
+    assert!(pair["backend"].is_null(), "{pair}");
+    assert_eq!(pair["error"], "E_TOOL_MISSING", "{pair}");
 }
