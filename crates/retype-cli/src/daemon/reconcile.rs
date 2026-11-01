@@ -14,6 +14,8 @@
 //! A parked job is not reconciled here: it keeps its deadline and its timer is
 //! re-armed, `docs/deferral.md` §7.
 
+use std::path::Path;
+
 use retype_core::error::Code;
 use retype_core::job::{Job, JobError, JobState};
 
@@ -48,9 +50,10 @@ fn requeue(shared: &Shared, pool: &Pool, job: &Job) {
 		input: job.source.path.clone(),
 		intent,
 		// The recorded path, not a fresh derivation: `-o` was part of the request and
-		// is not in the journal, so the output is the only place it survives.
-		output: match job.outputs.as_slice() {
-			[single] => Some(single.path.to_string_lossy().into_owned()),
+		// is not in the journal, so the output is the only place it survives. A
+		// rename-derived job has no `-o`.
+		output: match (job.consume_source, job.outputs.as_slice()) {
+			(false, [single]) => Some(single.path.to_string_lossy().into_owned()),
 			_ => None,
 		},
 		force: false,
@@ -64,9 +67,22 @@ fn requeue(shared: &Shared, pool: &Pool, job: &Job) {
 		return;
 	}
 
+	// A job that consumes its source came from a rename or a repair, not from
+	// `retype convert`. Requeueing it as an immediate job would leave the source
+	// behind after the conversion committed.
+	let kind = match job.consume_source {
+		true => Kind::Deferred {
+			root: job.source.path.parent().unwrap_or(Path::new("")).to_path_buf(),
+			source: request.input.clone(),
+			intent: request.intent.clone(),
+			force: false,
+		},
+		false => Kind::Immediate(request),
+	};
+
 	let work = Work {
 		id: job.id.clone(),
-		kind: Kind::Immediate(request),
+		kind,
 	};
 
 	if !pool.submit(work) {

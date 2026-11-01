@@ -167,4 +167,54 @@ fn a_restart_requeues_the_queued_and_declares_the_running() {
 		!dir.path().join("running.webp").exists(),
 		"an interrupted job is not silently re-run"
 	);
+
+	// The queued job came from a rename, so it consumes its source when it commits.
+	assert!(
+		!dir.path().join("queued.png").exists(),
+		"a requeued rename consumes its source"
+	);
+}
+
+#[test]
+fn a_requeued_submission_leaves_its_source_in_place() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	fs::create_dir_all(&state).unwrap();
+	let config = copy_config(dir.path());
+
+	let id = JobId::parse(&format!("01J{:023}", 3)).unwrap();
+	let source = dir.path().join("submitted.png");
+	let output = dir.path().join("submitted.webp");
+	fs::write(&source, b"pixels").unwrap();
+
+	let mut job = record(&id, &source, &output, JobState::Queued);
+	job.consume_source = false;
+
+	let journal = state.join("jobs.jsonl");
+	fs::write(&journal, format!("{}\n", job.to_line().unwrap())).unwrap();
+
+	let _daemon = Daemon(
+		retype()
+			.args(["daemon", "--detached"])
+			.arg("--state-dir")
+			.arg(&state)
+			.env("RETYPE_CONFIG", &config)
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.spawn()
+			.unwrap(),
+	);
+
+	let deadline = Instant::now() + Duration::from_secs(20);
+	loop {
+		if last_record(&journal, &id)["state"] == "done" {
+			break;
+		}
+
+		assert!(Instant::now() < deadline, "the queued submission did not finish");
+		std::thread::sleep(Duration::from_millis(50));
+	}
+
+	assert_eq!(fs::read(&output).unwrap(), b"pixels");
+	assert!(source.exists(), "a submitted conversion never consumes its source");
 }
