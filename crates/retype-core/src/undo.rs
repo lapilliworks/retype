@@ -324,23 +324,19 @@ impl Store {
 			)));
 		};
 
-		for output in &record.outputs {
-			match fs::remove_file(&output.path) {
-				Ok(()) => {}
-				Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-				Err(error) => return Err(Error::Io(error)),
-			}
-		}
-
 		if !record.consume_source {
 			// The source never moved. Undo is the removal of what the job produced,
 			// and the record goes with it.
+			remove_outputs(&record)?;
 			self.remove(id)?;
 			return Ok(record);
 		}
 
 		let held = self.directory(id).join(record.source_file());
 
+		// Every refusal happens before an output is touched. Removing the outputs
+		// first and then discovering that the source name is occupied would destroy
+		// the result without restoring anything.
 		if record.source_path.exists() {
 			return Err(Error::Diagnostic(Diagnostic::global(
 				Code::IoExists,
@@ -350,6 +346,15 @@ impl Store {
 				),
 			)));
 		}
+
+		if !held.exists() {
+			return Err(Error::Diagnostic(Diagnostic::global(
+				Code::IoNotFound,
+				format!("{} has no source bytes to restore", self.directory(id).display()),
+			)));
+		}
+
+		remove_outputs(&record)?;
 
 		// A rename is enough when the store shares a filesystem; otherwise the copy
 		// is carried back and the original removed.
@@ -468,6 +473,19 @@ impl Store {
 		let path = self.directory(id).join(record.source_file());
 		Ok(path.exists().then_some(path))
 	}
+}
+
+/// Remove every output a record says the job produced.
+fn remove_outputs(record: &Record) -> Result<()> {
+	for output in &record.outputs {
+		match fs::remove_file(&output.path) {
+			Ok(()) => {}
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+			Err(error) => return Err(Error::Io(error)),
+		}
+	}
+
+	Ok(())
 }
 
 fn write_manifest(directory: &Path, record: &Record) -> Result<()> {
@@ -807,9 +825,11 @@ mod tests {
 	}
 
 	#[test]
-	fn restoring_into_an_occupied_path_is_refused() {
+	fn restoring_into_an_occupied_path_is_refused_before_outputs_are_touched() {
 		let state = state();
 		let source = source(state.path());
+		let output = state.path().join("photo.jpg");
+		fs::write(&output, b"jpeg bytes").unwrap();
 		let store = Store::open(state.path());
 
 		store
@@ -821,7 +841,10 @@ mod tests {
 				source_path: source.clone(),
 				source_ext: "heic".to_string(),
 				consume_source: true,
-				outputs: Vec::new(),
+				outputs: vec![Output {
+					path: output.clone(),
+					ext: "jpg".to_string(),
+				}],
 			})
 			.unwrap();
 
@@ -829,6 +852,8 @@ mod tests {
 
 		assert_eq!(error.code(), Code::IoExists);
 		assert_eq!(fs::read(&source).unwrap(), b"heic bytes", "nothing was lost");
+		assert_eq!(fs::read(&output).unwrap(), b"jpeg bytes", "the output was not removed");
+		assert!(store.load(&id(3)).unwrap().is_some(), "the record is kept for a retry");
 	}
 
 	#[test]

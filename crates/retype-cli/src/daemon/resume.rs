@@ -79,6 +79,25 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 			.map(|output| output.path.clone())
 			.unwrap_or_else(|| output_path(&job.source.path, &resolved, index));
 
+		if blocked(recorded, &path, force) {
+			outputs.push(Output {
+				path,
+				format: plan.format.clone(),
+				state: OutputState::Failed,
+				bytes: None,
+				tier: plan.tier,
+				identity: None,
+				stderr: None,
+				error: Some(JobError {
+					code: Code::IoExists.to_string(),
+					message:
+						"the output path is occupied by a file this job did not produce; pass --force to replace it"
+							.to_string(),
+				}),
+			});
+			continue;
+		}
+
 		let log = crate::state::log_path(&shared.state_dir, &job.id);
 
 		match execute::run_logged(plan, &input, &path, &cancellation, Some(&log)) {
@@ -188,6 +207,20 @@ fn output_path(source: &std::path::Path, resolved: &resolve::Resolved, index: us
 		.unwrap_or_else(|| source.to_path_buf())
 }
 
+/// Whether a file at this path is somebody else's work.
+///
+/// A platform that cannot record a file identity leaves `recorded.identity` empty
+/// and resume runs the output again, which is the documented Windows answer. Where
+/// an identity exists, a file that does not carry it belongs to the user and is not
+/// replaced without `--force`.
+fn blocked(recorded: Option<&Output>, path: &std::path::Path, force: bool) -> bool {
+	if force || !path.exists() {
+		return false;
+	}
+
+	recorded.is_none_or(|output| output.identity.is_some())
+}
+
 /// Whether an output still carries the identity and size the job recorded.
 fn still_produced(output: &Output) -> bool {
 	let Some(identity) = &output.identity else {
@@ -207,4 +240,40 @@ fn still_produced(output: &Output) -> bool {
 
 fn unavailable(message: &str) -> Error {
 	Error::Diagnostic(Diagnostic::global(Code::JobResumeUnavailable, message))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use retype_core::job::{FileIdentity, Tier};
+
+	#[test]
+	fn an_occupied_output_is_only_replaced_on_purpose() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("photo.webp");
+		std::fs::write(&path, b"mine").unwrap();
+
+		let mut output = Output::pending(path.clone(), "webp", Tier::Converted);
+		output.identity = Some(FileIdentity::Unix {
+			dev: 1,
+			ino: 1,
+			birth_ns: None,
+		});
+
+		assert!(blocked(None, &path, false), "an unrecorded path is not ours");
+		assert!(blocked(Some(&output), &path, false), "a different file is not ours");
+		assert!(!blocked(None, &path, true), "--force replaces it");
+		assert!(!blocked(None, &dir.path().join("absent.webp"), false));
+	}
+
+	#[test]
+	fn a_platform_without_identity_keeps_the_documented_rerun() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("photo.webp");
+		std::fs::write(&path, b"mine").unwrap();
+
+		let output = Output::pending(path.clone(), "webp", Tier::Converted);
+
+		assert!(!blocked(Some(&output), &path, false));
+	}
 }
