@@ -36,6 +36,8 @@ Environment variables, all optional:
 | `RETYPE_CONFIG` | User configuration path, instead of the platform default. A daemon started by a client inherits the path the client used, so both read the same file |
 
 `--config <path>` names the user file for one invocation and wins over `RETYPE_CONFIG`. A file named that way has to exist: falling back to the built-in table would answer a different question than the one asked, so a missing one is `E_CFG_MISSING` rather than silence.
+
+Without either, the user file is `$XDG_CONFIG_HOME/retype/retype.toml` on Unix and `%APPDATA%\retype\retype.toml` on Windows; `XDG_CONFIG_HOME` defaults to `~/.config`. macOS is Unix here: the user file lives in `~/.config` and not in `~/Library/Application Support`, so configuration, state and data share one tree on the one platform where the two conventions disagree. There is no alternate path and no symlink between them.
 | `RETYPE_NO_AUTOSTART` | Clients never start the daemon |
 | `RETYPE_LOG` | Verbosity, the same number `--verbose` counts, as a digit or a word: `error`, `warn`, `info`, `debug`, `trace` |
 
