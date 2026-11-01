@@ -148,13 +148,21 @@ impl Watcher {
 /// already running, rather than only after a restart.
 pub fn start(shared: Arc<Shared>, pool: Arc<Pool>, state_dir: &Path) -> Result<Option<Watcher>> {
 	let stop = Arc::new(AtomicBool::new(false));
+	let (ready, ready_rx) = std::sync::mpsc::channel();
 	let supervisor = {
 		let shared = Arc::clone(&shared);
 		let stop = Arc::clone(&stop);
 		let state_dir = state_dir.to_path_buf();
 
-		thread::spawn(move || supervise(&shared, &pool, &state_dir, &stop))
+		thread::spawn(move || supervise(&shared, &pool, &state_dir, &stop, ready))
 	};
+
+	// A daemon a client can reach has to be watching already. macOS reports only
+	// what happens after its event stream starts, so a rename made between the
+	// endpoint appearing and the first registration round is lost rather than late.
+	// The wait is bounded because a registration on a stalled mount must not hold
+	// the daemon before it has even installed its signal handlers.
+	let _ = ready_rx.recv_timeout(Duration::from_secs(2));
 
 	Ok(Some(Watcher {
 		stop,
@@ -165,7 +173,13 @@ pub fn start(shared: Arc<Shared>, pool: Arc<Pool>, state_dir: &Path) -> Result<O
 /// How often the registration file is re-read.
 const RELOAD: Duration = Duration::from_secs(1);
 
-fn supervise(shared: &Arc<Shared>, pool: &Arc<Pool>, state_dir: &Path, stop: &AtomicBool) {
+fn supervise(
+	shared: &Arc<Shared>,
+	pool: &Arc<Pool>,
+	state_dir: &Path,
+	stop: &AtomicBool,
+	ready: std::sync::mpsc::Sender<()>,
+) {
 	// One worker per root, keyed by the canonical path the registration holds.
 	let mut workers: BTreeMap<PathBuf, (Arc<AtomicBool>, JoinHandle<()>)> = BTreeMap::new();
 	// A missing path is retried on a slow clock so a deleted directory does not
@@ -180,6 +194,9 @@ fn supervise(shared: &Arc<Shared>, pool: &Arc<Pool>, state_dir: &Path, stop: &At
 			Ok(registrations) => registrations,
 			Err(error) => {
 				eprintln!("retype: cannot read watch registrations: {error}");
+				// Nothing can be watched, but the daemon still has to become reachable
+				// and report the error.
+				let _ = ready.send(());
 				thread::sleep(RELOAD);
 				continue;
 			}
@@ -228,6 +245,10 @@ fn supervise(shared: &Arc<Shared>, pool: &Arc<Pool>, state_dir: &Path, stop: &At
 				}
 			}
 		}
+
+		// Everything registered by now has a live watcher, so the daemon may say it
+		// is ready. Later rounds have nobody waiting, and the send is ignored.
+		let _ = ready.send(());
 
 		thread::sleep(RELOAD);
 	}

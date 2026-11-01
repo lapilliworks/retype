@@ -22,7 +22,8 @@ A file outside every registration root is never converted, so it has no director
 ## 3. Startup
 
 - **Nothing is converted retroactively.** Registering a directory does not convert files that are already there, even if their names carry intent syntax. That would be surprising, and on first registration it would be destructive
-- **Identity priming does happen.** The daemon stats every file under the root and records device and inode, because without priming, renaming a file that existed before the daemon started has no identity to correlate and would be silently ignored. Priming reads no file contents and writes nothing
+- **Identity priming does happen.** The daemon stats every file under the root and records device and inode, or the volume and file id on Windows, because without priming, renaming a file that existed before the daemon started has no identity to correlate and would be silently ignored. Priming reads no file contents and writes nothing
+- The watcher for each registration is started before the daemon publishes its endpoint. macOS reports only what happens after its event stream starts, so a rename made in the gap between "the daemon answers" and "the watcher is live" would be lost rather than late
 - Priming is incremental and cancellable: it walks in the background, reports a running count in `daemon status`, and stops immediately if the registration is removed. A root of a million files delays correlation of unprimed files, it does not delay startup
 - A file whose identity is unprimed at rename time is still handled: the `From` and `To` event pair covers it, and if that is unavailable the result is `NeedsAttention`, never silence
 

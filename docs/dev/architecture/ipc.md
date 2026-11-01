@@ -20,6 +20,7 @@ Client start sequence:
 2. On failure, spawn `retype daemon --detached` and retry with backoff for up to 3 s
 3. If the socket still does not answer, report `E_IPC_UNAVAILABLE` with the spawn log path
 4. Racing clients are harmless: all spawn candidates contend for the lock, one wins, the rest exit, and every client connects to the winner
+5. The endpoint is published only once the first registration round has started a watcher for every root, or two seconds have passed if a registration is stalled. macOS reports only what happens after its event stream starts, so a rename made in that gap would be lost rather than late
 
 Suppression:
 
