@@ -264,21 +264,12 @@ fn number_of(text: &str) -> Option<u64> {
 }
 
 /// A duration, `docs/grammar.md` §7: units in order with the ones between them
-/// optional, or a clock.
-///
-/// `1h30s` needs no `0m`, because nobody says "one hour, zero minutes, thirty
-/// seconds". The clock form is the other way round: every place down to seconds
-/// is present, so `1:30` is ninety seconds and an hour and a half has to be
-/// written `1:30:00`.
+/// optional, so `1h30s` needs no `0m`.
 ///
 /// There is no month unit. A month is not a fixed number of seconds, and every
 /// other unit here is exact, so a `M` would be a wrong number in the one place
 /// a user cannot check it.
 fn time(text: &str) -> Result<u64, Fault> {
-	if text.contains(':') {
-		return clock(text);
-	}
-
 	tagged(text)
 }
 
@@ -342,46 +333,6 @@ fn tagged(text: &str) -> Result<u64, Fault> {
 	}
 
 	Ok(total)
-}
-
-fn clock(text: &str) -> Result<u64, Fault> {
-	let parts: Vec<&str> = text.split(':').collect();
-
-	let field = |part: &str, name: &str, two_digits: bool| -> Result<u64, Fault> {
-		if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
-			return Err(syntax(format!("'{text}' has no number for its {name}")));
-		}
-		if two_digits && part.len() != 2 {
-			return Err(syntax(format!("'{text}' writes its {name} with two digits")));
-		}
-
-		part.parse()
-			.map_err(|_| out_of_range(format!("'{text}' has a {name} too large to be a number")))
-	};
-
-	let below_sixty = |value: u64, name: &str| -> Result<u64, Fault> {
-		if value > 59 {
-			return Err(out_of_range(format!("'{text}' has {value} for its {name}")));
-		}
-		Ok(value)
-	};
-
-	match parts.as_slice() {
-		[minutes, seconds] => {
-			let minutes = field(minutes, "minutes", false)?;
-			let seconds = below_sixty(field(seconds, "seconds", true)?, "seconds")?;
-			Ok(minutes * 60 + seconds)
-		}
-		[hours, minutes, seconds] => {
-			let hours = field(hours, "hours", false)?;
-			let minutes = below_sixty(field(minutes, "minutes", true)?, "minutes")?;
-			let seconds = below_sixty(field(seconds, "seconds", true)?, "seconds")?;
-			Ok(hours * 3600 + minutes * 60 + seconds)
-		}
-		_ => Err(syntax(format!(
-			"'{text}' is written as M:S or H:M:S, with every place present"
-		))),
-	}
 }
 
 /// `scalar`, `scalar-scalar`, `scalar-`, `-scalar`, where a scalar is an integer
@@ -585,39 +536,6 @@ mod tests {
 				interpret(&class, written).unwrap_err().code,
 				Code::ValueSyntax,
 				"{written}"
-			);
-		}
-	}
-
-	#[test]
-	fn a_clock_has_every_place_it_needs() {
-		let class = param(Class::Time);
-
-		assert_eq!(interpret(&class, "2:30"), Ok(Value::Time(150)));
-		assert_eq!(interpret(&class, "1:30"), Ok(Value::Time(90)), "minutes and seconds");
-		assert_eq!(interpret(&class, "1:00:30"), Ok(Value::Time(3630)));
-		assert_eq!(interpret(&class, "1:30:00"), Ok(Value::Time(5400)));
-		assert_eq!(interpret(&class, "100:30"), Ok(Value::Time(6030)));
-	}
-
-	#[test]
-	fn a_clock_refuses_a_missing_place_or_a_field_out_of_its_range() {
-		let class = param(Class::Time);
-
-		for written in [
-			"1:5",
-			"1:30:5",
-			"1:2:3",
-			"1::30",
-			":30",
-			"1:60",
-			"1:60:00",
-			"1:30:00:00",
-		] {
-			let error = interpret(&class, written).unwrap_err();
-			assert!(
-				matches!(error.code, Code::ValueSyntax | Code::ValueRange),
-				"{written} was accepted"
 			);
 		}
 	}

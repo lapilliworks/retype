@@ -22,6 +22,10 @@ pub struct Registration {
 	pub recursive: bool,
 	/// When it was registered, in milliseconds since the epoch.
 	pub added: i64,
+	/// Paused by `retype watch --pause`. A directory file's `paused = true`
+	/// outranks this, `docs/watch.md` §8.
+	#[serde(default)]
+	pub paused: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -81,6 +85,7 @@ pub fn register(state_dir: &Path, directory: &Path, recursive: bool) -> Result<R
 		path: canonical,
 		recursive,
 		added: now_ms(),
+		paused: false,
 	};
 
 	registrations.push(registration.clone());
@@ -91,18 +96,18 @@ pub fn register(state_dir: &Path, directory: &Path, recursive: bool) -> Result<R
 
 /// Remove a registration by canonical path. Removing something absent succeeds.
 pub fn unregister(state_dir: &Path, directory: &Path) -> Result<bool> {
-	// A path that no longer exists cannot match a registration, and removing
-	// something absent is a success, `docs/cli.md` §4.
-	let canonical = match std::fs::canonicalize(directory) {
-		Ok(path) => path,
-		Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-		Err(error) => return Err(Error::Io(error)),
-	};
+	// A registration whose path has vanished is still removable, which is the
+	// only way to clean up after a deleted directory. Compare the canonical form
+	// when it exists, and a lexical absolute form when it does not.
+	let canonical = std::fs::canonicalize(directory).ok();
+	let absolute = std::path::absolute(directory)?;
 
 	let mut registrations = load(state_dir)?;
 	let before = registrations.len();
 
-	registrations.retain(|registration| registration.path != canonical);
+	registrations.retain(|registration| {
+		registration.path != absolute && canonical.as_ref().is_none_or(|path| registration.path != *path)
+	});
 
 	if registrations.len() == before {
 		return Ok(false);
@@ -110,6 +115,31 @@ pub fn unregister(state_dir: &Path, directory: &Path) -> Result<bool> {
 
 	save(state_dir, &registrations)?;
 	Ok(true)
+}
+
+/// Set the paused state of a registration, creating it when absent. A path that
+/// does not exist cannot be registered, which is the same answer `register` gives.
+pub fn set_paused(state_dir: &Path, directory: &Path, recursive: bool, paused: bool) -> Result<Registration> {
+	let canonical = canonical(directory)?;
+	let mut registrations = load(state_dir)?;
+
+	if let Some(existing) = registrations.iter_mut().find(|existing| existing.path == canonical) {
+		existing.paused = paused;
+		let registration = existing.clone();
+		save(state_dir, &registrations)?;
+		return Ok(registration);
+	}
+
+	let registration = Registration {
+		path: canonical,
+		recursive,
+		added: now_ms(),
+		paused,
+	};
+
+	registrations.push(registration.clone());
+	save(state_dir, &registrations)?;
+	Ok(registration)
 }
 
 fn save(state_dir: &Path, registrations: &[Registration]) -> Result<()> {

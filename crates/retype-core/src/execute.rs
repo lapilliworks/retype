@@ -69,14 +69,14 @@ pub struct Report {
 }
 
 /// Run one plan, staging the output and committing it on success.
-pub fn run(plan: &Plan<'_>, input: &Path, output: &Path) -> Result<Report> {
+pub fn run(plan: &Plan, input: &Path, output: &Path) -> Result<Report> {
 	run_cancellable(plan, input, output, &Cancellation::default())
 }
 
 /// The same, with a way to stop it. A cancelled run kills the tool's whole process
 /// group, so an encoder that forked a helper does not outlive the job, and leaves
 /// the output absent: the staged file is discarded rather than committed.
-pub fn run_cancellable(plan: &Plan<'_>, input: &Path, output: &Path, cancellation: &Cancellation) -> Result<Report> {
+pub fn run_cancellable(plan: &Plan, input: &Path, output: &Path, cancellation: &Cancellation) -> Result<Report> {
 	run_logged(plan, input, output, cancellation, None)
 }
 
@@ -87,7 +87,7 @@ pub fn run_cancellable(plan: &Plan<'_>, input: &Path, output: &Path, cancellatio
 /// as it arrives is what makes `jobs logs --follow` worth the flag, because a job
 /// that runs for twenty minutes has something to watch before it ends.
 pub fn run_logged(
-	plan: &Plan<'_>,
+	plan: &Plan,
 	input: &Path,
 	output: &Path,
 	cancellation: &Cancellation,
@@ -95,17 +95,17 @@ pub fn run_logged(
 ) -> Result<Report> {
 	// A format this build writes itself has nothing to run, so it goes to the
 	// archive writer rather than looking for a tool that was never planned.
-	if let Backend::Native { from, to } = plan.backend {
-		return crate::archive::repack(None, from, to, input, output, cancellation);
+	if let Backend::Native { from, to } = &plan.backend {
+		return crate::archive::repack(None, *from, *to, input, output, cancellation);
 	}
 
 	// A container this build cannot write is still repacked by our rules, with the
 	// tool given a tree that has already been checked, `docs/tools.md` §7.
-	if let Backend::SevenZip { from, to, .. } = plan.backend {
-		return crate::archive::repack(Some(&plan.command), from, to, input, output, cancellation);
+	if let Backend::SevenZip { from, to, .. } = &plan.backend {
+		return crate::archive::repack(Some(&plan.command), *from, *to, input, output, cancellation);
 	}
 
-	let Backend::Tool(tool) = plan.backend else {
+	let Backend::Tool(tool) = &plan.backend else {
 		return Err(Error::Diagnostic(Diagnostic::global(
 			Code::InternalInvariant,
 			"a plan with no executable reached the runner",
@@ -447,7 +447,7 @@ tier = 'converted'
 		.expect("the fixture loads")
 	}
 
-	fn plans<'a>(registry: &'a Registry, text: &str) -> Vec<Plan<'a>> {
+	fn plans(registry: &Registry, text: &str) -> Vec<Plan> {
 		let intent = intent::parse(text).expect("scans");
 		let resolved = resolve::resolve(
 			&intent,

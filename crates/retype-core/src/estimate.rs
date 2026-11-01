@@ -164,8 +164,23 @@ impl Calibration {
 		})?;
 
 		let path = Self::path(state_dir);
-		fs::write(&path, text)?;
-		set_private(&path)?;
+		let temporary = path.with_extension("toml.tmp");
+
+		fs::write(&temporary, text)?;
+		set_private(&temporary)?;
+
+		// A reader sees the old file or the complete new one, never a half-written
+		// calibration while a parked job is asking for an estimate.
+		if let Err(error) = fs::rename(&temporary, &path) {
+			if path.exists() {
+				fs::remove_file(&path)?;
+				fs::rename(&temporary, &path)?;
+			} else {
+				let _ = fs::remove_file(&temporary);
+				return Err(error.into());
+			}
+		}
+
 		Ok(())
 	}
 

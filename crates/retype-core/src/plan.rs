@@ -56,9 +56,9 @@ impl Presence for crate::tools::Machine {
 /// not a thing to rewrite. A container that only moves bytes is a different
 /// problem, and putting it here rather than behind a fake tool keeps the planner's
 /// shape instead of teaching it a command name that resolves to nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend<'a> {
-	Tool(&'a Tool),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Backend {
+	Tool(Tool),
 	/// A container this build repacks: the codec it reads and the codec it writes.
 	Native {
 		from: Native,
@@ -68,13 +68,13 @@ pub enum Backend<'a> {
 	/// `docs/tools.md` §7. The rules are still ours: the tool is given a tree that has
 	/// already been checked.
 	SevenZip {
-		tool: &'a Tool,
+		tool: Tool,
 		from: Native,
 		to: Native,
 	},
 }
 
-impl Backend<'_> {
+impl Backend {
 	/// The name recorded with a job and printed by `explain`.
 	pub fn name(&self) -> &str {
 		match self {
@@ -114,13 +114,13 @@ pub enum Arg {
 
 /// What one output of one rename will do.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Plan<'a> {
+pub struct Plan {
 	/// The group this output belongs to, which is what a caller needs to find the
 	/// name it was given: a kept source has a group and no plan.
 	pub group: usize,
 	/// The format this output carries.
 	pub format: String,
-	pub backend: Backend<'a>,
+	pub backend: Backend,
 	/// The executable that resolved for the backend at plan time.
 	pub command: String,
 	/// The layout with `{ops}` expanded.
@@ -132,7 +132,7 @@ pub struct Plan<'a> {
 	pub engine: Option<(String, String)>,
 }
 
-impl Plan<'_> {
+impl Plan {
 	/// The argv for a concrete input and output path.
 	pub fn argv(&self, input: &Path, output: &Path) -> Vec<OsString> {
 		self.argv
@@ -151,11 +151,7 @@ impl Plan<'_> {
 /// A group that keeps the source produces no plan. Re-encoding a file to the format
 /// it already has would be a conversion nobody asked for, and for a directory there
 /// is nothing to encode at all.
-pub fn compile<'a>(
-	registry: &'a Registry,
-	presence: &dyn Presence,
-	resolved: &Resolved,
-) -> Result<Vec<Plan<'a>>, Diagnoses> {
+pub fn compile(registry: &Registry, presence: &dyn Presence, resolved: &Resolved) -> Result<Vec<Plan>, Diagnoses> {
 	let mut plans = Vec::new();
 	let mut problems = Vec::new();
 
@@ -177,13 +173,13 @@ pub fn compile<'a>(
 	}
 }
 
-fn plan_group<'a>(
-	registry: &'a Registry,
+fn plan_group(
+	registry: &Registry,
 	presence: &dyn Presence,
 	index: usize,
 	group: &resolve::Group,
 	origin: &str,
-) -> Result<Plan<'a>, Vec<Error>> {
+) -> Result<Plan, Vec<Error>> {
 	// The other direction of the same rule: a format with no writer cannot be a
 	// target, whatever the backend claims.
 	if let Some(format) = registry.format(&group.format) {
@@ -243,7 +239,11 @@ fn plan_group<'a>(
 			return Ok(Plan {
 				group: index,
 				format: group.format.clone(),
-				backend: Backend::SevenZip { tool, from, to },
+				backend: Backend::SevenZip {
+					tool: tool.clone(),
+					from,
+					to,
+				},
 				command,
 				argv: Vec::new(),
 				tier: tier_of(registry, &group.format),
@@ -370,7 +370,7 @@ fn assemble<'a>(
 	command: String,
 	group: &resolve::Group,
 	pipeline: &[resolve::Op],
-) -> Result<Plan<'a>, Vec<Error>> {
+) -> Result<Plan, Vec<Error>> {
 	let mut pieces: Vec<(&Fragment, Option<&resolve::Op>)> = Vec::new();
 
 	if let Some(fragment) = registry
@@ -424,7 +424,7 @@ fn assemble<'a>(
 	Ok(Plan {
 		group: index,
 		format: group.format.clone(),
-		backend: Backend::Tool(tool),
+		backend: Backend::Tool(tool.clone()),
 		command,
 		argv,
 		tier: tier_of(registry, &group.format),
@@ -570,7 +570,7 @@ args = ['--pdf-engine', '{engine.pdf}']
 		}
 	}
 
-	fn plan_for(text: &str, machine: &Machine) -> Result<Vec<Plan<'static>>, Vec<Code>> {
+	fn plan_for(text: &str, machine: &Machine) -> Result<Vec<Plan>, Vec<Code>> {
 		let registry = Box::leak(Box::new(config()));
 		let intent = intent::parse(text).expect("the intent scans");
 		let resolved = resolve::resolve(
@@ -586,13 +586,13 @@ args = ['--pdf-engine', '{engine.pdf}']
 		compile(registry, machine, &resolved).map_err(|problems| problems.codes())
 	}
 
-	fn plan_one(text: &str, machine: &Machine) -> Plan<'static> {
+	fn plan_one(text: &str, machine: &Machine) -> Plan {
 		let mut plans = plan_for(text, machine).expect("a plan");
 		assert_eq!(plans.len(), 1, "one output");
 		plans.remove(0)
 	}
 
-	fn literals(plan: &Plan<'_>) -> Vec<String> {
+	fn literals(plan: &Plan) -> Vec<String> {
 		plan.argv
 			.iter()
 			.filter_map(|arg| match arg {

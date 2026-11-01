@@ -104,10 +104,105 @@ pub fn collect(receiver: &mpsc::Receiver<notify::Result<Event>>, window: Window)
 
 /// Feed a batch through both strategies and return the facts it supports.
 pub fn feed(correlator: &mut Correlator, batch: &Batch) -> Vec<RenameFact> {
+	invalidate_renamed_directories(correlator, batch);
 	let mut facts = observe_names(correlator, batch);
 	facts.extend(observe_identity(correlator, batch));
 	correlator.end_batch();
 	coalesce(dedupe(facts))
+}
+
+/// Record the identity of every file under a root, so a file that existed
+/// before the daemon started can still be correlated by identity when it is
+/// renamed. Returns how many files were primed.
+///
+/// Directories in the ignore list are pruned, matching `docs/watch.md` §4. A
+/// directory's own `patterns` do not prune priming: an ignored file is still
+/// primed, because a later rename can make it interesting.
+pub fn prime(
+	correlator: &mut Correlator,
+	root: &Path,
+	recursive: bool,
+	mut admit: impl FnMut(&Path) -> bool,
+	mut stop: impl FnMut() -> bool,
+) -> usize {
+	let mut primed = 0;
+
+	fn walk(
+		correlator: &mut Correlator,
+		directory: &Path,
+		recursive: bool,
+		admit: &mut impl FnMut(&Path) -> bool,
+		stop: &mut impl FnMut() -> bool,
+		primed: &mut usize,
+	) {
+		if stop() {
+			return;
+		}
+
+		let entries = match fs::read_dir(directory) {
+			Ok(entries) => entries,
+			Err(_) => return,
+		};
+
+		for entry in entries.flatten() {
+			if stop() {
+				return;
+			}
+
+			let path = entry.path();
+			let Ok(meta) = fs::symlink_metadata(&path) else {
+				continue;
+			};
+
+			if meta.is_dir() {
+				if recursive && admit(&path) {
+					walk(correlator, &path, true, admit, stop, primed);
+				}
+				continue;
+			}
+
+			if !meta.is_file() || !admit(&path) {
+				continue;
+			}
+
+			if let Some(sighting) = sighting(&path) {
+				correlator.observe(sighting);
+				*primed += 1;
+			}
+		}
+	}
+
+	walk(correlator, root, recursive, &mut admit, &mut stop, &mut primed);
+	primed
+}
+
+/// A directory rename changes every path beneath it without per-file events, so
+/// the identities below the old name are stale. The new tree is primed by the
+/// caller.
+fn invalidate_renamed_directories(correlator: &mut Correlator, batch: &Batch) {
+	for event in &batch.events {
+		let EventKind::Modify(ModifyKind::Name(kind)) = event.kind else {
+			continue;
+		};
+
+		for pair in event.paths.windows(2) {
+			let [source, target] = pair else { continue };
+			let is_directory = fs::symlink_metadata(target).is_ok_and(|meta| meta.is_dir());
+			if is_directory {
+				correlator.invalidate_prefix(source);
+			}
+		}
+
+		// A single-path `To` carries only the new name, and the old prefix is
+		// unknowable without an identity. `From` is enough to invalidate the name
+		// that just left, which is what a later identity lookup would otherwise
+		// still hold.
+		if matches!(kind, RenameMode::From) {
+			if let Some(source) = event.paths.first() {
+				correlator.invalidate_prefix(source);
+			}
+		}
+	}
 }
 
 /// Feed a batch through name pairing alone, as Windows needs and as measurement
@@ -276,6 +371,22 @@ mod tests {
 			.iter()
 			.map(|fact| (fact.source.clone(), fact.target.clone()))
 			.collect()
+	}
+
+	#[test]
+	fn priming_lets_a_pre_existing_file_correlate_by_identity() {
+		let dir = dir();
+		let source = dir.path().join("a.heic");
+		let target = dir.path().join("a.jpg");
+		fs::write(&source, b"heic").unwrap();
+
+		let mut correlator = fresh();
+		assert_eq!(prime(&mut correlator, dir.path(), true, |_| true, || false), 1);
+
+		fs::rename(&source, &target).unwrap();
+		let facts = feed_identity(&mut correlator, &batch(vec![rename(RenameMode::Any, &[&target])]));
+
+		assert_eq!(sources(&facts), vec![(source, target)]);
 	}
 
 	#[test]

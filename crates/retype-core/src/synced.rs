@@ -122,6 +122,20 @@ pub fn fuse_provider(path: &Path, mounts: &str) -> Option<String> {
 /// On Linux and macOS a placeholder has no contents to read, so the answer is what
 /// happens when it is read. On Windows the attribute says so directly.
 pub fn dataless(path: &Path) -> bool {
+	// macOS reports the flag directly, so a dataless file is recognised before a
+	// read that would start a download. `SF_DATALESS` is `0x4000_0000`.
+	#[cfg(target_os = "macos")]
+	{
+		use std::os::macos::fs::MetadataExt;
+
+		if std::fs::metadata(path)
+			.map(|metadata| metadata.st_flags() & 0x4000_0000 != 0)
+			.unwrap_or(false)
+		{
+			return true;
+		}
+	}
+
 	#[cfg(unix)]
 	{
 		use std::io::Read;

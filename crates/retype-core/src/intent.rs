@@ -289,7 +289,18 @@ fn scan_token(token: &str, start: usize) -> Result<Token, Error> {
 		None => (token, None),
 	};
 
-	if !is_name(name) && !is_alias_form(name) {
+	// A compact token has no `=` to tell the name from the value, so the scanner
+	// accepts the whole shape and `resolve` finds the longest registered prefix.
+	// Refusing here would reject `trim1m-2m` before the registry could read it.
+	if value.is_none() && !is_name(name) && !is_alias_form(name) && !is_compact_token(name) {
+		return Err(Error::diagnostic(
+			Code::NameUnknown,
+			format!("'{name}' is not a token name"),
+			Span::new(start, start + name.len()),
+		));
+	}
+
+	if value.is_some() && !is_name(name) {
 		return Err(Error::diagnostic(
 			Code::NameUnknown,
 			format!("'{name}' is not a token name"),
@@ -344,6 +355,20 @@ fn is_alias_form(text: &str) -> bool {
 	}
 
 	false
+}
+
+/// A compact token begins with a name and continues with a value, so it may
+/// carry the punctuation a value class allows. The boundary is the registry's
+/// question, not the scanner's, `docs/grammar.md` §6 step 6.
+fn is_compact_token(text: &str) -> bool {
+	let mut bytes = text.bytes();
+
+	match bytes.next() {
+		Some(byte) if byte.is_ascii_alphabetic() => {}
+		_ => return false,
+	}
+
+	bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_'))
 }
 
 /// A token name starts with a letter and continues with letters and digits,
@@ -570,6 +595,14 @@ mod tests {
 
 		assert_eq!(intent.groups[0].tokens.len(), 3);
 		assert_eq!(intent.groups[0].tokens[0].name, "1080p");
+	}
+
+	#[test]
+	fn a_compact_range_keeps_its_hyphen() {
+		let intent = parse("jpg+trim1m-2m").expect("a range token");
+
+		assert!(intent.groups[0].tokens[0].value.is_none());
+		assert_eq!(intent.groups[0].tokens[0].name, "trim1m-2m");
 	}
 
 	#[test]

@@ -363,6 +363,10 @@ pub struct Job {
 	/// Present when the job is parked or was repaired, `docs/deferral.md` §11.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub parked: Option<Parked>,
+	/// Whether the job removes its source when it commits: true for a rename,
+	/// false for a client submission, `docs/state.md` §5.
+	#[serde(default)]
+	pub consume_source: bool,
 }
 
 impl Job {
@@ -389,6 +393,7 @@ impl Job {
 			machine: machine.into(),
 			error: None,
 			parked: None,
+			consume_source: false,
 		})
 	}
 
