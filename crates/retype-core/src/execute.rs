@@ -447,6 +447,36 @@ tier = 'converted'
 		.expect("the fixture loads")
 	}
 
+	/// A fixture whose only tool writes nothing and succeeds, so the runner can be
+	/// told that a tool producing no output is a failure. `cmd /c rem` exits zero
+	/// and ignores its arguments on Windows; `true` does the same elsewhere.
+	fn noop_fixture() -> Registry {
+		let (command, layout) = match cfg!(windows) {
+			true => ("cmd", "layout = ['/c', 'rem', '{input}', '{ops}', '{output}']"),
+			false => ("true", "layout = ['{input}', '{ops}', '{output}']"),
+		};
+
+		Registry::load(&format!(
+			"\
+version = 'retype-config-1'
+
+[backends]
+prefer = ['noop']
+
+[tools.noop]
+command = '{command}'
+{layout}
+
+[formats.webp]
+family = 'image'
+lossy = true
+alpha = true
+tier = 'converted'
+",
+		))
+		.expect("the fixture loads")
+	}
+
 	fn plans(registry: &Registry, text: &str) -> Vec<Plan> {
 		let intent = intent::parse(text).expect("scans");
 		let resolved = resolve::resolve(
@@ -492,25 +522,7 @@ tier = 'converted'
 
 	#[test]
 	fn a_tool_that_writes_nothing_is_a_failure() {
-		let registry = Registry::load(
-			"\
-version = 'retype-config-1'
-
-[backends]
-prefer = ['noop']
-
-[tools.noop]
-command = 'true'
-layout = ['{input}', '{ops}', '{output}']
-
-[formats.webp]
-family = 'image'
-lossy = true
-alpha = true
-tier = 'converted'
-",
-		)
-		.expect("the fixture loads");
+		let registry = noop_fixture();
 		let plans = plans(&registry, "webp");
 		let dir = tempfile::tempdir().unwrap();
 
@@ -565,25 +577,7 @@ tier = 'converted'
 
 	#[test]
 	fn a_failed_rename_conversion_puts_the_source_name_back() {
-		let registry = Registry::load(
-			"\
-version = 'retype-config-1'
-
-[backends]
-prefer = ['noop']
-
-[tools.noop]
-command = 'true'
-layout = ['{input}', '{ops}', '{output}']
-
-[formats.webp]
-family = 'image'
-lossy = true
-alpha = true
-tier = 'converted'
-",
-		)
-		.expect("the fixture loads");
+		let registry = noop_fixture();
 		let plans = plans(&registry, "webp");
 		let dir = tempfile::tempdir().unwrap();
 		let target = dir.path().join("photo.webp");

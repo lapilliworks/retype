@@ -459,7 +459,14 @@ mod tests {
 	}
 
 	fn shared(state: &std::path::Path) -> Arc<Shared> {
-		let registry = Registry::load(
+		// `true` writes nothing and succeeds, which is the failure these tests need.
+		// Windows has no `true`; `rem` is `cmd`'s comment, so it exits zero.
+		let (command, layout) = match cfg!(windows) {
+			true => ("cmd", "layout = ['/c', 'rem', '{input}', '{ops}', '{output}']"),
+			false => ("true", "layout = ['{input}', '{ops}', '{output}']"),
+		};
+
+		let registry = Registry::load(&format!(
 			"\
 version = 'retype-config-1'
 
@@ -467,8 +474,8 @@ version = 'retype-config-1'
 prefer = ['copy']
 
 [tools.copy]
-command = 'true'
-layout = ['{input}', '{ops}', '{output}']
+command = '{command}'
+{layout}
 
 [formats.png]
 family = 'image'
@@ -482,7 +489,7 @@ lossy = true
 alpha = true
 tier = 'converted'
 ",
-		)
+		))
 		.expect("the fixture loads");
 
 		let (journal, replay) = Journal::open(&state.join("jobs.jsonl")).expect("journal");
