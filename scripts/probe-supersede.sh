@@ -43,20 +43,33 @@ fi
 trees=()
 watcher_pid=
 daemon_pid=
+shadow_pid=
 tree=
 
 cleanup() {
 	[ -n "$watcher_pid" ] && kill "$watcher_pid" 2>/dev/null
-	[ -n "$daemon_pid" ] && kill "$daemon_pid" 2>/dev/null
-	if [ "$keep" = 1 ]; then
-		[ ${#trees[@]} -gt 0 ] && printf '\ntrees kept:\n%s\n' "${trees[*]}"
-		return
-	fi
-
 	[ ${#trees[@]} -gt 0 ] || return
 
 	for kept in "${trees[@]}"; do
 		"$bin" daemon stop --now --state-dir "$kept/state" >/dev/null 2>&1
+	done
+
+	if [ -n "$shadow_pid" ]; then
+		kill "$shadow_pid" 2>/dev/null
+		wait "$shadow_pid" 2>/dev/null
+	fi
+
+	if [ -n "$daemon_pid" ]; then
+		kill "$daemon_pid" 2>/dev/null
+		wait "$daemon_pid" 2>/dev/null
+	fi
+
+	if [ "$keep" = 1 ]; then
+		printf '\ntrees kept:\n%s\n' "${trees[*]}"
+		return
+	fi
+
+	for kept in "${trees[@]}"; do
 		rm -rf "$kept"
 	done
 }
@@ -65,6 +78,37 @@ trap cleanup EXIT
 
 say() {
 	printf '  %-12s %s\n' "$1" "$2"
+}
+
+stop_daemon() {
+	local tree=$1 waited=0
+
+	"$bin" daemon stop --now --state-dir "$tree/state" >/dev/null 2>&1
+
+	while [ -n "$daemon_pid" ] && [ $waited -lt 20 ]; do
+		kill -0 "$daemon_pid" 2>/dev/null || break
+		sleep 0.2
+		waited=$((waited + 1))
+	done
+
+	kill "$daemon_pid" 2>/dev/null
+	wait "$daemon_pid" 2>/dev/null
+	daemon_pid=
+}
+
+# The decision lines are the report: a transcript without the daemon's own view
+# cannot say whether the platform was silent or the watcher was.
+report_log() {
+	local log=$1 lines
+
+	lines=$(grep -E '^retype: (batch:|rename |watching |stopped watching|[0-9]+ job)' "$log" 2>/dev/null)
+	if [ -n "$lines" ]; then
+		while IFS= read -r line; do
+			printf '    %s\n' "${line#retype: }"
+		done <<<"$lines"
+	else
+		printf '    (no watcher lines)\n'
+	fi
 }
 
 now_ms() {
@@ -196,6 +240,47 @@ start() {
 	sleep 1.5
 }
 
+# A second daemon on the same tree, ignoring every file, so its own log says whether
+# the platform reported an event that the daemon under test did not. Same library,
+# different process: a difference between the two is the process, not the platform.
+shadow_start() {
+	local tree=$1 deadline
+	mkdir -p "$tree/shadow-state"
+
+	cat >"$tree/shadow.toml" <<CONFIG
+version = 'retype-config-1'
+
+[notify]
+enabled = false
+
+[watch]
+ignore = ['**']
+CONFIG
+
+	RETYPE_CONFIG="$tree/shadow.toml" "$bin" watch "$tree/photos" --state-dir "$tree/shadow-state" \
+		>>"$tree/shadow.log" 2>&1 || return 1
+	RETYPE_CONFIG="$tree/shadow.toml" RETYPE_LOG=debug "$bin" daemon --detached --state-dir "$tree/shadow-state" \
+		>>"$tree/shadow.log" 2>&1 &
+	shadow_pid=$!
+
+	deadline=$((SECONDS + 20))
+	while [ ! -e "$tree/shadow-state/endpoint" ]; do
+		[ $SECONDS -ge $deadline ] && return 1
+		sleep 0.05
+	done
+
+	sleep 1.5
+}
+
+shadow_stop() {
+	local tree=$1
+
+	"$bin" daemon stop --now --state-dir "$tree/shadow-state" >/dev/null 2>&1
+	[ -n "$shadow_pid" ] && kill "$shadow_pid" 2>/dev/null
+	wait "$shadow_pid" 2>/dev/null
+	shadow_pid=
+}
+
 # An independent watcher, so "not delivered" can be told from "we dropped it".
 watch_independently() {
 	local tree=$1
@@ -231,6 +316,9 @@ trial_renames() {
 	tree=$TREE
 	log=$tree/daemon.log
 	photos=$tree/photos
+
+	say "tree" "$tree"
+	say "log" "$log"
 
 	start "$tree" || {
 		say "start" "the daemon did not start"
@@ -277,7 +365,7 @@ trial_renames() {
 		say "c.bbb -> c.ccc" "second rename NOT delivered"
 	fi
 
-	say "facts" "$(facts "$log" "$photos" | wc -l | tr -d ' ')"
+	say "facts" "$(facts "$log" "$(resolve "$photos")" | wc -l | tr -d ' ')"
 }
 
 # The supersession the test expects, with every stage reported.
@@ -298,10 +386,15 @@ trial_supersede() {
 	webp=$photos/photo.webp
 	jpg=$photos/photo.jpg
 
+	say "tree" "$tree"
+	say "log" "$log"
+
 	start "$tree" || {
 		say "start" "the daemon did not start"
 		return 1
 	}
+
+	shadow_start "$tree" || say "shadow" "the second daemon did not start"
 
 	watch_independently "$tree" && saw_watcher=yes || saw_watcher=no
 
@@ -335,16 +428,18 @@ trial_supersede() {
 
 	say "journal" "$(journal_states "$tree")"
 
-	local renamed_at after
+	local renamed_at after before_obs
 	renamed_at=$(now_ms)
+	before_obs=$(observed "$tree")
 	mv "$png" "$jpg"
 	wait_fact "$log" 'rename .*photo\.jpg' 10
+	say "observed" "$before_obs -> $(observed "$tree")"
 
 	say "inode" "$(inode "$jpg") at photo.jpg"
 
 	# Whatever came out, not only the fact the test expects: a fact that starts at
 	# the name we restored is our own rename, and it should not chain.
-	after=$(facts "$log" "$photos" | tail -n +2 | tr '\n' ';')
+	after=$(facts "$log" "$(resolve "$photos")" | tail -n +2 | tr '\n' ';')
 	[ -n "$after" ] || after=none
 	say "facts after" "$after"
 	grep -q 'photo\.png -> .*photo\.jpg' <<<"$after" && have_fact=yes
@@ -379,6 +474,15 @@ trial_supersede() {
 		say "tool" "ran after the source name was gone"
 	fi
 
+	if [ -n "$shadow_pid" ]; then
+		shadow_stop "$tree"
+
+		local witnessed
+		witnessed=$(facts "$tree/shadow.log" "$(resolve "$photos")" | tail -n +2 | tr '\n' ';')
+		[ -n "$witnessed" ] || witnessed=none
+		say "shadow" "a second daemon saw: $witnessed"
+	fi
+
 	if [ "$saw_watcher" = yes ]; then
 		stop_watching_independently
 		if grep -q 'photo\.jpg' "$tree/events.txt" 2>/dev/null; then
@@ -407,6 +511,9 @@ trial_supersede() {
 
 	# The window matters: a rename after the job ended cannot supersede it.
 	say "renamed" "$renamed_at ms after epoch"
+
+	say "log" "$log"
+	report_log "$log"
 }
 
 main() {
@@ -428,9 +535,7 @@ main() {
 			;;
 		esac
 
-		"$bin" daemon stop --now --state-dir "$TREE/state" >/dev/null 2>&1
-		wait "$daemon_pid" 2>/dev/null
-		daemon_pid=
+		stop_daemon "$TREE"
 	done
 }
 
