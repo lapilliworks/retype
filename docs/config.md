@@ -201,7 +201,7 @@ Three things are deliberately not configurable, so that nobody tunes them and th
 
 - The built-in ignore list, `docs/watch.md` §4. It is lifted only by registering a directory inside one of its entries, because naming a directory is intent
 - The batch size of 64 files per debounce window and the queue cap of 256, which are churn protection rather than policy, `docs/watch.md` §8
-- The debounce default of 500 ms, which a directory may override but a user may not, because pacing belongs to the directory being watched
+- The debounce default of 400 ms plus 200 ms of quiet, capped at 3 s, which a directory may override but a user may not, because pacing belongs to the directory being watched
 
 ## 6. Operations
 

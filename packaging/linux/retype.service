@@ -1,0 +1,13 @@
+[Unit]
+Description=retype file conversion daemon
+Documentation=https://github.com/justretype/retype
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/retype daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -64,8 +64,9 @@ Two tiers exist, and the difference is deliberate.
 
 - **Installed**: platform installer, signed. Command line, daemon, notifier,
   URI scheme, user service. External tools are acquired separately. Supported
-- **Source**: `cargo install`. Command line only, no daemon, no watched
-  directories that survive a reboot. A workaround, not the supported path
+- **Source**: `cargo install --git https://github.com/justretype/retype`. The
+  binary includes the daemon, but no service, URI registration or notifier
+  bundle is installed. A workaround, not the supported path
 
 Tool acquisition follows the interface. The CLI does not install or manage tools: a
 CLI user uses the platform's package manager or installs them by hand. The GUI manages

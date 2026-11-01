@@ -11,7 +11,7 @@ retype <command> [arguments] [flags]
 | Command | Purpose |
 |---|---|
 | `convert <input> <intent>` | One-shot conversion. Alias `c` |
-| `watch [<dir>...] [--non-recursive]` | Register directories, or list registrations with no arguments |
+| `watch [<dir>...] [--non-recursive] [--pause\|--resume]` | Register directories, or list registrations with no arguments |
 | `unwatch <dir>...` | Deregister directories |
 | `daemon [start\|stop [--now] [--force]\|status]` | Foreground by default. `stop` drains, `--now` cancels, `--force` overrides a supervisor's refusal |
 | `jobs list\|get\|cancel\|logs` | Queue inspection and control |
@@ -45,9 +45,8 @@ retype convert <input> <intent> [-o <path>] [--force] [--dry-run]
 | `retype c a.heic jpg` | `a.jpg` |
 | `retype c a.heic jpg+quality80` | `a.jpg` at quality 80 |
 | `retype c a.heic png,webp` | `a.png` and `a.webp` |
-| `retype c a.heic webp+q80+nometa` | `a.webp`, quality 80, metadata stripped |
+| `retype c a.heic webp+q80+cap1080` | `a.webp`, quality 80, capped at 1080 |
 | `retype c a.heic jpg+q80 -o holiday.jpg` | `holiday.jpg` |
-| `retype c Photos zip` | `Photos.zip` |
 | `retype c a.heic png,webp -o x.png` | `E_USAGE_OUTPUT_COUNT`: one path, several outputs |
 | `retype c a.heic` | `E_USAGE`: nothing to do |
 | `retype c a.heic jpg --dry-run` | Prints what would happen, writes nothing |
@@ -101,9 +100,8 @@ The name is read three ways, in this order:
 |---|---|
 | `holiday.heic` | A file, stem `holiday`, format `heic` |
 | `heic` | A source format with no file, stem `input`, which is how a user asks about a pair without having a file in hand |
-| `Photos` | A directory, which is what makes `explain Photos zip` work |
 
-A name that has a suffix this build has no format for is a diagnosis, because retype does not convert what it does not know. A name that is a declared format wins over the directory reading: `heic` is a format, and a directory may be spelled any other way.
+A name that has a suffix this build has no format for is a diagnosis, because retype does not convert what it does not know. A directory is not a conversion source.
 
 `source` echoes the argument as written. The sentence and the outputs use the format's canonical spelling, so `explain photo.jpeg png` says `convert from jpg to png` and writes `photo.png`.
 
@@ -133,7 +131,7 @@ retype unwatch <dir>...
 
 `--json` writes one object per line with a `kind` of `format`, `operation`, `preset`, `backend` or `pair`.
 
-`watch` with no arguments lists registrations as `<path>  <recursive>  <policy summary>`. With arguments it registers each directory; registration is idempotent, and the daemon re-reads the file so a running one picks the directory up within a second. `--non-recursive` registers only that directory rather than its subtree. `watch` starts nothing itself, so it can be scripted.
+`watch` with no arguments lists registrations as `<path>  <recursive>  <policy summary>`. With arguments it registers each directory; registration is idempotent, and the daemon re-reads the file so a running one picks the directory up within a second. `--non-recursive` registers only that directory rather than its subtree. `--pause` stops converting renames in a registration until `--resume`; a directory file with `paused = true` outranks a resume and is refused with `E_WATCH_PAUSED_BY_POLICY`. `watch` starts nothing itself, so it can be scripted.
 
 The summary column is the directory's own `.retype.toml` policy, where it has one, because "what will happen here" is the question a listing is asked.
 
@@ -173,7 +171,7 @@ retype why <path>
 
 Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the candidates printed.
 
-`jobs resolve` acts on a parked job, and `jobs --interactive` walks the parked ones with one key each; both are specified in `docs/deferral.md` §8, which is a draft until a later release begins.
+`jobs resolve` acts on a parked job, and `jobs --interactive` walks the parked ones with one key each; both are specified in `docs/deferral.md` §8.
 
 `jobs --interactive` walks the parked jobs oldest first and reads one key each: `n` runs it as asked, `c` runs the corrected intent where there is one, `r` refuses it, `s` skips it and `q` stops. It refuses to run without a terminal rather than reading a script's stdin. `jobs resolve` is the same decisions for a script, one id at a time.
 
@@ -210,16 +208,15 @@ Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the ca
 ## 8. Examples
 
 ```
-retype c photo.heic webp+quality80+nometa
+retype c photo.heic webp+quality80+cap1080
 retype c clip.mov mp4+cap1080+mute
 retype c photo.heic jpg,png
-retype c scan.pdf png+page2-5+dpi300
 retype watch ~/Pictures ~/Documents
 retype jobs list --state needs-attention
 retype jobs get 01J8Z
 retype undo --last
 retype why photo.webp
-retype explain clip.mov 'mp4+cap1080+trim10s-30s+mute+now'
+retype explain clip.mov 'mp4+cap1080+at10s+mute+now'
 retype explain photo.heic 'webp+q80+cap1080+rotate90'
 retype doctor --emit
 retype fidelity --pair heic:webp

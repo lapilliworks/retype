@@ -5,7 +5,7 @@ Contract between `retype-daemon` and its clients. Protocol identifier: `retype-i
 ## 1. Process model
 
 - One daemon per user session. Never a system service, never privileged.
-- The daemon is the only writer of the journal, the undo store, the watch registry and the calibration file
+- The daemon is the only writer of the journal and the undo store. It owns the watch registry whenever it is reachable; `retype watch` writes the file only when no daemon answers, because the command does not start one. `retype bench` writes the calibration atomically, and the daemon reads it for the next estimate
 - `retype daemon` runs in the foreground, which is what a systemd user unit or a launchd agent executes
 - A second daemon exits with `another daemon owns <state dir>`. Single instance is enforced by the lock file, never by convention
 - The CLI and the GUI are equal clients. No method is available to one and not the other

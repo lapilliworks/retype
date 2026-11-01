@@ -12,7 +12,6 @@ What the daemon watches, what it ignores, and what it does at startup.
 | Nesting | Allowed. A registration inside another is recorded, and its own `.retype.toml` applies to its subtree |
 | Persistence | `watches.toml` in the state directory, re-read on daemon start |
 | Missing path | A registration whose path is gone stays registered, is marked unavailable in `daemon status`, and is retried every 30 s |
-| Count | Bounded by configuration, default 32. Noise beyond that is a misconfiguration, not a use case |
 
 ## 2. Directory configuration lookup
 
@@ -24,7 +23,7 @@ A file outside every registration root is never converted, so it has no director
 
 - **Nothing is converted retroactively.** Registering a directory does not convert files that are already there, even if their names carry intent syntax. That would be surprising, and on first registration it would be destructive
 - **Identity priming does happen.** The daemon stats every file under the root and records device and inode, because without priming, renaming a file that existed before the daemon started has no identity to correlate and would be silently ignored. Priming reads no file contents and writes nothing
-- Priming is incremental and cancellable: it walks in the background, reports progress in `daemon status`, and stops immediately if the registration is removed. A root of a million files delays correlation of unprimed files, it does not delay startup
+- Priming is incremental and cancellable: it walks in the background, reports a running count in `daemon status`, and stops immediately if the registration is removed. A root of a million files delays correlation of unprimed files, it does not delay startup
 - A file whose identity is unprimed at rename time is still handled: the `From` and `To` event pair covers it, and if that is unavailable the result is `NeedsAttention`, never silence
 
 ## 4. Ignores
@@ -65,7 +64,7 @@ Ordinary sync clients are unaffected, because there is nothing to detect: Dropbo
 
 Dataless and recall-on-access files encountered inside an ordinary registration are skipped, logged at info level, and counted as `placeholders` in `daemon status`. They are never converted implicitly.
 
-What is built: the provider rules above, decided from the path and the mount table, and a per-file placeholder probe that reads one byte and treats `EAGAIN`, or `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` on Windows, as "not here". What is not: the macOS `SF_DATALESS` flag, which needs a `stat` the standard library does not expose, so a dataless file there is caught by the read probe instead. The gap table names it.
+What is built: the provider rules above, decided from the path and the mount table; the macOS `SF_DATALESS` flag; and a per-file placeholder probe that reads one byte and treats `EAGAIN`, or `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS` on Windows, as "not here".
 
 ## 6. Size limits
 
@@ -126,8 +125,9 @@ Capability is a property of the platform, in three tiers:
 |---|---|---|
 | Actions | `notify-send --wait --action` | Linux, with a session bus and a libnotify build that has actions |
 | Plain | `notify-send` | Linux, with a session bus |
-| Log | a line on the daemon's own stderr | everywhere else, including Windows and macOS until the signed notifier bundle exists |
+| Plain, macOS | `osascript` | macOS until the signed notifier bundle exists |
+| Log | a line on the daemon's own stderr | Windows until the toast and AppUserModelID exist, or no session at all |
 
 The tier is decided once at startup, because the session is either there or it is not. A daemon with no notifier still converts: the tier is about being told, never about the work.
 
-Undo is the action, and it runs from the daemon rather than through a URI handler, because `notify-send --wait` answers on its own standard output and there is nothing else to listen to. The Windows toast and the macOS User Notifications centre need an AppUserModelID and a signed bundle; that bundle is the first signed artifact of a later release, not a library call.
+Undo is the action, and it runs from the daemon rather than through a URI handler, because `notify-send --wait` answers on its own standard output and there is nothing else to listen to. The CLI handles `retype://job/<id>` undo, cancel and resolve. The Windows toast and the macOS User Notifications centre need an AppUserModelID and a signed bundle; that bundle is the first signed artifact of a later release, not a library call.

@@ -138,10 +138,9 @@ size   = decimal ( decimal-unit / binary-unit )
 decimal-unit = "kb" / "mb" / "gb"      ; 1000, 1000^2, 1000^3 bytes
 binary-unit  = "kib" / "mib" / "gib"   ; 1024, 1024^2, 1024^3 bytes
 decimal = int [ "." 1*DIGIT ]
-time   = tagged / clock
+time   = tagged
 tagged = 1*DIGIT / 1*DIGIT "s" / 1*DIGIT "m" [ 1*DIGIT "s" ]
        / 1*DIGIT "h" [ 1*DIGIT "m" ] [ 1*DIGIT "s" ]
-clock  = 1*DIGIT ":" 2DIGIT / 1*DIGIT ":" 2DIGIT ":" 2DIGIT
 range  = scalar / scalar "-" scalar / scalar "-" / "-" scalar
 scalar = int / time
 code   = 2*3ALPHA *( "-" 1*8ALNUM )
@@ -159,13 +158,11 @@ Accepted `time` forms:
 | `int "h" [ int "m" ] [ int "s" ]` | `1h30s` | 3630 s |
 | `int "d" [ int "h" ] [ int "m" ] [ int "s" ]` | `1d12h` | 129600 s |
 | `int "w" [ int "d" ] [ int "h" ] [ int "m" ] [ int "s" ]` | `2w3d` | 1468800 s |
-| `int ":" 2DIGIT` | `1:30` | 90 s, minutes and seconds |
-| `int ":" 2DIGIT ":" 2DIGIT` | `1:00:30` | 3630 s, hours, minutes and seconds |
 
 Rules:
 
 - In the tagged form the units MUST appear in the order w, d, h, m, s, each at most once. A unit MAY be omitted, so `1h30s` needs no `0m`: nobody says "one hour, zero minutes, thirty seconds"
-- In the clock form every place down to seconds is present, and minutes and seconds are exactly two digits below 60. `1:30` is therefore ninety seconds, and an hour and a half is written `1:30:00`
+- A colon form is not accepted: `:` is outside the intent character set, because a Windows file name cannot carry it
 - A number without a unit MUST be the whole value, so `1h30` is `E_VALUE_SYNTAX`
 - There is no month unit. A month is not a fixed number of seconds, and every other unit is exact, so `1M` is `E_VALUE_SYNTAX` and a quarter year is written `13w`
 - A fraction is permitted only in `size`, and only down to a whole byte: `1.5mb` and `1.234kb` are exact, `1.2345kb` is half a byte and is `E_VALUE_SYNTAX`
@@ -218,7 +215,7 @@ Rules:
 - C1 Formats and names are printed in lowercase, using primary names only
 - C2 Tokens retain written order. Reordering is never applied, because the registry has no table of which operations commute: `quality` and `cap` do, `resize` and `rotate` do not, so any fixed sequence would be right for some strings and silently wrong for others. The string is the pipeline
 - C3 Groups retain written order
-- C4 Values are printed in the form produced by their class, without leading zeros. A duration prints in the tagged form with zero units omitted, so `1:00:30` prints as `1h30s` and 3600 s prints as `1h`
+- C4 Values are printed in the form produced by their class, without leading zeros. A duration prints in the tagged form with zero units omitted, so 3630 s prints as `1h30s` and 3600 s prints as `1h`
 - C5 A token is printed without `=` when reparsing the compact form yields an identical token, and with `=` otherwise
 - C6 `ask` and `now` print as `ask` and `now`, never as `+` or `!`
 - C7 Nothing is printed for the implicit conversion of a group
@@ -324,9 +321,8 @@ Valid, with canonical form:
 | `clip.mp4+mute!` | `clip.mp4+mute+now` | No confirmation |
 | `clip.mp4+!` | `clip.mp4+ask` | Warned and asked: a dismissed prompt beats a refused rename |
 | `clip.mp4+trim1h30s` | `clip.mp4+trim1h30s` | An hour and a half, without the zero minutes |
-| `clip.mp4+trim1:00-2:30` | `clip.mp4+trim1m-2m30s` | Clock form read, tagged form printed |
+| `clip.mp4+trim60s-150s` | `clip.mp4+trim1m-2m30s` | Range read, tagged form printed |
 | `photo.webp+q80+` | `photo.webp+quality80+ask` | Editor prefilled |
-| `scan.pdf` -> `scan.png+page2-5+dpi300` | unchanged | Page range rendered |
 | `notes.tar.gz` -> `notes.zip` | unchanged | Repack an archive into another container |
 
 Invalid:
@@ -343,7 +339,6 @@ Invalid:
 | `photo.jpg+quality80+quality90` | `E_DUPLICATE` |
 | `clip.mp4+cap1080+size5mb` | `E_EXCLUSIVE` |
 | `clip.mp4+trim1h30` | `E_VALUE_SYNTAX` |
-| `clip.mp4+trim1:5` | `E_VALUE_SYNTAX` |
 | `photo.jpg` renamed from `photo.jpg` | `E_NOOP` |
 | `photo.jpg+5 mb` | `E_CHARSET` |
 

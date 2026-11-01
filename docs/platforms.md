@@ -55,10 +55,10 @@ Two tiers, and the difference matters enough to be explicit in the documentation
 
 | Tier | How | Contains | Supported |
 |---|---|---|---|
-| Source | `cargo install`, or a Homebrew source formula | The CLI binary only | As a workaround, for people who build their own |
+| Source | `cargo install --git`, or a Homebrew source formula | The CLI binary only | As a workaround, for people who build their own |
 | Installed | Platform installer, signed | CLI, daemon, notifier bundle, URI scheme registration, service definition. No external tool binaries | Yes |
 
-`cargo install` is **CLI only and a workaround**. It gives conversion, explanation and in-process running with no daemon and no watched directories that survive a reboot, because a bare binary cannot register a URI scheme on macOS or a Start-menu shortcut on Windows, and cannot install a user service. The documentation states this rather than implying feature parity.
+`cargo install` is **CLI only and a workaround**. The binary can run the daemon in the foreground and `retype watch` registrations persist, but it cannot install a user service, register a URI scheme on macOS, or create a Start-menu shortcut on Windows. The documentation states this rather than implying feature parity.
 
 What the installer does, per platform:
 
@@ -108,8 +108,8 @@ Capability per platform, matching:
 | Platform | Actions | Owner |
 |---|---|---|
 | Linux | libnotify actions | Daemon |
-| Windows | Toast with protocol activation | Daemon, via the Start-menu shortcut identity |
-| macOS | User Notifications with categories | Notifier bundle |
+| Windows | Toast with protocol activation; the log fallback until the signed notifier exists | Daemon, via the Start-menu shortcut identity |
+| macOS | User Notifications with categories; `osascript` plain fallback now | Notifier bundle |
 
 When the GUI is installed it registers `retype://` and the notifier bundle defers. When the daemon is not running, the scheme handler performs undo in-process where possible, and otherwise reports that the daemon is unavailable.
 

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=retype
+NoDisplay=true
+Exec=retype uri %u
+MimeType=x-scheme-handler/retype;

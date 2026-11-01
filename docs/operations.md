@@ -130,11 +130,13 @@ Per-format constraints of this kind come from `docs/tools.md`, because they are 
 
 `at`, `fps`, `mute` and `cap` have landed for video and audio, `docs/tools.md` §3.1. Documents landed with their formats and no operations: `md`, `html`, `docx`, `odt`, `epub` and `pdf` convert through pandoc, `docs/tools.md` §5.
 
-Archives take no operations at all: `zip`, `tar` and `tar.gz` store the bytes they are given, and an operation that changed them would make the format an encoder. A plan that asks for one is `E_UNSUPPORTED` naming the archive.
+Archives take no operations at all: `zip`, `tar` and `tar.gz` store the bytes they are given, and an operation that changed them would make the format an encoder. A plan that asks for one is `E_UNSUPPORTED` naming the archive. A directory is not an archive source: keeps the gesture to container-to-container repacking.
+
+`crop`, `gray`, `nometa`, `noprofile`, `lossless`, `size`, `effort`, `compress` and `colors` are declared and do not yet have a backend fragment, so using one is `E_UNSUPPORTED` rather than a silent no-op. Their reasons are in.
 
 `trim`, `speed`, `normalize`, `mono`, `bitrate`, `codec`, `page` and `dpi` stay reserved with their slots and parameters, and a job that uses one is `E_UNSUPPORTED` rather than `E_NAME_UNKNOWN`. Two of them have a reason rather than a pending vertical:
 
-- `page` and `trim` take a `range`, and a fragment has one `{value}` hole. Expressing a range needs an argument that can carry two numbers
+- `page` and `trim` take a `range`, and a fragment has one `{value}` hole. The grammar reads a range, but expressing two numbers to a tool needs an argument that can carry both
 - `dpi` means something different to every document engine, and nothing at all to `docx`: pandoc's variable reaches a LaTeX preamble and a typst document alike only by accident. A dial that silently does nothing in half its targets is worse than a dial that refuses
 
 ## 7. Presets
