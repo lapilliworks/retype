@@ -150,7 +150,7 @@ Resume input, in order:
 2. The undo record for the job, which holds the original bytes as a hard link or a copy
 3. Nothing, which is `E_JOB_RESUME_UNAVAILABLE`
 
-Resume skips outputs whose recorded identity matches a file that still exists with the recorded size, and runs the rest. `--force` ignores the recorded identities and runs every output again. Identity is `(device, inode)` on Unix; on Windows the stable metadata API exposes no file id, so a resume there runs the output again rather than treating a file with the right name and size as its own work.
+Resume skips outputs whose recorded identity matches a file that still exists with the recorded size, and runs the rest. `--force` ignores the recorded identities and runs every output again. Identity is `(device, inode)` on Unix and the volume serial plus file id on Windows. An occupied output that does not carry the recorded identity is `E_IO_EXISTS`, because a file the job did not produce belongs to the person who put it there; `--force` is the deliberate replacement.
 
 Resume is therefore available for as long as the undo record survives retention, and unavailable afterwards. That coupling is deliberate rather than incidental: it makes retention a single, documented knob instead of two.
 

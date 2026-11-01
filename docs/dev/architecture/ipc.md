@@ -95,7 +95,7 @@ Request timeout defaults to 5 s. No method blocks on work that can outlive it.
 |---|---|
 | Session | `hello`, `status`, `shutdown` |
 | Registry | `watch.add`, `watch.remove`, `watch.list` |
-| Jobs | `jobs.list`, `jobs.get`, `jobs.submit`, `jobs.cancel`, `jobs.resume` |
+| Jobs | `jobs.list`, `jobs.get`, `jobs.submit`, `jobs.cancel`, `jobs.resume`, `jobs.resolve` |
 | History | `undo`, `why` |
 | Live | `events.subscribe` |
 | Config | `config.reload` |

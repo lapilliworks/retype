@@ -14,10 +14,10 @@ retype <command> [arguments] [flags]
 | `watch [<dir>...] [--non-recursive] [--pause\|--resume]` | Register directories, or list registrations with no arguments |
 | `unwatch <dir>...` | Deregister directories |
 | `daemon [start\|stop [--now] [--force]\|status]` | Foreground by default. `stop` drains, `--now` cancels, `--force` overrides a supervisor's refusal |
-| `jobs list\|get\|cancel\|logs` | Queue inspection and control |
+| `jobs list\|get\|cancel\|resume\|resolve\|logs` | Queue inspection and control |
 | `undo <id\|--last>` | Reverse one job |
 | `why <path>` | Explain a file's conversion |
-| `explain <intent>` | Parse, plan, backend, estimate and diagnostics without a file |
+| `explain <name> <intent>` | Parse, plan, backend, estimate and diagnostics without a file |
 | `list [--tiers]` | Configured pairs. `--tiers` adds one line per claim with its engine and version, `docs/fidelity.md` |
 | `doctor [--emit\|--write\|--report]` | Tool probing, availability, support bundle |
 | `bench [--pair <from>:<to>] [--family <name>]` | Measure this machine, so estimates are about it |
@@ -167,7 +167,7 @@ retype why <path>
 
 `undo` reads the undo store rather than the journal, so it answers even when the journal is gone, and it removes the record it used: one record, one restore target.
 
-`jobs resume` continues a `partial` job: an output that still carries the identity and size the job recorded is skipped, and the rest are run again from the source bytes, which come from the source path or from the undo record when a rename consumed the name. `--force` re-runs all of them, `jobs list --state partial` finds the candidates, and a job with neither source nor record is `E_JOB_RESUME_UNAVAILABLE`.
+`jobs resume` continues a `partial` job: an output that still carries the identity and size the job recorded is skipped, and the rest are run again from the source bytes, which come from the source path or from the undo record when a rename consumed the name. An occupied output that does not carry the recorded identity is `E_IO_EXISTS`; `--force` re-runs every output and replaces it. `jobs list --state partial` finds the candidates, and a job with neither source nor record is `E_JOB_RESUME_UNAVAILABLE`.
 
 Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the candidates printed.
 

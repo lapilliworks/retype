@@ -26,7 +26,7 @@ Two tiers exist, and the difference is deliberate.
 
 - **Installed**: platform installer, signed. Command line, daemon, notifier,
   URI scheme, user service. External tools are acquired separately. Supported
-- **Source**: `cargo install --git https://github.com/justretype/retype`. The
+- **Source**: `cargo install --git https://github.com/justretype/retype retype-cli`. The
   binary includes the daemon, but no service, URI registration or notifier
   bundle is installed. A workaround, not the supported path
 
