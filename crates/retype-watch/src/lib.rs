@@ -408,6 +408,47 @@ mod tests {
 	}
 
 	#[test]
+	fn a_rename_after_the_process_restored_the_name_is_still_a_fact() {
+		let dir = dir();
+		let source = dir.path().join("photo.png");
+		fs::write(&source, b"pixels").unwrap();
+
+		let mut correlator = fresh();
+		correlator.observe(retype_core::correlate::Sighting::of(&source).unwrap());
+
+		// macOS reports one path per event and the batch is decided after the move, so
+		// the old name is gone and the new one carries the identity.
+		let webp = dir.path().join("photo.webp");
+		fs::rename(&source, &webp).unwrap();
+		let facts = feed(
+			&mut correlator,
+			&batch(vec![
+				rename(RenameMode::Any, &[&source]),
+				rename(RenameMode::Any, &[&webp]),
+			]),
+		);
+		assert_eq!(sources(&facts), vec![(source.clone(), webp.clone())]);
+
+		// A job restores the bytes under the source name itself, and records the move
+		// at the moment it makes it, because the platform may not report it.
+		fs::rename(&webp, &source).unwrap();
+		correlator.observe(retype_core::correlate::Sighting::of(&source).unwrap());
+
+		// The user renames again. Whatever the platform reported about our own move,
+		// this has to correlate.
+		let jpg = dir.path().join("photo.jpg");
+		fs::rename(&source, &jpg).unwrap();
+		let facts = feed(
+			&mut correlator,
+			&batch(vec![
+				rename(RenameMode::Any, &[&source]),
+				rename(RenameMode::Any, &[&jpg]),
+			]),
+		);
+		assert_eq!(sources(&facts), vec![(source.clone(), jpg.clone())]);
+	}
+
+	#[test]
 	fn a_single_path_event_is_not_a_name_pair() {
 		let dir = dir();
 		let source = dir.path().join("a.heic");
