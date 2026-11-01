@@ -105,12 +105,13 @@ impl Fixture {
 			String::from_utf8_lossy(&converted.stderr)
 		);
 
-		let listed = self.run(&["jobs", "list"]);
+		// The listing prints the shortest handle; the log file is named by the full id.
+		let listed = self.run(&["jobs", "list", "--json"]);
 		String::from_utf8_lossy(&listed.stdout)
-			.split_whitespace()
-			.next()
+			.lines()
+			.filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+			.find_map(|job| job["id"].as_str().map(str::to_string))
 			.expect("a job id")
-			.to_string()
 	}
 }
 

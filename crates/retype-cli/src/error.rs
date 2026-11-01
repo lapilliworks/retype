@@ -122,7 +122,7 @@ pub fn exit_code(code: &retype_core::error::Code) -> u8 {
 		// interruption is a state the user or the daemon put the job in, not a
 		// capability this machine lacks.
 		Code::IoLocked
-		| Code::IpcAmbiguous
+		| Code::JobAmbiguous
 		| Code::JobState
 		| Code::JobCancelled
 		| Code::JobInterrupted

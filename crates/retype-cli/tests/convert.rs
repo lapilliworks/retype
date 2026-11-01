@@ -343,7 +343,7 @@ fn a_submitted_job_can_be_cancelled_while_it_runs() {
 	let mut stderr = String::new();
 	std::io::Read::read_to_string(&mut convert.stderr.unwrap(), &mut stderr).unwrap();
 
-	assert_eq!(finished.code(), Some(4), "{stderr}");
+	assert_eq!(finished.code(), Some(7), "{stderr}");
 	assert!(stderr.contains("E_JOB_CANCELLED"), "{stderr}");
 	assert!(
 		!dir.path().join("photo.webp").exists(),
@@ -473,12 +473,13 @@ fn jobs_list_since_filters_older_records() {
 		Some(0)
 	);
 
-	let first = String::from_utf8_lossy(&fixture.convert(&["jobs", "list"]).stdout)
+	// `jobs list` prints the shortest handle; `--since` takes the full id.
+	let first = String::from_utf8_lossy(&fixture.convert(&["jobs", "list", "--json"]).stdout)
 		.lines()
-		.find(|line| line.contains("photo.png"))
-		.and_then(|line| line.split_whitespace().next())
-		.unwrap_or_default()
-		.to_string();
+		.filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+		.find(|job| job["source"].as_str().is_some_and(|path| path.contains("photo.png")))
+		.and_then(|job| job["id"].as_str().map(str::to_string))
+		.unwrap_or_default();
 	assert!(!first.is_empty());
 
 	assert_eq!(

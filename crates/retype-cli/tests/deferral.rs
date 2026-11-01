@@ -231,7 +231,10 @@ fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
 	let listing = fixture.command().args(["jobs", "list"]).output().unwrap();
 	let listed = String::from_utf8_lossy(&listing.stdout);
 	assert_eq!(
-		listed.lines().filter(|line| line.starts_with(&id)).count(),
+		listed
+			.lines()
+			.filter(|line| line.split_whitespace().next().is_some_and(|handle| id.starts_with(handle)))
+			.count(),
 		1,
 		"the job has one record, not a parked one and a running one: {listed}"
 	);

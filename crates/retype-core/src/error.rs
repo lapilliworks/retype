@@ -85,6 +85,8 @@ pub enum Code {
 	JobPartial,
 	JobSuperseded,
 	JobResumeUnavailable,
+	JobNotFound,
+	JobAmbiguous,
 
 	// Transport, `docs/dev/architecture/ipc.md` §8.
 	IpcVersion,

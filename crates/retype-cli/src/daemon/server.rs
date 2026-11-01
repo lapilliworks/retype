@@ -254,18 +254,15 @@ impl Server {
 			));
 		};
 
-		match self.find(written) {
-			Some(job) => match job.to_record() {
+		match self.resolve_job(written) {
+			Ok(job) => match job.to_record() {
 				Ok(value) => Ok(Response::ok(request.id, value)?),
 				Err(error) => Ok(Response::error(
 					request.id,
 					WireError::new(Code::IpcFrame, error.to_string()),
 				)),
 			},
-			None => Ok(Response::error(
-				request.id,
-				WireError::new(Code::JobState, format!("no job matches '{written}'")),
-			)),
+			Err(error) => Ok(Response::error(request.id, error)),
 		}
 	}
 
@@ -412,7 +409,7 @@ impl Server {
 		let Ok(id) = retype_core::job::JobId::parse(written) else {
 			return Ok(Response::error(
 				request.id,
-				WireError::new(Code::JobState, format!("'{written}' is not a job id")),
+				WireError::new(Code::UsageArgs, format!("'{written}' is not a job id")),
 			));
 		};
 
@@ -470,11 +467,9 @@ impl Server {
 			.and_then(serde_json::Value::as_bool)
 			.unwrap_or(false);
 
-		let Some(job) = self.find(written) else {
-			return Ok(Response::error(
-				request.id,
-				WireError::new(Code::JobState, format!("no job matches '{written}'")),
-			));
+		let job = match self.resolve_job(written) {
+			Ok(job) => job,
+			Err(error) => return Ok(Response::error(request.id, error)),
 		};
 
 		if job.state != JobState::Partial {
@@ -520,11 +515,9 @@ impl Server {
 			.and_then(serde_json::Value::as_bool)
 			.unwrap_or(false);
 
-		let Some(job) = self.find(written) else {
-			return Ok(Response::error(
-				request.id,
-				WireError::new(Code::JobState, format!("no job matches '{written}'")),
-			));
+		let job = match self.resolve_job(written) {
+			Ok(job) => job,
+			Err(error) => return Ok(Response::error(request.id, error)),
 		};
 
 		let parked = match job.state {
@@ -682,16 +675,45 @@ impl Server {
 	}
 
 	/// A job by full id or unique prefix.
-	fn find(&self, written: &str) -> Option<Job> {
-		let wanted = written.to_ascii_lowercase();
+	fn resolve_job(&self, written: &str) -> std::result::Result<Job, WireError> {
+		if !retype_core::job::JobId::valid_prefix(written) {
+			return Err(WireError::new(
+				Code::UsageArgs,
+				format!(
+					"'{written}' is not a job handle; use at least {} characters",
+					retype_core::job::JobId::PREFIX_MIN
+				),
+			));
+		}
 
+		let Ok(jobs) = self.shared.jobs.lock() else {
+			return Err(WireError::new(Code::IpcInternal, "the job list is poisoned"));
+		};
+
+		let mut matches: Vec<Job> = jobs.iter().filter(|job| job.id.starts_with(written)).cloned().collect();
+
+		match matches.len() {
+			1 => Ok(matches.pop().expect("one match")),
+			0 => Err(WireError::new(Code::JobNotFound, format!("no job matches '{written}'"))),
+			_ => {
+				let candidates: Vec<&str> = matches.iter().map(|job| job.id.as_str()).collect();
+				Err(WireError::new(
+					Code::JobAmbiguous,
+					format!("'{written}' matches {} jobs: {}", candidates.len(), candidates.join(", ")),
+				))
+			}
+		}
+	}
+
+	/// A job by full id, for the paths that must have one already.
+	fn find(&self, written: &str) -> Option<Job> {
 		self.shared
 			.jobs
 			.lock()
 			.ok()?
 			.iter()
 			.rev()
-			.find(|job| job.id.as_str().to_ascii_lowercase().starts_with(&wanted))
+			.find(|job| job.id.as_str() == written)
 			.cloned()
 	}
 
@@ -914,18 +936,27 @@ impl Server {
 						WireError::new(Code::UsageArgs, "undo needs an id or --last"),
 					));
 				};
-				let wanted = written.to_ascii_lowercase();
-				let matches: Vec<_> = records
-					.iter()
-					.filter(|record| record.id.as_str().to_ascii_lowercase().starts_with(&wanted))
-					.collect();
+				if !retype_core::job::JobId::valid_prefix(written) {
+					return Ok(Response::error(
+						request.id,
+						WireError::new(
+							Code::UsageArgs,
+							format!(
+								"'{written}' is not a job handle; use at least {} characters",
+								retype_core::job::JobId::PREFIX_MIN
+							),
+						),
+					));
+				}
+
+				let matches: Vec<_> = records.iter().filter(|record| record.id.starts_with(written)).collect();
 
 				match matches.as_slice() {
 					[record] => (*record).clone(),
 					[] => {
 						return Ok(Response::error(
 							request.id,
-							WireError::new(Code::JobState, format!("no undo record matches '{written}'")),
+							WireError::new(Code::JobNotFound, format!("no undo record matches '{written}'")),
 						));
 					}
 					_ => {
@@ -933,7 +964,7 @@ impl Server {
 						return Ok(Response::error(
 							request.id,
 							WireError::new(
-								Code::IpcAmbiguous,
+								Code::JobAmbiguous,
 								format!(
 									"'{written}' matches {} records: {}",
 									candidates.len(),

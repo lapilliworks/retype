@@ -15,6 +15,19 @@ use crate::client;
 use crate::error::Result;
 use crate::output;
 
+/// The states `jobs list --state` accepts, `docs/dev/architecture/state.md` §3.
+pub const STATES: [&str; 9] = [
+	"pending",
+	"queued",
+	"running",
+	"done",
+	"partial",
+	"failed",
+	"cancelled",
+	"superseded",
+	"needs-attention",
+];
+
 pub fn list(
 	state_dir: &Path,
 	state: Option<&str>,
@@ -45,6 +58,11 @@ pub fn list(
 		.cloned()
 		.unwrap_or_default();
 
+	let ids: Vec<&str> = jobs
+		.iter()
+		.filter_map(|job| job.get("id").and_then(Value::as_str))
+		.collect();
+
 	let mut shown = 0;
 
 	for job in jobs.iter().rev() {
@@ -72,10 +90,16 @@ pub fn list(
 		shown += 1;
 
 		match json {
-			true => println!("{job}"),
+			true => {
+				let mut item = job.clone();
+				if let Some(object) = item.as_object_mut() {
+					object.insert("kind".to_string(), Value::String("job".to_string()));
+				}
+				println!("{item}");
+			}
 			false => println!(
 				"{:<28}{:<16}{}",
-				job.get("id").and_then(Value::as_str).unwrap_or_default(),
+				shortest_prefix(job_id, &ids),
 				job_state,
 				job.get("source").and_then(Value::as_str).unwrap_or_default()
 			),
@@ -85,10 +109,27 @@ pub fn list(
 	Ok(ExitCode::SUCCESS)
 }
 
+/// The shortest handle that names one id among `ids`, or the id itself when nothing
+/// shorter is unique. Listings print this so copy-paste is short by default.
+fn shortest_prefix(id: &str, ids: &[&str]) -> String {
+	for length in JobId::PREFIX_MIN..=id.len() {
+		let prefix = &id[..length];
+		if ids.iter().filter(|other| other.starts_with(prefix)).count() == 1 {
+			return prefix.to_string();
+		}
+	}
+
+	id.to_string()
+}
+
 /// One job, as the daemon recorded it. The record is JSON because it is the
 /// thing a bug report or a script wants, and every other shape would be a lossy
 /// rendering of it.
 pub fn get(state_dir: &Path, prefix: &str, allow_spawn: bool) -> Result<ExitCode> {
+	if let Some(code) = handle(prefix) {
+		return Ok(code);
+	}
+
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 
 	let id = match one(&mut client, prefix)? {
@@ -108,6 +149,10 @@ pub fn get(state_dir: &Path, prefix: &str, allow_spawn: bool) -> Result<ExitCode
 /// the record. `--follow` prints what arrives while the job runs and stops when
 /// it finishes.
 pub fn logs(state_dir: &Path, prefix: &str, follow: bool, json: bool, allow_spawn: bool) -> Result<ExitCode> {
+	if let Some(code) = handle(prefix) {
+		return Ok(code);
+	}
+
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 	let id = match one(&mut client, prefix)? {
 		Ok(id) => id,
@@ -251,6 +296,10 @@ fn recorded_tails(client: &mut retype_ipc::Client, id: &JobId) -> Result<Vec<Str
 }
 
 pub fn resume(state_dir: &Path, prefix: &str, force: bool, json: bool, allow_spawn: bool) -> Result<ExitCode> {
+	if let Some(code) = handle(prefix) {
+		return Ok(code);
+	}
+
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 
 	let id = match one(&mut client, prefix)? {
@@ -273,6 +322,10 @@ pub fn resume(state_dir: &Path, prefix: &str, force: bool, json: bool, allow_spa
 }
 
 pub fn cancel(state_dir: &Path, prefix: &str, json: bool, allow_spawn: bool) -> Result<ExitCode> {
+	if let Some(code) = handle(prefix) {
+		return Ok(code);
+	}
+
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 
 	let id = match one(&mut client, prefix)? {
@@ -478,6 +531,10 @@ pub fn resolve(
 	json: bool,
 	allow_spawn: bool,
 ) -> Result<ExitCode> {
+	if let Some(code) = handle(prefix) {
+		return Ok(code);
+	}
+
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 	let id = match single(&mut client, prefix)? {
 		Ok(id) => id,
@@ -520,6 +577,21 @@ fn single(client: &mut retype_ipc::Client, prefix: &str) -> Result<std::result::
 	}
 }
 
+/// A handle a person may type, `docs/dev/architecture/state.md` §2. Checked before
+/// the daemon is asked, so a typo is a usage error whether or not one is running.
+fn handle(prefix: &str) -> Option<ExitCode> {
+	match JobId::valid_prefix(prefix) {
+		true => None,
+		false => Some(ExitCode::from(output::fail(
+			&Code::UsageArgs,
+			format!(
+				"'{prefix}' is not a job handle; use at least {} characters",
+				JobId::PREFIX_MIN
+			),
+		))),
+	}
+}
+
 /// The one job a prefix names, or the exit code to answer with.
 fn one(client: &mut retype_ipc::Client, prefix: &str) -> Result<std::result::Result<JobId, ExitCode>> {
 	let candidates = matching(client, prefix)?;
@@ -527,7 +599,7 @@ fn one(client: &mut retype_ipc::Client, prefix: &str) -> Result<std::result::Res
 	match candidates.len() {
 		1 => Ok(Ok(candidates[0].clone())),
 		0 => Ok(Err(ExitCode::from(output::fail(
-			&Code::JobState,
+			&Code::JobNotFound,
 			format!("no job matches '{prefix}'"),
 		)))),
 		_ => {
@@ -536,7 +608,7 @@ fn one(client: &mut retype_ipc::Client, prefix: &str) -> Result<std::result::Res
 				message.push_str(&format!("\n  {candidate}"));
 			}
 
-			Ok(Err(ExitCode::from(output::fail(&Code::IpcAmbiguous, message))))
+			Ok(Err(ExitCode::from(output::fail(&Code::JobAmbiguous, message))))
 		}
 	}
 }
@@ -552,8 +624,8 @@ fn matching(client: &mut retype_ipc::Client, prefix: &str) -> Result<Vec<JobId>>
 		.map(|jobs| {
 			jobs.iter()
 				.filter_map(|job| job.get("id").and_then(Value::as_str))
-				.filter(|id| id.to_ascii_lowercase().starts_with(&prefix))
 				.filter_map(|id| JobId::parse(id).ok())
+				.filter(|id| id.starts_with(&prefix))
 				.collect()
 		})
 		.unwrap_or_default();
@@ -596,6 +668,14 @@ mod tests {
 		assert_eq!(choose('s', &attention), Some(Action::Skip));
 		assert_eq!(choose('q', &pending), Some(Action::Quit));
 		assert_eq!(choose('x', &pending), None);
+	}
+
+	#[test]
+	fn a_listing_prints_the_shortest_handle_that_is_unique() {
+		let ids = ["01m6a4rararx3wrttkrgpp1783", "01m6b4rararx3wrttkrgpp1783"];
+
+		assert_eq!(shortest_prefix(ids[0], &ids), "01m6a");
+		assert_eq!(shortest_prefix(ids[0], &ids[..1]), "01m6");
 	}
 
 	#[test]

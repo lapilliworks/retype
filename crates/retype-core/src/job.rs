@@ -49,6 +49,21 @@ impl JobId {
 		raw.parse()
 	}
 
+	/// The shortest handle a person may type, `docs/dev/architecture/state.md` §2.
+	pub const PREFIX_MIN: usize = 4;
+
+	/// Whether `raw` is a handle a listing could have printed: long enough, and
+	/// made only of Crockford characters.
+	pub fn valid_prefix(raw: &str) -> bool {
+		raw.len() >= Self::PREFIX_MIN && raw.bytes().all(|byte| decode(byte).is_some())
+	}
+
+	/// Whether this id starts with a handle. The comparison is case-insensitive
+	/// because a handle may be typed in either case.
+	pub fn starts_with(&self, prefix: &str) -> bool {
+		self.0.starts_with(&prefix.to_ascii_lowercase())
+	}
+
 	pub fn as_str(&self) -> &str {
 		&self.0
 	}
@@ -701,5 +716,27 @@ mod tests {
 
 		assert_ne!(first.id, second.id);
 		assert_eq!(first.machine, second.machine);
+	}
+}
+
+#[cfg(test)]
+mod handle_tests {
+	use super::JobId;
+
+	#[test]
+	fn a_handle_is_at_least_four_crockford_characters() {
+		assert!(JobId::valid_prefix("01m6"));
+		assert!(JobId::valid_prefix("01M6"));
+		assert!(!JobId::valid_prefix(""));
+		assert!(!JobId::valid_prefix("01m"));
+		assert!(!JobId::valid_prefix("01m!"));
+	}
+
+	#[test]
+	fn a_handle_is_matched_in_either_case() {
+		let id = JobId::parse("01m6b4rararx3wrttkrgpp1783").unwrap();
+
+		assert!(id.starts_with("01M6"));
+		assert!(!id.starts_with("01m7"));
 	}
 }

@@ -107,16 +107,19 @@ pub fn run(state_dir: &Path, id: Option<&str>, last: bool, json: bool) -> Result
 
 /// A full id, or a prefix unique among the records.
 fn resolve(records: &[Record], written: &str) -> std::result::Result<Record, ExitCode> {
-	let wanted = written.to_ascii_lowercase();
-	let matches: Vec<&Record> = records
-		.iter()
-		.filter(|record| record.id.as_str().to_ascii_lowercase().starts_with(&wanted))
-		.collect();
+	if !JobId::valid_prefix(written) {
+		return Err(ExitCode::from(output::fail(
+			&Code::UsageArgs,
+			format!("'{written}' is not a job handle; use at least {} characters", JobId::PREFIX_MIN),
+		)));
+	}
+
+	let matches: Vec<&Record> = records.iter().filter(|record| record.id.starts_with(written)).collect();
 
 	match matches.len() {
 		1 => Ok(matches[0].clone()),
 		0 => Err(ExitCode::from(output::fail(
-			&Code::JobState,
+			&Code::JobNotFound,
 			format!("no undo record matches '{written}'"),
 		))),
 		_ => {
@@ -125,7 +128,7 @@ fn resolve(records: &[Record], written: &str) -> std::result::Result<Record, Exi
 				message.push_str(&format!("\n  {}", record.id.as_str()));
 			}
 
-			Err(ExitCode::from(output::fail(&Code::IpcAmbiguous, message)))
+			Err(ExitCode::from(output::fail(&Code::JobAmbiguous, message)))
 		}
 	}
 }

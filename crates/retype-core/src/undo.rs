@@ -319,7 +319,7 @@ impl Store {
 	pub fn restore(&self, id: &JobId) -> Result<Record> {
 		let Some(record) = self.load(id)? else {
 			return Err(Error::Diagnostic(Diagnostic::global(
-				Code::JobState,
+				Code::JobNotFound,
 				format!("{id} has no undo record"),
 			)));
 		};
