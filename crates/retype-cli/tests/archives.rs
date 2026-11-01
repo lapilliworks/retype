@@ -257,7 +257,9 @@ fn a_seven_zip_becomes_a_tarball_and_back_through_the_tool() {
 		.arg(&made)
 		.output()
 		.unwrap();
-	let listing = String::from_utf8_lossy(&listing.stdout);
+	// 7-Zip writes a Windows path with its own separators, and the entries were added
+	// as `notes/one.txt`, so the listing is read with one separator.
+	let listing = String::from_utf8_lossy(&listing.stdout).replace('\\', "/");
 
 	assert!(listing.contains("notes/one.txt"), "{listing}");
 	assert!(listing.contains("notes/sub/two.txt"), "{listing}");

@@ -7,6 +7,19 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// The name a path is recorded under: the journal holds canonical paths, and a
+/// source that was renamed to its target no longer exists to canonicalise.
+fn recorded(path: &Path) -> PathBuf {
+	let Some(name) = path.file_name() else {
+		return path.to_path_buf();
+	};
+
+	match path.parent().and_then(|parent| parent.canonicalize().ok()) {
+		Some(parent) => parent.join(name),
+		None => path.to_path_buf(),
+	}
+}
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -305,7 +318,7 @@ fn debounce_ms_holds_a_rename_until_the_file_stops_changing() {
 
 	// One job, asked for what the last name asked for, and named after it.
 	assert_eq!(done["intent"], "webp+quality75", "{done:?}");
-	assert_eq!(done["source"]["path"], source.to_str().unwrap(), "{done:?}");
+	assert_eq!(done["source"]["path"], recorded(&source).to_str().unwrap(), "{done:?}");
 	assert!(fixture.photos.join("f-quality75.webp").exists());
 	assert_eq!(
 		fixture.records().len(),
