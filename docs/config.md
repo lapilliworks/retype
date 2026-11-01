@@ -95,7 +95,7 @@ layout = ['{input}', '{ops}', '{output}']
 
 The layout is the whole reason a tool is configuration: `7zz` takes its output before its input and `ffmpeg` needs `-i` in front of its input, and neither fact belongs in code.
 
-A bare `command` resolves in the managed toolchain first, then in `PATH`; an absolute path is used as written and pins the user's choice. The managed directory is `<state>/tools/bin` and is populated only from a signed distribution list, `docs/tools.md` §2. There is no per-tool source switch: pinning is expressed by an absolute path, and the fixed order keeps.
+A bare `command` resolves in the managed toolchain first, then in `PATH`; an absolute path is used as written and pins the user's choice. The managed directory is `<state>/tools/bin` and is populated only by the GUI from a signed distribution list, `docs/tools.md` §2; the CLI never writes to it. There is no per-tool source switch: pinning is expressed by an absolute path, and the fixed order keeps.
 
 `aliases` are other executable names for the same tool, tried in declared order after `command` when that candidate is absent or unusable. They change neither the tool's name nor its `[tools.<name>]` key, so every `argv` fragment and `backends.prefer` entry still names the declared tool. An absolute `command` is a pin and suppresses the aliases. A candidate below its version floor, or missing a required component, is skipped rather than shadowing a usable alias, and `retype doctor` reports which candidate answered.
 
@@ -277,7 +277,7 @@ prefer = ['magick', 'ffmpeg', 'pandoc', '7zz']
 
 The first backend in `prefer` that implements every operation in the plan and is available wins. Determinism is required: a plan never depends on discovery order, so a missing earlier backend moves the plan down the list rather than shuffling it.
 
-Availability is a plan-time question with a fixed answer at that moment: the tool is in the managed directory or on `PATH`, above its version floor, and carrying its components. A managed tool is also checked against its manifest. The chosen backend, its resolved engine and its build fingerprint are recorded with the job, because a later machine that has since gained ImageMagick must not silently produce a different file.
+Availability is a plan-time question with a fixed answer at that moment: the tool is in the managed directory or on `PATH`, above its version floor, and carrying its components. The chosen backend, its resolved engine and its build fingerprint are recorded with the job, because a later machine that has since gained ImageMagick must not silently produce a different file.
 
 ## 9. Undo retention, quota and overflow
 
@@ -415,7 +415,7 @@ A key the entry does not declare is refused as `E_CFG_UNKNOWN_KEY` before any ru
 
 V12 named an in-process backend and was retired with it. The number is not reused, so that a configuration error reported against an older build stays identifiable.
 
-Warnings, not errors: a name that is a prefix of another name; a tool that fails its probe; a managed tool whose fingerprint differs from its manifest; a pair whose tier is `delegated` but has no `argv` fragment.
+Warnings, not errors: a name that is a prefix of another name; a tool that fails its probe; a pair whose tier is `delegated` but has no `argv` fragment. A managed artifact whose fingerprint no longer matches its manifest is reported by the GUI's verification, not by a CLI warning.
 
 ## 14. Probing
 

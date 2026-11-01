@@ -43,7 +43,7 @@ A claim is earned by running the conversion.
 
 A fixture run converts a fixture per pair with the real tool, records the resolved engine, its reported version and its build fingerprint, and verifies the output is readable and of the target format. The result is a manifest, one record per claim, checked in and shipped with the release. `docs/tools.md` §5.1 records the same engine, version and fingerprint with every job, so a claim made two years ago can be compared against what is installed now.
 
-`retype fidelity` is that run, `docs/cli.md` §10. A pair is checked by converting the sample `[bench.sample]` declares for its source family, so a claim records what it was earned on.
+`retype fidelity` is that run, `docs/cli.md` §9. A pair is checked by converting the sample `[bench.sample]` declares for its source family, so a claim records what it was earned on.
 
 That sample proves the conversion succeeds. What turns it into "the tool preserved these properties" is the fixtures in `fixtures/fidelity`: one tiny checked-in file per property, converted through the same plan and probed on both sides. `fixtures/fidelity/fixtures.toml` declares which property each file carries, and a test probes every one of them, so a fixture whose bytes stop carrying its axis fails rather than quietly weakening a claim.
 

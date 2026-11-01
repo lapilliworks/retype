@@ -72,15 +72,17 @@ None of these actions is performed implicitly by running the binary.
 
 ### 5.1 Tool acquisition
 
-External tools are not part of the installer. They come from the system or from the managed toolchain, and the platform default differs:
+External tools are not part of the installer. Acquisition differs by interface: the CLI does not manage tools, while the GUI does.
 
-| Platform | Default acquisition | Managed toolchain |
+A CLI user installs tools with the platform's package manager or by hand, then leaves them on `PATH` or pins an absolute path in configuration. A source build has no other route. The GUI manages a signed set for users who may not know what the tools are, may not know what a package manager is, or may not want to bother.
+
+| Platform | CLI | GUI |
 |---|---|---|
-| Linux | Distribution packages, then `PATH` | Only when the user asks for it |
-| macOS | Homebrew or the system, then `PATH` | Fallback when neither has the tool |
-| Windows | Managed toolchain | Offered during installer setup or first use, with an explicit prompt |
+| Linux | Distribution packages, then `PATH` | Managed set when the user asks for it |
+| macOS | Homebrew or the system, then `PATH` | Managed set as a fallback when neither has the tool |
+| Windows | A manual install, then `PATH` | Managed set offered during setup or first use, with an explicit prompt |
 
-The managed set is a per-user directory described by a signed distribution list, `docs/tools.md` §2. An offline pack is the same artifacts and manifest on disk, for machines with no network or a controlled one. No conversion downloads anything; acquisition is an explicit command or an installer prompt.
+The managed set is a per-user directory described by a signed distribution list, `docs/tools.md` §2. The CLI and daemon resolve it before `PATH` when the GUI has installed it, but never install, update or verify it. An offline pack is the same artifacts and manifest on disk, for machines with no network or a controlled one. No conversion downloads anything; acquisition is an explicit GUI action or an installer prompt.
 
 A system tool is supported but not pinned. Its version and build fingerprint are recorded, and a fidelity claim that was earned against a different build is reported as `unverified`, `docs/fidelity.md`.
 
@@ -97,7 +99,7 @@ A system tool is supported but not pinned. Its version and build fingerprint are
 
 Publisher identity is fixed: Lapilli Works LLC, `com.lapilliworks.retype`. Reputation is bound to that identity, so it is never changed casually.
 
-The distribution manifest has its own Ed25519 key, kept offline and separate from the platform code-signing certificate. Its public key is embedded in `retype` and printed by `retype doctor`. Rotation dual-signs one release, so an old client accepts the new key before it is the only key.
+The distribution manifest has its own Ed25519 key, kept offline and separate from the platform code-signing certificate. Its public key is embedded in the GUI that manages the set. Rotation dual-signs one release, so an old client accepts the new key before it is the only key.
 
 ## 7. Notifications and scheme registration
 

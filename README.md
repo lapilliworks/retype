@@ -67,6 +67,10 @@ Two tiers exist, and the difference is deliberate.
 - **Source**: `cargo install`. Command line only, no daemon, no watched
   directories that survive a reboot. A workaround, not the supported path
 
+Tool acquisition follows the interface. The CLI does not install or manage tools: a
+CLI user uses the platform's package manager or installs them by hand. The GUI manages
+the signed toolchain for users who should not need to know what a package manager is.
+
 ## Licence
 
 ISC. See `LICENSE`. The graphical application is a separate, proprietary

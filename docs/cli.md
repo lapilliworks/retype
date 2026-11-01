@@ -19,7 +19,6 @@ retype <command> [arguments] [flags]
 | `why <path>` | Explain a file's conversion |
 | `explain <intent>` | Parse, plan, backend, estimate and diagnostics without a file |
 | `list [--tiers]` | Configured pairs. `--tiers` adds one line per claim with its engine and version, `docs/fidelity.md` |
-| `tools list\|install\|update\|verify` | Managed toolchain inspection, acquisition and verification |
 | `doctor [--emit\|--write\|--report]` | Tool probing, availability, support bundle |
 | `bench [--pair <from>:<to>] [--family <name>]` | Measure this machine, so estimates are about it |
 | `fidelity [--pair <from>:<to>] [--family <name>] [--write <path>] [--render <path>]` | Earn the fidelity claims for this machine and record the build that earned them |
@@ -28,6 +27,8 @@ retype <command> [arguments] [flags]
 | `completions <shell>` | A completion script for bash, zsh, fish, elvish or PowerShell |
 
 Global flags, valid on every command: `--config <path>`, `--state-dir <path>`, `--json`, `--quiet`, `--verbose`, `--no-spawn`, `--help`, `--version`.
+
+The CLI does not install, update or verify external tools. A CLI user acquires them with the platform's package manager or manually, and the CLI uses the result on `PATH`, an absolute path in configuration, or a managed set the GUI installed, `docs/tools.md` §2. `retype doctor` reports what the machine provides.
 
 `--` terminates flag parsing, for files whose names begin with a dash.
 
@@ -146,24 +147,7 @@ retype init [--output <path>]
 
 `doctor --emit` is the other half: it prints a `[tools]` snippet pinning the tools this machine resolved, which is what makes a result reproducible across machines. Only tools that are present are pinned, and a tool whose path has a space is skipped with a note, because a command with a space cannot be named in configuration. `--write` puts the snippet in the user configuration file and refuses when that file already has content, since merging by hand is the only thing that cannot silently lose a line.
 
-## 5. Toolchain
-
-```
-retype tools list [--installed|--available]
-retype tools install <tool>[@variant> [--offline <dir>]
-retype tools update [<tool>]
-retype tools verify [<tool>]
-```
-
-`tools list` shows each declared tool, its source, its resolved command, its version and its build fingerprint. `--installed` limits the output to the managed set; `--available` shows what the signed manifest offers for this platform and architecture.
-
-`tools install` and `tools update` are the only commands that download. They verify the manifest signature, the generation counter, the artifact hash and the artifact signature before unpacking into `<state>/tools`. `--offline` takes a directory or archive containing the same manifest and artifacts for a machine with no network.
-
-`tools verify` rechecks what is installed against the cached manifest and reports every artifact whose hash, signature or fingerprint no longer matches. It does not check system tools, because there is no manifest for them.
-
-A bare tool command resolves in the managed directory before `PATH`; an absolute `command` in configuration bypasses it, `docs/config.md` §3. A failed verification is an environment failure and exits 4; it never falls through to a different tool silently.
-
-## 6. Jobs and history
+## 5. Jobs and history
 
 ```
 retype jobs list [--state <state>] [--limit <n>] [--since <id>]
@@ -199,7 +183,7 @@ Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the ca
 
 `undo --last` reverses the most recent completed job, which is the gesture a notification button performs.
 
-## 7. Exit codes
+## 6. Exit codes
 
 | Code | Meaning |
 |---|---|
@@ -214,7 +198,7 @@ Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the ca
 
 3 means the request cannot be satisfied. 4 means the machine cannot satisfy it. 6 means try again.
 
-## 8. Output
+## 7. Output
 
 - Results go to stdout, diagnostics and progress to stderr, so a successful conversion in a pipeline emits one line and nothing else
 - Human output is column-aligned. Nothing colours it yet: `NO_COLOR`, `CLICOLOR` and `--no-color` arrive with the first coloured output, and are not accepted as flags until then, so a script cannot pass one that does nothing
@@ -223,7 +207,7 @@ Ids accept a unique prefix; an ambiguous prefix is `E_IPC_AMBIGUOUS` with the ca
 - `--quiet` suppresses everything below errors
 - `--verbose` is a count, not a filter language: `-v` reports what the command decided, such as which configuration file it read and which daemon it reached; `-vv` adds what it asked and got. `RETYPE_LOG` sets the same number, as a digit or as `error`, `warn`, `info`, `debug`, `trace`, so a wrapper can turn it on without rewriting arguments
 
-## 9. Examples
+## 8. Examples
 
 ```
 retype c photo.heic webp+quality80+nometa
@@ -238,11 +222,10 @@ retype why photo.webp
 retype explain clip.mov 'mp4+cap1080+trim10s-30s+mute+now'
 retype explain photo.heic 'webp+q80+cap1080+rotate90'
 retype doctor --emit
-retype tools list --installed
-retype tools install ffmpeg@gpl
+retype fidelity --pair heic:webp
 ```
 
-## 10. Fidelity claims
+## 9. Fidelity claims
 
 ```
 retype fidelity [--pair <from>:<to>] [--family <name>] [--write <path>] [--manifest <path>] [--render <path>] [--fixtures <dir>]
@@ -256,7 +239,7 @@ Alongside the sample conversion, every fixture of the source format is converted
 
 A claim that declares `exact` and is `unverified` exits 4 rather than silently downgrading a promise of no loss. So does an `exact` claim whose source has no fixture, and one whose fixtures lost a property: `exact` means nothing was lost, and a run that cannot show it has not earned the word. Nothing earned at all exits 4 for the same reason.
 
-## 11. Support report
+## 10. Support report
 
 ```
 retype doctor --report [<path>]

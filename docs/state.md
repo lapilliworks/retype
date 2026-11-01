@@ -31,7 +31,7 @@ retype/
 
 Directory mode is `0700`, files `0600`. The store holds user data in plain form, so nothing here is world-readable.
 
-The toolchain directory holds executables, so its mode is `0700` on Unix. `tools/bin` is searched before `PATH`, `docs/tools.md` §2. An artifact is unpacked into its own directory and only then linked into `bin`, so an interrupted install cannot replace a working tool with a partial one.
+The toolchain directory is owned by the GUI: it installs, updates and verifies the artifacts, while the CLI and daemon only read what is there. It holds executables, so its mode is `0700` on Unix. `tools/bin` is searched before `PATH`, `docs/tools.md` §2. An artifact is unpacked into its own directory and only then linked into `bin`, so an interrupted install cannot replace a working tool with a partial one.
 
 ## 2. Identifiers
 

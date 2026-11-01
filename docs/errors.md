@@ -66,7 +66,7 @@ Everything else is namespaced, and the table lists every code in full so that a 
 | `transient` | Try again | 5, 6 | Yes | Retry | `failed`, marked retryable |
 | `internal` | A bug | 1 | No | Report | `failed`, with a report id |
 
-Exit codes are the ones in `docs/cli.md` §7. A category maps to one code, so a script can branch on the category without parsing messages.
+Exit codes are the ones in `docs/cli.md` §6. A category maps to one code, so a script can branch on the category without parsing messages.
 
 Rules:
 

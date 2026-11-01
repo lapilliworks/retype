@@ -88,5 +88,5 @@ A repack through a tool keeps the same rules, and where the rules cannot be kept
 - Through a tool, the entry order is the tree's own, sorted by name, rather than the source's: the tool decides what order it writes, and pretending otherwise would be a claim the container cannot keep
 - Modes survive because the staged tree carries them on disk and the listing carries them in the archive
 
-`7zz` remains the declared backend for `.7z` and may be installed from the managed set; `7z` and `7za` are executable aliases, not separate backends.
+`7zz` remains the declared backend for `.7z` and may be present in the managed set; `7z` and `7za` are executable aliases, not separate backends.
 
