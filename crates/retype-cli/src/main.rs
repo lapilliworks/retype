@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, error::ErrorKind};
 use retype_cli::error::Result;
 use retype_cli::{
 	bench, client, config, daemon, doctor, explain, fidelity, init, list, output, report, state, verbose, why,
@@ -321,7 +321,25 @@ fn main() -> ExitCode {
 		libc::signal(libc::SIGPIPE, libc::SIG_DFL);
 	}
 
-	let cli = Cli::parse();
+	let wants_json = std::env::args_os().any(|argument| argument == "--json");
+
+	let cli = match Cli::try_parse() {
+		Ok(cli) => cli,
+		Err(error) => match error.kind() {
+			// `--version` is a result, so it answers in the same shape as `version`.
+			ErrorKind::DisplayVersion if wants_json => {
+				print_version(true);
+				return ExitCode::SUCCESS;
+			}
+			ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => error.exit(),
+			_ if wants_json => {
+				output::start(true);
+				let code = output::fail(&retype_core::error::Code::UsageArgs, clap_message(&error));
+				return ExitCode::from(code);
+			}
+			_ => error.exit(),
+		},
+	};
 	config::use_path(cli.config.clone());
 	verbose::start(cli.verbose, cli.quiet);
 	output::start(cli.json);
@@ -696,6 +714,31 @@ fn main() -> ExitCode {
 	};
 
 	finish(outcome)
+}
+
+/// The parser's complaint without its usage block, so `--json` gets one sentence.
+fn clap_message(error: &clap::Error) -> String {
+	let text = error.to_string();
+	let mut kept = Vec::new();
+
+	for line in text.lines() {
+		let line = line.trim();
+
+		if line.is_empty() || line.starts_with("For more information") {
+			continue;
+		}
+
+		if line.starts_with("Usage:") {
+			break;
+		}
+
+		kept.push(line.trim_start_matches("error: "));
+	}
+
+	match kept.is_empty() {
+		true => "invalid arguments".to_string(),
+		false => kept.join(" "),
+	}
 }
 
 /// One error rendering for every command: human on stderr, an envelope on stdout
