@@ -503,6 +503,7 @@ tier = 'converted'
 			skipped: AtomicU64::new(0),
 			placeholders: AtomicU64::new(0),
 			primed: AtomicU64::new(0),
+			observed: AtomicU64::new(0),
 			events: std::sync::Mutex::new(crate::daemon::events::Events::default()),
 			policies: Default::default(),
 			batches: Default::default(),

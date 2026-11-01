@@ -178,6 +178,7 @@ pub fn describe_status(status: &Value) -> Vec<(String, String)> {
 		("skipped".to_string(), field("skipped")),
 		("placeholders".to_string(), field("placeholders")),
 		("primed".to_string(), field("primed")),
+		("observed".to_string(), field("observed")),
 		("watches".to_string(), watch_line(&status["watches"])),
 		("journal".to_string(), field("journal")),
 		("endpoint".to_string(), field("endpoint")),

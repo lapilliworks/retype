@@ -51,6 +51,11 @@ pub struct Shared {
 	pub placeholders: AtomicU64,
 	/// Identities recorded by the startup walk, `docs/watch.md` §3.
 	pub primed: AtomicU64,
+	/// Event paths the watcher has looked at, `docs/watch.md` §3. It answers "is the
+	/// watcher seeing anything", and a caller can wait for it to grow before it
+	/// renames a file it just wrote, since on macOS a create and a rename inside one
+	/// window are reported as a create and carry no identity to correlate.
+	pub observed: AtomicU64,
 	/// What clients replay from, `docs/dev/architecture/ipc.md` §7.
 	pub events: Mutex<crate::daemon::events::Events>,
 	/// Each directory's `.retype.toml`, read once per change rather than once per file,
@@ -329,11 +334,19 @@ fn spawn_worker(
 				continue;
 			}
 
+			let observed: u64 = batch.events.iter().map(|event| event.paths.len() as u64).sum();
+
 			// One batch per window, so the jobs parked in one tick can be answered
 			// together, `docs/deferral.md` §10.
 			let parked_batch = retype_core::job::JobId::now().ok().map(|id| id.as_str().to_string());
 
-			for fact in feed(&mut correlator, &batch) {
+			let facts = feed(&mut correlator, &batch);
+
+			// After `feed`, so a caller that sees the count has had its file recorded:
+			// the sighting is what a later rename correlates against.
+			shared.observed.fetch_add(observed, Ordering::Relaxed);
+
+			for fact in facts {
 				// A directory may ask for more settled time than the window gives, which is
 				// what `debounce_ms` is for: an application that saves by renaming twice
 				// should be converted once, under the name it finally chose.

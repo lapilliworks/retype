@@ -115,6 +115,7 @@ fn the_status_lines_are_what_a_human_needs() {
 			"skipped",
 			"placeholders",
 			"primed",
+			"observed",
 			"watches",
 			"journal",
 			"endpoint",

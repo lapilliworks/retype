@@ -25,6 +25,7 @@ A file outside every registration root is never converted, so it has no director
 - **Identity priming does happen.** The daemon stats every file under the root and records device and inode, or the volume and file id on Windows, because without priming, renaming a file that existed before the daemon started has no identity to correlate and would be silently ignored. Priming reads no file contents and writes nothing
 - The watcher for each registration is started before the daemon publishes its endpoint. macOS reports only what happens after its event stream starts, so a rename made in the gap between "the daemon answers" and "the watcher is live" would be lost rather than late
 - Priming is incremental and cancellable: it walks in the background, reports a running count in `daemon status`, and stops immediately if the registration is removed. A root of a million files delays correlation of unprimed files, it does not delay startup
+- `daemon status` reports `observed`, the number of event paths the watcher has looked at. It answers whether the watcher is seeing anything at all, and it is how a test waits for a file it has just written to be known before renaming it: macOS reports a create and a rename inside one window as a create alone, which carries no pair and no identity to correlate
 - A file whose identity is unprimed at rename time is still handled: the `From` and `To` event pair covers it, and if that is unavailable the result is `NeedsAttention`, never silence
 
 ## 4. Ignores
