@@ -56,6 +56,11 @@ pub struct Shared {
 	/// renames a file it just wrote, since on macOS a create and a rename inside one
 	/// window are reported as a create and carry no identity to correlate.
 	pub observed: AtomicU64,
+	/// Paths this process moved itself and has not yet told the correlator about,
+	/// `docs/watch.md` §7. A job restores a renamed file to its source name before
+	/// converting it, and a platform that does not report its own process's renames
+	/// would leave the identity under the name the file no longer has.
+	pub own_renames: Mutex<Vec<PathBuf>>,
 	/// What clients replay from, `docs/dev/architecture/ipc.md` §7.
 	pub events: Mutex<crate::daemon::events::Events>,
 	/// Each directory's `.retype.toml`, read once per change rather than once per file,
@@ -107,6 +112,21 @@ impl Recent {
 }
 
 impl Shared {
+	/// Note a path this process moved itself, for the watcher to record.
+	pub fn note_own_rename(&self, path: &Path) {
+		if let Ok(mut moved) = self.own_renames.lock() {
+			moved.push(path.to_path_buf());
+		}
+	}
+
+	/// Take the paths this process moved since the last look.
+	fn take_own_renames(&self) -> Vec<PathBuf> {
+		match self.own_renames.lock() {
+			Ok(mut moved) => std::mem::take(&mut *moved),
+			Err(_) => Vec::new(),
+		}
+	}
+
 	/// A snapshot of the configuration. The `Arc` keeps the registry alive even
 	/// if a reload replaces it while a job is using it.
 	pub fn registry(&self) -> Arc<Registry> {
@@ -332,6 +352,13 @@ fn spawn_worker(
 
 			if batch.is_empty() {
 				continue;
+			}
+
+			// Our own renames first: a platform may not report a rename the process
+			// performed, and the identity has to be under the name the bytes now have
+			// before a batch that mentions that name is decided.
+			for moved in shared.take_own_renames() {
+				retype_watch::observe_path(&mut correlator, &moved);
 			}
 
 			let observed: u64 = batch.events.iter().map(|event| event.paths.len() as u64).sum();
@@ -941,7 +968,13 @@ fn run(
 
 	let mut renamed = match input {
 		Input::Renamed { renamed } => match execute::Rename::open(&renamed, &stem, &format) {
-			Ok(renamed) => Some(renamed),
+			Ok(renamed) => {
+				// The bytes are back under the source name because this process moved them.
+				// The watcher records that, so a platform that does not report its own
+				// process's renames does not lose the identity with the old name.
+				shared.note_own_rename(source);
+				Some(renamed)
+			}
 			Err(error) => {
 				eprintln!("retype: {}: {error}", target.display());
 				store.remove(&id).ok();

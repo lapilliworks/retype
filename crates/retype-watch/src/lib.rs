@@ -111,6 +111,19 @@ pub fn feed(correlator: &mut Correlator, batch: &Batch) -> Vec<RenameFact> {
 	coalesce(dedupe(facts))
 }
 
+/// Record a path this process moved itself, so correlation keeps up even when the
+/// platform never reports the rename it performed.
+///
+/// A job restores a renamed file to its source name before converting it. macOS does
+/// not always report a rename the process performed, and a missing report would leave
+/// the identity under the name the file no longer has, so the user's next rename of it
+/// would be silent.
+pub fn observe_path(correlator: &mut Correlator, path: &Path) {
+	if let Some(sighting) = sighting(path) {
+		correlator.observe(sighting);
+	}
+}
+
 /// Record the identity of every file under a root, so a file that existed
 /// before the daemon started can still be correlated by identity when it is
 /// renamed. Returns how many files were primed.

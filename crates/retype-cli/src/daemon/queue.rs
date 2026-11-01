@@ -504,6 +504,7 @@ tier = 'converted'
 			placeholders: AtomicU64::new(0),
 			primed: AtomicU64::new(0),
 			observed: AtomicU64::new(0),
+			own_renames: Default::default(),
 			events: std::sync::Mutex::new(crate::daemon::events::Events::default()),
 			policies: Default::default(),
 			batches: Default::default(),

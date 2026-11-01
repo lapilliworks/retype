@@ -90,6 +90,7 @@ impl Server {
 			placeholders: AtomicU64::new(0),
 			primed: AtomicU64::new(0),
 			observed: AtomicU64::new(0),
+			own_renames: Default::default(),
 			events: Mutex::new(crate::daemon::events::Events::default()),
 			policies: Default::default(),
 			batches: Default::default(),
