@@ -14,7 +14,7 @@ retype c holiday.heic jpg+q90        # holiday-quality90.jpg
 retype c holiday.heic png,webp       # holiday.png and holiday.webp
 ```
 
-`c` is short for `convert`. The first argument is the file being converted. The second is what follows the dot in the new name: a format, then zero or more transformations.
+`c` is short for `convert`. The first argument is the file being converted. The second is what follows the dot in the new name: a format, then zero or more transformations, which [Quality, size and geometry](dials.md) walks through and [Retype intent grammar](../reference/intents.md) defines exactly.
 
 No output path is required, because the rest of the name already determines the output name.
 
@@ -49,13 +49,13 @@ That is the only way to rename and convert in one step. A name that changes the 
 
 ## Overwriting
 
-An existing target is an error. Nothing is written, and nothing else in the job runs:
+An existing target is an error. Nothing is written, and nothing else in the job runs. The failure names the file that is in the way, and [Errors](../reference/errors.md) gives the status it exits with:
 
 ```
 retype c holiday.heic jpg --force
 ```
 
-`--force` replaces existing files. Use it deliberately: the previous file is not kept.
+`--force` replaces existing files. Use it deliberately: the previous file is not kept, and it is the previous file that [undo](jobs.md) would otherwise put back.
 
 ## Looking before doing
 
@@ -64,7 +64,7 @@ retype c holiday.heic webp+q80 --dry-run
 retype explain holiday.heic 'webp+q80'
 ```
 
-Both print the output name, the plan in the order it runs, the program chosen, the command line it would run, and an estimate. `--dry-run` uses the real source size and so prints a better estimate; `explain` needs no file at all, which is how a pair is tried before there is anything to try it on.
+Both print the output name, the plan in the order it runs, the program chosen, the command line it would run, and an estimate. `--dry-run` uses the real source size and so prints a better estimate; `explain` needs no file at all, which is how a pair is tried before there is anything to try it on. The tier printed beside the plan is the claim described in [Fidelity](../advanced/fidelity.md).
 
 ## Asking and telling
 

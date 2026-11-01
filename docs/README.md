@@ -8,7 +8,7 @@ Status is pre-alpha: part of what is described here is specified and not built y
 
 - A terminal
 - `retype` itself. There is no signed installer yet, so it is built from source, which needs a Rust toolchain: `cargo install --git https://github.com/justretype/retype retype-cli`
-- A converter for each format you use. Retype converts nothing by itself; it drives programs that are already on the machine, ImageMagick for images, FFmpeg for audio and video, Pandoc for documents. `retype doctor` reports which it finds and which are missing
+- A converter for each format you use. Retype converts nothing by itself; it drives programs that are already on the machine, ImageMagick for images, FFmpeg for audio and video, Pandoc for documents. `retype doctor` reports which it finds, and [Tools](advanced/converters.md) says what each of them has to be
 
 ## Convert one file
 
@@ -28,7 +28,7 @@ Quality rides on the same name:
 retype c photo.heic webp+q80
 ```
 
-That produces `photo-quality80.webp`. The tokens after the format are the same tokens that would be typed after a dot in a file name, which is why the two gestures are one grammar.
+That produces `photo-quality80.webp`. The tokens after the format are the same tokens that would be typed after a dot in a file name, which is why the two gestures are one grammar. What the tokens can be is in [Quality, size and geometry](usage/dials.md) and, down to the value forms and their limits, in [Retype intent grammar](reference/intents.md).
 
 ## Ask what would happen
 
@@ -42,7 +42,7 @@ That prints the name it would produce, the program it would run, and what the re
 retype c photo.heic webp+q80+cap1080 --dry-run
 ```
 
-Neither writes anything.
+Neither writes anything. The plan it prints is the one that would run, with the program that would run it on this machine; [Fidelity](advanced/fidelity.md) explains what that program is claimed to preserve.
 
 ## Do it by renaming
 
@@ -52,7 +52,7 @@ Register a folder once, then rename inside it as usual, from any file manager:
 retype watch ~/Pictures
 ```
 
-Nothing already in the folder is touched. From then on, renaming `photo.heic` to `photo.jpg` in that folder converts it, and renaming it to `photo.webp+q80` converts it with a quality setting. Registrations survive a restart.
+Nothing already in the folder is touched. From then on, renaming `photo.heic` to `photo.jpg` in that folder converts it, and renaming it to `photo.webp+q80` converts it with a quality setting. Registrations survive a restart, and a rename that would take a long time stops and waits rather than running unattended, which is what [Deferral](advanced/deferral.md) is about.
 
 ## Take it back
 
@@ -60,7 +60,7 @@ Nothing already in the folder is touched. From then on, renaming `photo.heic` to
 retype undo --last
 ```
 
-Every conversion keeps what it needs in order to be reversed for a week by default, including the source bytes when the rename is what consumed the source name.
+Every conversion keeps what it needs in order to be reversed for a week by default, including the source bytes when the rename is what consumed the source name. [Jobs, undo and history](usage/jobs.md) covers the queue, the settings behind that week, and what happens when a record has aged out.
 
 ## The manual
 

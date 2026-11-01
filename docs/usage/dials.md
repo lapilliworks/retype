@@ -4,7 +4,7 @@ The tokens after the format are the transformation. They run in the order they a
 
 ## Quality is the target format's own
 
-`quality`, or `q`, is a number from 1 to 100 where higher is better looking and larger. There is no shared scale: each format has its own range and its own meaning, and the number is passed to that format's encoder in that format's terms.
+`quality`, or `q`, is a number from 1 to 100 where higher is better looking and larger. There is no shared scale: each format has its own range and its own meaning, and the number is passed to that format's encoder in that format's terms. The exact ranges and defaults are in [Quality and size dials](../reference/dials.md).
 
 | Format | Range | Default | What the number does |
 |---|---|---|---|
@@ -23,6 +23,8 @@ retype c scan.jpg png+q80       # E_INAPPLICABLE: png has no quality
 
 The alternative would be to accept the token and quietly ignore it, which teaches a habit that fails later on a format where it matters.
 
+No setting here reaches a lossless re-encode: a `jpg` at `quality100` is still a re-encode of a re-encode, while a `png` at `compress9` loses nothing at all. That difference is the tier, and [Fidelity](../advanced/fidelity.md) is where it is defined.
+
 ## Shrinking
 
 Sizes are pixels, and nothing here ever enlarges an image. A resize that would make a picture bigger produces the source size instead.
@@ -37,7 +39,7 @@ Sizes are pixels, and nothing here ever enlarges an image. A resize that would m
 | `height720` | Scale so the height is 720 |
 | `crop1x1` | Centre crop to an aspect ratio, keeping the largest region that fits |
 
-`resize`, `width`, `height` and `cap` are four ways of saying "these proportions, no larger than this", and they are mutually exclusive within one output: asking for a width and a cap in the same name is `E_EXCLUSIVE`.
+`resize`, `width`, `height` and `cap` are four ways of saying "these proportions, no larger than this", and they are mutually exclusive within one output: asking for a width and a cap in the same name is `E_EXCLUSIVE`. Which operations a format accepts at all is the table in [Operations](../reference/operations.md).
 
 ## Turning and mirroring
 
@@ -62,7 +64,7 @@ Those are different images: the first turns a portrait picture sideways and then
 
 | Token | Effect |
 |---|---|
-| `size5mb` | Re-encode to fit under a budget, searching quality and then effort. `5mb` is decimal, `5mib` is binary |
+| `size5mb` | Re-encode to fit under a budget, searching quality and then effort. `5mb` is decimal, `5mib` is binary, and [Retype intent grammar](../reference/intents.md) has the units and their spellings |
 | `lossless` | Request lossless encoding, where the target has a lossless mode |
 | `effort4` | The encoder's speed dial, where it has one. Higher is slower and better |
 | `compress9` | The lossless compression level, 0 to 9, for containers that have one |

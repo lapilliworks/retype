@@ -10,7 +10,7 @@ A fidelity claim is evidence about one source format becoming one target format 
 (source, target, backend, tier, engine, engine version, engine fingerprint)
 ```
 
-The engine is part of the key because two backends implementing the same pair are not interchangeable. A PDF from `typst` and a PDF from `weasyprint` are both `pdf` and both `converted`, and no user would accept one as a substitute for the other without being told. The fingerprint is part of it because one version can be built with different codecs; `docs/tools.md` §5.1 records both with the job for the same reason.
+The engine is part of the key because two backends implementing the same pair are not interchangeable. A PDF from `typst` and a PDF from `weasyprint` are both `pdf` and both `converted`, and no user would accept one as a substitute for the other without being told. The fingerprint is part of it because one version can be built with different codecs; [Tools](converters.md) records both with the job for the same reason.
 
 ## 2. Tiers
 
@@ -27,7 +27,7 @@ Two rules follow from the definitions.
 
 ## 3. Reported states
 
-Three tiers, and two states that are not tiers and never appear in configuration. `docs/config.md` V10 accepts only the three.
+Three tiers, and two states that are not tiers and never appear in configuration. Configuration accepts only the three, which is a rule in [Configuration schema](../reference/config.md).
 
 | Value | Valid in config | Meaning |
 |---|---|---|
@@ -41,9 +41,9 @@ Three tiers, and two states that are not tiers and never appear in configuration
 
 A claim is earned by running the conversion.
 
-A fixture run converts a fixture per pair with the real tool, records the resolved engine, its reported version and its build fingerprint, and verifies the output is readable and of the target format. The result is a manifest, one record per claim, checked in and shipped with the release. `docs/tools.md` §5.1 records the same engine, version and fingerprint with every job, so a claim made two years ago can be compared against what is installed now.
+A fixture run converts a fixture per pair with the real tool, records the resolved engine, its reported version and its build fingerprint, and verifies the output is readable and of the target format. The result is a manifest, one record per claim, checked in and shipped with the release. [Tools](converters.md) records the same engine, version and fingerprint with every job, so a claim made two years ago can be compared against what is installed now.
 
-`retype fidelity` is that run, `docs/cli.md` §9. A pair is checked by converting the sample `[bench.sample]` declares for its source family, so a claim records what it was earned on.
+`retype fidelity` is that run, described in [Command line](../reference/cli.md). A pair is checked by converting the sample `[bench.sample]` declares for its source family, so a claim records what it was earned on.
 
 That sample proves the conversion succeeds. What turns it into "the tool preserved these properties" is the fixtures in `fixtures/fidelity`: one tiny checked-in file per property, converted through the same plan and probed on both sides. `fixtures/fidelity/fixtures.toml` declares which property each file carries, and a test probes every one of them, so a fixture whose bytes stop carrying its axis fails rather than quietly weakening a claim.
 
@@ -60,7 +60,7 @@ A pair records both lists: the properties it kept and the ones it lost. A `conve
 
 The properties are read from the bytes where the decoder does not report them. ImageMagick surfaces geometry, depth, opacity, frame count and colour count; it does not surface the EXIF orientation tag or, reliably, an embedded profile, so both are read directly: APP1 and APP2 segments in JPEG, `iCCP` and `eXIf` chunks in PNG, `ICCP` in WebP, tag 34675 in TIFF. An axis that cannot be read cannot be checked, and guessing would be worse than saying nothing.
 
-Size and duration are separate: they come from `retype bench`, not from the manifest, because they depend on the machine and the claim does not, `docs/dev/architecture/state.md` §4.
+Size and duration are separate: they come from `retype bench`, not from the manifest, because they depend on the machine and the claim does not.
 
 `delegated` is the answer for a pair no manifest describes: a converter we did not write, or a format offered because a tool accepts it. There is no fixture to convert and nothing to claim, so the tier says what is true, which is that a valid file of the target format was produced.
 
@@ -69,7 +69,7 @@ Size and duration are separate: they come from `retype bench`, not from the mani
 | Surface | Use |
 |---|---|
 | `retype list --tiers` | Prints the claims, per pair, with engine, version and fingerprint |
-| Plan compilation | A backend is chosen only if its claim meets the tier the pair declares, `docs/config.md` §4 |
+| Plan compilation | A backend is chosen only if its claim meets the tier the pair declares |
 | `retype why` | Prints the claim, the engine, and whether it is current |
 | `retype doctor` | Reports the manifest version, each tool source, and how many installed engines differ from the versions and fingerprints their claims were earned with |
 | Editor badge | The tier, with `unverified` shown as such rather than hidden |
@@ -88,8 +88,8 @@ Staleness never silently upgrades either. An engine newer than the recorded one 
 
 Three things wear the same vocabulary and are not fidelity.
 
-- `confidence` in `docs/provenance.md` is `exact`, `path-only` or `none`, and describes how a write was matched to an observed rename. It says nothing about an output's quality
-- The quality dials in `docs/quality.md` move within a tier. `jpg+quality100` and `jpg+quality10` are both `converted`; the dial does not reach `exact`
+- `confidence` in [Provenance](provenance.md) is `exact`, `path-only` or `none`, and describes how a write was matched to an observed rename. It says nothing about an output's quality
+- The dials in [Quality and size dials](../reference/dials.md) move within a tier. `jpg+quality100` and `jpg+quality10` are both `converted`; the dial does not reach `exact`
 - The format list is capability, not fidelity. A format we can write is not a pair we have evidence for
 
 ## 8. Claims for this release

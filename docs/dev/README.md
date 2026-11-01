@@ -4,14 +4,14 @@ These documents specify how `retype` is built and verified. Behaviour a user can
 
 | Document | Contents |
 |---|---|
-| [`architecture/state.md`](architecture/state.md) | State directory, journal, undo store, identifiers, calibration |
-| [`architecture/ipc.md`](architecture/ipc.md) | Daemon and client protocol |
+| [State, journal and identifiers](architecture/state.md) | The state directory, journal records, the undo store and calibration |
+| [Daemon and client protocol](architecture/ipc.md) | Requests, responses and the job lifecycle the client sees |
 
 ## Measurements
 
 | Document | Contents |
 |---|---|
-| [`measurement/events.md`](measurement/events.md) | What each platform reports for a rename (generated) |
+| [Filesystem events](measurement/events.md) | What each platform reports for a rename (generated) |
 | `measurement/probe/` | Raw probe transcripts, named `<platform>-<date>.txt` |
 
 `events.md` is generated from the probe, not written by hand:
@@ -47,7 +47,7 @@ cargo check --workspace --all-targets --target x86_64-unknown-freebsd
 
 ## Generated documents
 
-`measurement/events.md` is produced by the probe, and the claims table in [`fidelity.md`](../advanced/fidelity.md) is produced by a fidelity run:
+`measurement/events.md` is produced by the probe, and the claims table in [Fidelity](../advanced/fidelity.md) is produced by a fidelity run:
 
 ```
 retype fidelity --write share/retype/fidelity.toml --render docs/fidelity.md

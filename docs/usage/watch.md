@@ -11,7 +11,7 @@ retype watch                            # list what is registered
 retype unwatch ~/Pictures               # stop watching it
 ```
 
-Registration is idempotent and immediate: a running daemon re-reads the file within a second, so registering twice is not an error and does not convert twice. Registrations are remembered across restarts.
+Registration is idempotent and immediate: a running daemon re-reads the file within a second, so registering twice is not an error and does not convert twice. Registrations are remembered across restarts. Every flag these commands take is in [Command line](../reference/cli.md).
 
 A folder registered inside another is allowed, and its own policy applies to its subtree. Symlinks are resolved, and the resolved path is the identity: registering the same folder by another name is the same registration.
 
@@ -63,7 +63,7 @@ Ordinary sync clients are unaffected. A folder synced by Dropbox with files avai
 
 A dataless file encountered inside an ordinary registration is skipped, logged, and counted, and never converted implicitly.
 
-A network mount is not refused, because a warning that is wrong is better than a refusal that blocks a legitimate setup. It is warned about once at registration: renames on network filesystems are reported unreliably, so a conversion there may be missed.
+A network mount is not refused, because a warning that is wrong is better than a refusal that blocks a legitimate setup. It is warned about once at registration: renames on network filesystems are reported unreliably, so a conversion there may be missed. [Platforms](../reference/platforms.md) records which filesystems are supported and to what degree.
 
 ## Large files
 
@@ -96,9 +96,9 @@ One batch produces one notification, when its last job settles.
 retype daemon status
 ```
 
-That reports whether the daemon is running, what it is doing, and the counters behind the answers above: converted, skipped, parked, failed, and placeholders.
+That reports whether the daemon is running, what it is doing, and the counters behind the answers above: converted, skipped, parked, failed, and placeholders. A parked job is one waiting for an answer, and [Jobs, undo and history](jobs.md) is where it is answered or refused.
 
-Notifications say what a batch produced rather than what it attempted: three converted, or one converted and one failed with the reason, or one parked. The button on the notification is Undo, and it reverses every job of that batch that has a record.
+Notifications say what a batch produced rather than what it attempted: three converted, or one converted and one failed with the reason, or one parked. The button on the notification is Undo, and it reverses every job of that batch that has a record, which is the same record [Jobs, undo and history](jobs.md) describes.
 
 Where notifications come from depends on the platform: notification actions on Linux with a session bus, plain notifications elsewhere, and the daemon's own output where there is no session at all. A machine with nowhere to show a notification still converts.
 

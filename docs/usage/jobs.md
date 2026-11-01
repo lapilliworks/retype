@@ -14,9 +14,9 @@ retype jobs list --state needs-attention
 
 A conversion typed at the terminal is one job and does not queue behind a folder's renames. It shares the same pool, so parallelism is bounded the same way whether one person or a watcher started it.
 
-`jobs get` answers with the whole record, as JSON: the outputs, their sizes, their tier, their errors. It is what a bug report or a script wants, so it is not rendered into columns.
+`jobs get` answers with the whole record, as JSON: the outputs, their sizes, their tier, their errors. It is what a bug report or a script wants, so it is not rendered into columns. The tier is defined in [Fidelity](../advanced/fidelity.md).
 
-Ids accept any unique prefix. A prefix that matches more than one job is refused, with the candidates listed.
+Ids accept any unique prefix. A prefix that matches more than one job is refused, with the candidates listed, and [Command line](../reference/cli.md) has every subcommand and flag.
 
 ## Logs
 
@@ -56,9 +56,9 @@ One record restores one job. Undoing the same job twice is a refusal, not a seco
 | `quota` | `5gb` | Upper bound for the store, counted in source bytes |
 | `on_overflow` | `ask` | What to do when the bound is reached |
 
-The settings are host-level in configuration; a folder cannot set them, so a repository cannot decide every contributor's disk budget.
+The settings are host-level in configuration; a folder cannot set them, so a repository cannot decide every contributor's disk budget. They are read from the `[undo]` table in [Configuration schema](../reference/config.md).
 
-Undo is also the button on the notification a watched folder produces, and it reverses every job of that batch that has a record.
+Undo is also the button on the notification a watched folder produces, and it reverses every job of that batch that has a record. [Watching a folder](watch.md) describes the batching that makes it one notification.
 
 ## What made this file
 
@@ -74,7 +74,7 @@ The answer names what it knows and how it knows it:
 | `journal-path` | Only the name matched a record |
 | `unknown` | Nothing matched. Not an error: a file may have been made elsewhere |
 
-An identity match also requires the size to agree, because file identities are reused by the filesystem after a delete. Where the platform lets retype write the intent string onto the file as an attribute, that is a second, independent record, and turning that off affects future conversions only.
+An identity match also requires the size to agree, because file identities are reused by the filesystem after a delete. Where the platform lets retype write the intent string onto the file as an attribute, that is a second, independent record, and turning that off affects future conversions only. [Provenance](../advanced/provenance.md) describes both records and their limits.
 
 Records expire at twice the undo retention. `why` past that point says the file was not produced here.
 
