@@ -102,14 +102,14 @@ fn starting_twice_is_not_an_error() {
 }
 
 #[test]
-fn suppressed_autostart_reports_the_daemon_missing() {
+fn suppressed_spawn_reports_the_daemon_missing() {
 	let dir = tempfile::tempdir().unwrap();
 
 	let output = retype()
 		.args(["daemon", "status"])
 		.arg("--state-dir")
 		.arg(dir.path())
-		.env("RETYPE_NO_AUTOSTART", "1")
+		.env("RETYPE_NO_SPAWN", "1")
 		.output()
 		.unwrap();
 

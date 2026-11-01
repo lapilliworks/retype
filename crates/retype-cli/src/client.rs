@@ -36,7 +36,7 @@ pub fn connect_or_spawn(state_dir: &Path, allow_spawn: bool) -> Result<Client> {
 		return Ok(client);
 	}
 
-	if !allow_spawn || autostart_suppressed() {
+	if !allow_spawn || spawn_suppressed() {
 		return Err(Error::DaemonUnavailable);
 	}
 
@@ -114,8 +114,8 @@ pub fn wait_for_stop(state_dir: &Path, timeout: Duration) -> bool {
 	false
 }
 
-fn autostart_suppressed() -> bool {
-	std::env::var_os("RETYPE_NO_AUTOSTART").is_some_and(|value| value != "0" && !value.is_empty())
+fn spawn_suppressed() -> bool {
+	std::env::var_os("RETYPE_NO_SPAWN").is_some_and(|value| value != "0" && !value.is_empty())
 }
 
 /// `docs/dev/architecture/ipc.md` §1: the daemon's own account of itself, minus what a human does
