@@ -2,7 +2,7 @@
 
 Retype converts a file when you rename its extension. `photo.heic` becomes `photo.jpg`, and transformations ride on the same gesture: `photo.heic` becomes `photo.webp+q80`.
 
-Status is pre-alpha, so some documented behaviour is specified but not built yet.  records what has landed. The [root README](../README.md) explains what the product is and how it is installed.
+Status is pre-alpha, so some documented behaviour is specified but not built yet. The repository's records what has landed, and its README explains what the product is and how it is installed.
 
 ## Writing an intent
 

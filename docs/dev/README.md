@@ -1,8 +1,6 @@
 # Development documentation
 
-These documents specify how `retype` is built and verified. Behaviour a user can observe belongs in the [user documentation](../README.md).  holds the decisions and phases behind both.
-
-## Contracts
+These documents specify how `retype` is built and verified. Behaviour a user can observe belongs in the [user documentation](../README.md). ## Contracts
 
 | Document | Contents |
 |---|---|
@@ -14,7 +12,7 @@ These documents specify how `retype` is built and verified. Behaviour a user can
 | Document | Contents |
 |---|---|
 | [`measurement/events.md`](measurement/events.md) | What each platform reports for a rename (generated) |
-| [`measurement/probe/`](measurement/probe/) | Raw probe transcripts, named `<platform>-<date>.txt` |
+| `measurement/probe/` | Raw probe transcripts, named `<platform>-<date>.txt` |
 
 `events.md` is generated from the probe, not written by hand:
 
