@@ -3,8 +3,12 @@
 //! The `notify-send` here is a script that records what it was asked to say and answers
 //! with the action it was told to answer with, so the delivery path is proven without a
 //! desktop session, and so is the Undo button.
+//!
+//! macOS picks its own channel, `Plain` through `osascript`, which carries no action,
+//! so the scripted `notify-send` is never asked: these tests are about the Linux
+//! tiers and are skipped there.
 
-#![cfg(unix)]
+#![cfg(all(unix, not(target_os = "macos")))]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
