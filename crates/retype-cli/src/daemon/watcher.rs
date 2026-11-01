@@ -377,6 +377,14 @@ fn spawn_worker(
 
 			let facts = feed(&mut correlator, &batch);
 
+			for fact in &facts {
+				crate::verbose::detail(format!(
+					"rename {} -> {}",
+					fact.source.display(),
+					fact.target.display()
+				));
+			}
+
 			// After `feed`, so a caller that sees the count has had its file recorded:
 			// the sighting is what a later rename correlates against.
 			shared.observed.fetch_add(observed, Ordering::Relaxed);
@@ -509,6 +517,13 @@ fn decide(
 	// the file is not what its intermediate name claimed, it is what the
 	// job that was overtaken was reading, `docs/dev/architecture/state.md` §5.3.
 	let earlier = producers(shared, pool, &fact.source);
+
+	crate::verbose::detail(format!(
+		"{} job(s) hold {} while {} is decided",
+		earlier.len(),
+		fact.source.display(),
+		fact.target.display()
+	));
 
 	let source = match earlier.is_empty() {
 		true => fact.source.clone(),

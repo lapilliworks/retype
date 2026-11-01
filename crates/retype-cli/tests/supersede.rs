@@ -102,6 +102,8 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 			.arg("--state-dir")
 			.arg(&state)
 			.env("RETYPE_CONFIG", &config)
+			// The daemon's decisions are what a failure needs to explain.
+			.env("RETYPE_LOG", "debug")
 			.stdout(Stdio::null())
 			.stderr(Stdio::from(fs::File::create(&err).unwrap()))
 			.spawn()
