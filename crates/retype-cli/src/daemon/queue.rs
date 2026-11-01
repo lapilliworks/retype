@@ -91,8 +91,21 @@ pub enum Cancelled {
 
 #[derive(Default)]
 struct Inner {
+	/// `retype convert` and jobs a person resolves. They skip the automatic
+	/// admission order because the command is the request, `docs/cli.md` §2.
+	immediate: VecDeque<Work>,
 	waiting: VecDeque<Work>,
 	closed: bool,
+}
+
+impl Inner {
+	fn len(&self) -> usize {
+		self.immediate.len() + self.waiting.len()
+	}
+
+	fn take_next(&mut self) -> Option<Work> {
+		self.immediate.pop_front().or_else(|| self.waiting.pop_front())
+	}
 }
 
 /// The queue itself: a bounded deque with runners waiting on it. Runners take one
@@ -112,12 +125,16 @@ impl Queue {
 			return false;
 		};
 
-		if inner.closed || inner.waiting.len() >= CAPACITY {
+		if inner.closed || inner.len() >= CAPACITY {
 			self.dropped.fetch_add(1, Ordering::Relaxed);
 			return false;
 		}
 
-		inner.waiting.push_back(work);
+		match &work.kind {
+			Kind::Immediate(_) => inner.immediate.push_back(work),
+			_ => inner.waiting.push_back(work),
+		}
+
 		self.ready.notify_one();
 		true
 	}
@@ -130,7 +147,7 @@ impl Queue {
 		};
 
 		loop {
-			if let Some(work) = inner.waiting.pop_front() {
+			if let Some(work) = inner.take_next() {
 				return Take::Work(work);
 			}
 
@@ -153,15 +170,23 @@ impl Queue {
 	/// Remove a job that has not started. `None` when it is not waiting.
 	pub fn take_back(&self, id: &JobId) -> Option<Work> {
 		let mut inner = self.inner.lock().ok()?;
-		let index = inner.waiting.iter().position(|work| work.id == *id)?;
 
+		if let Some(index) = inner.immediate.iter().position(|work| work.id == *id) {
+			return inner.immediate.remove(index);
+		}
+
+		let index = inner.waiting.iter().position(|work| work.id == *id)?;
 		inner.waiting.remove(index)
 	}
 
 	/// Everything still waiting, taken out in one step so a stop cannot race a runner.
 	pub fn drain(&self) -> Vec<Work> {
 		match self.inner.lock() {
-			Ok(mut inner) => inner.waiting.drain(..).collect(),
+			Ok(mut inner) => {
+				let mut work: Vec<Work> = inner.immediate.drain(..).collect();
+				work.extend(inner.waiting.drain(..));
+				work
+			}
 			Err(_) => Vec::new(),
 		}
 	}
@@ -170,7 +195,14 @@ impl Queue {
 	pub fn ids(&self) -> Vec<JobId> {
 		self.inner
 			.lock()
-			.map(|inner| inner.waiting.iter().map(|work| work.id.clone()).collect())
+			.map(|inner| {
+				inner
+					.immediate
+					.iter()
+					.chain(inner.waiting.iter())
+					.map(|work| work.id.clone())
+					.collect()
+			})
 			.unwrap_or_default()
 	}
 
@@ -544,6 +576,50 @@ tier = 'converted'
 		}
 
 		pool.stop();
+	}
+
+	#[test]
+	fn an_immediate_job_goes_ahead_of_waiting_renames() {
+		let queue = Queue::default();
+		let photos = PathBuf::from("/photos");
+		let rename = |id| Work {
+			id,
+			kind: Kind::Rename {
+				root: photos.clone(),
+				bytes: photos.join("a.webp"),
+				source: photos.join("a.png"),
+				target: photos.join("a.webp"),
+			},
+		};
+
+		assert!(queue.submit(rename(id(1))));
+		assert!(queue.submit(Work {
+			id: id(2),
+			kind: Kind::Immediate(crate::daemon::immediate::Request {
+				input: photos.join("b.png"),
+				intent: "webp".to_string(),
+				output: None,
+				force: false,
+			}),
+		}));
+		assert!(queue.submit(rename(id(3))));
+
+		let first = match queue.take(Duration::ZERO) {
+			Take::Work(work) => work.id,
+			_ => panic!("the queue was empty"),
+		};
+		let second = match queue.take(Duration::ZERO) {
+			Take::Work(work) => work.id,
+			_ => panic!("the queue was empty"),
+		};
+		let third = match queue.take(Duration::ZERO) {
+			Take::Work(work) => work.id,
+			_ => panic!("the queue was empty"),
+		};
+
+		assert_eq!(first, id(2), "the submission skips the waiting renames");
+		assert_eq!(second, id(1), "the automatic jobs keep their own order");
+		assert_eq!(third, id(3));
 	}
 
 	#[test]
