@@ -364,15 +364,23 @@ fn spawn_worker(
 			}
 
 			if crate::verbose::level() >= 2 {
+				// The daemon's own state is most of the traffic and none of the
+				// question, so the line names everything else, whole.
 				let mut paths: Vec<String> = batch
 					.events
 					.iter()
 					.flat_map(|event| event.paths.iter())
-					.take(6)
+					.filter(|path| !path.starts_with(&shared.state_dir))
 					.map(|path| path.display().to_string())
 					.collect();
 				paths.dedup();
-				crate::verbose::detail(format!("batch: {} event(s): {}", batch.events.len(), paths.join(", ")));
+
+				crate::verbose::detail(format!(
+					"batch: {} event(s), {} outside state: {}",
+					batch.events.len(),
+					paths.len(),
+					paths.join(", ")
+				));
 			}
 
 			let observed: u64 = batch.events.iter().map(|event| event.paths.len() as u64).sum();
