@@ -376,22 +376,87 @@ fn spawn_worker(
 
 			if crate::verbose::level() >= 2 {
 				// The daemon's own state is most of the traffic and none of the
-				// question, so the line names everything else, whole.
-				let mut paths: Vec<String> = batch
-					.events
-					.iter()
-					.flat_map(|event| event.paths.iter())
-					.filter(|path| !path.starts_with(&shared.state_dir))
-					.map(|path| path.display().to_string())
-					.collect();
-				paths.dedup();
+				// question, so the line names everything else, whole, with the kind and
+				// any flag: a dropped-events notice is a flag, not a path.
+				let mut described: Vec<String> = Vec::new();
+
+				for event in &batch.events {
+					let paths: Vec<String> = event
+						.paths
+						.iter()
+						.filter(|path| !path.starts_with(&shared.state_dir))
+						.map(|path| path.display().to_string())
+						.collect();
+
+					if paths.is_empty() {
+						continue;
+					}
+
+					let mut label = format!("{:?}", event.kind);
+
+					if let Some(flag) = event.flag() {
+						label.push_str(&format!(" {flag:?}"));
+					}
+
+					if let Some(info) = event.info() {
+						label.push_str(&format!(" {info}"));
+					}
+
+					described.push(format!("{label}: {}", paths.join(", ")));
+				}
 
 				crate::verbose::detail(format!(
-					"batch: {} event(s), {} outside state: {}",
+					"batch: {} event(s): {}",
 					batch.events.len(),
-					paths.len(),
-					paths.join(", ")
+					described.join("; ")
 				));
+			}
+
+			// A platform that dropped events says so in the batch. What it lost is gone, so
+			// the batch cannot be read as a description of the tree: the tree is scanned
+			// instead, and identity correlation names what moved while nothing was watching,
+			// `docs/dev/measurement/events.md` §3.
+			if retype_watch::needs_rescan(&batch) {
+				for error in &batch.errors {
+					eprintln!("retype: {}: watching: {error}", watched_root.display());
+				}
+
+				crate::verbose::note("events were dropped; scanning the tree");
+
+				// The file this process restored is under the tree the scan is about to read,
+				// so anchor its identity at the restored name first: the scan then names the
+				// user's rename from that name, not from the job's output.
+				for sighting in shared.take_own_renames() {
+					let _ = correlator.observe(sighting);
+				}
+
+				let registry = shared.registry();
+				let scanned_paths: u64 = batch.events.iter().map(|event| event.paths.len() as u64).sum();
+				let parked_batch = retype_core::job::JobId::now().ok().map(|id| id.as_str().to_string());
+				let (facts, scanned) = retype_watch::rescan(
+					&mut correlator,
+					&watched_root,
+					recursive,
+					|path| {
+						!retype_core::convert::is_temp_file(path)
+							&& registry.watch().considers(&watched_root, path)
+					},
+					|| worker_stop.load(Ordering::Relaxed),
+				);
+
+				shared.primed.fetch_add(scanned as u64, Ordering::Relaxed);
+				shared.observed.fetch_add(scanned_paths, Ordering::Relaxed);
+
+				for fact in facts {
+					crate::verbose::detail(format!(
+						"rename {} -> {}",
+						fact.source.display(),
+						fact.target.display()
+					));
+					dispatch(&shared, &pool, &watched_root, fact, window, &mut held, parked_batch.as_deref());
+				}
+
+				continue;
 			}
 
 			let observed: u64 = batch.events.iter().map(|event| event.paths.len() as u64).sum();
@@ -420,27 +485,7 @@ fn spawn_worker(
 			shared.observed.fetch_add(observed, Ordering::Relaxed);
 
 			for fact in facts {
-				// A directory may ask for more settled time than the window gives, which is
-				// what `debounce_ms` is for: an application that saves by renaming twice
-				// should be converted once, under the name it finally chose.
-				let directory = fact.target.parent().unwrap_or(&watched_root);
-
-				let debounce = match shared.policies.policy(&watched_root, directory).as_ref() {
-					Ok(policy) => policy.debounce_ms.unwrap_or_default(),
-					Err(problem) => {
-						eprintln!("retype: {problem}");
-						continue;
-					}
-				};
-
-				let wait = std::time::Duration::from_millis(debounce);
-
-				if wait > window.first_wait {
-					held.entry(directory.to_path_buf()).or_default().hold(fact, wait);
-					continue;
-				}
-
-				decide(&shared, &pool, &watched_root, fact, parked_batch.as_deref());
+				dispatch(&shared, &pool, &watched_root, fact, window, &mut held, parked_batch.as_deref());
 			}
 		}
 
@@ -448,6 +493,39 @@ fn spawn_worker(
 	});
 
 	Ok((stop, handle))
+}
+
+/// One fact from a batch or from a rescan: honour the directory's debounce, or decide.
+fn dispatch(
+	shared: &Shared,
+	pool: &Pool,
+	watched_root: &Path,
+	fact: retype_core::correlate::RenameFact,
+	window: Window,
+	held: &mut BTreeMap<PathBuf, Held>,
+	parked_batch: Option<&str>,
+) {
+	// A directory may ask for more settled time than the window gives, which is what
+	// `debounce_ms` is for: an application that saves by renaming twice should be
+	// converted once, under the name it finally chose.
+	let directory = fact.target.parent().unwrap_or(watched_root);
+
+	let debounce = match shared.policies.policy(watched_root, directory).as_ref() {
+		Ok(policy) => policy.debounce_ms.unwrap_or_default(),
+		Err(problem) => {
+			eprintln!("retype: {problem}");
+			return;
+		}
+	};
+
+	let wait = Duration::from_millis(debounce);
+
+	if wait > window.first_wait {
+		held.entry(directory.to_path_buf()).or_default().hold(fact, wait);
+		return;
+	}
+
+	decide(shared, pool, watched_root, fact, parked_batch);
 }
 
 /// One rename, decided: hold it, park it, or run it.

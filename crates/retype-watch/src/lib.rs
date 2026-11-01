@@ -170,10 +170,47 @@ pub fn prime(
 	correlator: &mut Correlator,
 	root: &Path,
 	recursive: bool,
+	admit: impl FnMut(&Path) -> bool,
+	stop: impl FnMut() -> bool,
+) -> usize {
+	scan(correlator, root, recursive, admit, stop).1
+}
+
+/// Record the identity of every file under a root and return the renames the tree
+/// itself proves.
+///
+/// A platform that dropped events says so in a batch (`needs_rescan`), and the events
+/// it lost are gone: a file that moved is under its new name with the identity the
+/// correlator remembers, so walking the tree recovers the rename the batch could not
+/// describe. [`prime`] discards these facts, because at startup there is nothing to
+/// have moved from.
+pub fn rescan(
+	correlator: &mut Correlator,
+	root: &Path,
+	recursive: bool,
+	admit: impl FnMut(&Path) -> bool,
+	stop: impl FnMut() -> bool,
+) -> (Vec<RenameFact>, usize) {
+	scan(correlator, root, recursive, admit, stop)
+}
+
+/// Whether the platform dropped events in this batch.
+///
+/// Such a batch is not a description of what happened: `docs/dev/measurement/events.md`
+/// §1.5 is void for it, and the caller has to take the tree itself as the truth.
+pub fn needs_rescan(batch: &Batch) -> bool {
+	!batch.errors.is_empty() || batch.events.iter().any(Event::need_rescan)
+}
+
+fn scan(
+	correlator: &mut Correlator,
+	root: &Path,
+	recursive: bool,
 	mut admit: impl FnMut(&Path) -> bool,
 	mut stop: impl FnMut() -> bool,
-) -> usize {
+) -> (Vec<RenameFact>, usize) {
 	let mut primed = 0;
+	let mut facts = Vec::new();
 
 	fn walk(
 		correlator: &mut Correlator,
@@ -182,6 +219,7 @@ pub fn prime(
 		admit: &mut impl FnMut(&Path) -> bool,
 		stop: &mut impl FnMut() -> bool,
 		primed: &mut usize,
+		facts: &mut Vec<RenameFact>,
 	) {
 		if stop() {
 			return;
@@ -204,7 +242,7 @@ pub fn prime(
 
 			if meta.is_dir() {
 				if recursive && admit(&path) {
-					walk(correlator, &path, true, admit, stop, primed);
+					walk(correlator, &path, true, admit, stop, primed, facts);
 				}
 				continue;
 			}
@@ -214,14 +252,16 @@ pub fn prime(
 			}
 
 			if let Some(sighting) = sighting(&path) {
-				correlator.observe(sighting);
+				if let Some(fact) = correlator.observe(sighting) {
+					facts.push(fact);
+				}
 				*primed += 1;
 			}
 		}
 	}
 
-	walk(correlator, root, recursive, &mut admit, &mut stop, &mut primed);
-	primed
+	walk(correlator, root, recursive, &mut admit, &mut stop, &mut primed, &mut facts);
+	(coalesce(dedupe(facts)), primed)
 }
 
 /// A directory rename changes every path beneath it without per-file events, so
@@ -395,6 +435,42 @@ mod tests {
 		fs::rename(&source, &target).unwrap();
 		let facts = feed_identity(&mut correlator, &batch(vec![rename(RenameMode::Any, &[&target])]));
 
+		assert_eq!(sources(&facts), vec![(source, target)]);
+	}
+
+	#[test]
+	fn a_batch_that_says_events_were_dropped_asks_for_a_rescan() {
+		let dropped = Event::new(EventKind::Other)
+			.set_flag(notify::event::Flag::Rescan)
+			.add_path(PathBuf::from("/dir/photos"));
+
+		assert!(needs_rescan(&batch(vec![dropped])));
+
+		let renamed = rename(RenameMode::Any, &[Path::new("/dir/photos/a.heic")]);
+		assert!(!needs_rescan(&batch(vec![renamed])));
+
+		// An error from the watcher means the same thing: events may be missing.
+		let mut failed = batch(Vec::new());
+		failed.errors.push(notify::Error::generic("stream invalidated"));
+		assert!(needs_rescan(&failed));
+	}
+
+	#[test]
+	fn a_rescan_names_a_rename_whose_events_were_lost() {
+		let dir = dir();
+		let source = dir.path().join("photo.png");
+		let target = dir.path().join("photo.jpg");
+		fs::write(&source, b"pixels").unwrap();
+
+		let mut correlator = fresh();
+		prime(&mut correlator, dir.path(), true, |_| true, || false);
+
+		// The platform dropped the events; nothing reached the correlator.
+		fs::rename(&source, &target).unwrap();
+
+		let (facts, scanned) = rescan(&mut correlator, dir.path(), true, |_| true, || false);
+
+		assert_eq!(scanned, 1);
 		assert_eq!(sources(&facts), vec![(source, target)]);
 	}
 
