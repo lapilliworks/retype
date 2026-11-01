@@ -49,6 +49,8 @@ cargo check --workspace --all-targets --target x86_64-unknown-freebsd
 
 A suite whose subject needs an external tool probes for it first and passes with a note when it is absent, naming what is missing. `cargo test` green therefore does not prove that vertical on that host: a run on a machine without 7-Zip, ImageMagick, an image backend or an FFmpeg encoder says so in the note rather than failing.
 
+When a failure depends on the platform, `scripts/probe-supersede.sh` reports the stage it broke at on the host that fails: delivery, batching, correlation, a running job holding the source, or the cancellation. It runs the same gesture as `tests/supersede.rs` in a temporary tree with the daemon's own log, so a report can be attached to an issue without the test harness.
+
 ## Generated documents
 
 `measurement/events.md` is produced by the probe, and the claims table in [`../fidelity.md`](../fidelity.md) is produced by a fidelity run:
