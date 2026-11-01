@@ -1,4 +1,4 @@
-//! `retype why`, `docs/cli.md` §6 and `docs/provenance.md` §8.
+//! `retype why`, `docs/cli.md` §5 and `docs/provenance.md` §8.
 //!
 //! The daemon answers, because the journal is what it holds. The command prints
 //! which store answered and how sure it is, since a path match and an identity

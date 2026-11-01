@@ -75,7 +75,7 @@ impl Error {
 		}
 	}
 
-	/// Exit codes are contract, `docs/cli.md` §7. The category decides, and this
+	/// Exit codes are contract, `docs/cli.md` §6. The category decides, and this
 	/// layer narrows it where it knows more: a transport failure is a daemon
 	/// problem rather than a filesystem one, and a held lock is a state conflict.
 	pub fn exit_code(&self) -> u8 {
@@ -103,7 +103,7 @@ impl Error {
 }
 
 /// "Cannot be done here" and "cannot be done" are different answers,
-/// `docs/cli.md` §7. The categories are the ones `docs/errors.md` gives each code,
+/// `docs/cli.md` §6. The categories are the ones `docs/errors.md` gives each code,
 /// restated here because a job carries its code as a string across the wire and the
 /// client is what turns it into a status.
 pub fn exit_code(code: &retype_core::error::Code) -> u8 {
@@ -121,7 +121,7 @@ pub fn exit_code(code: &retype_core::error::Code) -> u8 {
 		| Code::JobInterrupted
 		| Code::JobResumeUnavailable => 4,
 		// A state conflict: the lock, an ambiguous prefix, or a job that is not in the
-		// state the request needs, `docs/cli.md` §7.
+		// state the request needs, `docs/cli.md` §6.
 		Code::IoLocked | Code::IpcAmbiguous | Code::JobState => 7,
 		// Something to retry: the filesystem or the moment.
 		Code::IoFailed

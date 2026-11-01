@@ -4,8 +4,9 @@ use std::process::ExitCode;
 use clap::{CommandFactory, Parser, Subcommand};
 use retype_cli::error::Result;
 use retype_cli::{
-	bench, client, config, daemon, doctor, explain, fidelity, init, list, output, report, state, tools, verbose, why,
+	bench, client, config, daemon, doctor, explain, fidelity, init, list, output, report, state, verbose, why,
 };
+use retype_core::tools;
 use serde_json::Value;
 
 /// Automatic file format conversion on rename.
@@ -172,12 +173,6 @@ enum Command {
 		/// Add one line per pair, with the tier it claims and the backend that carries it
 		#[arg(long)]
 		tiers: bool,
-	},
-
-	/// Inspect, install and verify the managed toolchain
-	Tools {
-		#[command(subcommand)]
-		action: tools::Action,
 	},
 
 	/// Explain a file's conversion
@@ -537,19 +532,6 @@ fn main() -> ExitCode {
 		return finish(code);
 	}
 
-	if let Command::Tools { action } = &cli.command {
-		let code = state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
-			tools::use_managed(state_dir.join("tools").join("bin"));
-
-			config::load().and_then(|registry| {
-				config::report_warnings(&registry);
-				tools::run(&registry, &state_dir, action, cli.json, cli.quiet)
-			})
-		});
-
-		return finish(code);
-	}
-
 	if matches!(cli.command, Command::Version) {
 		print_version(cli.json);
 		return ExitCode::SUCCESS;
@@ -682,7 +664,6 @@ fn main() -> ExitCode {
 		| Command::Version
 		| Command::Completions { .. }
 		| Command::List { .. }
-		| Command::Tools { .. }
 		| Command::Init { .. }
 		| Command::Doctor { .. } => unreachable!("these are dispatched before the outcome is built"),
 	};
@@ -715,7 +696,6 @@ fn print_version(json: bool) {
 		("bench", retype_core::estimate::BENCH_VERSION),
 		("fidelity", retype_core::fidelity::FIDELITY_VERSION),
 		("fixtures", retype_core::axis::FIXTURES_VERSION),
-		("tools", retype_core::managed::TOOLS_VERSION),
 	];
 
 	if json {

@@ -751,7 +751,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "clap_complete",
- "ed25519-dalek",
  "flate2",
  "getrandom 0.3.4",
  "libc",

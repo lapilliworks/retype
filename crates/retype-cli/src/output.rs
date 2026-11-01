@@ -1,6 +1,6 @@
 //! What the command line writes, and the one place the JSON envelope is built.
 //!
-//! `docs/cli.md` §8 and `docs/errors.md` §7 make `--json` a contract rather than a
+//! `docs/cli.md` §7 and `docs/errors.md` §7 make `--json` a contract rather than a
 //! rendering: a consumer gets `{v, ok, error}` on failure and a versioned object on
 //! success. Keeping the shape here means a command cannot invent its own.
 

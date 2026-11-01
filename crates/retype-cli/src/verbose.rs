@@ -1,4 +1,4 @@
-//! How much a command says about what it is doing, `docs/cli.md` §8.
+//! How much a command says about what it is doing, `docs/cli.md` §7.
 //!
 //! One count, because a user asking for detail wants detail rather than a filter
 //! language. `RETYPE_LOG` sets the same number, so a wrapper script can turn it on

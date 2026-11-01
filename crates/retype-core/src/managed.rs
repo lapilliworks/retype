@@ -1,5 +1,5 @@
 //! The managed toolchain: the signed list of artifacts and what is installed
-//! from it, `docs/tools.md` §2 and `docs/cli.md` §5.
+//! from it, `docs/tools.md` §2; the GUI owns it.
 //!
 //! The manifest is the authority for what may be installed. A file downloaded or
 //! copied from an offline pack is accepted only after the manifest signature, the

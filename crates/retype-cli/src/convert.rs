@@ -69,7 +69,7 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	let submitted = match client.call("jobs.submit", params) {
 		Ok(answer) => answer,
 		// Everything that can fail before a byte moves fails at submission, with
-		// the code the same failure would have had locally, `docs/cli.md` §6.
+		// the code the same failure would have had locally, `docs/cli.md` §5.
 		Err(retype_ipc::ClientError::Rpc(error)) => {
 			return Ok(ExitCode::from(output::fail(&error.code, &error.message)));
 		}

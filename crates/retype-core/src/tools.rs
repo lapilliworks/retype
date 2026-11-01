@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-/// Where `tools install` puts artifacts, set once by the CLI, `docs/tools.md` §2.
+/// Where the GUI installs managed artifacts, set once by the CLI so bare
+/// commands resolve there first, `docs/tools.md` §2.
 static MANAGED: OnceLock<PathBuf> = OnceLock::new();
 
 /// Point bare commands at the managed directory before `PATH`, `docs/tools.md` §2.
@@ -352,7 +353,8 @@ pub fn probe_all(tools: &[Tool]) -> Vec<ToolStatus<'_>> {
 	tools.iter().map(probe).collect()
 }
 
-/// First candidate of a named engine that is on `PATH`, `docs/tools.md` §5.1.
+/// First candidate of a named engine that resolves managed-first, then on
+/// `PATH`, `docs/tools.md` §5.1.
 pub fn resolve_engine<'a>(tool: &'a Tool, engine: &str) -> Option<&'a str> {
 	let path_env = std::env::var_os("PATH").unwrap_or_default();
 	tool.candidates(engine)

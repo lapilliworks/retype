@@ -21,7 +21,6 @@ pub mod notify;
 pub mod output;
 pub mod report;
 pub mod state;
-pub mod tools;
 pub mod undo;
 pub mod verbose;
 pub mod watch;

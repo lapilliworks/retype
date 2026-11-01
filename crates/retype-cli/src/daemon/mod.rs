@@ -42,6 +42,9 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 
 	let state_dir = state::resolve(state_dir)?;
 	state::ensure_private_directory(&state_dir)?;
+	// The GUI installs the managed set into the state directory; the daemon is
+	// where plans run, so it has to resolve it too.
+	retype_core::tools::use_managed(state_dir.join("tools").join("bin"));
 
 	let _lock = Lock::acquire(&state_dir.join("lock"), &state_dir)?;
 	let socket = state::socket_path(&state_dir)?;
@@ -102,6 +105,9 @@ fn set_socket_private(path: &std::path::Path) -> Result<()> {
 pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	let state_dir = state::resolve(state_dir)?;
 	state::ensure_private_directory(&state_dir)?;
+	// The GUI installs the managed set into the state directory; the daemon is
+	// where plans run, so it has to resolve it too.
+	retype_core::tools::use_managed(state_dir.join("tools").join("bin"));
 
 	let _lock = Lock::acquire(&state_dir.join("lock"), &state_dir)?;
 	let mut server = Server::open(&state_dir)?;
