@@ -267,62 +267,15 @@ impl FileIdentity {
 		}
 
 		// The stable metadata API does not expose a Windows file id, so it comes
-		// from a handle. `FileIdInfo` carries the 128-bit id ReFS uses; the older
-		// `BY_HANDLE_FILE_INFORMATION` is the fallback for filesystems that do not
-		// answer it.
+		// from a handle, the same source the watcher uses to correlate a rename.
 		#[cfg(windows)]
 		{
-			use std::ffi::c_void;
-			use std::mem::size_of;
-			use std::os::windows::fs::OpenOptionsExt;
-			use std::os::windows::io::AsRawHandle;
+			let (volume, file, wide) = windows_file_id(path)?;
+			let width = if wide { 32 } else { 16 };
 
-			use windows_sys::Win32::Foundation::HANDLE;
-			use windows_sys::Win32::Storage::FileSystem::{
-				BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-				FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
-			};
-
-			let file = std::fs::OpenOptions::new()
-				.read(true)
-				.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-				.open(path)
-				.ok()?;
-			let handle = file.as_raw_handle() as HANDLE;
-
-			let mut id: FILE_ID_INFO = unsafe { std::mem::zeroed() };
-			let asked = unsafe {
-				GetFileInformationByHandleEx(
-					handle,
-					FileIdInfo,
-					std::ptr::from_mut(&mut id).cast::<c_void>(),
-					size_of::<FILE_ID_INFO>() as u32,
-				)
-			};
-
-			if asked != 0 {
-				let file = id
-					.FileId
-					.Identifier
-					.iter()
-					.map(|byte| format!("{byte:02x}"))
-					.collect::<String>();
-
-				return Some(Self::Windows {
-					volume: id.VolumeSerialNumber,
-					file,
-				});
-			}
-
-			let mut fallback: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-			if unsafe { GetFileInformationByHandle(handle, &mut fallback) } == 0 {
-				return None;
-			}
-
-			let file = (u64::from(fallback.nFileIndexHigh) << 32) | u64::from(fallback.nFileIndexLow);
 			Some(Self::Windows {
-				volume: u64::from(fallback.dwVolumeSerialNumber),
-				file: format!("{file:016x}"),
+				volume,
+				file: format!("{file:0width$x}"),
 			})
 		}
 
@@ -355,6 +308,55 @@ impl FileIdentity {
 			_ => false,
 		}
 	}
+}
+
+/// The volume and file id Windows reports for `path`, read from a handle.
+///
+/// `FileIdInfo` carries the 128-bit id ReFS uses; the older
+/// `BY_HANDLE_FILE_INFORMATION` is the fallback for filesystems that do not
+/// answer it, with the 64-bit file index in the low half. `wide` says which,
+/// because the two are written in different widths.
+#[cfg(windows)]
+pub(crate) fn windows_file_id(path: &std::path::Path) -> Option<(u64, u128, bool)> {
+	use std::ffi::c_void;
+	use std::mem::size_of;
+	use std::os::windows::fs::OpenOptionsExt;
+	use std::os::windows::io::AsRawHandle;
+
+	use windows_sys::Win32::Foundation::HANDLE;
+	use windows_sys::Win32::Storage::FileSystem::{
+		BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
+		GetFileInformationByHandle, GetFileInformationByHandleEx,
+	};
+
+	let file = std::fs::OpenOptions::new()
+		.read(true)
+		.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+		.open(path)
+		.ok()?;
+	let handle = file.as_raw_handle() as HANDLE;
+
+	let mut id: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+	let asked = unsafe {
+		GetFileInformationByHandleEx(
+			handle,
+			FileIdInfo,
+			std::ptr::from_mut(&mut id).cast::<c_void>(),
+			size_of::<FILE_ID_INFO>() as u32,
+		)
+	};
+
+	if asked != 0 {
+		return Some((id.VolumeSerialNumber, u128::from_be_bytes(id.FileId.Identifier), true));
+	}
+
+	let mut fallback: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+	if unsafe { GetFileInformationByHandle(handle, &mut fallback) } == 0 {
+		return None;
+	}
+
+	let file = (u64::from(fallback.nFileIndexHigh) << 32) | u64::from(fallback.nFileIndexLow);
+	Some((u64::from(fallback.dwVolumeSerialNumber), u128::from(file), false))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

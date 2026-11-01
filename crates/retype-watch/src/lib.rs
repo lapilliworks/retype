@@ -300,24 +300,9 @@ fn sighting(path: &Path) -> Option<Sighting> {
 
 	Some(Sighting {
 		path: path.to_path_buf(),
-		identity: identity(&meta)?,
+		identity: retype_core::correlate::Identity::of(path)?,
 		links: links(&meta),
 	})
-}
-
-#[cfg(unix)]
-fn identity(meta: &fs::Metadata) -> Option<retype_core::correlate::Identity> {
-	use std::os::unix::fs::MetadataExt;
-	Some(retype_core::correlate::Identity {
-		device: meta.dev(),
-		inode: meta.ino(),
-	})
-}
-
-#[cfg(not(unix))]
-fn identity(_meta: &fs::Metadata) -> Option<retype_core::correlate::Identity> {
-	// `std` exposes no file identifier on Windows: `docs/dev/measurement/events.md` §2.
-	None
 }
 
 #[cfg(unix)]

@@ -19,10 +19,53 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 /// Filesystem identity of a file: device and inode, or volume and file id.
+///
+/// `high` is the top half of a 128-bit Windows file id, which ReFS uses; NTFS
+/// and every Unix filesystem leave it zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Identity {
 	pub device: u64,
 	pub inode: u64,
+	pub high: u64,
+}
+
+impl Identity {
+	/// The identity this platform reports for the file at `path`.
+	///
+	/// Unix reads the device and inode from the metadata. Windows has neither in
+	/// `std`, so the volume and file id come from a handle, the same source the
+	/// journal records for a produced output.
+	pub fn of(path: &Path) -> Option<Self> {
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::MetadataExt;
+
+			let metadata = std::fs::metadata(path).ok()?;
+
+			Some(Self {
+				device: metadata.dev(),
+				inode: metadata.ino(),
+				high: 0,
+			})
+		}
+
+		#[cfg(windows)]
+		{
+			let (device, file, _) = crate::job::windows_file_id(path)?;
+
+			Some(Self {
+				device,
+				inode: file as u64,
+				high: (file >> 64) as u64,
+			})
+		}
+
+		#[cfg(not(any(unix, windows)))]
+		{
+			let _ = path;
+			None
+		}
+	}
 }
 
 /// What a rename fact says: this path became that path, in one directory.
@@ -267,7 +310,11 @@ mod tests {
 	use super::*;
 
 	fn id(inode: u64) -> Identity {
-		Identity { device: 1, inode }
+		Identity {
+			device: 1,
+			inode,
+			high: 0,
+		}
 	}
 
 	fn sighting(path: &str, inode: u64) -> Sighting {
