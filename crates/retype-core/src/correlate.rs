@@ -184,9 +184,17 @@ impl Correlator {
 	}
 
 	/// Forget a path that no longer exists.
+	///
+	/// The identity is dropped only when this path is still the one it belongs to.
+	/// A batch that reports a rename names both the old and the new path, and the
+	/// new one is observed before the old one is forgotten; dropping the identity
+	/// then would leave the file that just moved with no identity at all, and the
+	/// next rename of it would be silent.
 	pub fn forget(&mut self, path: &Path) {
 		if let Some(identity) = self.by_path.remove(path) {
-			self.by_identity.remove(&identity);
+			if self.by_identity.get(&identity).is_some_and(|current| current == path) {
+				self.by_identity.remove(&identity);
+			}
 		}
 	}
 
@@ -206,10 +214,22 @@ impl Correlator {
 	}
 
 	fn remember(&mut self, path: PathBuf, identity: Identity) {
+		// A path that now carries another identity does not stand for the old one.
 		if let Some(previous) = self.by_path.insert(path.clone(), identity) {
-			self.by_identity.remove(&previous);
+			if self.by_identity.get(&previous).is_some_and(|current| current == &path) {
+				self.by_identity.remove(&previous);
+			}
 		}
-		self.by_identity.insert(identity, path.clone());
+
+		// One identity belongs to one path: a rename moves it, and the old name has
+		// to leave `by_path` too, or forgetting that stale name would drop the
+		// identity that now belongs here.
+		if let Some(old) = self.by_identity.insert(identity, path.clone()) {
+			if old != path {
+				self.by_path.remove(&old);
+			}
+		}
+
 		self.order.push_back(path);
 
 		while self.by_identity.len() > self.capacity {
@@ -341,6 +361,26 @@ mod tests {
 
 		assert_eq!(rename.source, PathBuf::from("/dir/photo.heic"));
 		assert_eq!(rename.target, PathBuf::from("/dir/photo.webp+q80"));
+	}
+
+	#[test]
+	fn a_batch_that_forgets_the_old_name_keeps_the_new_identity() {
+		// macOS reports one path per event, so a rename arrives as the old name and
+		// the new name in the same batch. The new one is observed first and the old
+		// one forgotten second, and the file that just moved has to keep its identity
+		// for the rename that follows.
+		let mut correlator = Correlator::new(16);
+		correlator.observe(sighting("/dir/photo.heic", 1));
+
+		let moved = correlator.observe(sighting("/dir/photo.jpg", 1)).unwrap();
+		assert_eq!(moved.source, PathBuf::from("/dir/photo.heic"));
+		correlator.forget(Path::new("/dir/photo.heic"));
+
+		let next = correlator
+			.observe(sighting("/dir/photo.webp", 1))
+			.expect("the moved file still has an identity");
+		assert_eq!(next.source, PathBuf::from("/dir/photo.jpg"));
+		assert_eq!(next.target, PathBuf::from("/dir/photo.webp"));
 	}
 
 	#[test]
