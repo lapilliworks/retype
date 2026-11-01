@@ -945,6 +945,28 @@ fn run(
 			Err(error) => {
 				eprintln!("retype: {}: {error}", target.display());
 				store.remove(&id).ok();
+
+				// The file the job was about to read is gone, usually because a later
+				// rename moved it. A job must not stay `running` for that: say which
+				// happened, and let the cancellation decide whether it was overtaken.
+				let (state, output_state) = match cancellation.is_superseded() {
+					true => (JobState::Superseded, OutputState::Skipped),
+					false => (JobState::Failed, OutputState::Failed),
+				};
+
+				let mut outputs = Vec::new();
+				if let Some(plan) = plans.first() {
+					outputs.push(record(
+						target,
+						plan,
+						output_state,
+						None,
+						None,
+						Some((error.code(), error.to_string())),
+					));
+				}
+
+				publish(shared, &settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state));
 				return;
 			}
 		},
@@ -1073,17 +1095,45 @@ fn run(
 		}
 	}
 
-	let job = Job {
+	let job = settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state);
+
+	publish(shared, &job);
+	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
+
+	// Nothing was produced, so there is nothing to undo: the source is where it
+	// always was and the record would only describe a file that never changed.
+	if state != JobState::Done && state != JobState::Partial {
+		let _ = store.remove(&id);
+	}
+}
+
+/// A job's last word, whether it got as far as an output or not.
+///
+/// Every path out of a job goes through this, so a job that could not start leaves a
+/// terminal record rather than a `running` one nothing will ever finish.
+#[allow(clippy::too_many_arguments)]
+fn settled(
+	shared: &Shared,
+	id: &retype_core::job::JobId,
+	now: i64,
+	source: &Path,
+	format: &str,
+	resolved: &resolve::Resolved,
+	plans: &[Plan],
+	outputs: Vec<Output>,
+	state: JobState,
+) -> Job {
+	Job {
 		id: id.clone(),
 		created: now,
 		updated: now_ms(),
 		source: Source {
 			path: source.to_path_buf(),
-			format: format.clone(),
+			format: format.to_string(),
 			size: 0,
 			mtime_ns: 0,
 		},
-		intent: Some(print::intent(&resolved, &shared.registry())),
+		intent: Some(print::intent(resolved, &shared.registry())),
 		outputs,
 		state,
 		backend: plans.first().map(|plan| plan.backend.name().to_string()),
@@ -1093,17 +1143,8 @@ fn run(
 			.map(|(name, candidate)| retype_core::job::Engine { name, candidate }),
 		machine: shared.machine.clone(),
 		error: None,
-		parked: carried(shared, &id),
+		parked: carried(shared, id),
 		consume_source: true,
-	};
-
-	publish(shared, &job);
-	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
-
-	// Nothing was produced, so there is nothing to undo: the source is where it
-	// always was and the record would only describe a file that never changed.
-	if state != JobState::Done && state != JobState::Partial {
-		let _ = store.remove(&id);
 	}
 }
 
