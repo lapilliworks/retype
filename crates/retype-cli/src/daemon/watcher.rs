@@ -328,6 +328,20 @@ fn reload_config(shared: &Arc<Shared>, stamp: &mut Option<std::time::SystemTime>
 	}
 }
 
+/// The state directory the way an event names it: resolved on Unix, where a path can
+/// be written through a symlink that the platform reports resolved.
+fn as_events_name(path: &Path) -> PathBuf {
+	#[cfg(unix)]
+	{
+		path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+	}
+
+	#[cfg(not(unix))]
+	{
+		path.to_path_buf()
+	}
+}
+
 fn spawn_worker(
 	shared: Arc<Shared>,
 	pool: Arc<Pool>,
@@ -339,6 +353,10 @@ fn spawn_worker(
 	let window = Window::default();
 	let watched_root = root.to_path_buf();
 	let worker_stop = Arc::clone(&stop);
+	// Event paths are resolved, so a filter on the state directory has to be too:
+	// macOS reports `/private/var` for a path written as `/var`, and a comparison
+	// against the unresolved form matches nothing.
+	let state_dir = as_events_name(&shared.state_dir);
 
 	let handle = thread::spawn(move || {
 		// The watcher lives as long as the thread, which is what keeps the events
@@ -355,7 +373,11 @@ fn spawn_worker(
 			&mut correlator,
 			&watched_root,
 			recursive,
-			|path| !retype_core::convert::is_temp_file(path) && registry.watch().considers(&watched_root, path),
+			|path| {
+				!path.starts_with(&state_dir)
+					&& !retype_core::convert::is_temp_file(path)
+					&& registry.watch().considers(&watched_root, path)
+			},
 			|| worker_stop.load(Ordering::Relaxed),
 		);
 		shared.primed.fetch_add(primed as u64, Ordering::Relaxed);
@@ -370,23 +392,22 @@ fn spawn_worker(
 
 			let batch = retype_watch::collect(&receiver, less_than(&held, window));
 
+			// State is not part of the watched tree even when the tree contains it, and the
+			// undo record it holds is a hard link to a file the user may rename.
+			let batch = batch.without_prefix(&state_dir);
+
 			if batch.is_empty() {
 				continue;
 			}
 
 			if crate::verbose::level() >= 2 {
-				// The daemon's own state is most of the traffic and none of the
-				// question, so the line names everything else, whole, with the kind and
-				// any flag: a dropped-events notice is a flag, not a path.
+				// The line names every path the batch still has, with the kind and any flag:
+				// a dropped-events notice is a flag, not a path.
 				let mut described: Vec<String> = Vec::new();
 
 				for event in &batch.events {
-					let paths: Vec<String> = event
-						.paths
-						.iter()
-						.filter(|path| !path.starts_with(&shared.state_dir))
-						.map(|path| path.display().to_string())
-						.collect();
+					let paths: Vec<String> =
+						event.paths.iter().map(|path| path.display().to_string()).collect();
 
 					if paths.is_empty() {
 						continue;
@@ -438,7 +459,8 @@ fn spawn_worker(
 					&watched_root,
 					recursive,
 					|path| {
-						!retype_core::convert::is_temp_file(path)
+						!path.starts_with(&state_dir)
+							&& !retype_core::convert::is_temp_file(path)
 							&& registry.watch().considers(&watched_root, path)
 					},
 					|| worker_stop.load(Ordering::Relaxed),

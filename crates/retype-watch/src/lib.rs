@@ -56,6 +56,25 @@ impl Batch {
 	pub fn is_empty(&self) -> bool {
 		self.events.is_empty() && self.errors.is_empty()
 	}
+
+	/// Drop the events whose every path is under `prefix`.
+	///
+	/// The daemon's own state normally lives outside every watch, but nothing stops a
+	/// root from containing it, and the undo record is a hard link to a file the user
+	/// may rename. Correlated, it would take the identity of that file and the user's
+	/// rename would be silent.
+	pub fn without_prefix(self, prefix: &Path) -> Self {
+		let events = self
+			.events
+			.into_iter()
+			.filter(|event| !event.paths.iter().all(|path| path.starts_with(prefix)))
+			.collect();
+
+		Self {
+			events,
+			errors: self.errors,
+		}
+	}
 }
 
 /// Watch a directory and its subtree, sending events to the returned receiver.
@@ -436,6 +455,21 @@ mod tests {
 		let facts = feed_identity(&mut correlator, &batch(vec![rename(RenameMode::Any, &[&target])]));
 
 		assert_eq!(sources(&facts), vec![(source, target)]);
+	}
+
+	#[test]
+	fn the_daemons_own_state_is_not_part_of_the_batch() {
+		let state = Path::new("/watch/state");
+		let batch = batch(vec![
+			created(Path::new("/watch/state/undo/source.png")),
+			created(Path::new("/watch/photo.png")),
+			rename(RenameMode::Any, &[Path::new("/watch/photo.png")]),
+		]);
+
+		let kept = batch.without_prefix(state);
+
+		assert_eq!(kept.events.len(), 2, "the state event is dropped, the photo ones stay");
+		assert!(kept.events.iter().all(|event| event.paths.iter().any(|path| path == Path::new("/watch/photo.png"))));
 	}
 
 	#[test]
