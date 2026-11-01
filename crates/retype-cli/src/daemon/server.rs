@@ -25,6 +25,7 @@ pub struct Server {
 	machine: String,
 	started: Instant,
 	stopped: bool,
+	supervisor: Option<&'static str>,
 }
 
 impl Server {
@@ -108,6 +109,9 @@ impl Server {
 			machine,
 			started: Instant::now(),
 			stopped: false,
+			// A server opened here was not started by a supervisor. The daemon's
+			// entry point says otherwise when the environment says so.
+			supervisor: None,
 		})
 	}
 
@@ -141,6 +145,14 @@ impl Server {
 	/// per machine, so it is reported rather than assumed.
 	pub fn set_endpoint(&mut self, endpoint: impl Into<String>) {
 		self.endpoint = Some(endpoint.into());
+	}
+
+	/// Record which supervisor started this daemon. `open` assumes
+	/// none: a server built by a test was started by the test, and a supervisor's
+	/// environment variables are inherited by every child of the session, not only
+	/// by the process the unit runs.
+	pub fn set_supervisor(&mut self, supervisor: Option<&'static str>) {
+		self.supervisor = supervisor;
 	}
 
 	pub fn machine(&self) -> &str {
@@ -593,7 +605,7 @@ impl Server {
 			.unwrap_or(false);
 
 		if !force {
-			if let Some(supervisor) = crate::daemon::supervision::supervisor() {
+			if let Some(supervisor) = self.supervisor {
 				return Ok(Response::error(
 					request.id,
 					WireError::new(
@@ -1032,7 +1044,7 @@ impl Server {
 					"primed": self.shared.primed.load(Ordering::Relaxed),
 					"watches": self.watches(),
 					"endpoint": self.endpoint,
-					"supervised": crate::daemon::supervision::supervisor(),
+					"supervised": self.supervisor,
 				}),
 			)?,
 			"jobs.list" => Response::ok(

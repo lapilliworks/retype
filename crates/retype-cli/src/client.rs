@@ -70,6 +70,12 @@ pub fn spawn_detached(state_dir: &Path) -> Result<PathBuf> {
 		command.env("RETYPE_CONFIG", config);
 	}
 
+	// This daemon was started by the CLI, not by the supervisor that started the
+	// CLI's shell. The variables are inherited down the whole session, and a
+	// systemd user unit for the terminal or a launchd-launched app sets them, so
+	// passing them on would claim a supervision that would never restart it.
+	command.env_remove("INVOCATION_ID").env_remove("XPC_SERVICE_NAME");
+
 	// Without this the child inherits the console and dies with it.
 	#[cfg(windows)]
 	{

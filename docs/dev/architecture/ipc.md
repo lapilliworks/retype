@@ -31,7 +31,8 @@ Suppression:
 
 Supervision:
 
-- The daemon records how it was started in the state directory
+- The daemon reads how it was started from the environment the supervisor sets
+- The variables are inherited by every process in the session, so a daemon the CLI started itself clears them: its supervisor would never restart it
 - Under a supervisor, `retype daemon stop` refuses with `E_IPC_SUPERVISED`, telling the user to run the supervisor's stop command, because stopping a supervised daemon is immediately undone by the supervisor
 - `--force` overrides the refusal for the case where the unit is being removed
 - `retype daemon start` exists for tests, units and scripts that want an explicit start without the foreground
@@ -102,7 +103,7 @@ Request timeout defaults to 5 s. No method blocks on work that can outlive it.
 
 `shutdown` reads `force` and `now`. Without `force`, a daemon a supervisor started refuses with `E_IPC_SUPERVISED` and names the supervisor, §2. With `now`, running jobs are cancelled and waiting ones are recorded as cancelled, the runners are given a moment to write those records, and the answer carries how many were stopped.
 
-`status` reports `supervised`: `systemd`, `launchd`, or null, read from the environment the supervisor sets rather than from the process tree.
+`status` reports `supervised`: `systemd`, `launchd`, or null, read from the environment of the process the supervisor actually runs rather than from the process tree. A daemon the CLI started itself has had those variables cleared, so it reports null.
 
 `jobs.submit` takes `mode`:
 

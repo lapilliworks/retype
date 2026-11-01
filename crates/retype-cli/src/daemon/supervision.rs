@@ -8,6 +8,10 @@
 //! process tree: a parent lookup is a guess that gets `systemd --user` wrong when
 //! the daemon is started from a shell inside the session, and the environment
 //! variables are what the supervisor itself promises.
+//!
+//! The variables are inherited by every process the supervisor's children start,
+//! so only the process a unit actually runs may trust them. The CLI clears them
+//! when it starts a daemon of its own, `client::spawn_detached`.
 
 /// Which supervisor started this process, if any.
 pub fn supervisor() -> Option<&'static str> {
