@@ -21,6 +21,61 @@ fn have_ffmpeg() -> bool {
 		.unwrap_or(false)
 }
 
+/// The encoders the fixture and the targets under test ask for: `libx264` for the
+/// clip and the mkv target, `aac` for the clip, `libmp3lame` for the sound.
+const ENCODERS: [&str; 3] = ["libx264", "aac", "libmp3lame"];
+
+/// What this host's FFmpeg cannot do, or nothing when it can do all of it.
+///
+/// A distribution build is not the same FFmpeg everywhere: Fedora ships
+/// `ffmpeg-free`, which has no `libx264`, so the fixture clip cannot be made and
+/// the mkv, mp4 and mov targets have no encoder. A tool that is absent skips in
+/// this suite rather than failing, and a tool missing an encoder is the same thing
+/// for a target that names one, `docs/tools.md` §6.
+fn cannot_run() -> Option<String> {
+	if !have_ffmpeg() {
+		return Some("no ffmpeg on this machine".to_string());
+	}
+
+	if !Command::new("ffprobe")
+		.arg("-version")
+		.stdout(std::process::Stdio::null())
+		.stderr(std::process::Stdio::null())
+		.status()
+		.is_ok_and(|status| status.success())
+	{
+		return Some("no ffprobe on this machine".to_string());
+	}
+
+	let listed = match Command::new("ffmpeg").args(["-hide_banner", "-encoders"]).output() {
+		Ok(output) => String::from_utf8_lossy(&output.stdout).into_owned(),
+		Err(error) => return Some(format!("ffmpeg -encoders could not run: {error}")),
+	};
+
+	for encoder in ENCODERS {
+		let present = listed
+			.lines()
+			.any(|line| line.split_whitespace().nth(1) == Some(encoder));
+
+		if !present {
+			return Some(format!("this ffmpeg has no {encoder} encoder"));
+		}
+	}
+
+	None
+}
+
+/// Skip with a reason, which is how this suite treats a host that cannot run it.
+fn skip_if_cannot_run() -> bool {
+	match cannot_run() {
+		Some(reason) => {
+			eprintln!("{reason}, so this test proves nothing");
+			true
+		}
+		None => false,
+	}
+}
+
 fn config(dir: &Path) -> PathBuf {
 	let config = dir.join("retype.toml");
 	fs::write(&config, "version = 'retype-config-1'\n").unwrap();
@@ -82,7 +137,7 @@ impl Drop for Cleanup {
 
 #[test]
 fn a_container_comes_out_as_the_other_container() {
-	if !have_ffmpeg() {
+	if skip_if_cannot_run() {
 		return;
 	}
 
@@ -115,7 +170,7 @@ fn a_container_comes_out_as_the_other_container() {
 
 #[test]
 fn a_cap_scales_without_stretching_and_mute_removes_the_sound() {
-	if !have_ffmpeg() {
+	if skip_if_cannot_run() {
 		return;
 	}
 
@@ -151,7 +206,7 @@ fn a_cap_scales_without_stretching_and_mute_removes_the_sound() {
 
 #[test]
 fn extracting_the_sound_is_a_conversion() {
-	if !have_ffmpeg() {
+	if skip_if_cannot_run() {
 		return;
 	}
 
