@@ -316,18 +316,23 @@ fn debounce_ms_holds_a_rename_until_the_file_stops_changing() {
 	let before = support::observed(&fixture.state);
 	fs::write(&source, b"pixels").unwrap();
 	support::observe(&fixture.state, before);
+	// The first rename is held rather than decided, so the second one can still
+	// change the request. Waiting for the watcher to have seen it is what makes the
+	// second rename arrive inside the hold on a platform whose events are slower
+	// than the hold.
+	let held = support::observed(&fixture.state);
 	fs::rename(&source, fixture.photos.join("f.webp")).unwrap();
-
-	// Nothing decides on the daemon's own four hundred milliseconds.
-	std::thread::sleep(Duration::from_millis(700));
+	support::observe(&fixture.state, held);
 	assert!(fixture.records().is_empty(), "{:?}", fixture.records());
 
 	// The second rename arrives inside the hold and is the one that counts.
+	let before = support::observed(&fixture.state);
 	fs::rename(fixture.photos.join("f.webp"), fixture.photos.join("f.webp+q75")).unwrap();
+	support::observe(&fixture.state, before);
 
 	let done = fixture
 		.wait_for(|record| record["state"] == "done")
-		.expect("a settled job");
+		.unwrap_or_else(|| panic!("a settled job: {:?}", fixture.records()));
 
 	// One job, asked for what the last name asked for, and named after it.
 	assert_eq!(done["intent"], "webp+quality75", "{done:?}");

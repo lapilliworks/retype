@@ -120,17 +120,22 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 	support::observe(&state, before);
 	fs::rename(&source, photos.join("photo.webp")).unwrap();
 
-	// The first job is running by now and has not finished: the tool sleeps longer
-	// than this. While it runs the file shows its source name again, so that is the
-	// name a person renames, `docs/dev/architecture/state.md` §5.4.
-	std::thread::sleep(Duration::from_millis(1200));
-	assert!(
-		!photos.join("photo.webp").exists(),
-		"the target must not exist while converting"
-	);
-	fs::rename(photos.join("photo.png"), photos.join("photo.jpg")).unwrap();
-
+	// The first job is running and has not finished: the tool sleeps longer than
+	// this. While it runs the file shows its source name again, so that is the name
+	// a person renames, `docs/dev/architecture/state.md` §5.4.
 	let journal_path = state.join("jobs.jsonl");
+	let deadline = Instant::now() + Duration::from_secs(20);
+	while !fs::read_to_string(&journal_path).unwrap_or_default().contains("\"state\":\"running\"")
+		|| photos.join("photo.webp").exists()
+	{
+		assert!(Instant::now() < deadline, "the job never started");
+		std::thread::sleep(Duration::from_millis(50));
+	}
+
+	let before = support::observed(&state);
+	fs::rename(photos.join("photo.png"), photos.join("photo.jpg")).unwrap();
+	support::observe(&state, before);
+
 	let deadline = Instant::now() + Duration::from_secs(30);
 	let journal = loop {
 		let recorded = fs::read_to_string(&journal_path).unwrap_or_default();
