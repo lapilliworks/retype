@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 /// The name a path is recorded under: the journal holds canonical paths, and a
 /// source that was renamed to its target no longer exists to canonicalise.
 fn recorded(path: &Path) -> PathBuf {
@@ -152,9 +154,11 @@ impl Fixture {
 
 	fn rename(&self, from: &str, to: &str, bytes: &[u8]) {
 		let source = self.photos.join(from);
+		let before = support::observed(&self.state);
 		let mut file = fs::File::create(&source).unwrap();
 		file.write_all(bytes).unwrap();
 		drop(file);
+		support::observe(&self.state, before);
 		fs::rename(&source, self.photos.join(to)).unwrap();
 	}
 
@@ -249,7 +253,12 @@ fn a_pattern_keeps_a_file_out_of_the_directory_s_business() {
 #[test]
 fn a_paused_directory_is_not_watched_and_is_refused_by_watch() {
 	let fixture = Fixture::new("1s", "paused = true\n");
-	fixture.rename("d.png", "d.webp", b"pixels");
+
+	// Nothing is watching, so there is no event to wait for before the rename that
+	// this test expects to be ignored.
+	let source = fixture.photos.join("d.png");
+	fs::write(&source, b"pixels").unwrap();
+	fs::rename(&source, fixture.photos.join("d.webp")).unwrap();
 
 	assert!(
 		fixture.wait_for(|record| record["id"].is_string()).is_none(),
@@ -279,9 +288,11 @@ fn confirm_false_suppresses_the_cost_confirmation_in_that_directory() {
 	let fixture = Fixture::new("1s", "confirm = false\n");
 
 	let source = fixture.photos.join("e.png");
+	let before = support::observed(&fixture.state);
 	let mut file = fs::File::create(&source).unwrap();
 	file.write_all(&vec![b'p'; 8 * 1024 * 1024]).unwrap();
 	drop(file);
+	support::observe(&fixture.state, before);
 
 	fs::rename(&source, fixture.photos.join("e.webp")).unwrap();
 
@@ -302,7 +313,9 @@ fn confirm_false_suppresses_the_cost_confirmation_in_that_directory() {
 fn debounce_ms_holds_a_rename_until_the_file_stops_changing() {
 	let fixture = Fixture::new("1h", "debounce_ms = 1500\n");
 	let source = fixture.photos.join("f.png");
+	let before = support::observed(&fixture.state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
 	fs::rename(&source, fixture.photos.join("f.webp")).unwrap();
 
 	// Nothing decides on the daemon's own four hundred milliseconds.

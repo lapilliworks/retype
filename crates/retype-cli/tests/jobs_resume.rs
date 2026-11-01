@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -104,7 +106,9 @@ fn a_partial_job_resumes_and_skips_what_it_already_produced() {
 	fs::create_dir(&blocked).unwrap();
 
 	let source = photos.join("photo.png");
+	let before = support::observed(&state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
 	fs::rename(&source, photos.join("photo.webp+fliph,png+flipv")).unwrap();
 
 	let journal_path = state.join("jobs.jsonl");

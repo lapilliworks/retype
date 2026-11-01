@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -105,7 +107,9 @@ fn a_rename_in_a_watched_directory_is_converted() {
 	}
 
 	let source = photos.join("holiday.png");
+	let before = support::observed(&state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
 	fs::rename(&source, photos.join("holiday.webp")).unwrap();
 
 	// The record is written after the bytes, so the wait covers both.
@@ -170,7 +174,9 @@ fn one_rename_with_two_outputs_converts_both() {
 	}
 
 	let source = photos.join("holiday.png");
+	let before = support::observed(&state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
 	fs::rename(&source, photos.join("holiday.webp,jpg")).unwrap();
 
 	let first = photos.join("holiday.webp");

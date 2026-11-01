@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -92,7 +94,9 @@ fn undo_puts_the_source_back_and_removes_the_output() {
 	}
 
 	let source = photos.join("photo.png");
+	let before = support::observed(&state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
 	fs::rename(&source, photos.join("photo.webp")).unwrap();
 
 	// The rename itself already puts the bytes at the new name, so the conversion

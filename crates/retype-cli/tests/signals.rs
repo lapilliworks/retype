@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -134,7 +136,9 @@ impl Fixture {
 	/// Start a job and wait until it is running, so the signal arrives mid-flight.
 	fn start_job(&self) {
 		let source = self.photos.join("slow.png");
+		let before = support::observed(&self.state);
 		fs::write(&source, b"pixels").unwrap();
+		support::observe(&self.state, before);
 		fs::rename(&source, self.photos.join("slow.webp")).unwrap();
 
 		let deadline = Instant::now() + Duration::from_secs(20);

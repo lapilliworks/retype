@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -113,7 +115,9 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 	std::thread::sleep(Duration::from_millis(1500));
 
 	let source = photos.join("photo.png");
+	let before = support::observed(&state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
 	fs::rename(&source, photos.join("photo.webp")).unwrap();
 
 	// The first job is running by now and has not finished: the tool sleeps longer

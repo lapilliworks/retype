@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 /// The name a path is recorded under: the journal holds canonical paths, and a
 /// source that was renamed to its target no longer exists to canonicalise.
 fn recorded(path: &Path) -> PathBuf {
@@ -150,7 +152,9 @@ impl Fixture {
 		if let Some(parent) = source.parent() {
 			fs::create_dir_all(parent).unwrap();
 		}
+		let before = support::observed(&self.state);
 		fs::write(&source, bytes).unwrap();
+		support::observe(&self.state, before);
 
 		let target = source.with_file_name(to);
 		fs::rename(&source, &target).unwrap();

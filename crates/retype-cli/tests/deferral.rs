@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -133,7 +135,9 @@ impl Fixture {
 	/// Rename a file into an intent and answer with the job the daemon recorded.
 	fn rename(&self, from: &str, to: &str) -> serde_json::Value {
 		let source = self.photos.join(from);
+		let before = support::observed(&self.state);
 		big_file(&source);
+		support::observe(&self.state, before);
 		fs::rename(&source, self.photos.join(to)).unwrap();
 
 		self.wait_for(|record| record["state"] != "running")
@@ -201,7 +205,9 @@ fn an_expensive_rename_is_parked_under_its_own_name_and_runs_when_the_timer_fire
 fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
 	let fixture = Fixture::new("1h");
 	let small = fixture.photos.join("b.png");
+	let before = support::observed(&fixture.state);
 	fs::write(&small, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("b.webp+ask")).unwrap();
 
 	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");
@@ -244,7 +250,9 @@ fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
 fn an_intent_that_cannot_be_carried_waits_with_a_string_to_fix() {
 	let fixture = Fixture::new("1h");
 	let small = fixture.photos.join("c.png");
+	let before = support::observed(&fixture.state);
 	fs::write(&small, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("c.webp+zzz")).unwrap();
 
 	let parked = fixture.wait_for(|record| record["state"] == "needs-attention");
@@ -302,7 +310,9 @@ fn a_parked_job_can_be_refused_before_its_time_comes() {
 fn repair_converts_without_the_token_it_could_not_carry_and_says_what_it_dropped() {
 	let fixture = Fixture::with("1h", "convert");
 	let small = fixture.photos.join("e.png");
+	let before = support::observed(&fixture.state);
 	fs::write(&small, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("e.webp+zzz")).unwrap();
 
 	let done = fixture.wait_for(|record| record["state"] == "done");
@@ -339,7 +349,9 @@ fn the_interactive_walk_refuses_a_pipe_rather_than_reading_a_script() {
 fn a_file_that_appeared_during_the_pause_is_not_overwritten() {
 	let fixture = Fixture::new("1h");
 	let small = fixture.photos.join("d.png");
+	let before = support::observed(&fixture.state);
 	fs::write(&small, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("d.webp+ask")).unwrap();
 
 	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");
@@ -371,7 +383,9 @@ fn a_file_that_appeared_during_the_pause_is_not_overwritten() {
 fn force_replaces_a_file_that_appeared_during_the_pause() {
 	let fixture = Fixture::new("1h");
 	let small = fixture.photos.join("e.png");
+	let before = support::observed(&fixture.state);
 	fs::write(&small, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("e.webp+ask")).unwrap();
 
 	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");

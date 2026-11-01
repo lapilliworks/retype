@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -168,7 +170,9 @@ fn a_stop_now_cancels_a_running_job_and_records_it() {
 	let _daemon = start(&state, &config, false);
 
 	let source = photos.join("photo.png");
+	let before = support::observed(&state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
 	fs::rename(&source, photos.join("photo.webp")).unwrap();
 
 	// Wait until the job is running rather than merely queued, so the cancel has a
