@@ -35,9 +35,11 @@ done
 
 bin=${RETYPE_BIN:-${CARGO_TARGET_DIR:-$root/target}/debug/retype}
 
-if [ ! -x "$bin" ]; then
+# Always build: a binary left from another commit produces a transcript about the
+# wrong code, and the commit in the header says only what the sources are.
+if [ -z "${RETYPE_BIN:-}" ]; then
 	echo "building $bin"
-	(cd "$root" && cargo build -p retype-cli) || exit 1
+	(cd "$root" && cargo build -p retype-cli --quiet) || exit 1
 fi
 
 trees=()
