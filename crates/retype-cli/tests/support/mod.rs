@@ -1,4 +1,9 @@
 //! Helpers shared by the tests that drive the daemon.
+//!
+//! A test daemon must not raise a real desktop notification: Windows and macOS both
+//! have a notifier the daemon will find, so every configuration a daemon reads in a
+//! test sets `[notify] enabled = false`. `tests/notify.rs` is the one exception, and it
+//! scripts the notifier instead.
 
 use std::path::Path;
 use std::process::Command;

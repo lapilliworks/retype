@@ -39,6 +39,9 @@ fn config(dir: &Path, above: &str) -> PathBuf {
 			"\
 version = 'retype-config-1'
 
+[notify]
+enabled = false
+
 [backends]
 prefer = ['copy']
 

@@ -25,6 +25,9 @@ fn slow_config(dir: &Path, seconds: u32) -> PathBuf {
 			"\
 version = 'retype-config-1'
 
+[notify]
+enabled = false
+
 [backends]
 prefer = ['slow']
 
