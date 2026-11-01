@@ -66,6 +66,11 @@ impl Journal {
 
 		if let Some(quarantined) = &replay.quarantined {
 			fs::rename(path, quarantined)?;
+		} else if replay.torn {
+			// Drop the partial line before opening for append. Leaving it would make
+			// it a non-trailing line as soon as the next record is written, which
+			// turns an interrupted write into corruption on the following start.
+			truncate_torn(path)?;
 		}
 
 		if let Some(parent) = path.parent() {
@@ -178,6 +183,26 @@ fn is_durable(state: JobState) -> bool {
 	// A parked job has a deadline to survive a crash, a queued one has a queue entry
 	// that reconciliation rebuilds, and a finished one is the record itself.
 	matches!(state, JobState::Queued | JobState::Pending | JobState::Done)
+}
+
+/// Remove the incomplete line at the end of the journal.
+fn truncate_torn(path: &Path) -> Result<()> {
+	let bytes = fs::read(path)?;
+	let mut end = bytes.len();
+
+	while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+		end -= 1;
+	}
+
+	let start = bytes[..end]
+		.iter()
+		.rposition(|byte| *byte == b'\n')
+		.map_or(0, |newline| newline + 1);
+
+	let file = fs::OpenOptions::new().write(true).open(path)?;
+	file.set_len(start as u64)?;
+	file.sync_all()?;
+	Ok(())
 }
 
 fn replay(path: &Path) -> Result<Replay> {
@@ -410,6 +435,41 @@ mod tests {
 		assert!(replay.torn);
 		assert_eq!(replay.jobs.len(), 1);
 		assert!(replay.quarantined.is_none(), "a torn tail is not corruption");
+	}
+
+	#[test]
+	fn a_torn_tail_is_removed_before_the_next_append() {
+		let (_dir, path) = path();
+		let first = job();
+
+		{
+			let (mut journal, _) = Journal::open(&path).unwrap();
+			journal.append(&first).unwrap();
+		}
+
+		let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+		file.write_all(b"not json").unwrap();
+		drop(file);
+
+		let second = job();
+
+		{
+			let (mut journal, replay) = Journal::open(&path).unwrap();
+			assert!(replay.torn);
+			assert_eq!(replay.jobs.len(), 1);
+			journal.append(&second).unwrap();
+		}
+
+		let (_journal, replay) = Journal::open(&path).unwrap();
+
+		assert!(
+			!replay.torn,
+			"the partial line was not left in front of the next record"
+		);
+		assert!(replay.quarantined.is_none(), "a torn tail is not corruption");
+		assert_eq!(replay.jobs.len(), 2);
+		assert_eq!(replay.jobs[0].id, first.id);
+		assert_eq!(replay.jobs[1].id, second.id);
 	}
 
 	#[test]
