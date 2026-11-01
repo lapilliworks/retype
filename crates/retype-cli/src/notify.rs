@@ -47,55 +47,61 @@ impl Message {
 			return None;
 		}
 
-		let count = |state: JobState| jobs.iter().filter(|job| job.state == state).count();
-
 		let converted: Vec<&Job> = jobs
 			.iter()
 			.filter(|job| matches!(job.state, JobState::Done | JobState::Partial))
 			.collect();
 
-		let failed = count(JobState::Failed);
-		let cancelled = count(JobState::Cancelled) + count(JobState::Superseded);
-		let parked = count(JobState::Pending) + count(JobState::NeedsAttention);
+		let failed = with_state(jobs, JobState::Failed);
+		let cancelled = with_state(jobs, JobState::Cancelled);
+		let superseded = with_state(jobs, JobState::Superseded);
+		let parked: Vec<&Job> = jobs
+			.iter()
+			.filter(|job| matches!(job.state, JobState::Pending | JobState::NeedsAttention))
+			.collect();
 
 		let mut parts = Vec::new();
 		if !converted.is_empty() {
 			// A count alone leaves the user guessing what became of what, so the names
 			// and the formats follow it.
-			parts.push(format!("{} converted ({})", converted.len(), conversions(&converted)));
+			parts.push(format!(
+				"{} converted ({})",
+				converted.len(),
+				named(&converted, conversion)
+			));
 		}
-		if failed > 0 {
-			parts.push(format!("{failed} failed"));
+		if !failed.is_empty() {
+			parts.push(format!("{} failed ({})", failed.len(), named(&failed, failure)));
 		}
-		if cancelled > 0 {
-			parts.push(format!("{cancelled} cancelled"));
+		if !cancelled.is_empty() {
+			parts.push(format!(
+				"{} cancelled ({})",
+				cancelled.len(),
+				named(&cancelled, source_name)
+			));
 		}
-		if parked > 0 {
-			parts.push(format!("{parked} parked"));
+		if !superseded.is_empty() {
+			parts.push(format!(
+				"{} superseded ({})",
+				superseded.len(),
+				named(&superseded, source_name)
+			));
+		}
+		if !parked.is_empty() {
+			parts.push(format!("{} parked ({})", parked.len(), named(&parked, waiting)));
 		}
 
 		if parts.is_empty() {
 			return None;
 		}
 
-		let body = parts.join(", ");
+		let mut body = parts.join(", ");
 
-		// The first thing that went wrong is worth more than a count: a code and a file
-		// are what the user needs to act.
-		let detail = jobs.iter().find_map(|job| {
-			let error = job.error.as_ref()?;
-			let path = file_name(&job.source.path);
-
-			Some(format!("{path}: {}", error.message))
-		});
-
-		let body = match (detail, parked) {
-			(Some(detail), _) => format!("{body} ({detail})"),
-			(None, parked) if parked > 0 => {
-				format!("{body}; `retype jobs --interactive` decides what happens")
-			}
-			(None, _) => body,
-		};
+		// A parked job that can run as asked only needs the timer; one that cannot needs
+		// a person, so the body says which.
+		if !parked.is_empty() {
+			body.push_str(&parked_hint(&parked));
+		}
 
 		let undo = match undo_enabled {
 			true => converted.iter().map(|job| job.id.clone()).collect(),
@@ -111,8 +117,8 @@ impl Message {
 }
 
 /// Name each conversion and its product, up to `NAMED`, then count the rest.
-fn conversions(jobs: &[&Job]) -> String {
-	let mut names: Vec<String> = jobs.iter().take(NAMED).map(|job| conversion(job)).collect();
+fn named(jobs: &[&Job], describe: impl Fn(&Job) -> String) -> String {
+	let mut names: Vec<String> = jobs.iter().take(NAMED).map(|job| describe(job)).collect();
 
 	if jobs.len() > NAMED {
 		names.push(format!("and {} more", jobs.len() - NAMED));
@@ -121,7 +127,7 @@ fn conversions(jobs: &[&Job]) -> String {
 	names.join(", ")
 }
 
-/// `a.heic → a.jpg`, or `a.heic → a.webp, a.jpg` when the intent made several files.
+/// `a.heic → a.jpg`, plus what was dropped or missed on the way.
 fn conversion(job: &Job) -> String {
 	let source = file_name(&job.source.path);
 	let written = outputs(job);
@@ -131,8 +137,99 @@ fn conversion(job: &Job) -> String {
 	}
 
 	let targets: Vec<String> = written.iter().map(|output| file_name(&output.path)).collect();
+	let mut text = format!("{source} → {}", targets.join(", "));
 
-	format!("{source} → {}", targets.join(", "))
+	// A repair ran an intent it had cut down, and a partial conversion left an output
+	// unwritten: both are things the user has to know to judge the result.
+	if let Some(dropped) = dropped_tokens(job) {
+		text.push_str(&format!("; dropped {}", dropped.join(", ")));
+	}
+
+	let missed: Vec<String> = job
+		.outputs
+		.iter()
+		.filter(|output| matches!(output.state, OutputState::Failed | OutputState::Skipped))
+		.map(missed_output)
+		.collect();
+
+	if !missed.is_empty() {
+		text.push_str(&format!("; {}", missed.join(", ")));
+	}
+
+	text
+}
+
+/// The tokens a repair dropped, which a job that ran as asked never has.
+fn dropped_tokens(job: &Job) -> Option<&[String]> {
+	let dropped = &job.parked.as_ref()?.dropped;
+
+	(!dropped.is_empty()).then_some(dropped.as_slice())
+}
+
+/// `a.webp: magick exited 1`, an output of a batch that was not written.
+fn missed_output(output: &Output) -> String {
+	let name = file_name(&output.path);
+
+	match output.error.as_ref().map(|error| error.message.as_str()) {
+		Some(message) if !message.is_empty() => format!("{name}: {message}"),
+		_ => name,
+	}
+}
+
+/// `a.heic: magick exited 1`: the file and the reason it failed.
+fn failure(job: &Job) -> String {
+	let source = source_name(job);
+
+	match diagnosis(job) {
+		Some(message) => format!("{source}: {message}"),
+		None => source,
+	}
+}
+
+/// `a.heic: cost`: the file and the reason `jobs list` shows for the wait.
+fn waiting(job: &Job) -> String {
+	let source = source_name(job);
+	let reason = job
+		.parked
+		.as_ref()
+		.map(|parked| parked.reason.as_str())
+		.unwrap_or_default();
+
+	match reason.is_empty() {
+		true => source,
+		false => format!("{source}: {reason}"),
+	}
+}
+
+/// The first thing recorded as wrong. A tool's failure lands on its output, and the
+/// job's own error is only set when the job never reached one.
+fn diagnosis(job: &Job) -> Option<String> {
+	job.error
+		.as_ref()
+		.or_else(|| job.outputs.iter().find_map(|output| output.error.as_ref()))
+		.map(|error| error.message.clone())
+}
+
+fn source_name(job: &Job) -> String {
+	file_name(&job.source.path)
+}
+
+/// What ends the wait, so a parked batch says whether it needs a person.
+fn parked_hint(jobs: &[&Job]) -> String {
+	if jobs.iter().any(|job| job.state == JobState::NeedsAttention) {
+		return "; `retype jobs --interactive` decides what happens".to_string();
+	}
+
+	let pronoun = match jobs.len() {
+		1 => "it",
+		_ => "them",
+	};
+
+	format!("; the deferral timer will run {pronoun}")
+}
+
+fn with_state(jobs: &[Job], state: JobState) -> Vec<&Job> {
+	jobs.iter().filter(|job| job.state == state).collect()
 }
 
 /// The outputs that were written, falling back to every output the job declared when no
@@ -213,7 +310,8 @@ impl Channel {
 	pub fn send(&self, message: &Message, undo: impl FnOnce(&[JobId])) {
 		match self {
 			Self::Log => {
-				eprintln!("retype: {}: {}", message.title, message.body);
+				// The title is the product's own name, so a log line would say it twice.
+				eprintln!("retype: {}", message.body);
 			}
 			Self::Plain => {
 				let _ = plain(message);
@@ -422,7 +520,7 @@ fn has_command(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use retype_core::job::{Job, JobError, Source, Tier};
+	use retype_core::job::{Job, JobError, Parked, Source, Tier};
 
 	fn job(id: usize, state: JobState) -> Job {
 		let mut job = Job::new(
@@ -450,6 +548,22 @@ mod tests {
 				output.state = OutputState::Done;
 			}
 		}
+
+		job
+	}
+
+	/// The same job, parked for a reason, as the daemon records one.
+	fn park(mut job: Job, reason: &str) -> Job {
+		job.parked = Some(Parked {
+			reason: reason.to_string(),
+			deadline: None,
+			batch: None,
+			estimate: None,
+			requested: None,
+			corrected: None,
+			dropped: Vec::new(),
+			consume: true,
+		});
 
 		job
 	}
@@ -493,6 +607,32 @@ mod tests {
 	}
 
 	#[test]
+	fn a_partial_conversion_names_the_output_it_missed() {
+		let mut partial = job(1, JobState::Partial);
+		let mut missed = Output::pending("/photos/1.webp".into(), "webp", Tier::Converted);
+		missed.state = OutputState::Failed;
+		missed.error = Some(JobError {
+			code: "E_TOOL_FAILED".to_string(),
+			message: "magick exited 1".to_string(),
+		});
+		partial.outputs.push(missed);
+
+		let message = Message::of(&[partial], true).expect("a message");
+
+		assert_eq!(message.body, "1 converted (1.heic → 1.jpg; 1.webp: magick exited 1)");
+	}
+
+	#[test]
+	fn a_repaired_conversion_says_what_it_dropped() {
+		let mut repaired = park(job(1, JobState::Done), "inapplicable");
+		repaired.parked.as_mut().expect("a parked record").dropped = vec!["quality80".to_string()];
+
+		let message = Message::of(&[repaired], true).expect("a message");
+
+		assert_eq!(message.body, "1 converted (1.heic → 1.jpg; dropped quality80)");
+	}
+
+	#[test]
 	fn a_failure_is_named_rather_than_counted() {
 		let mut failed = job(1, JobState::Failed);
 		failed.error = Some(JobError {
@@ -509,12 +649,43 @@ mod tests {
 	}
 
 	#[test]
-	fn a_parked_batch_says_where_to_decide_and_offers_no_undo() {
-		let message = Message::of(&[job(1, JobState::Pending)], true).expect("a message");
+	fn a_failure_without_a_job_error_takes_the_outputs_reason() {
+		let mut failed = job(1, JobState::Failed);
+		failed.outputs[0].state = OutputState::Failed;
+		failed.outputs[0].error = Some(JobError {
+			code: "E_TOOL_FAILED".to_string(),
+			message: "magick exited 1: no decode delegate".to_string(),
+		});
+
+		let message = Message::of(&[failed], true).expect("a message");
+
+		assert_eq!(message.body, "1 failed (1.heic: magick exited 1: no decode delegate)");
+	}
+
+	#[test]
+	fn a_cancelled_job_and_a_superseded_one_are_named_and_kept_apart() {
+		let jobs = vec![job(1, JobState::Cancelled), job(2, JobState::Superseded)];
+
+		let message = Message::of(&jobs, true).expect("a message");
+
+		assert_eq!(message.body, "1 cancelled (1.heic), 1 superseded (2.heic)");
+	}
+
+	#[test]
+	fn a_pending_batch_names_the_file_and_what_ends_the_wait() {
+		let message = Message::of(&[park(job(1, JobState::Pending), "cost")], true).expect("a message");
+
+		assert_eq!(message.body, "1 parked (1.heic: cost); the deferral timer will run it");
+		assert!(message.undo.is_empty());
+	}
+
+	#[test]
+	fn a_batch_that_needs_attention_says_where_to_decide() {
+		let message = Message::of(&[park(job(1, JobState::NeedsAttention), "intent")], true).expect("a message");
 
 		assert_eq!(
 			message.body,
-			"1 parked; `retype jobs --interactive` decides what happens"
+			"1 parked (1.heic: intent); `retype jobs --interactive` decides what happens"
 		);
 		assert!(message.undo.is_empty());
 	}
