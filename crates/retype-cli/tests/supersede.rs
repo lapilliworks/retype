@@ -95,7 +95,10 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 		.output()
 		.unwrap();
 
-	let err = photos.join("daemon.err");
+	// Outside the watched root: debug logging would otherwise be a stream of events in
+	// the directory the test is reasoning about.
+	let _logs = tempfile::tempdir().unwrap();
+	let err = _logs.path().join("daemon.err");
 	let _daemon = Daemon(
 		retype()
 			.args(["daemon", "--detached"])
