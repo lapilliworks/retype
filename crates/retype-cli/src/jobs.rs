@@ -9,6 +9,7 @@ use std::process::ExitCode;
 
 use retype_core::error::Code;
 use retype_core::job::JobId;
+use retype_core::print;
 use serde_json::Value;
 
 use crate::client;
@@ -484,7 +485,7 @@ fn describe(job: &Value) -> String {
 		.map(|estimate| {
 			let ms = estimate["ms"].as_u64().unwrap_or_default();
 			let bytes = estimate["bytes"].as_u64().unwrap_or_default();
-			format!("  (about {}, {} estimated)", duration(ms), size(bytes))
+			format!("  (about {}, {} estimated)", duration(ms), print::size(bytes))
 		})
 		.unwrap_or_default();
 
@@ -503,14 +504,6 @@ fn duration(ms: u64) -> String {
 		0..=999 => format!("{ms}ms"),
 		ms if ms < 60_000 => format!("{:.1}s", ms as f64 / 1000.0),
 		ms => format!("{}m{:02}s", ms / 60_000, ms % 60_000 / 1000),
-	}
-}
-
-fn size(bytes: u64) -> String {
-	match bytes {
-		0..=999 => format!("{bytes} bytes"),
-		bytes if bytes < 1_000_000 => format!("{:.0}kb", bytes as f64 / 1000.0),
-		bytes => format!("{:.1}mb", bytes as f64 / 1_000_000.0),
 	}
 }
 
@@ -688,7 +681,7 @@ mod tests {
 		assert_eq!(duration(400), "400ms");
 		assert_eq!(duration(2_400), "2.4s");
 		assert_eq!(duration(62_000), "1m02s");
-		assert_eq!(size(900), "900 bytes");
-		assert_eq!(size(1_200_000), "1.2mb");
+		assert_eq!(print::size(900), "900 bytes");
+		assert_eq!(print::size(1_200_000), "1.2mb");
 	}
 }
