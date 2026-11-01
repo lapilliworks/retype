@@ -127,6 +127,17 @@ impl Shared {
 		}
 	}
 
+	/// Put back the sightings whose rename the watcher has not seen yet.
+	fn restore_own_renames(&self, own: Vec<retype_core::correlate::Sighting>) {
+		if own.is_empty() {
+			return;
+		}
+
+		if let Ok(mut moved) = self.own_renames.lock() {
+			moved.extend(own);
+		}
+	}
+
 	/// Take the paths this process moved since the last look.
 	fn take_own_renames(&self) -> Vec<retype_core::correlate::Sighting> {
 		match self.own_renames.lock() {
@@ -392,8 +403,9 @@ fn spawn_worker(
 			// Our own renames are carried into the batch: a platform may not report a
 			// rename the process performed, and the file may have moved again by the
 			// time the batch is decided.
-			let own = shared.take_own_renames();
-			let facts = retype_watch::feed_with(&mut correlator, &batch, &own);
+			let mut own = shared.take_own_renames();
+			let facts = retype_watch::feed_with(&mut correlator, &batch, &mut own);
+			shared.restore_own_renames(own);
 
 			for fact in &facts {
 				crate::verbose::detail(format!(

@@ -104,11 +104,19 @@ pub fn collect(receiver: &mpsc::Receiver<notify::Result<Event>>, window: Window)
 
 /// Feed a batch through both strategies and return the facts it supports.
 pub fn feed(correlator: &mut Correlator, batch: &Batch) -> Vec<RenameFact> {
+	coalesce(raw_facts(correlator, batch))
+}
+
+/// The facts a batch supports, one per strategy, before rename chains collapse.
+///
+/// Kept apart from [`feed`] because a chain must not be joined through a rename
+/// this process made itself: the job's restore is not a step the user took.
+fn raw_facts(correlator: &mut Correlator, batch: &Batch) -> Vec<RenameFact> {
 	invalidate_renamed_directories(correlator, batch);
 	let mut facts = observe_names(correlator, batch);
 	facts.extend(observe_identity(correlator, batch));
 	correlator.end_batch();
-	coalesce(dedupe(facts))
+	dedupe(facts)
 }
 
 /// Feed a batch, keeping the sightings this process made itself current.
@@ -119,20 +127,36 @@ pub fn feed(correlator: &mut Correlator, batch: &Batch) -> Vec<RenameFact> {
 /// name the identity was recorded under. The identity is what carries the chain, so it
 /// is put back under the last name this process knows, and the rename that follows has
 /// something to correlate against.
-pub fn feed_with(correlator: &mut Correlator, batch: &Batch, own: &[Sighting]) -> Vec<RenameFact> {
-	for sighting in own {
+/// A sighting stays in `own` until the watcher has seen the file again under some
+/// name, so a platform that reports one path per event cannot lose the identity in a
+/// batch that names only the old one; the rename that follows would have nothing to
+/// correlate against.
+pub fn feed_with(correlator: &mut Correlator, batch: &Batch, own: &mut Vec<Sighting>) -> Vec<RenameFact> {
+	for sighting in own.iter() {
 		correlator.observe(sighting.clone());
 	}
 
-	let facts = feed(correlator, batch);
+	let facts: Vec<RenameFact> = raw_facts(correlator, batch)
+		.into_iter()
+		// A fact that ends at a name this process just restored is the restore
+		// itself, and a chain through it would start at the job's output name.
+		.filter(|fact| !own.iter().any(|sighting| sighting.path == fact.target))
+		.collect();
 
-	for sighting in own {
+	for sighting in own.iter() {
 		if !correlator.knows_identity(&sighting.identity) {
 			correlator.observe(sighting.clone());
 		}
 	}
 
-	facts
+	let seen: HashSet<_> = sightings(batch)
+		.iter()
+		.filter_map(|(_, sighting)| sighting.as_ref())
+		.map(|sighting| sighting.identity)
+		.collect();
+	own.retain(|sighting| !seen.contains(&sighting.identity));
+
+	coalesce(facts)
 }
 
 /// Record the identity of every file under a root, so a file that existed
@@ -468,7 +492,7 @@ mod tests {
 				rename(RenameMode::Any, &[&webp]),
 				rename(RenameMode::Any, &[&source]),
 			]),
-			&[own],
+			&mut vec![own],
 		);
 		assert!(facts.is_empty(), "the restore's own batch is not a user rename");
 
@@ -480,9 +504,98 @@ mod tests {
 				rename(RenameMode::Any, &[&source]),
 				rename(RenameMode::Any, &[&jpg]),
 			]),
-			&[],
+			&mut Vec::new(),
 		);
 		assert_eq!(sources(&facts), vec![(source.clone(), jpg.clone())]);
+	}
+
+	#[test]
+	fn our_restore_does_not_chain_into_the_users_rename() {
+		let dir = dir();
+		let source = dir.path().join("photo.png");
+		let webp = dir.path().join("photo.webp");
+		let jpg = dir.path().join("photo.jpg");
+		fs::write(&source, b"pixels").unwrap();
+
+		// Linux reports the pair, and the job starts.
+		let mut correlator = fresh();
+		correlator.observe(Sighting::of(&source).unwrap());
+		fs::rename(&source, &webp).unwrap();
+		let facts = feed(&mut correlator, &batch(vec![rename(RenameMode::Both, &[&source, &webp])]));
+		assert_eq!(sources(&facts), vec![(source.clone(), webp.clone())]);
+
+		// The job restores the source name and records that move. The user renames the
+		// restored file before the restore's own pair is decided, so one batch carries
+		// both pairs.
+		fs::rename(&webp, &source).unwrap();
+		let mut own = vec![Sighting::of(&source).unwrap()];
+		fs::rename(&source, &jpg).unwrap();
+
+		let facts = feed_with(
+			&mut correlator,
+			&batch(vec![
+				rename(RenameMode::Both, &[&webp, &source]),
+				rename(RenameMode::Both, &[&source, &jpg]),
+			]),
+			&mut own,
+		);
+
+		assert_eq!(
+			sources(&facts),
+			vec![(source.clone(), jpg.clone())],
+			"the chain starts at the name the user renamed, not at our output"
+		);
+		assert!(own.is_empty(), "the watcher saw the file again");
+	}
+
+	#[test]
+	fn an_own_sighting_outlives_batches_that_name_only_the_old_path() {
+		let dir = dir();
+		let source = dir.path().join("photo.png");
+		let webp = dir.path().join("photo.webp");
+		let jpg = dir.path().join("photo.jpg");
+		fs::write(&source, b"pixels").unwrap();
+
+		let mut correlator = fresh();
+		correlator.observe(Sighting::of(&source).unwrap());
+		fs::rename(&source, &webp).unwrap();
+		feed(
+			&mut correlator,
+			&batch(vec![
+				rename(RenameMode::Any, &[&source]),
+				rename(RenameMode::Any, &[&webp]),
+			]),
+		);
+
+		// Our restore, then the user's rename: macOS reports one path per event, so the
+		// old name going away and the new one arriving land in different batches.
+		fs::rename(&webp, &source).unwrap();
+		let mut own = vec![Sighting::of(&source).unwrap()];
+
+		let facts = feed_with(
+			&mut correlator,
+			&batch(vec![rename(RenameMode::Any, &[&webp])]),
+			&mut own,
+		);
+		assert!(facts.is_empty());
+		assert_eq!(own.len(), 1, "the watcher has not seen the restored file yet");
+
+		fs::rename(&source, &jpg).unwrap();
+		let facts = feed_with(
+			&mut correlator,
+			&batch(vec![rename(RenameMode::Any, &[&source])]),
+			&mut own,
+		);
+		assert!(facts.is_empty(), "an absent path is not a sighting");
+		assert_eq!(own.len(), 1, "the identity outlives a batch that names only the old path");
+
+		let facts = feed_with(
+			&mut correlator,
+			&batch(vec![rename(RenameMode::Any, &[&jpg])]),
+			&mut own,
+		);
+		assert_eq!(sources(&facts), vec![(source.clone(), jpg.clone())]);
+		assert!(own.is_empty(), "the watcher saw the file again");
 	}
 
 	#[test]
