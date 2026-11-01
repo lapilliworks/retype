@@ -41,7 +41,7 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 			format: &job.source.format,
 			is_directory: false,
 		},
-		&shared.registry,
+		&shared.registry(),
 	)
 	.map_err(|problems| {
 		Diagnostic::global(
@@ -50,7 +50,7 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 		)
 	})?;
 
-	let plans = plan::compile(&shared.registry, &retype_core::tools::Machine, &resolved).map_err(|problems| {
+	let plans = plan::compile(&shared.registry(), &retype_core::tools::Machine, &resolved).map_err(|problems| {
 		Diagnostic::global(
 			Code::ToolMissing,
 			format!("the recorded intent can no longer be planned: {problems}"),
@@ -133,6 +133,7 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 		machine: machine.to_string(),
 		error: None,
 		parked: None,
+		consume_source: job.consume_source,
 	};
 
 	if let Ok(mut journal) = shared.journal.lock() {

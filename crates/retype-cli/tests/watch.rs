@@ -196,3 +196,70 @@ fn unwatching_a_path_that_does_not_exist_succeeds() {
 		String::from_utf8_lossy(&output.stderr)
 	);
 }
+
+#[test]
+fn pause_and_resume_are_state_that_the_listing_shows() {
+	let dir = tempfile::tempdir().unwrap();
+	let photos = dir.path().join("photos");
+	fs::create_dir(&photos).unwrap();
+	let state = dir.path().join("state");
+
+	let paused = run(&state, &["watch", photos.to_str().unwrap(), "--pause"]);
+	assert_eq!(
+		paused.status.code(),
+		Some(0),
+		"{}",
+		String::from_utf8_lossy(&paused.stderr)
+	);
+	assert!(String::from_utf8_lossy(&run(&state, &["watch"]).stdout).contains("paused"));
+
+	let resumed = run(&state, &["watch", photos.to_str().unwrap(), "--resume"]);
+	assert_eq!(
+		resumed.status.code(),
+		Some(0),
+		"{}",
+		String::from_utf8_lossy(&resumed.stderr)
+	);
+	let listing = String::from_utf8_lossy(&run(&state, &["watch"]).stdout).to_string();
+	assert!(!listing.contains("paused"), "{listing}");
+}
+
+#[test]
+fn a_policy_pause_refuses_resume() {
+	let dir = tempfile::tempdir().unwrap();
+	let photos = dir.path().join("photos");
+	fs::create_dir(&photos).unwrap();
+	fs::write(
+		photos.join(".retype.toml"),
+		"version = 'retype-config-1'\npaused = true\n",
+	)
+	.unwrap();
+	let state = dir.path().join("state");
+
+	let resumed = run(&state, &["watch", photos.to_str().unwrap(), "--resume"]);
+
+	assert_eq!(resumed.status.code(), Some(3));
+	assert!(String::from_utf8_lossy(&resumed.stderr).contains("paused = true"));
+}
+
+#[test]
+fn a_vanished_registration_can_still_be_removed() {
+	let dir = tempfile::tempdir().unwrap();
+	let photos = dir.path().join("photos");
+	fs::create_dir(&photos).unwrap();
+	let state = dir.path().join("state");
+
+	run(&state, &["watch", photos.to_str().unwrap()]);
+	fs::remove_dir(&photos).unwrap();
+
+	assert!(String::from_utf8_lossy(&run(&state, &["watch"]).stdout).contains("missing"));
+
+	let removed = run(&state, &["unwatch", photos.to_str().unwrap()]);
+	assert_eq!(
+		removed.status.code(),
+		Some(0),
+		"{}",
+		String::from_utf8_lossy(&removed.stderr)
+	);
+	assert!(run(&state, &["watch"]).stdout.is_empty());
+}

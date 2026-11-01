@@ -31,17 +31,17 @@ pub struct Request {
 
 /// A request that has been read, resolved and planned: everything that can fail
 /// before a byte moves.
-pub struct Prepared<'a> {
+pub struct Prepared {
 	pub input: PathBuf,
 	pub stem: String,
 	pub format: String,
 	pub resolved: resolve::Resolved,
-	pub plans: Vec<plan::Plan<'a>>,
+	pub plans: Vec<plan::Plan>,
 	pub paths: Vec<PathBuf>,
 }
 
 /// Read the request and choose a backend for each output. Nothing is written.
-pub fn prepare<'a>(registry: &'a Registry, request: &Request) -> std::result::Result<Prepared<'a>, Diagnoses> {
+pub fn prepare(registry: &Registry, request: &Request) -> std::result::Result<Prepared, Diagnoses> {
 	let name = request
 		.input
 		.file_name()
@@ -169,7 +169,7 @@ fn validate(request: &Request, paths: &[PathBuf]) -> std::result::Result<(), Dia
 /// The paths the plans write to, in plan order, with `-o` applied.
 fn targets(
 	request: &Request,
-	plans: &[plan::Plan<'_>],
+	plans: &[plan::Plan],
 	stem: &str,
 	format: &str,
 	resolved: &resolve::Resolved,
@@ -200,7 +200,7 @@ fn targets(
 
 /// The record a submitted job writes before a runner reaches it, so a client can
 /// see it waiting rather than only once it starts.
-pub fn queued(shared: &Shared, prepared: &Prepared<'_>, id: &JobId) -> Job {
+pub fn queued(shared: &Shared, prepared: &Prepared, id: &JobId) -> Job {
 	let now = now_ms();
 
 	Job {
@@ -208,7 +208,7 @@ pub fn queued(shared: &Shared, prepared: &Prepared<'_>, id: &JobId) -> Job {
 		created: now,
 		updated: now,
 		source: source(prepared),
-		intent: Some(print::intent(&prepared.resolved, &shared.registry)),
+		intent: Some(print::intent(&prepared.resolved, &shared.registry())),
 		outputs: prepared
 			.plans
 			.iter()
@@ -225,6 +225,7 @@ pub fn queued(shared: &Shared, prepared: &Prepared<'_>, id: &JobId) -> Job {
 		machine: shared.machine.clone(),
 		error: None,
 		parked: None,
+		consume_source: false,
 	}
 }
 
@@ -232,7 +233,7 @@ pub fn queued(shared: &Shared, prepared: &Prepared<'_>, id: &JobId) -> Job {
 pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancellation) {
 	// The plan was made when the job was accepted. Making it again is how a tool
 	// that went away in between is reported instead of run.
-	let prepared = match prepare(&shared.registry, request) {
+	let prepared = match prepare(&shared.registry(), request) {
 		Ok(prepared) => prepared,
 		Err(problems) => {
 			publish(shared, &unsatisfied(shared, request, problems, id));
@@ -246,7 +247,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 	let store = retype_core::undo::Store::open(&shared.state_dir);
 	let undo_record = store.save(retype_core::undo::Subject {
 		id: id.clone(),
-		intent: print::intent(&prepared.resolved, &shared.registry),
+		intent: print::intent(&prepared.resolved, &shared.registry()),
 		machine: shared.machine.clone(),
 		bytes: prepared.input.clone(),
 		source_path: prepared.input.clone(),
@@ -348,7 +349,7 @@ fn tail(report: &execute::Report) -> Option<String> {
 	}
 }
 
-fn source(prepared: &Prepared<'_>) -> Source {
+fn source(prepared: &Prepared) -> Source {
 	Source {
 		path: prepared.input.clone(),
 		format: prepared.format.clone(),
@@ -361,7 +362,7 @@ fn source(prepared: &Prepared<'_>) -> Source {
 
 fn record(
 	path: &Path,
-	plan: &plan::Plan<'_>,
+	plan: &plan::Plan,
 	state: OutputState,
 	bytes: Option<u64>,
 	stderr: Option<String>,
@@ -397,7 +398,7 @@ fn unsatisfied(shared: &Shared, request: &Request, problems: Diagnoses, id: &Job
 		.and_then(|name| name.to_str())
 		.unwrap_or_default();
 	let format = shared
-		.registry
+		.registry()
 		.split(name)
 		.map(|(_, format)| format.to_string())
 		.unwrap_or_default();
@@ -424,5 +425,6 @@ fn unsatisfied(shared: &Shared, request: &Request, problems: Diagnoses, id: &Job
 			message: problems.to_string(),
 		}),
 		parked: None,
+		consume_source: false,
 	}
 }

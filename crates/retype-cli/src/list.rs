@@ -168,12 +168,7 @@ fn describe(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: 
 
 /// One line per pair: the tier it declares, and the backend that would carry it.
 fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: bool) {
-	let mut names: Vec<&str> = registry.formats().map(|(name, _)| name.as_str()).collect();
-
-	// A directory is a source the grammar names, `docs/grammar.md` §3, and archiving
-	// one is the gesture the archive formats exist for. It is not a declared format,
-	// so it has to be listed here or the pair would never show.
-	names.push("folder");
+	let names: Vec<&str> = registry.formats().map(|(name, _)| name.as_str()).collect();
 
 	if !json {
 		println!(
@@ -184,7 +179,7 @@ fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: boo
 
 	for from in &names {
 		for to in &names {
-			if from == to || (*from == "folder" && *to == "folder") {
+			if from == to {
 				continue;
 			}
 

@@ -135,7 +135,7 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 /// Convert the sample and record what it cost.
 fn measure(
 	registry: &Registry,
-	plan: &Plan<'_>,
+	plan: &Plan,
 	sample: &Path,
 	work: &Path,
 	source: &str,
@@ -164,8 +164,8 @@ fn measure(
 	})
 }
 
-fn version(plan: &Plan<'_>) -> String {
-	match plan.backend {
+fn version(plan: &Plan) -> String {
+	match &plan.backend {
 		// A native backend is this build, and its version is the product's.
 		plan::Backend::Native { .. } => env!("CARGO_PKG_VERSION").to_string(),
 		// A repack through a tool is the tool's work whatever the rules around it are.

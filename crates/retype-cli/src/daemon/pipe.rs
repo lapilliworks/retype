@@ -11,14 +11,19 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::FromRawHandle;
 use std::ptr;
 
-use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
-use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, RevertToSelf, SECURITY_ATTRIBUTES};
+use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE, LocalFree};
+use windows_sys::Win32::Security::Authorization::{
+	ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+};
+use windows_sys::Win32::Security::{
+	GetTokenInformation, PSECURITY_DESCRIPTOR, RevertToSelf, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+};
 use windows_sys::Win32::Storage::FileSystem::{FlushFileBuffers, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::Pipes::{
 	ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, ImpersonateNamedPipeClient, PIPE_READMODE_BYTE,
 	PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 use crate::daemon::Server;
 use crate::error::{Error, Result};
@@ -63,13 +68,20 @@ pub fn serve(name: &str, server: &mut Server) -> Result<()> {
 			return Err(Error::Io(std::io::Error::last_os_error()));
 		}
 
+		crate::daemon::signals::watch_pipe(handle as usize);
 		let connected = match connect(handle) {
 			Ok(connected) => connected,
 			Err(error) => {
-				unsafe { close(handle) };
+				if crate::daemon::signals::unwatch_pipe(handle as usize) {
+					unsafe { close(handle) };
+				}
+				if crate::daemon::signals::stop_requested() {
+					break;
+				}
 				return Err(error);
 			}
 		};
+		crate::daemon::signals::unwatch_pipe(handle as usize);
 
 		if !connected {
 			// A failed connect leaves nothing to serve, and the instance cannot
@@ -147,14 +159,64 @@ fn wide(text: &str) -> Vec<u16> {
 }
 
 fn user_token() -> String {
-	let token: String = std::env::var("USERNAME")
-		.unwrap_or_else(|_| "user".to_string())
-		.chars()
-		.filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
-		.take(24)
-		.collect();
+	// The SID is stable across a rename and unique on a machine that is not
+	// single-user. A short FNV-1a digest keeps the pipe name readable without
+	// exposing the account identifier in a name another local process can list.
+	sid()
+		.map(|sid| format!("{:016x}", fnv(sid.as_bytes())))
+		.or_else(|| std::env::var("USERNAME").ok())
+		.map(|token| {
+			token
+				.chars()
+				.filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+				.take(24)
+				.collect::<String>()
+		})
+		.filter(|token| !token.is_empty())
+		.unwrap_or_else(|| "user".to_string())
+}
 
-	if token.is_empty() { "user".to_string() } else { token }
+fn fnv(bytes: &[u8]) -> u64 {
+	let mut hash = 0xcbf2_9ce4_8422_2325u64;
+	for byte in bytes {
+		hash ^= u64::from(*byte);
+		hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+	}
+	hash
+}
+
+/// The current user's SID as text, or none when the token cannot be read.
+fn sid() -> Option<String> {
+	unsafe {
+		let mut token: HANDLE = ptr::null_mut();
+		if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+			return None;
+		}
+
+		let mut needed = 0u32;
+		GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut needed);
+		let mut buffer = vec![0u8; needed as usize];
+		let read = GetTokenInformation(token, TokenUser, buffer.as_mut_ptr().cast(), needed, &mut needed);
+		close(token);
+
+		if read == 0 {
+			return None;
+		}
+
+		let user = &*buffer.as_ptr().cast::<TOKEN_USER>();
+		let mut text = ptr::null_mut();
+		if ConvertSidToStringSidW(user.User.Sid, &mut text) == 0 {
+			return None;
+		}
+
+		let mut length = 0usize;
+		while *text.add(length) != 0 {
+			length += 1;
+		}
+		let sid = String::from_utf16_lossy(std::slice::from_raw_parts(text, length));
+		LocalFree(text.cast());
+		Some(sid)
+	}
 }
 
 unsafe fn flush_and_disconnect(handle: HANDLE) {

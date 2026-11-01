@@ -81,6 +81,14 @@ enum Command {
 		/// Watch this directory only, not its subdirectories
 		#[arg(long = "non-recursive")]
 		non_recursive: bool,
+
+		/// Stop converting renames here until resumed
+		#[arg(long, conflicts_with = "resume")]
+		pause: bool,
+
+		/// Resume a paused registration, unless its directory policy pauses it
+		#[arg(long, conflicts_with = "pause")]
+		resume: bool,
 	},
 
 	/// Deregister directories
@@ -156,6 +164,13 @@ enum Command {
 		/// The property fixtures to check each pair against
 		#[arg(long, value_name = "DIR")]
 		fixtures: Option<std::path::PathBuf>,
+	},
+
+	/// Handle a retype:// link from a notification or a registered scheme
+	#[command(hide = true)]
+	Uri {
+		/// The retype:// URI to handle
+		uri: String,
 	},
 
 	/// Print the version, and the schemas this build reads
@@ -313,6 +328,13 @@ fn main() -> ExitCode {
 	retype_ipc::client::trace_with(|line| verbose::detail(line));
 	announce(cli.config.as_deref());
 
+	if let Command::Uri { uri } = &cli.command {
+		let code = retype_cli::state::resolve(cli.state_dir.clone())
+			.and_then(|state_dir| retype_cli::uri::run(&state_dir, uri, cli.json));
+
+		return finish(code);
+	}
+
 	if let Command::Undo { job, last } = &cli.command {
 		let code = retype_cli::state::resolve(cli.state_dir.clone())
 			.and_then(|state_dir| retype_cli::undo::run(&state_dir, job.as_deref(), *last, cli.json));
@@ -384,6 +406,8 @@ fn main() -> ExitCode {
 	if let Command::Watch {
 		directories,
 		non_recursive,
+		pause,
+		resume,
 	} = &cli.command
 	{
 		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
@@ -396,6 +420,8 @@ fn main() -> ExitCode {
 					!non_recursive,
 					cli.json,
 					registry.watch().allow_synced,
+					*pause,
+					*resume,
 				)
 			})
 		});
@@ -652,7 +678,8 @@ fn main() -> ExitCode {
 			None => daemon::run(cli.state_dir.clone(), !detached).map(|()| ExitCode::SUCCESS),
 			Some(action) => control(&cli, action),
 		},
-		Command::Undo { .. }
+		Command::Uri { .. }
+		| Command::Undo { .. }
 		| Command::Jobs { .. }
 		| Command::Watch { .. }
 		| Command::Unwatch { .. }

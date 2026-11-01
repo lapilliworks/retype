@@ -83,7 +83,7 @@ fn named(registry: &Registry, pair: &str) -> std::result::Result<(String, String
 
 /// The plan a bare target format compiles to from `source`, which is the same plan
 /// a rename would run.
-pub fn plan_for<'a>(registry: &'a Registry, source: &str, target: &str) -> Option<Plan<'a>> {
+pub fn plan_for(registry: &Registry, source: &str, target: &str) -> Option<Plan> {
 	let parsed = intent::parse(target).ok()?;
 	let resolved = resolve::resolve(
 		&parsed,

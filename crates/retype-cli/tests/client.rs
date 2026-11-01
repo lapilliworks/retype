@@ -114,9 +114,49 @@ fn the_status_lines_are_what_a_human_needs() {
 			"dropped",
 			"skipped",
 			"placeholders",
+			"primed",
+			"watches",
 			"journal",
 			"endpoint",
 			"supervised"
 		]
 	);
+}
+
+#[test]
+fn the_daemon_owns_watch_registration_while_it_is_reachable() {
+	let daemon = Running::start();
+	let dir = tempfile::tempdir().unwrap();
+	let photos = dir.path().join("photos");
+	std::fs::create_dir(&photos).unwrap();
+	let mut client = client::connect(daemon.state_dir()).unwrap();
+
+	let added = client
+		.call(
+			"watch.add",
+			serde_json::json!({"path": photos.display().to_string(), "recursive": true}),
+		)
+		.unwrap();
+	assert_eq!(added["recursive"], true);
+
+	let listed = client.call_without_params("watch.list").unwrap();
+	assert_eq!(listed["watches"][0]["path"], photos.display().to_string());
+	assert_eq!(listed["watches"][0]["available"], true);
+
+	let removed = client
+		.call(
+			"watch.remove",
+			serde_json::json!({"path": photos.display().to_string()}),
+		)
+		.unwrap();
+	assert_eq!(removed["removed"], true);
+}
+
+#[test]
+fn the_daemon_answers_a_config_reload() {
+	let daemon = Running::start();
+	let mut client = client::connect(daemon.state_dir()).unwrap();
+
+	let answer = client.call_without_params("config.reload").unwrap();
+	assert_eq!(answer["reloaded"], true);
 }

@@ -124,6 +124,7 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 		eprintln!("retype: daemon listening on {name} (pid {})", std::process::id());
 	}
 
+	signals::install();
 	let result = pipe::serve(&name, &mut server);
 
 	signals::drain(&mut server);
@@ -138,7 +139,7 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	pool.stop();
 
 	state::clear_endpoint(&state_dir);
-	result
+	if signals::stop_requested() { Ok(()) } else { result }
 }
 
 #[cfg(not(any(unix, windows)))]

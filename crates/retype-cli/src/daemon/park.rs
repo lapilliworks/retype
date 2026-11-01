@@ -57,14 +57,14 @@ pub fn decide(
 	};
 
 	let Some((stem, format)) = shared
-		.registry
+		.registry()
 		.split(source_name)
 		.map(|(stem, format)| (stem.to_string(), format.to_string()))
 	else {
 		return Verdict::Ignore;
 	};
 
-	let parsed = match resolve::intent_of(&shared.registry, source_name, target_name) {
+	let parsed = match resolve::intent_of(&shared.registry(), source_name, target_name) {
 		Ok(Some(parsed)) => parsed,
 		Ok(None) => return Verdict::Ignore,
 		Err(problems) => {
@@ -98,7 +98,7 @@ pub fn decide(
 			format: &format,
 			is_directory: false,
 		},
-		&shared.registry,
+		&shared.registry(),
 	) {
 		Ok(resolved) => resolved,
 		Err(problems) => {
@@ -129,7 +129,7 @@ pub fn decide(
 		);
 	}
 
-	let plans = match plan::compile(&shared.registry, &retype_core::tools::Machine, &resolved) {
+	let plans = match plan::compile(&shared.registry(), &retype_core::tools::Machine, &resolved) {
 		Ok(plans) => plans,
 		Err(problems) => {
 			return uncarried(
@@ -219,7 +219,7 @@ fn uncarried(
 	resolved: Option<&Resolved>,
 ) -> Verdict {
 	let reason = reason_of(&problems);
-	let corrected = corrected(&shared.registry, parsed, format, policy);
+	let corrected = corrected(&shared.registry(), parsed, format, policy);
 
 	if let Some(verdict) = repair(
 		shared,
@@ -264,7 +264,8 @@ fn cost_defers(shared: &Shared, directory: &Policy, estimate: &Option<Cost>, byt
 		return false;
 	};
 
-	let deferral = shared.registry.deferral();
+	let registry = shared.registry();
+	let deferral = registry.deferral();
 
 	if deferral.mode == Mode::Now {
 		return false;
@@ -284,7 +285,8 @@ fn cost_defers(shared: &Shared, directory: &Policy, estimate: &Option<Cost>, byt
 /// Whether an undo record could be kept for a file of this size, decided without
 /// dropping anything, `docs/state.md` §5.5.
 fn keeps_a_record(shared: &Shared, bytes: u64) -> bool {
-	let policy = shared.registry.undo();
+	let registry = shared.registry();
+	let policy = registry.undo();
 
 	policy.enabled
 		&& Store::open(&shared.state_dir)
@@ -293,13 +295,13 @@ fn keeps_a_record(shared: &Shared, bytes: u64) -> bool {
 }
 
 /// What the whole job is expected to cost, or nothing when any output is unknown.
-fn cost(shared: &Shared, format: &str, plans: &[Plan<'_>], bytes: u64) -> Option<Cost> {
+fn cost(shared: &Shared, format: &str, plans: &[Plan], bytes: u64) -> Option<Cost> {
+	let registry = shared.registry();
 	let calibration = Calibration::open(&shared.state_dir).ok()?;
 	let (mut ms, mut total) = (0u64, 0u64);
 
 	for plan in plans {
-		let family = shared
-			.registry
+		let family = registry
 			.format(&plan.format)
 			.map(|format| format.family.as_str())
 			.unwrap_or_default();
@@ -446,7 +448,8 @@ fn repair(
 	requested: Option<&str>,
 	correction: Option<&Correction>,
 ) -> Option<Verdict> {
-	let policy = shared.registry.deferral();
+	let registry = shared.registry();
+	let policy = registry.deferral();
 	let correction = correction?;
 
 	if policy.repair != Repair::Convert {
@@ -497,6 +500,7 @@ fn repair(
 			dropped: correction.dropped.clone(),
 			consume: true,
 		}),
+		consume_source: true,
 	};
 
 	watcher::publish(shared, &job);
@@ -537,10 +541,10 @@ fn cost_of(shared: &Shared, format: &str, text: &str, bytes: u64) -> Option<Cost
 			format,
 			is_directory: false,
 		},
-		&shared.registry,
+		&shared.registry(),
 	)
 	.ok()?;
-	let plans = plan::compile(&shared.registry, &retype_core::tools::Machine, &resolved).ok()?;
+	let plans = plan::compile(&shared.registry(), &retype_core::tools::Machine, &resolved).ok()?;
 
 	cost(shared, format, &plans, bytes)
 }
@@ -552,7 +556,7 @@ struct Parking<'a> {
 	corrected: Option<Correction>,
 	estimate: Option<Cost>,
 	resolved: Option<&'a Resolved>,
-	plans: &'a [Plan<'a>],
+	plans: &'a [Plan],
 	consume: bool,
 	diagnosis: Option<&'a Diagnoses>,
 }
@@ -585,7 +589,7 @@ fn park(
 
 	let state = reason.parked();
 	let deadline = match state {
-		Parked::Pending => i64::try_from(shared.registry.deferral().pause.as_millis())
+		Parked::Pending => i64::try_from(shared.registry().deferral().pause.as_millis())
 			.ok()
 			.map(|pause| now_ms() + pause),
 		Parked::Attention => None,
@@ -627,7 +631,7 @@ fn park(
 		},
 		intent: parking
 			.resolved
-			.map(|resolved| print::intent(resolved, &shared.registry)),
+			.map(|resolved| print::intent(resolved, &shared.registry())),
 		outputs,
 		state: match state {
 			Parked::Pending => JobState::Pending,
@@ -660,6 +664,7 @@ fn park(
 				.unwrap_or_default(),
 			consume: parking.consume,
 		}),
+		consume_source: true,
 	};
 
 	watcher::publish(shared, &job);

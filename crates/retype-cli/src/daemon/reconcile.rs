@@ -59,7 +59,7 @@ fn requeue(shared: &Shared, pool: &Pool, job: &Job) {
 	// The plan is made again rather than trusted. A source that went away or a tool
 	// that was uninstalled between the two runs is then the failure it would have
 	// been, instead of a job that dies unexplained.
-	if immediate::prepare(&shared.registry, &request).is_err() {
+	if immediate::prepare(&shared.registry(), &request).is_err() {
 		interrupted(shared, job);
 		return;
 	}

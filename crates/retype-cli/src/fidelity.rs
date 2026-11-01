@@ -238,7 +238,7 @@ fn find_fixtures(state_dir: &Path) -> Option<std::path::PathBuf> {
 ///
 /// A fixture that cannot be converted is reported and skipped: the claim then carries
 /// one property fewer rather than a claim that the property was kept.
-fn check_axes(fixtures: &Fixtures, directory: &Path, source: &str, plan: &Plan<'_>, work: &Path) -> Vec<Check> {
+fn check_axes(fixtures: &Fixtures, directory: &Path, source: &str, plan: &Plan, work: &Path) -> Vec<Check> {
 	let mut checks = Vec::new();
 	let outputs = work.join("checks");
 
@@ -309,8 +309,8 @@ fn names(axes: &[Axis]) -> Vec<&'static str> {
 }
 
 /// The claim one successful conversion earns.
-fn claim_of(plan: &Plan<'_>, source: &str, target: &str, samples: &Samples<'_>) -> Claim {
-	let (version, fingerprint) = match plan.backend {
+fn claim_of(plan: &Plan, source: &str, target: &str, samples: &Samples<'_>) -> Claim {
+	let (version, fingerprint) = match &plan.backend {
 		// This build is the backend, so the claim is earned by the release rather
 		// than by a tool on the machine.
 		plan::Backend::Native { .. } => (env!("CARGO_PKG_VERSION").to_string(), String::new()),

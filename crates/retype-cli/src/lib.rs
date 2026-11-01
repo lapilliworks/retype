@@ -22,6 +22,7 @@ pub mod output;
 pub mod report;
 pub mod state;
 pub mod undo;
+pub mod uri;
 pub mod verbose;
 pub mod watch;
 pub mod why;

@@ -139,6 +139,8 @@ pub fn describe_status(status: &Value) -> Vec<(String, String)> {
 		("dropped".to_string(), field("dropped")),
 		("skipped".to_string(), field("skipped")),
 		("placeholders".to_string(), field("placeholders")),
+		("primed".to_string(), field("primed")),
+		("watches".to_string(), watch_line(&status["watches"])),
 		("journal".to_string(), field("journal")),
 		("endpoint".to_string(), field("endpoint")),
 		(
@@ -150,6 +152,34 @@ pub fn describe_status(status: &Value) -> Vec<(String, String)> {
 			},
 		),
 	]
+}
+
+/// A one-line account of the registrations, with a missing or paused one named
+/// rather than silently leaving `daemon status` looking healthy.
+fn watch_line(watches: &Value) -> String {
+	let Some(watches) = watches.as_array() else {
+		return "-".to_string();
+	};
+
+	if watches.is_empty() {
+		return "none".to_string();
+	}
+
+	watches
+		.iter()
+		.map(|watch| {
+			let path = watch["path"].as_str().unwrap_or_default();
+			match (
+				watch["available"].as_bool().unwrap_or(false),
+				watch["paused"].as_bool().unwrap_or(false),
+			) {
+				(false, _) => format!("{path} (missing)"),
+				(_, true) => format!("{path} (paused)"),
+				_ => path.to_string(),
+			}
+		})
+		.collect::<Vec<_>>()
+		.join(", ")
 }
 
 fn format_uptime(milliseconds: u64) -> String {

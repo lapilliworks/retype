@@ -269,12 +269,7 @@ fn source_of(registry: &Registry, name: &str) -> std::result::Result<Named, Diag
 /// `explain` asks about a name, which usually does not exist, so no estimate is
 /// printed rather than a guess: `docs/cli.md` §3. `convert --dry-run` reaches the
 /// same code with a real file and therefore gets one.
-fn estimates(
-	registry: &Registry,
-	state_dir: Option<&Path>,
-	source: &Named,
-	plans: &[Plan<'_>],
-) -> Vec<Option<Estimate>> {
+fn estimates(registry: &Registry, state_dir: Option<&Path>, source: &Named, plans: &[Plan]) -> Vec<Option<Estimate>> {
 	let Some(state_dir) = state_dir else {
 		return vec![None; plans.len()];
 	};
@@ -318,7 +313,7 @@ fn print_human(
 	sentence: &str,
 	source: &str,
 	derived: &[Derived],
-	plans: &[Plan<'_>],
+	plans: &[Plan],
 	estimates: &[Option<Estimate>],
 	installed: bool,
 ) {
@@ -377,7 +372,7 @@ fn print_json(
 	sentence: &str,
 	source: &str,
 	derived: &[Derived],
-	plans: &[Plan<'_>],
+	plans: &[Plan],
 	estimates: &[Option<Estimate>],
 	failure: Option<&Code>,
 	warnings: &[Diagnostic],
@@ -453,7 +448,7 @@ fn print_json(
 }
 
 /// The argv as the user would type it, with the paths left as holes.
-fn render(command: &str, plan: &Plan<'_>) -> String {
+fn render(command: &str, plan: &Plan) -> String {
 	let mut parts = vec![command.to_string()];
 
 	for arg in &plan.argv {
@@ -467,7 +462,7 @@ fn render(command: &str, plan: &Plan<'_>) -> String {
 	parts.join(" ")
 }
 
-fn tier(plan: &Plan<'_>) -> &'static str {
+fn tier(plan: &Plan) -> &'static str {
 	match plan.tier {
 		Tier::Exact => "exact",
 		Tier::Converted => "converted",

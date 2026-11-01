@@ -9,6 +9,8 @@ use std::time::Instant;
 use retype_core::error::Code;
 use retype_core::job::{Job, JobError, JobState, Output, OutputState, Source, Tier};
 use retype_core::journal::Journal;
+use retype_core::policy::Policy;
+use retype_core::watches;
 use retype_ipc::{Hello, HelloResult, IPC_VERSION, Request, Response, WireError, read_frame, same_major};
 use serde_json::json;
 
@@ -76,7 +78,7 @@ impl Server {
 		};
 
 		let shared = Arc::new(Shared {
-			registry,
+			registry: std::sync::RwLock::new(std::sync::Arc::new(registry)),
 			machine: machine.clone(),
 			state_dir: state_dir.to_path_buf(),
 			journal: Mutex::new(journal),
@@ -85,10 +87,11 @@ impl Server {
 			dropped: AtomicU64::new(0),
 			skipped: AtomicU64::new(0),
 			placeholders: AtomicU64::new(0),
+			primed: AtomicU64::new(0),
 			events: Mutex::new(crate::daemon::events::Events::default()),
 			policies: Default::default(),
 			batches: Default::default(),
-			notifier,
+			notifier: Mutex::new(notifier),
 		});
 
 		let pool = crate::daemon::queue::Pool::start(Arc::clone(&shared), crate::daemon::queue::runners());
@@ -371,7 +374,7 @@ impl Server {
 
 		// Everything that can fail before a byte moves fails here, so the caller
 		// gets a diagnosis rather than a job that will only fail later.
-		let prepared = match immediate::prepare(&self.shared.registry, &asked) {
+		let prepared = match immediate::prepare(&self.shared.registry(), &asked) {
 			Ok(prepared) => prepared,
 			Err(problems) => {
 				let code = problems.codes().first().cloned().unwrap_or(Code::ToolFailed);
@@ -697,10 +700,10 @@ impl Server {
 	fn record_cancelled(&self, id: &retype_core::job::JobId, work: &crate::daemon::queue::Work) {
 		use crate::daemon::queue::Kind;
 
-		let (source, target) = match &work.kind {
-			Kind::Rename { source, target, .. } => (source.clone(), target.clone()),
-			Kind::Immediate(request) => (request.input.clone(), request.input.clone()),
-			Kind::Deferred { source, .. } => (source.clone(), source.clone()),
+		let (source, target, consume_source) = match &work.kind {
+			Kind::Rename { source, target, .. } => (source.clone(), target.clone(), true),
+			Kind::Immediate(request) => (request.input.clone(), request.input.clone(), false),
+			Kind::Deferred { source, .. } => (source.clone(), source.clone(), true),
 		};
 
 		let job = Job {
@@ -733,9 +736,237 @@ impl Server {
 			machine: self.machine.clone(),
 			error: None,
 			parked: None,
+			consume_source,
 		};
 
 		crate::daemon::watcher::publish(&self.shared, &job);
+	}
+
+	/// The registrations as `daemon status` and `watch.list` report them: what is
+	/// registered, whether its path is there, and whether state or policy paused it.
+	fn watches(&self) -> Vec<serde_json::Value> {
+		let Ok(registrations) = watches::load(&self.shared.state_dir) else {
+			return Vec::new();
+		};
+
+		registrations
+			.into_iter()
+			.map(|registration| {
+				let available = registration.path.exists();
+				let policy = Policy::open(&registration.path).ok();
+				let paused = registration.paused || policy.as_ref().is_some_and(|policy| policy.paused);
+
+				json!({
+					"path": registration.path.display().to_string(),
+					"recursive": registration.recursive,
+					"added": registration.added,
+					"paused": paused,
+					"paused_by": match (registration.paused, policy.as_ref().is_some_and(|policy| policy.paused)) {
+						(true, _) => "state",
+						(_, true) => "policy",
+						_ => "no",
+					},
+					"available": available,
+					"patterns": policy.map(|policy| policy.patterns).unwrap_or_default(),
+				})
+			})
+			.collect()
+	}
+
+	fn watch_add(&self, request: &Request) -> Result<Response> {
+		let Some(path) = request.params.get("path").and_then(|path| path.as_str()) else {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::IpcMethod, "watch.add needs a path"),
+			));
+		};
+
+		let recursive = request
+			.params
+			.get("recursive")
+			.and_then(|value| value.as_bool())
+			.unwrap_or(true);
+
+		let paused = request.params.get("paused").and_then(|value| value.as_bool());
+		let directory = Path::new(path);
+
+		if !directory.is_dir() {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::UsageArgs, format!("{path} is not a directory")),
+			));
+		}
+
+		let policy = Policy::open(directory)?;
+		if policy.paused && paused != Some(true) {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(
+					Code::WatchPausedByPolicy,
+					format!(
+						"{} sets paused = true, so {path} stays unwatched",
+						policy.path.display()
+					),
+				),
+			));
+		}
+
+		if paused.is_none() && !self.shared.registry().watch().allow_synced {
+			if let Some(provider) = retype_core::synced::provider(directory) {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(
+						Code::UsageArgs,
+						format!(
+							"{path} is inside {provider}, which can hold placeholders instead of files; \
+							 [watch] allow_synced = true overrides this"
+						),
+					),
+				));
+			}
+		}
+
+		let registration = match paused {
+			Some(paused) => watches::set_paused(&self.shared.state_dir, directory, recursive, paused),
+			None => watches::register(&self.shared.state_dir, directory, recursive),
+		}?;
+
+		Ok(Response::ok(
+			request.id,
+			json!({
+				"path": registration.path.display().to_string(),
+				"recursive": registration.recursive,
+				"added": registration.added,
+				"paused": registration.paused,
+			}),
+		)?)
+	}
+
+	fn watch_remove(&self, request: &Request) -> Result<Response> {
+		let Some(path) = request.params.get("path").and_then(|path| path.as_str()) else {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::IpcMethod, "watch.remove needs a path"),
+			));
+		};
+
+		let removed = watches::unregister(&self.shared.state_dir, Path::new(path))?;
+		Ok(Response::ok(request.id, json!({"path": path, "removed": removed}))?)
+	}
+
+	fn config_reload(&self, request: &Request) -> Result<Response> {
+		match crate::config::load() {
+			Ok(registry) => {
+				crate::config::report_warnings(&registry);
+				self.shared.reload_registry(registry);
+				Ok(Response::ok(request.id, json!({"reloaded": true}))?)
+			}
+			Err(error) => Ok(Response::error(
+				request.id,
+				WireError::new(error.code(), error.to_string()),
+			)),
+		}
+	}
+
+	/// Reverse one job from the store, in the daemon rather than in a client, so a
+	/// conversion still running cannot have its record pulled out from under it.
+	fn undo(&self, request: &Request) -> Result<Response> {
+		use retype_core::undo::Store;
+
+		let store = Store::open(&self.shared.state_dir);
+		let records = store.list()?;
+		let active: std::collections::BTreeSet<String> = self
+			.shared
+			.jobs
+			.lock()
+			.map(|jobs| {
+				jobs.iter()
+					.filter(|job| {
+						matches!(
+							job.state,
+							JobState::Queued | JobState::Running | JobState::Pending | JobState::NeedsAttention
+						)
+					})
+					.map(|job| job.id.as_str().to_string())
+					.collect()
+			})
+			.unwrap_or_default();
+
+		let record = match request
+			.params
+			.get("last")
+			.and_then(|value| value.as_bool())
+			.unwrap_or(false)
+		{
+			true => match records.iter().find(|record| !active.contains(record.id.as_str())) {
+				Some(record) => record.clone(),
+				None => {
+					return Ok(Response::error(
+						request.id,
+						WireError::new(Code::JobState, "there is nothing to undo"),
+					));
+				}
+			},
+			false => {
+				let Some(written) = request.params.get("id").and_then(|id| id.as_str()) else {
+					return Ok(Response::error(
+						request.id,
+						WireError::new(Code::IpcMethod, "undo needs an id or last"),
+					));
+				};
+				let wanted = written.to_ascii_lowercase();
+				let matches: Vec<_> = records
+					.iter()
+					.filter(|record| record.id.as_str().to_ascii_lowercase().starts_with(&wanted))
+					.collect();
+
+				match matches.as_slice() {
+					[record] => (*record).clone(),
+					[] => {
+						return Ok(Response::error(
+							request.id,
+							WireError::new(Code::JobState, format!("no undo record matches '{written}'")),
+						));
+					}
+					_ => {
+						let candidates: Vec<_> = matches.iter().map(|record| record.id.as_str()).collect();
+						return Ok(Response::error(
+							request.id,
+							WireError::new(
+								Code::IpcAmbiguous,
+								format!(
+									"'{written}' matches {} records: {}",
+									candidates.len(),
+									candidates.join(", ")
+								),
+							),
+						));
+					}
+				}
+			}
+		};
+
+		if active.contains(record.id.as_str()) {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(
+					Code::JobState,
+					format!("{} is still waiting or running; stop it before undoing it", record.id),
+				),
+			));
+		}
+
+		let restored = store.restore(&record.id)?;
+
+		Ok(Response::ok(
+			request.id,
+			json!({
+				"id": restored.id,
+				"source": restored.source_path.display().to_string(),
+				"consume_source": restored.consume_source,
+				"removed": restored.outputs.iter().map(|output| output.path.display().to_string()).collect::<Vec<_>>(),
+			}),
+		)?)
 	}
 
 	fn hello(&self) -> HelloResult {
@@ -744,8 +975,10 @@ impl Server {
 			pid: std::process::id(),
 			machine: self.machine.clone(),
 			uptime_ms: self.started.elapsed().as_millis() as u64,
-			features: Vec::new(),
-			capabilities: json!({}),
+			features: vec!["events".to_string()],
+			capabilities: json!({
+				"backends": self.shared.registry().backends(),
+			}),
 		}
 	}
 
@@ -765,6 +998,8 @@ impl Server {
 					"dropped": self.shared.dropped.load(Ordering::Relaxed),
 					"skipped": self.shared.skipped.load(Ordering::Relaxed),
 					"placeholders": self.shared.placeholders.load(Ordering::Relaxed),
+					"primed": self.shared.primed.load(Ordering::Relaxed),
+					"watches": self.watches(),
 					"endpoint": self.endpoint,
 					"supervised": crate::daemon::supervision::supervisor(),
 				}),
@@ -777,7 +1012,12 @@ impl Server {
 					}).collect::<Vec<_>>()).unwrap_or_default(),
 				}),
 			)?,
-			"events" => self.events(request)?,
+			"events" | "events.subscribe" => self.events(request)?,
+			"watch.add" => self.watch_add(request)?,
+			"watch.remove" => self.watch_remove(request)?,
+			"watch.list" => Response::ok(request.id, json!({"watches": self.watches()}))?,
+			"undo" => self.undo(request)?,
+			"config.reload" => self.config_reload(request)?,
 			"why" => self.why(request)?,
 			"jobs.get" => self.get(request)?,
 			"jobs.submit" => self.submit(request)?,

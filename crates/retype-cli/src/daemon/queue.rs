@@ -456,17 +456,18 @@ tier = 'converted'
 		let (journal, replay) = Journal::open(&state.join("jobs.jsonl")).expect("journal");
 
 		Arc::new(Shared {
-			registry,
+			registry: std::sync::RwLock::new(std::sync::Arc::new(registry)),
 			journal: std::sync::Mutex::new(journal),
 			jobs: std::sync::Mutex::new(replay.jobs),
 			recent: Recent::default(),
 			dropped: AtomicU64::new(0),
 			skipped: AtomicU64::new(0),
 			placeholders: AtomicU64::new(0),
+			primed: AtomicU64::new(0),
 			events: std::sync::Mutex::new(crate::daemon::events::Events::default()),
 			policies: Default::default(),
 			batches: Default::default(),
-			notifier: None,
+			notifier: std::sync::Mutex::new(None),
 			machine: "test".to_string(),
 			state_dir: state.to_path_buf(),
 		})

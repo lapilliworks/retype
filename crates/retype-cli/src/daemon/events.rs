@@ -92,6 +92,7 @@ mod tests {
 			machine: "machine".to_string(),
 			error: None,
 			parked: None,
+			consume_source: false,
 		}
 	}
 

@@ -23,6 +23,37 @@ pub fn run(state_dir: &Path, id: Option<&str>, last: bool, json: bool) -> Result
 		)));
 	}
 
+	// A reachable daemon owns the undo store. Asking it is what keeps an undo from
+	// racing a conversion that still has the record open, `docs/ipc.md` §1.
+	if let Ok(mut client) = crate::client::connect(state_dir) {
+		let answer = client.call("undo", serde_json::json!({"id": id, "last": last}));
+
+		return match answer {
+			Ok(answer) => {
+				if json {
+					output::success(answer);
+				} else {
+					let source = answer
+						.get("source")
+						.and_then(|value| value.as_str())
+						.unwrap_or_default();
+					match answer
+						.get("consume_source")
+						.and_then(|value| value.as_bool())
+						.unwrap_or(false)
+					{
+						true => println!("{source}  restored"),
+						false => println!("{source}  outputs removed, source kept"),
+					}
+				}
+
+				Ok(ExitCode::SUCCESS)
+			}
+			Err(retype_ipc::ClientError::Rpc(error)) => Ok(ExitCode::from(output::fail(&error.code, &error.message))),
+			Err(other) => Err(crate::error::Error::Client(other)),
+		};
+	}
+
 	let store = Store::open(state_dir);
 	let records = store.list()?;
 

@@ -114,13 +114,27 @@ pub enum Channel {
 impl Channel {
 	/// What this machine can do, decided once at startup.
 	pub fn detect(actions: bool) -> Self {
-		if !has_session() || !has_notifier() {
+		// macOS has its own notifier. It carries no action, but a person on macOS
+		// expects a notification rather than a line they have to go looking for.
+		#[cfg(target_os = "macos")]
+		{
+			let _ = actions;
+			if has_command("osascript") {
+				return Self::Plain;
+			}
 			return Self::Log;
 		}
 
-		match actions {
-			true => Self::Actions,
-			false => Self::Plain,
+		#[cfg(not(target_os = "macos"))]
+		{
+			if !has_session() || !has_notifier() {
+				return Self::Log;
+			}
+
+			match actions {
+				true => Self::Actions,
+				false => Self::Plain,
+			}
 		}
 	}
 
@@ -135,7 +149,7 @@ impl Channel {
 				eprintln!("retype: {}: {}", message.title, message.body);
 			}
 			Self::Plain => {
-				let _ = notify_send(message, false);
+				let _ = plain(message);
 			}
 			Self::Actions => match message.undo.is_empty() {
 				// Nothing to offer, so nothing to wait for.
@@ -151,6 +165,33 @@ impl Channel {
 				}
 			},
 		}
+	}
+}
+
+/// A notification without actions, on whatever this platform uses.
+fn plain(message: &Message) -> Option<String> {
+	#[cfg(target_os = "macos")]
+	{
+		let quote = |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
+		let script = format!(
+			"display notification {} with title {}",
+			quote(&message.body),
+			quote(&message.title)
+		);
+
+		let output = Command::new("osascript")
+			.args(["-e", &script])
+			.stdin(Stdio::null())
+			.stderr(Stdio::null())
+			.output()
+			.ok()?;
+
+		return output.status.success().then(String::new);
+	}
+
+	#[cfg(not(target_os = "macos"))]
+	{
+		notify_send(message, false)
 	}
 }
 
@@ -185,7 +226,11 @@ fn has_session() -> bool {
 /// Whether a notifier command exists. `notify-send` is libnotify's own client and the
 /// one every desktop session ships.
 fn has_notifier() -> bool {
-	retype_core::tools::find_in_path(&std::env::var_os("PATH").unwrap_or_default(), "notify-send").is_some()
+	has_command("notify-send")
+}
+
+fn has_command(command: &str) -> bool {
+	retype_core::tools::find_in_path(&std::env::var_os("PATH").unwrap_or_default(), command).is_some()
 }
 
 #[cfg(test)]

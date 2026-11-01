@@ -34,7 +34,9 @@ use crate::error::Result;
 
 /// What the daemon, its watchers and its runners share.
 pub struct Shared {
-	pub registry: Registry,
+	/// The merged configuration, replaced whole on a successful reload so a
+	/// reader never sees a half-updated document.
+	pub(crate) registry: std::sync::RwLock<Arc<Registry>>,
 	pub journal: Mutex<Journal>,
 	/// The jobs this process has run, for `jobs.list`.
 	pub jobs: Mutex<Vec<Job>>,
@@ -49,6 +51,8 @@ pub struct Shared {
 	/// Files passed over because their contents are not on this machine: a provider's
 	/// placeholder, `docs/watch.md` §5.
 	pub placeholders: AtomicU64,
+	/// Identities recorded by the startup walk, `docs/watch.md` §3.
+	pub primed: AtomicU64,
 	/// What clients replay from, `docs/ipc.md` §7.
 	pub events: Mutex<crate::daemon::events::Events>,
 	/// Each directory's `.retype.toml`, read once per change rather than once per file,
@@ -58,7 +62,7 @@ pub struct Shared {
 	///.
 	pub batches: crate::daemon::batches::Batches,
 	/// How this machine is told what happened, or nothing when the user turned it off.
-	pub notifier: Option<crate::notify::Channel>,
+	pub(crate) notifier: Mutex<Option<crate::notify::Channel>>,
 	/// This install's identity, recorded with every job and undo record.
 	pub machine: String,
 	/// Where the state lives, which is where undo records go.
@@ -96,6 +100,30 @@ impl Recent {
 		pairs
 			.iter()
 			.any(|(consumed, produced, at)| *consumed == target && *produced == source && at.elapsed() < ECHO_WINDOW)
+	}
+}
+
+impl Shared {
+	/// A snapshot of the configuration. The `Arc` keeps the registry alive even
+	/// if a reload replaces it while a job is using it.
+	pub fn registry(&self) -> Arc<Registry> {
+		self.registry
+			.read()
+			.map(|registry| Arc::clone(&registry))
+			.unwrap_or_else(|_| Arc::new(Registry::builtin().expect("the built-in table loads")))
+	}
+
+	pub fn reload_registry(&self, registry: Registry) {
+		let policy = registry.notify();
+		if let Ok(mut current) = self.registry.write() {
+			*current = Arc::new(registry);
+		}
+		if let Ok(mut notifier) = self.notifier.lock() {
+			*notifier = match policy.enabled {
+				true => Some(crate::notify::Channel::detect(policy.actions)),
+				false => None,
+			};
+		}
 	}
 }
 
@@ -142,8 +170,14 @@ const RELOAD: Duration = Duration::from_secs(1);
 fn supervise(shared: &Arc<Shared>, pool: &Arc<Pool>, state_dir: &Path, stop: &AtomicBool) {
 	// One worker per root, keyed by the canonical path the registration holds.
 	let mut workers: BTreeMap<PathBuf, (Arc<AtomicBool>, JoinHandle<()>)> = BTreeMap::new();
+	// A missing path is retried on a slow clock so a deleted directory does not
+	// fill the daemon log every second, `docs/watch.md` §1.
+	let mut retry: BTreeMap<PathBuf, Instant> = BTreeMap::new();
+	let mut config_stamp = config_stamp();
 
 	while !stop.load(Ordering::Relaxed) {
+		reload_config(shared, &mut config_stamp);
+
 		let wanted = match watches::load(state_dir) {
 			Ok(registrations) => registrations,
 			Err(error) => {
@@ -153,15 +187,12 @@ fn supervise(shared: &Arc<Shared>, pool: &Arc<Pool>, state_dir: &Path, stop: &At
 			}
 		};
 
-		// Stop what is no longer registered, or whose recursion changed, which
-		// needs a new watcher rather than a reconfigured one.
+		// Stop what is no longer registered, paused, or whose path vanished. A
+		// paused registration is state, and a policy-paused directory is handled
+		// when a fact arrives, `docs/watch.md` §8.
 		let keep: BTreeSet<PathBuf> = wanted
 			.iter()
-			.filter(|registration| {
-				workers
-					.get(&registration.path)
-					.is_none_or(|_| registration.path.exists())
-			})
+			.filter(|registration| !registration.paused && registration.path.exists())
 			.map(|registration| registration.path.clone())
 			.collect();
 
@@ -175,7 +206,11 @@ fn supervise(shared: &Arc<Shared>, pool: &Arc<Pool>, state_dir: &Path, stop: &At
 		}
 
 		for registration in wanted {
-			if workers.contains_key(&registration.path) {
+			if registration.paused || workers.contains_key(&registration.path) {
+				continue;
+			}
+
+			if retry.get(&registration.path).is_some_and(|at| *at > Instant::now()) {
 				continue;
 			}
 
@@ -186,9 +221,13 @@ fn supervise(shared: &Arc<Shared>, pool: &Arc<Pool>, state_dir: &Path, stop: &At
 				registration.recursive,
 			) {
 				Ok((worker_stop, handle)) => {
+					retry.remove(&registration.path);
 					workers.insert(registration.path.clone(), (worker_stop, handle));
 				}
-				Err(error) => eprintln!("retype: cannot watch {}: {error}", registration.path.display()),
+				Err(error) => {
+					eprintln!("retype: cannot watch {}: {error}", registration.path.display());
+					retry.insert(registration.path.clone(), Instant::now() + Duration::from_secs(30));
+				}
 			}
 		}
 
@@ -198,6 +237,31 @@ fn supervise(shared: &Arc<Shared>, pool: &Arc<Pool>, state_dir: &Path, stop: &At
 	for (_, (worker_stop, handle)) in workers {
 		worker_stop.store(true, Ordering::Relaxed);
 		let _ = handle.join();
+	}
+}
+
+/// The user configuration's modification stamp, so an edit takes effect without
+/// restarting the daemon, `docs/ipc.md` §3.
+fn config_stamp() -> Option<std::time::SystemTime> {
+	crate::config::user_path().and_then(|path| std::fs::metadata(path).and_then(|meta| meta.modified()).ok())
+}
+
+/// Reload the last good configuration. A broken edit keeps what is running and
+/// says so, rather than taking the daemon down over a typo.
+fn reload_config(shared: &Arc<Shared>, stamp: &mut Option<std::time::SystemTime>) {
+	let now = config_stamp();
+	if now == *stamp {
+		return;
+	}
+	*stamp = now;
+
+	match crate::config::load() {
+		Ok(registry) => {
+			crate::config::report_warnings(&registry);
+			shared.reload_registry(registry);
+			crate::verbose::note("configuration reloaded");
+		}
+		Err(error) => eprintln!("retype: configuration reload failed; keeping the last good one: {error}"),
 	}
 }
 
@@ -218,6 +282,20 @@ fn spawn_worker(
 		// arriving.
 		let _watcher = watcher;
 		let mut correlator = Correlator::new(256);
+
+		// Prime before the first batch is decided: a file that existed before the
+		// daemon started has no identity otherwise, and on macOS identity is the
+		// only correlation mechanism, `docs/watch.md` §3 and `docs/events.md` §3.
+		let registry = shared.registry();
+		let primed = retype_watch::prime(
+			&mut correlator,
+			&watched_root,
+			recursive,
+			|path| !retype_core::convert::is_temp_file(path) && registry.watch().considers(&watched_root, path),
+			|| worker_stop.load(Ordering::Relaxed),
+		);
+		shared.primed.fetch_add(primed as u64, Ordering::Relaxed);
+		crate::verbose::note(format!("primed {primed} file(s) under {}", watched_root.display()));
 		// Renames waiting out a directory's own debounce, by directory.
 		let mut held: std::collections::BTreeMap<PathBuf, Held> = std::collections::BTreeMap::new();
 
@@ -290,8 +368,8 @@ fn decide(
 	// it, `docs/watch.md` §4.
 	// Both names a rename has, because they describe the same bytes: a glob
 	// that names the source is about the file being converted.
-	if !shared.registry.watch().considers(watched_root, &fact.target)
-		|| !shared.registry.watch().considers(watched_root, &fact.source)
+	if !shared.registry().watch().considers(watched_root, &fact.target)
+		|| !shared.registry().watch().considers(watched_root, &fact.source)
 	{
 		crate::verbose::detail(format!("{} is not considered", fact.target.display()));
 		return;
@@ -310,13 +388,13 @@ fn decide(
 	// §6.
 	let size = std::fs::metadata(&fact.target).map(|meta| meta.len()).unwrap_or(0);
 
-	if !shared.registry.watch().admits(size) {
+	if !shared.registry().watch().admits(size) {
 		shared.skipped.fetch_add(1, Ordering::Relaxed);
 		eprintln!(
 			"retype: {} is {} and the automatic limit is {}; `retype convert` converts it",
 			fact.target.display(),
 			retype_core::print::size(size),
-			retype_core::print::size(shared.registry.watch().max_source_size),
+			retype_core::print::size(shared.registry().watch().max_source_size),
 		);
 		return;
 	}
@@ -536,10 +614,10 @@ fn supersede(shared: &Shared, pool: &Pool, earlier: &[Job]) -> PathBuf {
 fn retire(shared: &Shared, work: &crate::daemon::queue::Work, state: JobState) {
 	use crate::daemon::queue::Kind;
 
-	let (source, target) = match &work.kind {
-		Kind::Rename { source, target, .. } => (source.clone(), target.clone()),
-		Kind::Immediate(request) => (request.input.clone(), request.input.clone()),
-		Kind::Deferred { source, .. } => (source.clone(), source.clone()),
+	let (source, target, consume_source) = match &work.kind {
+		Kind::Rename { source, target, .. } => (source.clone(), target.clone(), true),
+		Kind::Immediate(request) => (request.input.clone(), request.input.clone(), false),
+		Kind::Deferred { source, .. } => (source.clone(), source.clone(), true),
 	};
 
 	let mut job = Job {
@@ -561,6 +639,7 @@ fn retire(shared: &Shared, work: &crate::daemon::queue::Work, state: JobState) {
 		state,
 		backend: None,
 		engine: None,
+		consume_source: true,
 		machine: shared.machine.clone(),
 		error: Some(JobError {
 			code: Code::JobSuperseded.to_string(),
@@ -570,6 +649,7 @@ fn retire(shared: &Shared, work: &crate::daemon::queue::Work, state: JobState) {
 	};
 
 	job.outputs[0].state = OutputState::Skipped;
+	job.consume_source = consume_source;
 	publish(shared, &job);
 }
 
@@ -584,11 +664,11 @@ enum Input {
 }
 
 /// What a job will do, worked out once and then run.
-struct Prepared<'a> {
+struct Prepared {
 	stem: String,
 	format: String,
 	resolved: Resolved,
-	plans: Vec<Plan<'a>>,
+	plans: Vec<Plan>,
 }
 
 /// Turn one rename into jobs, or explain in the log why it is not one.
@@ -644,18 +724,19 @@ pub fn convert_deferred(
 }
 
 /// Read a rename as a job, or say why it is not one.
-fn prepare<'a>(shared: &'a Shared, root: &Path, source: &Path, target: &Path) -> Option<Prepared<'a>> {
+fn prepare(shared: &Shared, root: &Path, source: &Path, target: &Path) -> Option<Prepared> {
 	let (source_name, target_name) = (
 		source.file_name().and_then(|name| name.to_str())?,
 		target.file_name().and_then(|name| name.to_str())?,
 	);
 
-	let Some((stem, format)) = shared.registry.split(source_name) else {
+	let registry = shared.registry();
+	let Some((stem, format)) = registry.split(source_name) else {
 		// Not a file whose format we know, so not ours to act on.
 		return None;
 	};
 
-	let parsed = match resolve::intent_of(&shared.registry, source_name, target_name) {
+	let parsed = match resolve::intent_of(&registry, source_name, target_name) {
 		Ok(Some(intent)) => intent,
 		Ok(None) => return None,
 		Err(problems) => {
@@ -668,9 +749,10 @@ fn prepare<'a>(shared: &'a Shared, root: &Path, source: &Path, target: &Path) ->
 }
 
 /// Read a recorded intent as a job, which is what a parked job carries.
-fn prepare_from<'a>(shared: &'a Shared, root: &Path, source: &Path, text: &str) -> Option<Prepared<'a>> {
+fn prepare_from(shared: &Shared, root: &Path, source: &Path, text: &str) -> Option<Prepared> {
 	let source_name = source.file_name().and_then(|name| name.to_str())?;
-	let (stem, format) = shared.registry.split(source_name)?;
+	let registry = shared.registry();
+	let (stem, format) = registry.split(source_name)?;
 
 	let parsed = match intent::parse(text) {
 		Ok(parsed) => parsed,
@@ -685,21 +767,22 @@ fn prepare_from<'a>(shared: &'a Shared, root: &Path, source: &Path, text: &str) 
 
 /// Resolve and compile, which is the same work whether the request came from a name
 /// or from a journal record.
-fn build<'a>(
-	shared: &'a Shared,
+fn build(
+	shared: &Shared,
 	root: &Path,
 	stem: &str,
 	format: &str,
 	parsed: intent::Intent,
 	reported: &Path,
-) -> Option<Prepared<'a>> {
+) -> Option<Prepared> {
+	let registry = shared.registry();
 	let mut resolved = match resolve::resolve(
 		&parsed,
 		Origin {
 			format,
 			is_directory: false,
 		},
-		&shared.registry,
+		&registry,
 	) {
 		Ok(resolved) => resolved,
 		Err(problems) => {
@@ -708,7 +791,7 @@ fn build<'a>(
 		}
 	};
 
-	let plans = match plan::compile(&shared.registry, &retype_core::tools::Machine, &resolved) {
+	let plans = match plan::compile(&registry, &retype_core::tools::Machine, &resolved) {
 		Ok(plans) => plans,
 		Err(problems) => {
 			eprintln!("retype: {}: {problems}", reported.display());
@@ -743,7 +826,7 @@ fn run(
 	root: &Path,
 	source: &Path,
 	target: &Path,
-	prepared: Prepared<'_>,
+	prepared: Prepared,
 	input: Input,
 	force: bool,
 	id: &retype_core::job::JobId,
@@ -771,7 +854,8 @@ fn run(
 	// does not keep records, or has no room for this one, does not pay for it and
 	// the conversion runs anyway.
 	let store = retype_core::undo::Store::open(&shared.state_dir);
-	let policy = shared.registry.undo();
+	let registry = shared.registry();
+	let policy = registry.undo();
 	let bytes = match &input {
 		Input::Renamed { renamed } => renamed.clone(),
 		Input::Named => source.to_path_buf(),
@@ -789,7 +873,7 @@ fn run(
 				Some(
 					store.save(retype_core::undo::Subject {
 						id: id.clone(),
-						intent: print::intent(&resolved, &shared.registry),
+						intent: print::intent(&resolved, &shared.registry()),
 						machine: shared.machine.clone(),
 						bytes: bytes.clone(),
 						// The path the bytes belong to, which is not `root` plus the
@@ -859,22 +943,25 @@ fn run(
 
 		let output = target.parent().unwrap_or(Path::new("")).join(&derived.path);
 
-		// An output that appeared while the job was parked is not overwritten for it:
-		// the file the person put there is theirs, `docs/deferral.md` §8.
-		if !force && named && output.exists() && output != read_from {
+		// A file that was not this job's source is not overwritten by a rename. The
+		// rename target itself is the source bytes under their new name, so that one
+		// path is the job's own. A deferred job is stricter: anything that appeared
+		// while it waited belongs to the person who put it there, `docs/deferral.md` §8.
+		let collision = output.exists() && output != read_from && (named || output != target);
+
+		if !force && collision {
+			let hint = match named {
+				true => "`jobs resolve --now --force` replaces it".to_string(),
+				false => "rename the file to a name that derives a free path".to_string(),
+			};
+
 			outputs.push(record(
 				&output,
 				plan,
 				OutputState::Failed,
 				None,
 				None,
-				Some((
-					Code::IoExists,
-					format!(
-						"{} already exists; `jobs resolve --now --force` replaces it",
-						output.display()
-					),
-				)),
+				Some((Code::IoExists, format!("{} already exists; {hint}", output.display()))),
 			));
 			continue;
 		}
@@ -975,7 +1062,7 @@ fn run(
 			size: 0,
 			mtime_ns: 0,
 		},
-		intent: Some(print::intent(&resolved, &shared.registry)),
+		intent: Some(print::intent(&resolved, &shared.registry())),
 		outputs,
 		state,
 		backend: plans.first().map(|plan| plan.backend.name().to_string()),
@@ -986,6 +1073,7 @@ fn run(
 		machine: shared.machine.clone(),
 		error: None,
 		parked: carried(shared, &id),
+		consume_source: true,
 	};
 
 	publish(shared, &job);
@@ -1020,7 +1108,7 @@ pub fn carried(shared: &Shared, id: &retype_core::job::JobId) -> Option<retype_c
 /// Best effort: a filesystem that refuses attributes, or a policy that turns them
 /// off, leaves the journal as the only record and changes nothing else.
 pub fn mark(shared: &Shared, outputs: &[Output], intent: &str) {
-	if !shared.registry.provenance().xattr {
+	if !shared.registry().provenance().xattr {
 		return;
 	}
 
@@ -1072,7 +1160,7 @@ fn is_settled(state: JobState) -> bool {
 
 /// Say what a finished batch did, without holding a lock while saying it.
 fn announce(shared: &Shared, ids: &[JobId]) {
-	let Some(channel) = shared.notifier else {
+	let Some(channel) = shared.notifier.lock().ok().and_then(|notifier| *notifier) else {
 		return;
 	};
 
@@ -1081,7 +1169,7 @@ fn announce(shared: &Shared, ids: &[JobId]) {
 		Err(_) => return,
 	};
 
-	let Some(message) = crate::notify::Message::of(&jobs, shared.registry.undo().enabled) else {
+	let Some(message) = crate::notify::Message::of(&jobs, shared.registry().undo().enabled) else {
 		return;
 	};
 
@@ -1124,7 +1212,7 @@ fn running(
 			size: 0,
 			mtime_ns: 0,
 		},
-		intent: Some(print::intent(resolved, &shared.registry)),
+		intent: Some(print::intent(resolved, &shared.registry())),
 		outputs: vec![Output {
 			path: target.to_path_buf(),
 			format: String::new(),
@@ -1141,6 +1229,7 @@ fn running(
 		machine: shared.machine.clone(),
 		error: None,
 		parked: None,
+		consume_source: true,
 	};
 
 	if let Ok(mut journal) = shared.journal.lock() {
@@ -1158,7 +1247,7 @@ fn running(
 
 fn record(
 	path: &Path,
-	plan: &Plan<'_>,
+	plan: &Plan,
 	state: OutputState,
 	bytes: Option<u64>,
 	stderr: Option<String>,

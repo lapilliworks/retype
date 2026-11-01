@@ -75,9 +75,53 @@ pub fn install() {
 	}
 }
 
-/// Windows has console control events instead, and `Ctrl+C` there ends the process the
-/// same way it always did: a gap, recorded in.
-#[cfg(not(unix))]
+/// Windows has console control events instead. A handler may only return quickly,
+/// so it counts and closes the listening pipe, which is what makes a blocked
+/// `ConnectNamedPipe` return and lets the daemon reach its drain.
+#[cfg(windows)]
+static PIPE: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(windows)]
+pub fn install() {
+	use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+
+	unsafe {
+		SetConsoleCtrlHandler(Some(handle_console), 1);
+	}
+}
+
+#[cfg(windows)]
+pub fn watch_pipe(handle: usize) {
+	PIPE.store(handle, Ordering::SeqCst);
+}
+
+/// Return whether this caller still owns the handle, so it closes it exactly once.
+#[cfg(windows)]
+pub fn unwatch_pipe(handle: usize) -> bool {
+	PIPE.compare_exchange(handle, 0, Ordering::SeqCst, Ordering::SeqCst)
+		.is_ok()
+}
+
+#[cfg(windows)]
+pub fn stop_requested() -> bool {
+	SEEN.load(Ordering::Relaxed) > 0
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn handle_console(_: u32) -> i32 {
+	SEEN.fetch_add(1, Ordering::Relaxed);
+
+	let handle = PIPE.swap(0, Ordering::SeqCst);
+	if handle != 0 {
+		unsafe {
+			windows_sys::Win32::Foundation::CloseHandle(handle as *mut std::ffi::c_void);
+		}
+	}
+
+	1
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn install() {}
 
 /// Wait for the running jobs, unless another signal says not to.
