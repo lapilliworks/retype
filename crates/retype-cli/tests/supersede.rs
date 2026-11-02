@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "support/journal.rs"]
+mod journal;
 mod support;
 
 fn retype() -> Command {
@@ -134,7 +136,9 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 	// a person renames, `docs/dev/architecture/state.md` §5.4.
 	let journal_path = state.join("jobs.jsonl");
 	let deadline = Instant::now() + Duration::from_secs(20);
-	while !fs::read_to_string(&journal_path).unwrap_or_default().contains("\"state\":\"running\"")
+	while !fs::read_to_string(&journal_path)
+		.unwrap_or_default()
+		.contains("\"state\":\"running\"")
 		|| photos.join("photo.webp").exists()
 	{
 		assert!(
@@ -153,7 +157,7 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 	let journal = loop {
 		let recorded = fs::read_to_string(&journal_path).unwrap_or_default();
 
-		if recorded.contains("\"state\":\"done\"") && recorded.contains("\"state\":\"superseded\"") {
+		if supersession_finished(&recorded) {
 			break recorded;
 		}
 
@@ -180,4 +184,22 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 		.find(|line| line.contains("\"state\":\"superseded\""))
 		.expect("a superseded record");
 	assert!(superseded.contains("\"skipped\""), "{superseded}");
+}
+
+fn supersession_finished(contents: &str) -> bool {
+	let jobs = journal::latest(contents);
+	jobs.iter().any(|job| job["state"] == "done") && jobs.iter().any(|job| job["state"] == "superseded")
+}
+
+#[test]
+fn a_prepublication_output_checkpoint_is_not_a_completed_supersession() {
+	const CHECKPOINTS: &str = concat!(
+		"{\"id\":\"old\",\"state\":\"superseded\",\"outputs\":[{\"state\":\"skipped\"}]}\n",
+		"{\"id\":\"new\",\"state\":\"running\",\"outputs\":[{\"state\":\"done\"}]}\n",
+	);
+	assert!(!supersession_finished(CHECKPOINTS));
+	let complete = format!("{CHECKPOINTS}{{\"id\":\"new\",\"state\":\"done\"}}\n");
+	assert!(supersession_finished(&complete));
+	let running_again = format!("{complete}{{\"id\":\"new\",\"state\":\"running\"}}\n");
+	assert!(!supersession_finished(&running_again), "latest snapshots win");
 }

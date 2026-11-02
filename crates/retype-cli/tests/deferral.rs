@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "support/journal.rs"]
+mod journal;
 mod support;
 
 fn retype() -> Command {
@@ -152,10 +154,7 @@ impl Fixture {
 	fn records(&self) -> Vec<serde_json::Value> {
 		let contents = fs::read_to_string(self.state.join("jobs.jsonl")).unwrap_or_default();
 
-		contents
-			.lines()
-			.filter_map(|line| serde_json::from_str(line).ok())
-			.collect()
+		journal::latest(&contents)
 	}
 
 	/// The newest record at or after `from` that satisfies `done`.

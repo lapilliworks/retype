@@ -30,6 +30,10 @@ use retype_watch::Window;
 use crate::daemon::queue::Pool;
 use crate::error::Result;
 
+#[cfg(test)]
+#[path = "watcher_tests.rs"]
+mod tests;
+
 /// What the daemon, its watchers and its runners share.
 pub struct Shared {
 	/// The merged configuration, replaced whole on a successful reload so a
@@ -1406,11 +1410,7 @@ pub fn mark(shared: &Shared, outputs: &[Output], intent: &str) {
 	}
 }
 
-/// Put a snapshot in the journal and in the list `jobs.list` answers from.
-///
-/// The journal is the record; the list is the same records, kept in memory so a
-/// client does not read a file per request. A later snapshot for the same id
-/// replaces the earlier one in both.
+/// Persist a checkpoint without exposing completion before publication or source cleanup.
 pub fn persist(shared: &Shared, job: &Job) -> retype_core::error::Result<()> {
 	let mut journal = shared
 		.journal
@@ -1419,26 +1419,41 @@ pub fn persist(shared: &Shared, job: &Job) -> retype_core::error::Result<()> {
 	journal.append(job)
 }
 
+/// Journal and register a snapshot before IPC readers or events can observe it.
 pub fn publish(shared: &Shared, job: &Job) {
-	if let Err(error) = persist(shared, job) {
-		eprintln!("retype: cannot journal {}: {error}", job.id);
+	if let Err(error) = record_job(shared, job, || persist(shared, job)) {
+		eprintln!("retype: cannot publish {}: {error}", job.id);
 	}
-	publish_persisted(shared, job);
 }
 
+/// Expose a durable snapshot after the caller has finished its destructive decisions.
 pub fn publish_persisted(shared: &Shared, job: &Job) {
-	// One event per snapshot, so a client polling `events` sees the same
-	// transitions the journal records, `docs/dev/architecture/ipc.md` §7.
-	if let Ok(mut events) = shared.events.lock() {
-		events.push(job);
+	if let Err(error) = record_job(shared, job, || Ok(())) {
+		eprintln!("retype: cannot publish persisted job {}: {error}", job.id);
 	}
+}
 
-	if let Ok(mut jobs) = shared.jobs.lock() {
-		match jobs.iter_mut().find(|existing| existing.id == job.id) {
-			Some(existing) => *existing = job.clone(),
-			None => jobs.push(job.clone()),
-		}
+fn record_job(
+	shared: &Shared,
+	job: &Job,
+	write: impl FnOnce() -> retype_core::error::Result<()>,
+) -> retype_core::error::Result<()> {
+	/* Readers must not answer "not found" while a visible journal record is still syncing. */
+	let mut jobs = shared
+		.jobs
+		.lock()
+		.map_err(|_| retype_core::error::Error::Io(std::io::Error::other("job list lock poisoned")))?;
+	write()?;
+	match jobs.iter_mut().find(|existing| existing.id == job.id) {
+		Some(existing) => *existing = job.clone(),
+		None => jobs.push(job.clone()),
 	}
+	shared
+		.events
+		.lock()
+		.map_err(|_| retype_core::error::Error::Io(std::io::Error::other("event ring lock poisoned")))?
+		.push(job);
+	drop(jobs);
 
 	// The last job of a batch is the one that speaks for it.
 	if is_settled(job.state) {
@@ -1446,6 +1461,7 @@ pub fn publish_persisted(shared: &Shared, job: &Job) {
 			announce(shared, &ids);
 		}
 	}
+	Ok(())
 }
 
 /// Whether a job has reached a state a notification could describe. `running` and
