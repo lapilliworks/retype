@@ -36,8 +36,9 @@ pub struct Request<'a> {
 pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Result<ExitCode> {
 	// The work directory comes first, because the calibration and the identity live
 	// beside it and neither can be written into a directory that is not there.
-	let work = state_dir.join("bench");
-	let mut samples = Samples::new(registry, &work)?;
+	let workspace = crate::matrix::workspace(state_dir, "bench")?;
+	let work = workspace.path();
+	let mut samples = Samples::new(registry, work)?;
 
 	let mut calibration = Calibration::open(state_dir)?;
 
@@ -99,7 +100,7 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 			}
 		};
 
-		match measure(registry, &plan, &sample, &work, source, target) {
+		match measure(registry, &plan, &sample, work, source, target) {
 			Ok(measurement) => {
 				measured += 1;
 				report(&measurement, request);

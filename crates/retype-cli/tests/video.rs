@@ -3,6 +3,9 @@
 //! Skipped when FFmpeg is missing: the rest of the suite proves the pipeline with
 //! a copy tool, and this file is the one that has to touch a real codec.
 
+#[path = "support/tools.rs"]
+mod tool_support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -69,7 +72,7 @@ fn cannot_run() -> Option<String> {
 fn skip_if_cannot_run() -> bool {
 	match cannot_run() {
 		Some(reason) => {
-			eprintln!("{reason}, so this test proves nothing");
+			tool_support::unavailable(reason);
 			true
 		}
 		None => false,

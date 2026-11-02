@@ -3,6 +3,9 @@
 //!
 //! The tool copies, so the test proves the claim machinery rather than an encoder.
 
+#[path = "support/tools.rs"]
+mod tool_support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,7 +22,7 @@ fn skip_if_no_decoder(fixtures: &Path) -> bool {
 	match retype_core::axis::Probe::read(&fixtures.join("alpha.png")) {
 		Ok(_) => false,
 		Err(error) => {
-			eprintln!("{error}, so this test proves nothing");
+			tool_support::unavailable(error);
 			true
 		}
 	}
@@ -151,7 +154,6 @@ fn a_run_earns_a_claim_and_records_the_build() {
 		return;
 	}
 
-
 	let ran = fixture.run(&["--write", fixture.manifest.to_str().unwrap()]);
 	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
 
@@ -170,7 +172,6 @@ fn a_stale_exact_claim_fails_the_run() {
 	if skip_if_no_decoder(&fixture.fixtures) {
 		return;
 	}
-
 
 	let first = fixture.run(&["--write", fixture.manifest.to_str().unwrap()]);
 	assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
@@ -202,6 +203,23 @@ fn a_stale_exact_claim_fails_the_run() {
 		"{}",
 		String::from_utf8_lossy(&second.stdout)
 	);
+}
+
+#[test]
+fn competing_fidelity_runs_have_independent_scratch_files() {
+	let fixture = Fixture::new();
+	if skip_if_no_decoder(&fixture.fixtures) {
+		return;
+	}
+	std::thread::scope(|scope| {
+		let first = scope.spawn(|| fixture.run(&["--json"]));
+		let second = scope.spawn(|| fixture.run(&["--json"]));
+		for ran in [first.join().unwrap(), second.join().unwrap()] {
+			assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+			assert!(String::from_utf8_lossy(&ran.stdout).contains("\"kind\":\"claim\""));
+		}
+	});
+	assert_eq!(fs::read_dir(fixture.state.join("fidelity")).unwrap().count(), 0);
 }
 
 #[test]

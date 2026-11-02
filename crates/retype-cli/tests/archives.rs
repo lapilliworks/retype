@@ -4,6 +4,9 @@
 //! only the container changes. Nothing here extracts to a directory, because that is
 //! not a conversion.
 
+#[path = "support/tools.rs"]
+mod tool_support;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -206,7 +209,7 @@ fn seven_zip_archive(tool: &str, dir: &Path, entries: &[(&str, &[u8])]) -> std::
 #[test]
 fn a_seven_zip_becomes_a_tarball_and_back_through_the_tool() {
 	let Some(tool) = seven_zip() else {
-		eprintln!("no 7z on this machine, so this test proves nothing");
+		tool_support::unavailable("7-Zip: install 7zz, 7z or 7za on PATH");
 		return;
 	};
 
@@ -269,7 +272,7 @@ fn a_seven_zip_becomes_a_tarball_and_back_through_the_tool() {
 #[cfg(unix)]
 fn a_seven_zip_holding_a_symlink_is_refused_whole() {
 	let Some(tool) = seven_zip() else {
-		eprintln!("no 7z on this machine, so this test proves nothing");
+		tool_support::unavailable("7-Zip: install 7zz, 7z or 7za on PATH");
 		return;
 	};
 

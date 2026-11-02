@@ -5,6 +5,9 @@
 //! keeps them says so, a pair that does not says which one it lost, and a pair declared
 //! `exact` cannot be earned without either.
 
+#[path = "support/tools.rs"]
+mod tool_support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -40,7 +43,7 @@ fn skip_if_no_decoder() -> bool {
 	match Probe::read(&fixtures().join("alpha.png")) {
 		Ok(_) => false,
 		Err(error) => {
-			eprintln!("{error}, so this test proves nothing");
+			tool_support::unavailable(error);
 			true
 		}
 	}
