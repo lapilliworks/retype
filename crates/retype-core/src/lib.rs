@@ -27,6 +27,7 @@ pub mod process;
 pub mod provenance;
 pub mod registry;
 pub mod resolve;
+pub mod safety;
 pub mod synced;
 pub mod tools;
 pub mod undo;

@@ -34,31 +34,51 @@ pub fn is_temp_file(path: &Path) -> bool {
 /// returns `Ok`, the temporary file is renamed onto `target`. If it returns
 /// `Err` or panics, the temporary file is removed and `target` is untouched.
 pub fn write_atomically(target: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
-	let staged = StagedOutput::new(target)?;
+	let staged = StagedOutput::replacing(target)?;
 	write(staged.temp())?;
 	staged.commit()
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Publication {
+	Create,
+	Replace,
 }
 
 /// A temporary file that becomes `target` on commit and disappears otherwise.
 pub struct StagedOutput {
 	temp: PathBuf,
 	target: PathBuf,
-	committed: bool,
+	_directory: tempfile::TempDir,
+	should_replace: bool,
 }
 
 impl StagedOutput {
 	pub fn new(target: &Path) -> Result<Self> {
-		let parent = target.parent().ok_or_else(|| Error::NoParent(target.to_path_buf()))?;
-		let name = target
-			.file_name()
-			.ok_or_else(|| Error::NoFileName(target.to_path_buf()))?;
-
-		let temp = parent.join(format!("{TEMP_PREFIX}{}", name.to_string_lossy()));
+		let target = crate::fsx::entry_path(target)?;
+		let parent = target.parent().ok_or_else(|| Error::NoParent(target.clone()))?;
+		let name = target.file_name().ok_or_else(|| Error::NoFileName(target.clone()))?;
+		/* A private directory allows tools that require an absent output or replace it themselves. */
+		let directory = tempfile::Builder::new().prefix(TEMP_PREFIX).tempdir_in(parent)?;
 		Ok(Self {
-			temp,
-			target: target.to_path_buf(),
-			committed: false,
+			temp: directory.path().join(name),
+			target,
+			_directory: directory,
+			should_replace: false,
 		})
+	}
+
+	pub fn for_publication(target: &Path, publication: Publication) -> Result<Self> {
+		match publication {
+			Publication::Create => Self::new(target),
+			Publication::Replace => Self::replacing(target),
+		}
+	}
+
+	pub fn replacing(target: &Path) -> Result<Self> {
+		let mut staged = Self::new(target)?;
+		staged.should_replace = true;
+		Ok(staged)
 	}
 
 	/// Path the writer should create.
@@ -67,18 +87,19 @@ impl StagedOutput {
 	}
 
 	/// Rename the temporary file onto the target.
-	pub fn commit(mut self) -> Result<()> {
-		crate::fsx::rename(&self.temp, &self.target)?;
-		self.committed = true;
-		Ok(())
-	}
-}
-
-impl Drop for StagedOutput {
-	fn drop(&mut self) {
-		if !self.committed {
-			let _ = fs::remove_file(&self.temp);
+	pub fn commit(self) -> Result<()> {
+		if !fs::symlink_metadata(&self.temp)?.file_type().is_file() {
+			return Err(Error::Io(std::io::Error::other("staged output is not a regular file")));
 		}
+		fs::File::open(&self.temp)?.sync_all()?;
+		crate::fsx::sync_directory(self._directory.path())?;
+		if self.should_replace {
+			crate::fsx::rename(&self.temp, &self.target)?;
+		} else {
+			crate::fsx::rename_noreplace(&self.temp, &self.target)?;
+		}
+		crate::fsx::sync_directory(self.target.parent().expect("resolved parent"))?;
+		Ok(())
 	}
 }
 
@@ -99,7 +120,7 @@ pub enum PreparedInput {
 	Restored { input: PathBuf, target: PathBuf },
 	/// The file could not be renamed back, so its bytes are reachable through
 	/// a temporary link, or a copy where links are unsupported.
-	Linked { input: PathBuf, target: PathBuf },
+	Linked { input: PathBuf, target: PathBuf, directory: tempfile::TempDir },
 }
 
 impl PreparedInput {
@@ -121,14 +142,6 @@ impl PreparedInput {
 	}
 }
 
-impl Drop for PreparedInput {
-	fn drop(&mut self) {
-		if let Self::Linked { input, .. } = self {
-			let _ = fs::remove_file(input);
-		}
-	}
-}
-
 /// Prepare the input for a conversion whose target already holds the source
 /// bytes, which is what a rename produces.
 pub fn prepare_input(target: &Path, stem: &str, source_format: &str) -> Result<PreparedInput> {
@@ -138,23 +151,14 @@ pub fn prepare_input(target: &Path, stem: &str, source_format: &str) -> Result<P
 			target: target.to_path_buf(),
 		}),
 		Err(Error::Exists(_)) => {
-			let input = temporary_input_path(target, stem, source_format)?;
-			if fs::hard_link(target, &input).is_err() {
-				// Filesystems without hard links, such as exFAT camera media.
-				fs::copy(target, &input)?;
-			}
-			Ok(PreparedInput::Linked {
-				input,
-				target: target.to_path_buf(),
-			})
+			let parent = target.parent().ok_or_else(|| Error::NoParent(target.to_path_buf()))?;
+			let directory = tempfile::Builder::new().prefix(TEMP_IN_PREFIX).tempdir_in(parent)?;
+			let input = directory.path().join(format!("{stem}.{source_format}"));
+			crate::safety::copy_snapshot(target, &input)?;
+			Ok(PreparedInput::Linked { input, target: target.to_path_buf(), directory })
 		}
 		Err(error) => Err(error),
 	}
-}
-
-fn temporary_input_path(target: &Path, stem: &str, source_format: &str) -> Result<PathBuf> {
-	let parent = target.parent().ok_or_else(|| Error::NoParent(target.to_path_buf()))?;
-	Ok(parent.join(format!("{TEMP_IN_PREFIX}{stem}.{source_format}")))
 }
 
 /// Restore a path to the source extension after a failed conversion.
@@ -165,10 +169,12 @@ pub fn restore_source_name(path: &Path, stem: &str, source_format: &str) -> Resu
 	let parent = path.parent().ok_or_else(|| Error::NoParent(path.to_path_buf()))?;
 
 	let restored = parent.join(format!("{stem}.{source_format}"));
-	if restored.exists() {
-		return Err(Error::Exists(restored));
+	if let Err(error) = crate::fsx::rename_noreplace(path, &restored) {
+		if error.kind() == std::io::ErrorKind::AlreadyExists {
+			return Err(Error::Exists(restored));
+		}
+		return Err(Error::Io(error));
 	}
-	crate::fsx::rename(path, &restored)?;
 	Ok(restored)
 }
 
@@ -307,7 +313,7 @@ mod tests {
 	}
 
 	#[test]
-	fn input_falls_back_to_a_link_when_the_source_name_is_taken() {
+	fn input_falls_back_to_an_independent_snapshot_when_the_source_name_is_taken() {
 		let dir = tempdir();
 		let target = dir.path().join("photo.jpg");
 		let occupied = dir.path().join("photo.heic");
@@ -317,7 +323,8 @@ mod tests {
 		let prepared = prepare_input(&target, "photo", "heic").unwrap();
 
 		assert!(prepared.is_temporary());
-		assert_eq!(prepared.input(), dir.path().join(".retype-in.photo.heic"));
+		assert_eq!(prepared.input().file_name().unwrap(), "photo.heic");
+		assert_ne!(prepared.input().parent().unwrap(), dir.path());
 		assert_eq!(prepared.target(), target);
 		assert_eq!(fs::read(prepared.input()).unwrap(), b"heic bytes");
 		// The occupied name is untouched, and the target still holds the bytes.
@@ -327,7 +334,7 @@ mod tests {
 
 	#[cfg(unix)]
 	#[test]
-	fn linked_input_shares_the_inode() {
+	fn fallback_input_does_not_share_the_mutable_source_inode() {
 		use std::os::unix::fs::MetadataExt;
 
 		let dir = tempdir();
@@ -339,7 +346,7 @@ mod tests {
 		let input_meta = fs::metadata(prepared.input()).unwrap();
 		let target_meta = fs::metadata(&target).unwrap();
 
-		assert_eq!(input_meta.ino(), target_meta.ino(), "a link, not a copy");
+		assert_ne!(input_meta.ino(), target_meta.ino(), "an independent copy, not a hard link");
 	}
 
 	#[test]
