@@ -8,6 +8,7 @@ const ROOT: &str = "RETYPE_PROCESS_ROOT";
 
 fn worker_command(root: &Path, mode: &str) -> Command {
 	let mut command = Command::new(std::env::current_exe().unwrap());
+	crate::process::hide_console(&mut command);
 	command
 		.args(["--exact", WORKER, "--nocapture"])
 		.env(MODE, mode)

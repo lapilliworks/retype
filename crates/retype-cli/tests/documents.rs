@@ -140,7 +140,8 @@ fn the_pdf_engine_is_recorded_with_the_job() {
 
 	assert!(
 		explained.status.success(),
-		"{}",
+		"stdout: {}\nstderr: {}",
+		String::from_utf8_lossy(&explained.stdout),
 		String::from_utf8_lossy(&explained.stderr)
 	);
 
