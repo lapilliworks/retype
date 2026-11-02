@@ -51,7 +51,7 @@ Nothing in the product requires an attribute or a stream. Identity is the mechan
 
 ## 5. Delivery tiers
 
-Two tiers are defined, and the difference matters enough to be explicit in the documentation. A pre-release script route sits outside them.
+Two tiers are defined, and the difference matters enough to be explicit in the documentation. Pre-release installer routes sit outside them.
 
 | Tier | How | Contains | Supported |
 |---|---|---|---|
@@ -60,13 +60,21 @@ Two tiers are defined, and the difference matters enough to be explicit in the d
 
 `cargo install` is **CLI only and a workaround**. The binary can run the daemon in the foreground and `retype watch` registrations persist, but it cannot install a user service, register a URI scheme on macOS, or create a Start-menu shortcut on Windows. The documentation states this rather than implying feature parity.
 
-Linux and macOS have a pre-release script:
+Linux, macOS and Windows have pre-release installers.
+
+Linux and macOS:
 
 ```sh
 curl -fsSL https://justretype.com/install.sh | bash
 ```
 
-It downloads the release archive for the host architecture, checks its SHA-256 against the release checksums, and installs the CLI, daemon and shared release assets under `~/.local`. Running it again updates the installation. It is not the installed tier: it does not register a URI scheme, install a user service or ship the notifier, and the archive is not code-signed. It exists so a pre-alpha build can be installed without a Rust toolchain. Windows uses the release archive directly.
+Windows, in PowerShell:
+
+```powershell
+irm https://justretype.com/install.ps1 | iex
+```
+
+They download the release archive for the host architecture, check its SHA-256 against the release checksums, and install the CLI, daemon and shared release assets under `~/.local` on Unix or `%LOCALAPPDATA%\Programs\retype` on Windows. The Windows installer adds its `bin` directory to the user `PATH`. Running either again updates the installation. They are not the installed tier: they do not register a URI scheme, install a user service or ship the notifier, and the archives are not code-signed. They exist so a pre-alpha build can be installed without a Rust toolchain.
 
 What the installed-tier installer does, per platform:
 
@@ -107,7 +115,7 @@ A system tool is supported but not pinned. Its version and build fingerprint are
 
 Publisher identity is fixed: Lapilli Works LLC, `com.lapilliworks.retype`. The bundle and display name are both `retype`. Reputation is bound to that identity, so it is never changed casually.
 
-The pre-release script is not a published binary in the signing sense. Its release publishes SHA-256 checksums and GitHub build attestations. The installer rejects a corrupted download, and the attestation can be checked out of band, but neither authenticates the publisher the way a platform signature does. The installed tier remains gated on the signatures in the table above.
+The pre-release installers are not published binaries in the signing sense. Their releases publish SHA-256 checksums and GitHub build attestations. The installers reject a corrupted download, and the attestation can be checked out of band, but neither authenticates the publisher the way a platform signature does. The installed tier remains gated on the signatures in the table above.
 
 The distribution manifest has its own Ed25519 key, kept offline and separate from the platform code-signing certificate. Its public key is embedded in the GUI that manages the set. Rotation dual-signs one release, so an old client accepts the new key before it is the only key.
 

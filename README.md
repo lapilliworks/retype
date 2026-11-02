@@ -22,7 +22,7 @@ Transformations ride on the same gesture: `photo.heic` becomes `photo.webp+q80`.
 
 ## Installation tiers
 
-Two tiers exist, and the difference is deliberate. A pre-release script is a
+Two tiers exist, and the difference is deliberate. Pre-release installers are a
 convenience on top of the source tier, not a third tier.
 
 - **Installed**: platform installer, signed. Command line, daemon, notifier,
@@ -31,16 +31,25 @@ convenience on top of the source tier, not a third tier.
   binary includes the daemon, but no service, URI registration or notifier
   bundle is installed. A workaround, not the supported path
 
-Linux and macOS can install the pre-alpha release without a Rust toolchain:
+Linux, macOS and Windows can install the pre-alpha release without a Rust toolchain.
+
+Linux and macOS:
 
 ```sh
 curl -fsSL https://justretype.com/install.sh | bash
 ```
 
-The script verifies the release checksum, installs the CLI, daemon and shared
-release assets under `~/.local`, and updates that installation when run again.
-It does not install a service, register a URI scheme or ship the notifier, and
-it is not code-signed. Windows uses the release archive.
+Windows, in PowerShell:
+
+```powershell
+irm https://justretype.com/install.ps1 | iex
+```
+
+The scripts verify the release checksum, install the CLI, daemon and shared
+release assets under `~/.local` on Unix or `%LOCALAPPDATA%\Programs\retype` on
+Windows, and update that installation when run again. The Windows installer adds
+its `bin` directory to the user `PATH`. They do not install a service, register a
+URI scheme or ship the notifier, and they are not code-signed.
 
 Tool acquisition follows the interface. The CLI does not install or manage tools: a
 CLI user uses the platform's package manager or installs them by hand. The GUI manages
