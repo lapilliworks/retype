@@ -134,7 +134,7 @@ if [ -z "$target" ]; then
 	Linux) os=unknown-linux-gnu ;;
 	Darwin) os=apple-darwin ;;
 	MINGW* | MSYS* | CYGWIN*)
-		die "Windows uses the release archive, not this script: https://github.com/$repo/releases/latest"
+		die "Windows uses the PowerShell installer: https://justretype.com/install.ps1"
 		;;
 	*) die "unsupported operating system: $(uname -s)" ;;
 	esac

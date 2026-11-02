@@ -42,27 +42,35 @@ The release workflow builds every supported target from `docs/reference/platform
 | Windows aarch64 | `aarch64-pc-windows-msvc` | `windows-latest`, cross compiled |
 
 A tag push publishes the archives, per-archive `.sha256` files, `SHA256SUMS`,
-`install.sh`, and GitHub build attestations. A manual dispatch builds the same
-archives without creating a release. The tag must match the workspace version in
-`Cargo.toml`.
+`install.sh`, `install.ps1`, and GitHub build attestations. A manual dispatch
+builds the same archives without creating a release. The tag must match the
+workspace version in `Cargo.toml`.
 
 ## Script install
 
-`install.sh` is the `curl | bash` installer and updater. It detects Linux or
-macOS and x86_64 or aarch64, resolves the latest release tag through the GitHub
-API, downloads the matching archive and `SHA256SUMS`, verifies the digest, and
-installs the binary and shared assets under `~/.local` by default. Running it
-again updates in place.
+`install.sh` is the `curl | bash` installer and updater for Linux and macOS.
+`install.ps1` is the PowerShell installer and updater for Windows. Both resolve
+the latest release tag through the GitHub API, download the matching archive and
+`SHA256SUMS`, verify the digest, and install the binary and shared assets.
+`install.sh` uses `~/.local` by default; `install.ps1` uses
+`%LOCALAPPDATA%\Programs\retype` and adds its `bin` directory to the user
+`PATH`. Running either again updates in place.
 
-```
+```sh
 curl -fsSL https://justretype.com/install.sh | bash
 curl -fsSL https://justretype.com/install.sh | bash -s -- --version v0.1.0
 curl -fsSL https://justretype.com/install.sh | bash -s -- --prefix "$HOME/.local"
 ```
 
-The script is copied into the product site at build time and is also a release
-asset. It does not install a user service, register the URI scheme or ship the
-notifier. Windows uses the archive, not the script.
+```powershell
+irm https://justretype.com/install.ps1 | iex
+$env:RETYPE_VERSION = 'v0.1.0'; irm https://justretype.com/install.ps1 | iex
+$env:RETYPE_PREFIX = 'C:\Tools\retype'; irm https://justretype.com/install.ps1 | iex
+```
+
+The scripts are copied into the product site at build time and are also release
+assets. They do not install a user service, register the URI scheme or ship the
+notifier.
 
 ## Per platform
 
@@ -81,12 +89,12 @@ Authenticode-signed executable with a secure timestamp. The notifier bundle is
 the first artifact that needs the platform identity, and it is signed before the
 CLI.
 
-The pre-release script is outside that guarantee. Its archive carries a SHA-256
-checksum and a GitHub build attestation. The installer rejects a corrupted
-download; the attestation can be checked out of band with
+The pre-release scripts are outside that guarantee. Their archives carry a
+SHA-256 checksum and a GitHub build attestation. The installers reject a
+corrupted download; the attestation can be checked out of band with
 `gh attestation verify <archive> --repo LapilliWorks/retype`. Neither is a code
-signature. It is a pre-alpha convenience, not the installed tier. Signing steps
-are inserted into the same workflow before that tier is published.
+signature. They are a pre-alpha convenience, not the installed tier. Signing
+steps are inserted into the same workflow before that tier is published.
 
 ## Rename or move
 

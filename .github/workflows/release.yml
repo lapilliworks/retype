@@ -177,6 +177,14 @@ jobs:
       - run: cargo test --workspace
       - run: bash -n packaging/install.sh
       - run: bash scripts/test-install.sh
+      - run: test -s packaging/install.ps1
+      - name: Parse PowerShell installer
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'packaging/install.ps1').Path, [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
 
   publish:
     name: publish release
@@ -195,9 +203,10 @@ jobs:
         run: |
           set -euo pipefail
           cp packaging/install.sh dist/install.sh
+          cp packaging/install.ps1 dist/install.ps1
           cd dist
-          sha256sum *.tar.gz install.sh > SHA256SUMS
-          for file in *.tar.gz install.sh; do
+          sha256sum *.tar.gz install.sh install.ps1 > SHA256SUMS
+          for file in *.tar.gz install.sh install.ps1; do
             sha256sum "$file" > "$file.sha256"
           done
           sha256sum -c SHA256SUMS
