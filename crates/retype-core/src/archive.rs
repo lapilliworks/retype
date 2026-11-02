@@ -51,13 +51,26 @@ pub fn repack(
 	output: &Path,
 	cancellation: &Cancellation,
 ) -> Result<Report> {
+	repack_published(tool, from, to, input, output, cancellation, crate::convert::Publication::Create, &|_, _| Ok(()))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn repack_published(
+	tool: Option<&str>, from: Native, to: Native, input: &Path, output: &Path,
+	cancellation: &Cancellation, publication: crate::convert::Publication,
+	before_commit: &dyn Fn(&Path, &Report) -> Result<()>,
+) -> Result<Report> {
+	if crate::fsx::protects_input(input, output)? {
+		return Err(Error::Diagnostic(Diagnostic::global(Code::UsageConflict, "archive output aliases its input")));
+	}
+	let original = crate::safety::Fingerprint::of(input)?;
 	// Absolute, because a repack through a tool changes the child's working directory:
 	// a relative path would then mean something else to the tool than it did here.
 	let input = &std::path::absolute(input)?;
 	let output_path = std::path::absolute(output)?;
 	let output = output_path.as_path();
 
-	let staged = StagedOutput::new(output)?;
+	let staged = StagedOutput::for_publication(output, publication)?;
 
 	let stderr = match tool {
 		Some(tool) if from.needs_tool() || to.needs_tool() => {
@@ -69,6 +82,7 @@ pub fn repack(
 
 			let mut budget = MAX_BYTES;
 			source.each(&mut sink, cancellation, &mut budget)?;
+			source.finish(cancellation)?;
 			sink.commit()?;
 			String::new()
 		}
@@ -77,13 +91,17 @@ pub fn repack(
 	// The staged file is the archive, so its length is the answer; committing first
 	// would only move it.
 	let bytes = fs::metadata(staged.temp())?.len();
-	staged.commit()?;
-
-	Ok(Report {
-		output: output.to_path_buf(),
-		bytes,
-		stderr,
-	})
+	if !original.matches(input)? {
+		return Err(malformed("the input", &"archive changed during conversion"));
+	}
+	let report = Report {
+		output: output.to_path_buf(), bytes, validated: !from.needs_tool() && !to.needs_tool(), stderr,
+	};
+	cancellation.commit(|| {
+		before_commit(staged.temp(), &report)?;
+		staged.commit()
+	})?;
+	Ok(report)
 }
 
 /// Repack a container that needs a tool, `docs/tools.md` §7.
@@ -114,6 +132,7 @@ fn through(
 
 			let mut budget = MAX_BYTES;
 			source.each(&mut sink, cancellation, &mut budget)?;
+			source.finish(cancellation)?;
 			sink.commit()?;
 		}
 	}
@@ -127,6 +146,7 @@ fn through(
 
 			let mut budget = MAX_BYTES;
 			source.each(&mut sink, cancellation, &mut budget)?;
+			source.finish(cancellation)?;
 			sink.commit()?;
 		}
 	}
@@ -148,7 +168,7 @@ enum Source {
 
 enum TarSource {
 	Plain(File),
-	Gzip(Box<flate2::read::GzDecoder<File>>),
+	Gzip(Box<flate2::read::MultiGzDecoder<File>>),
 }
 
 impl Read for TarSource {
@@ -161,6 +181,24 @@ impl Read for TarSource {
 }
 
 impl Source {
+	fn finish(self, cancellation: &Cancellation) -> Result<()> {
+		if let Self::Tar(archive) = self {
+			let mut reader = archive.into_inner();
+			let mut buffer = [0u8; 8192];
+			let mut trailing = 0u64;
+			loop {
+				stop_if_cancelled(cancellation)?;
+				let read = reader.read(&mut buffer)?;
+				if read == 0 { break; }
+				trailing += read as u64;
+				if trailing > MAX_BYTES || buffer[..read].iter().any(|byte| *byte != 0) {
+					return Err(malformed("the tar trailer", &"unexpected trailing data"));
+				}
+			}
+		}
+		Ok(())
+	}
+
 	fn open(codec: Native, path: &Path) -> Result<Self> {
 		let file = File::open(path).map_err(|error| unreadable(path, &error))?;
 
@@ -170,7 +208,7 @@ impl Source {
 			)),
 			Native::Tar => Ok(Self::Tar(Box::new(tar::Archive::new(TarSource::Plain(file))))),
 			Native::TarGz => Ok(Self::Tar(Box::new(tar::Archive::new(TarSource::Gzip(Box::new(
-				flate2::read::GzDecoder::new(file),
+				flate2::read::MultiGzDecoder::new(file),
 			)))))),
 			// A codec with no reader here is always on the other side of a tool, and
 			// `through` is what handles it, `docs/tools.md` §7.
@@ -221,6 +259,10 @@ impl Source {
 					let size = entry.size();
 					spend(&name, size, budget)?;
 					sink.file(&name, mode, size, &mut entry)?;
+					let mut extra = [0u8; 1];
+					if entry.read(&mut extra)? != 0 {
+						return Err(malformed("the zip", &"entry exceeds its declared size"));
+					}
 				}
 			}
 			Self::Tar(archive) => {
