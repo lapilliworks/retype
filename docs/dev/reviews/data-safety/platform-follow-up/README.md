@@ -40,6 +40,7 @@ Available tools: ImageMagick 7.1.2-34 Q16, FFmpeg 9.0.2 with the three required 
 - Deterministic publication and process-completion unit tests: **5 passed**
 - Benchmark/fidelity workspace tests: **7 passed**, including the fixed stale-claim path
 - Full strict-tool workspace run: **721 passed, 2 failed because no PDF engine was installed**; the only failed target was `documents`
+- After cleanly rebasing onto the concurrent identifier-normalization change `d8fdcb1`: **727 passed, the same 2 PDF prerequisite failures**, with no other failed targets
 - Clippy passed with the existing `clippy::type_complexity` warning waived
 
 The prerequisite failure is explicit: Pandoc needs one of `typst`, `xelatex`, `lualatex`, `pdflatex`, `weasyprint` or `wkhtmltopdf` on `PATH`. No replacement PDF implementation or test bypass was added. Install a supported engine, then repeat `documents` and the full strict run.
@@ -52,5 +53,6 @@ Evidence:
 - [Publication synchronization tests](publication-tests.log)
 - [Completion polling tests](process-completion-tests.log)
 - [Full strict-tool run, including the missing-PDF-engine failures](workspace-tools-tests.log)
+- [Integrated strict-tool run after the clean rebase](workspace-integrated-tests.log)
 
 Original supplied transcripts remain untouched in the repository root. Additional execution logs and persistent review backups are in `worktrees/platform-safety-fixes/`.
