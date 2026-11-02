@@ -2,7 +2,7 @@
 
 Rename the extension, the file converts.
 
-Status: pre-alpha. The engine is being rebuilt from specification; see and `docs/`.
+Status: pre-alpha. The manual marks which behaviour has landed.
 
 ## What it will be
 
