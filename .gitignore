@@ -1,8 +1,8 @@
 /target
 /worktrees
-/site/*/node_modules
-/site/*/dist
-/site/*/.vitepress/cache
-/site/*/.vitepress/dist
-/site/*/.astro
+/site/apps/*/node_modules
+/site/apps/*/dist
+/site/apps/*/.vitepress/cache
+/site/apps/*/.vitepress/dist
+/site/apps/*/.astro
 /site/dist
