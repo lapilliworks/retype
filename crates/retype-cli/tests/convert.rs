@@ -450,6 +450,12 @@ fn a_convert_can_be_undone_and_leaves_its_source() {
 	assert!(fixture.dir.path().join("photo.webp").exists());
 
 	let undone = fixture.convert(&["undo", "--last"]);
+	if !retype_core::fsx::supports_durable_cleanup() {
+		assert!(!undone.status.success());
+		assert_eq!(fs::read(&input).unwrap(), before);
+		assert!(fixture.dir.path().join("photo.webp").exists());
+		return;
+	}
 	assert_eq!(
 		undone.status.code(),
 		Some(0),

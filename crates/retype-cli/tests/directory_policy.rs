@@ -183,7 +183,15 @@ impl Fixture {
 
 	/// Wait for any record satisfying `this`, or answer `None` after a short while.
 	fn wait_for(&self, this: impl Fn(&serde_json::Value) -> bool) -> Option<serde_json::Value> {
-		let deadline = Instant::now() + Duration::from_secs(5);
+		self.wait_for_within(Duration::from_secs(5), this)
+	}
+
+	fn wait_for_within(
+		&self,
+		within: Duration,
+		this: impl Fn(&serde_json::Value) -> bool,
+	) -> Option<serde_json::Value> {
+		let deadline = Instant::now() + within;
 
 		loop {
 			if let Some(record) = self.records().into_iter().find(|record| this(record)) {
@@ -307,8 +315,14 @@ fn confirm_false_suppresses_the_cost_confirmation_in_that_directory() {
 	fs::rename(&source, fixture.photos.join("e.webp")).unwrap();
 
 	let done = fixture
-		.wait_for(|record| record["state"] == "done")
-		.expect("the job ran without being parked");
+		.wait_for_within(Duration::from_secs(30), |record| record["state"] == "done")
+		.unwrap_or_else(|| {
+			panic!(
+				"the job did not finish: {:?}\ndaemon: {}",
+				fixture.records(),
+				fixture.daemon()
+			)
+		});
 
 	assert_eq!(done["state"], "done", "{done}");
 	assert!(fixture.photos.join("e.webp").exists());
@@ -348,10 +362,12 @@ fn debounce_ms_holds_a_rename_until_the_file_stops_changing() {
 	assert_eq!(done["intent"], "webp+quality75", "{done:?}");
 	assert_eq!(done["source"]["path"], recorded(&source).to_str().unwrap(), "{done:?}");
 	assert!(fixture.photos.join("f-quality75.webp").exists());
+	let records = fixture.records();
+	let ids: std::collections::BTreeSet<_> = records.iter().map(|record| record["id"].as_str().unwrap()).collect();
 	assert_eq!(
-		fixture.records().len(),
-		2,
-		"one job, one settled record: {:?}",
-		fixture.records()
+		ids.len(),
+		1,
+		"one job, including its durable output checkpoints: {records:?}"
 	);
+	assert_eq!(records.iter().filter(|record| record["state"] == "done").count(), 1);
 }

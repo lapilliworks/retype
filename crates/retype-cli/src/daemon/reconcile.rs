@@ -92,11 +92,41 @@ fn requeue(shared: &Shared, pool: &Pool, job: &Job) {
 
 fn interrupted(shared: &Shared, job: &Job) {
 	let mut failed = job.clone();
-
+	let store = retype_core::undo::Store::open(&shared.state_dir);
+	match store.load(&job.id) {
+		Ok(Some(record)) => {
+			failed.outputs = record
+				.outputs
+				.iter()
+				.map(|planned| {
+					let committed = record.commits.iter().find(|commit| commit.output.path == planned.path);
+					if let Some(commit) = committed {
+						if matches!(commit.fingerprint.matches(&planned.path), Ok(true)) {
+							return commit.output.clone();
+						}
+					}
+					retype_core::job::Output::pending(
+						planned.path.clone(),
+						&planned.ext,
+						retype_core::job::Tier::Converted,
+					)
+				})
+				.collect();
+		}
+		Ok(None) => {}
+		Err(error) => eprintln!("retype: cannot read recovery ledger for {}: {error}", job.id),
+	}
 	failed.fail(JobError {
 		code: Code::JobInterrupted.to_string(),
-		message: "the daemon stopped before this job finished".to_string(),
+		message: "the daemon stopped before this job finished; verified recovery bytes are required to resume"
+			.to_string(),
 	});
-
+	if failed
+		.outputs
+		.iter()
+		.any(|output| output.state == retype_core::job::OutputState::Done)
+	{
+		failed.state = JobState::Partial;
+	}
 	watcher::publish(shared, &failed);
 }

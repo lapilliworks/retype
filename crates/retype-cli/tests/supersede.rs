@@ -169,7 +169,10 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 	// jpg, which is what the user asked for in the end.
 	assert!(photos.join("photo.jpg").exists(), "{journal}");
 	assert!(!photos.join("photo.webp").exists(), "the intermediate name is consumed");
-	assert!(!photos.join("photo.png").exists(), "the source name is consumed");
+	assert!(
+		photos.join("photo.png").exists(),
+		"an unvalidated copy backend retains its source"
+	);
 
 	// The job that was overtaken says so, and did not produce anything.
 	let superseded = journal

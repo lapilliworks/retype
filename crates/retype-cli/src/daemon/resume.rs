@@ -3,8 +3,7 @@
 //! A partial job is one where at least one output succeeded and at least one did
 //! not. Resume runs the ones that are missing, skips the ones that are still what
 //! the job produced, and takes its input from whichever place still holds the
-//! source bytes: the source path, or the undo record when a rename has taken the
-//! name away.
+//! source bytes: a private working copy of the job's digest-verified retained original.
 //!
 //! The record is the reason this works. A rename consumes the source name, so a
 //! partial job's source is usually only in the store; a job with neither is
@@ -57,7 +56,13 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 		)
 	})?;
 
-	let input = source_bytes(shared, job)?;
+	let store = Store::open(&shared.state_dir);
+	let lease = store.lease(&job.id)?;
+	store.pin(&job.id)?;
+	let retained = source_bytes(shared, job)?;
+	let snapshot = retype_core::safety::Snapshot::open(&retained)?;
+	let input = snapshot.path.clone();
+	let ledger = store.load(&job.id)?.ok_or_else(|| unavailable("no recovery ledger"))?;
 	let cancellation = execute::Cancellation::default();
 	let mut outputs = Vec::with_capacity(plans.len());
 
@@ -68,7 +73,11 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 		// else, including a different file with the same name, is run again.
 		if !force {
 			if let Some(recorded) = recorded {
-				if still_produced(recorded) {
+				if still_produced(recorded)
+					&& ledger.commits.iter().any(|commit| {
+						commit.output.path == recorded.path
+							&& commit.fingerprint.matches(&recorded.path).unwrap_or(false)
+					}) {
 					outputs.push(recorded.clone());
 					continue;
 				}
@@ -98,9 +107,19 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 			continue;
 		}
 
-		let log = crate::state::log_path(&shared.state_dir, &job.id);
-
-		match execute::run_logged(plan, &input, &path, &cancellation, Some(&log)) {
+		let publication = if force {
+			retype_core::convert::Publication::Replace
+		} else {
+			retype_core::convert::Publication::Create
+		};
+		let transaction = super::transaction::OutputTransaction {
+			shared,
+			job,
+			original: &job.source.path,
+			completed: &outputs,
+			store: Some(&store),
+		};
+		match transaction.run(plan, &input, &path, &cancellation, publication) {
 			Ok(report) => outputs.push(Output {
 				path: path.clone(),
 				format: plan.format.clone(),
@@ -155,32 +174,17 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 		consume_source: job.consume_source,
 	};
 
-	if let Ok(mut journal) = shared.journal.lock() {
-		journal.append(&resumed)?;
-	}
-
-	if let Ok(mut jobs) = shared.jobs.lock() {
-		match jobs.iter_mut().find(|existing| existing.id == resumed.id) {
-			Some(existing) => *existing = resumed.clone(),
-			None => jobs.push(resumed.clone()),
-		}
-	}
-
-	// A finished job has nothing left to undo from the store: its source name is
-	// still where the rename put it, and the outputs are the result.
+	crate::daemon::watcher::persist(shared, &resumed)?;
 	if state == JobState::Done {
-		Store::open(&shared.state_dir).remove(&job.id)?;
+		store.finish(&job.id)?;
 	}
-
+	drop(lease);
+	crate::daemon::watcher::publish_persisted(shared, &resumed);
 	Ok(state)
 }
 
-/// Where the source bytes still are, in the order `docs/dev/architecture/state.md` §5.2 gives.
+/// Never substitute a live pathname for the job's verified retained original.
 fn source_bytes(shared: &Shared, job: &Job) -> Result<PathBuf> {
-	if job.source.path.exists() {
-		return Ok(job.source.path.clone());
-	}
-
 	if let Some(bytes) = Store::open(&shared.state_dir).source(&job.id)? {
 		return Ok(bytes);
 	}
@@ -209,16 +213,11 @@ fn output_path(source: &std::path::Path, resolved: &resolve::Resolved, index: us
 
 /// Whether a file at this path is somebody else's work.
 ///
-/// A platform that cannot record a file identity leaves `recorded.identity` empty
-/// and resume runs the output again, which is the documented Windows answer. Where
-/// an identity exists, a file that does not carry it belongs to the user and is not
-/// replaced without `--force`.
+/// Occupied paths are never rerun without explicit replacement. Matching completed
+/// outputs are skipped separately using both identity and content fingerprints.
 fn blocked(recorded: Option<&Output>, path: &std::path::Path, force: bool) -> bool {
-	if force || !path.exists() {
-		return false;
-	}
-
-	recorded.is_none_or(|output| output.identity.is_some())
+	let _ = recorded;
+	!force && std::fs::symlink_metadata(path).is_ok()
 }
 
 /// Whether an output still carries the identity and size the job recorded.
@@ -267,13 +266,13 @@ mod tests {
 	}
 
 	#[test]
-	fn a_platform_without_identity_keeps_the_documented_rerun() {
+	fn an_output_without_identity_is_not_safe_to_overwrite() {
 		let dir = tempfile::tempdir().unwrap();
 		let path = dir.path().join("photo.webp");
 		std::fs::write(&path, b"mine").unwrap();
 
 		let output = Output::pending(path.clone(), "webp", Tier::Converted);
 
-		assert!(!blocked(Some(&output), &path, false));
+		assert!(blocked(Some(&output), &path, false));
 	}
 }

@@ -127,6 +127,12 @@ fn undo_puts_the_source_back_and_removes_the_output() {
 		.output()
 		.unwrap();
 
+	if !retype_core::fsx::supports_durable_cleanup() {
+		assert!(!undo.status.success());
+		assert_eq!(fs::read(&source).unwrap(), b"pixels");
+		assert!(output.exists());
+		return;
+	}
 	assert!(undo.status.success(), "{}", String::from_utf8_lossy(&undo.stderr));
 	assert!(String::from_utf8_lossy(&undo.stdout).contains("photo.png"));
 

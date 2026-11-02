@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::job::{JOURNAL_VERSION, Job, JobId, JobState, now_ms};
+use crate::job::{JOURNAL_VERSION, Job, JobId, now_ms};
 
 /// When compaction is worth doing, `docs/dev/architecture/state.md` §4.
 const MAX_LINES: usize = 10_000;
@@ -169,20 +169,11 @@ impl Journal {
 		self.file.write_all(line.as_bytes())?;
 		self.file.flush()?;
 
-		if is_durable(job.state) {
-			self.file.sync_data()?;
-		}
+		self.file.sync_all()?;
+		crate::fsx::sync_directory(self.path.parent().unwrap_or(Path::new(".")))?;
 
 		Ok(())
 	}
-}
-
-/// Transitions that are synced. The rest are best effort because reconciliation
-/// covers the gap, `docs/dev/architecture/state.md` §4.
-fn is_durable(state: JobState) -> bool {
-	// A parked job has a deadline to survive a crash, a queued one has a queue entry
-	// that reconciliation rebuilds, and a finished one is the record itself.
-	matches!(state, JobState::Queued | JobState::Pending | JobState::Done)
 }
 
 /// Remove the incomplete line at the end of the journal.
@@ -298,6 +289,7 @@ fn set_private_file(_file: &fs::File) -> Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::job::JobState;
 	use crate::job::{Output, Source, Tier};
 
 	fn path() -> (tempfile::TempDir, PathBuf) {
@@ -534,19 +526,19 @@ mod tests {
 	}
 
 	#[test]
-	fn only_the_promised_transitions_are_synced() {
-		assert!(is_durable(JobState::Queued));
-		assert!(is_durable(JobState::Pending));
-		assert!(is_durable(JobState::Done));
-		for state in [
-			JobState::Running,
-			JobState::Partial,
-			JobState::Failed,
-			JobState::Cancelled,
-			JobState::Superseded,
-			JobState::NeedsAttention,
-		] {
-			assert!(!is_durable(state), "{state:?} is not a promised transition");
+	fn intermediate_and_partial_snapshots_survive_reopening() {
+		let (_dir, path) = path();
+		for state in [JobState::Running, JobState::Partial, JobState::Cancelled] {
+			let mut current = job();
+			current.state = state;
+			let (mut journal, _) = Journal::open(&path).unwrap();
+			journal.append(&current).unwrap();
+			drop(journal);
+			let (_, replay) = Journal::open(&path).unwrap();
+			assert_eq!(
+				replay.jobs.iter().find(|job| job.id == current.id).unwrap().state,
+				state
+			);
 		}
 	}
 

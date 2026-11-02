@@ -21,6 +21,7 @@ mod server;
 pub mod signals;
 pub mod supervision;
 pub mod timer;
+mod transaction;
 pub mod watcher;
 
 pub use server::Server;

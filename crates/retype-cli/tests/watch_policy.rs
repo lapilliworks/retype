@@ -290,5 +290,8 @@ fn a_source_over_the_ceiling_is_passed_over_and_counted() {
 		fixture.photos.join("small.webp").exists(),
 		"the small one was converted"
 	);
-	assert!(!fixture.photos.join("small.png").exists(), "and its source consumed");
+	assert!(
+		fixture.photos.join("small.png").exists(),
+		"an unvalidated copy backend retains its source"
+	);
 }

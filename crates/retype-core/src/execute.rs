@@ -1,10 +1,8 @@
 //! Running a plan, `docs/cli.md` §2 and `docs/errors.md` §5.
 //!
-//! One plan is one argv. The tool writes to a temporary path in the output's own
-//! directory and the file is renamed into place only when the tool exits zero, so
-//! an output path is either absent or complete. A failure restores nothing
-//! because nothing was moved: the source is still where it was, which is why
-//! `convert` needs none of the restoration a rename does.
+//! Tools write inside private staging on the destination filesystem. Publication is
+//! synchronized with cancellation and a checked recovery checkpoint. A successful tool
+//! exit is not independent validation and cannot by itself authorize source disposal.
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -56,9 +54,15 @@ impl Cancellation {
 	}
 
 	pub fn commit<T>(&self, action: impl FnOnce() -> Result<T>) -> Result<T> {
-		let _guard = self.commit_gate.lock().map_err(|_| Error::Io(std::io::Error::other("commit lock poisoned")))?;
+		let _guard = self
+			.commit_gate
+			.lock()
+			.map_err(|_| Error::Io(std::io::Error::other("commit lock poisoned")))?;
 		if self.is_cancelled() {
-			return Err(Error::Diagnostic(Diagnostic::global(Code::JobCancelled, "job was cancelled before commit")));
+			return Err(Error::Diagnostic(Diagnostic::global(
+				Code::JobCancelled,
+				"job was cancelled before commit",
+			)));
 		}
 		action()
 	}
@@ -105,34 +109,80 @@ pub fn run_logged(
 	cancellation: &Cancellation,
 	log: Option<&Path>,
 ) -> Result<Report> {
-	run_recorded(plan, input, output, cancellation, log, crate::convert::Publication::Create, &|_, _| Ok(()))
+	run_recorded(
+		plan,
+		input,
+		output,
+		cancellation,
+		log,
+		crate::convert::Publication::Create,
+		&|_, _| Ok(()),
+	)
 }
 
 pub fn run_replacing(
-	plan: &Plan, input: &Path, output: &Path, cancellation: &Cancellation, log: Option<&Path>,
+	plan: &Plan,
+	input: &Path,
+	output: &Path,
+	cancellation: &Cancellation,
+	log: Option<&Path>,
 ) -> Result<Report> {
-	run_recorded(plan, input, output, cancellation, log, crate::convert::Publication::Replace, &|_, _| Ok(()))
+	run_recorded(
+		plan,
+		input,
+		output,
+		cancellation,
+		log,
+		crate::convert::Publication::Replace,
+		&|_, _| Ok(()),
+	)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_recorded(
-	plan: &Plan, input: &Path, output: &Path, cancellation: &Cancellation, log: Option<&Path>,
-	publication: crate::convert::Publication, before_commit: &dyn Fn(&Path, &Report) -> Result<()>,
+	plan: &Plan,
+	input: &Path,
+	output: &Path,
+	cancellation: &Cancellation,
+	log: Option<&Path>,
+	publication: crate::convert::Publication,
+	before_commit: &dyn Fn(&Path, &Report) -> Result<()>,
 ) -> Result<Report> {
 	if crate::fsx::protects_input(input, output)? {
-		return Err(Error::Diagnostic(Diagnostic::global(Code::UsageConflict, "output aliases the input")));
+		return Err(Error::Diagnostic(Diagnostic::global(
+			Code::UsageConflict,
+			"output aliases the input",
+		)));
 	}
 	let original = crate::safety::Fingerprint::of(input)?;
 	// A format this build writes itself has nothing to run, so it goes to the
 	// archive writer rather than looking for a tool that was never planned.
 	if let Backend::Native { from, to } = &plan.backend {
-		return crate::archive::repack_published(None, *from, *to, input, output, cancellation, publication, before_commit);
+		return crate::archive::repack_published(
+			None,
+			*from,
+			*to,
+			input,
+			output,
+			cancellation,
+			publication,
+			before_commit,
+		);
 	}
 
 	// A container this build cannot write is still repacked by our rules, with the
 	// tool given a tree that has already been checked, `docs/tools.md` §7.
 	if let Backend::SevenZip { from, to, .. } = &plan.backend {
-		return crate::archive::repack_published(Some(&plan.command), *from, *to, input, output, cancellation, publication, before_commit);
+		return crate::archive::repack_published(
+			Some(&plan.command),
+			*from,
+			*to,
+			input,
+			output,
+			cancellation,
+			publication,
+			before_commit,
+		);
 	}
 
 	let Backend::Tool(tool) = &plan.backend else {
@@ -166,13 +216,24 @@ pub fn run_recorded(
 
 	let metadata = std::fs::symlink_metadata(staged.temp())?;
 	if !metadata.file_type().is_file() || metadata.len() == 0 {
-		return Err(Error::Diagnostic(Diagnostic::global(Code::ToolFailed, "tool produced no regular nonempty output")));
+		return Err(Error::Diagnostic(Diagnostic::global(
+			Code::ToolFailed,
+			"tool produced no regular nonempty output",
+		)));
 	}
 	let validated = validate_output(plan, staged.temp(), cancellation)?;
 	if !original.matches(input)? {
-		return Err(Error::Diagnostic(Diagnostic::global(Code::ToolFailed, "input changed during conversion")));
+		return Err(Error::Diagnostic(Diagnostic::global(
+			Code::ToolFailed,
+			"input changed during conversion",
+		)));
 	}
-	let report = Report { output: output.to_path_buf(), bytes: metadata.len(), validated, stderr };
+	let report = Report {
+		output: staged.target().to_path_buf(),
+		bytes: metadata.len(),
+		validated,
+		stderr,
+	};
 	cancellation.commit(|| {
 		before_commit(staged.temp(), &report)?;
 		staged.commit()
@@ -185,8 +246,18 @@ pub fn run_recorded(
 fn validate_output(plan: &Plan, output: &Path, cancellation: &Cancellation) -> Result<bool> {
 	let argv: Vec<OsString> = match plan.backend.name() {
 		"magick" => vec![output.into(), "null:".into()],
-		"ffmpeg" => vec!["-v".into(), "error".into(), "-xerror".into(), "-i".into(), output.into(),
-			"-map".into(), "0".into(), "-f".into(), "null".into(), "-".into()],
+		"ffmpeg" => vec![
+			"-v".into(),
+			"error".into(),
+			"-xerror".into(),
+			"-i".into(),
+			output.into(),
+			"-map".into(),
+			"0".into(),
+			"-f".into(),
+			"null".into(),
+			"-".into(),
+		],
 		_ => return Ok(false),
 	};
 	let path = executable(&plan.command).ok_or_else(|| Error::Io(std::io::Error::other("validator disappeared")))?;
@@ -207,51 +278,35 @@ fn validate_output(plan: &Plan, output: &Path, cancellation: &Cancellation) -> R
 		_ => return Ok(false),
 	};
 	if !matches {
-		return Err(Error::Diagnostic(Diagnostic::global(Code::ToolFailed, "output format does not match the request")));
+		return Err(Error::Diagnostic(Diagnostic::global(
+			Code::ToolFailed,
+			"output format does not match the request",
+		)));
 	}
-	Ok(true)
-}
-
-/// What happens to the bytes a job used up.
-///
-/// A kept undo record can put the source back, so the bytes are simply removed.
-/// When no record could be kept, the source goes to the operating system's trash
-/// instead: the file leaves its directory, which is what the rename asked for, and
-/// the user can still get it back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Disposal {
-	Remove,
-	Trash,
+	/* Full source-to-output property coverage is not yet available for external encoders. */
+	Ok(false)
 }
 
 /// The source a rename left under the target's name, prepared once for a whole
 /// job.
 ///
 /// The target path holds the source bytes under the new name, so the bytes are
-/// relabelled on open: the input name carries the format its content actually has
-/// while the job runs, and no observer sees a WebP path holding HEIC bytes.
+/// relabelled on open where possible. If the source name is occupied, the target
+/// stays untouched and the job reads an independent copy instead.
 ///
 /// One rename is one job, and a job may produce several outputs. Preparing
 /// per output would move the bytes for the first one and leave the rest with
-/// nothing to read, so the job opens the bytes once and closes them once:
-/// `consume` when anything was produced, `keep` when nothing was.
+/// nothing to read. This handle never authorizes disposal; the durable job transaction does.
 pub struct Rename {
 	prepared: crate::convert::PreparedInput,
-	original: crate::safety::Fingerprint,
-	stem: String,
-	source_format: String,
 }
 
 impl Rename {
 	/// Take the bytes at `target` and give them back under a name their content
 	/// fits.
 	pub fn open(target: &Path, stem: &str, source_format: &str) -> Result<Self> {
-		let original = crate::safety::Fingerprint::of(target)?;
 		Ok(Self {
 			prepared: crate::convert::prepare_input(target, stem, source_format)?,
-			original,
-			stem: stem.to_string(),
-			source_format: source_format.to_string(),
 		})
 	}
 
@@ -259,43 +314,9 @@ impl Rename {
 	pub fn input(&self) -> &Path {
 		self.prepared.input()
 	}
-
-	/// The job produced at least one output, so the renamed file has done its work
-	/// and its bytes are no longer needed under the source name.
-	pub fn consume(self, disposal: Disposal) -> Result<()> {
-		match &self.prepared {
-			crate::convert::PreparedInput::Restored { input, .. } => consume(input, disposal, &self.original),
-			crate::convert::PreparedInput::Linked { target, .. } => consume(target, disposal, &self.original),
-		}
-	}
-
-	/// Nothing was produced, so the file goes back to a name its bytes fit.
-	///
-	/// The only case where that is impossible is the source name being occupied, and
-	/// nothing is deleted for it: the record names both paths instead.
-	pub fn keep(self) {
-		if let crate::convert::PreparedInput::Linked { target, .. } = &self.prepared {
-			let _ = crate::convert::restore_source_name(target, &self.stem, &self.source_format);
-		}
-	}
 }
 
-/// Dispose of the bytes a job used up.
-///
-/// A kept undo record can put the source back, so the bytes are removed. When no
-/// record could be kept, they go to the operating system's trash instead: the file
-/// leaves the directory the rename asked it to leave, and the user can still get it
-/// back.
-pub fn consume(path: &Path, disposal: Disposal, expected: &crate::safety::Fingerprint) -> Result<()> {
-	match disposal {
-		Disposal::Remove => crate::safety::remove_owned(path, expected),
-		Disposal::Trash => Err(Error::Io(std::io::Error::other(
-			"source retained: identity-safe trash disposal is unavailable",
-		))),
-	}
-}
-
-/// Kill a child and everything it started, then reap it.
+/// Stop the child and its Unix group, then reap it. The Windows job guard kills descendants on exit.
 fn kill(child: &mut std::process::Child) {
 	#[cfg(unix)]
 	{
@@ -367,7 +388,7 @@ pub fn run_child(
 			command_line.process_group(0);
 		}
 
-		command_line.spawn().map_err(|error| {
+		crate::tool_process::ToolProcess::spawn(&mut command_line).map_err(|error| {
 			Error::Diagnostic(Diagnostic::global(
 				Code::ToolFailed,
 				format!("{command} could not run: {error}"),
@@ -434,26 +455,30 @@ pub fn run_child(
 	};
 
 	/* A zero-exiting parent with live helpers has not finalized its output. */
-	#[cfg(unix)]
-	if let Ok(pid) = libc::pid_t::try_from(child.id()) {
-		if unsafe { libc::kill(-pid, 0) } == 0 {
-			kill(&mut child);
-			return Err(Error::Diagnostic(Diagnostic::global(
-				Code::ToolFailed, format!("{command} exited while helper processes were still running"),
-			)));
-		}
+	if child.has_helpers()? {
+		kill(&mut child);
+		return Err(Error::Diagnostic(Diagnostic::global(
+			Code::ToolFailed,
+			format!("{command} exited while helper processes were still running"),
+		)));
 	}
 
 	let deadline = std::time::Instant::now() + Duration::from_secs(5);
 	while !reader.is_finished() {
 		if cancellation.is_cancelled() || std::time::Instant::now() >= deadline {
 			kill(&mut child);
-			return Err(Error::Diagnostic(Diagnostic::global(Code::ToolFailed,
-				format!("{command} stderr did not close; output was not committed"))));
+			return Err(Error::Diagnostic(Diagnostic::global(
+				Code::ToolFailed,
+				format!("{command} stderr did not close; output was not committed"),
+			)));
 		}
 		thread::sleep(POLL);
 	}
-	let stderr = tail(&reader.join().map_err(|_| Error::Io(std::io::Error::other("stderr reader panicked")))?);
+	let stderr = tail(
+		&reader
+			.join()
+			.map_err(|_| Error::Io(std::io::Error::other("stderr reader panicked")))?,
+	);
 	cancellation.commit(|| Ok(()))?;
 
 	if !status.success() {
@@ -625,13 +650,13 @@ tier = 'converted'
 
 		let renamed = Rename::open(&target, "photo", "png").expect("opens");
 		let report = run(&plans[0], renamed.input(), &target).expect("converts");
-		renamed.consume(Disposal::Remove).expect("consumes");
+		drop(renamed);
 
 		assert_eq!(report.bytes, 6);
 		assert_eq!(fs::read(&target).unwrap(), b"pixels");
 		assert!(
-			!dir.path().join("photo.png").exists(),
-			"the source name is not left behind"
+			dir.path().join("photo.png").exists(),
+			"an unvalidated copy cannot authorize disposal"
 		);
 	}
 
@@ -651,11 +676,11 @@ tier = 'converted'
 			let output = dir.path().join(output);
 			run(&plans[0], renamed.input(), &output).expect("converts");
 		}
-		renamed.consume(Disposal::Remove).expect("consumes");
+		drop(renamed);
 
 		assert_eq!(fs::read(dir.path().join("photo.webp")).unwrap(), b"pixels");
 		assert_eq!(fs::read(dir.path().join("photo-2.webp")).unwrap(), b"pixels");
-		assert!(!dir.path().join("photo.png").exists());
+		assert!(dir.path().join("photo.png").exists());
 	}
 
 	#[test]
@@ -668,7 +693,7 @@ tier = 'converted'
 
 		let renamed = Rename::open(&target, "photo", "png").expect("opens");
 		let error = run(&plans[0], renamed.input(), &target).unwrap_err();
-		renamed.keep();
+		drop(renamed);
 
 		assert_eq!(error.code(), Code::ToolFailed);
 		assert!(!target.exists(), "a webp path does not keep png bytes");

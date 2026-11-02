@@ -104,7 +104,7 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	}
 
 	if request.dry_run {
-		let input = std::path::absolute(&source.written).unwrap_or_else(|_| PathBuf::from(&source.written));
+		let input = PathBuf::from(&source.written);
 
 		for plan in &plans {
 			let path = derived
@@ -112,9 +112,16 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 				.find(|named| named.group == plan.group)
 				.map(|named| named.path.clone())
 				.unwrap_or_default();
-			let absolute = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
-
-			if absolute == input {
+			let aliases_input = match retype_core::fsx::protects_input(&input, &path) {
+				Ok(aliases) => aliases,
+				Err(error) => {
+					return Ok(ExitCode::from(output::fail(
+						&retype_core::error::code_for_io(&error),
+						error.to_string(),
+					)));
+				}
+			};
+			if aliases_input {
 				return Ok(ExitCode::from(output::fail(
 					&Code::UsageConflict,
 					format!(

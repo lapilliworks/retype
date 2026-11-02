@@ -19,11 +19,16 @@ pub struct Snapshot {
 impl Snapshot {
 	pub fn open(source: &Path) -> Result<Self> {
 		let source = crate::fsx::entry_path(source)?;
-		let directory = tempfile::Builder::new().prefix(crate::convert::TEMP_IN_PREFIX)
+		let directory = tempfile::Builder::new()
+			.prefix(crate::convert::TEMP_IN_PREFIX)
 			.tempdir_in(source.parent().expect("resolved parent"))?;
 		let path = directory.path().join(source.file_name().expect("resolved name"));
 		let original = copy_snapshot(&source, &path)?;
-		Ok(Self { path, original, _directory: directory })
+		Ok(Self {
+			path,
+			original,
+			_directory: directory,
+		})
 	}
 }
 
@@ -44,7 +49,22 @@ impl Fingerprint {
 		if before.len() != bytes || before.modified()? != after.modified()? || after.len() != bytes {
 			return Err(changed(path));
 		}
-		Ok(Self { identity: FileIdentity::of(path), bytes, sha256: format!("{:x}", hash.finalize()) })
+		#[cfg(unix)]
+		let identity = {
+			use std::os::unix::fs::MetadataExt;
+			Some(FileIdentity::Unix {
+				dev: before.dev(),
+				ino: before.ino(),
+				birth_ns: None,
+			})
+		};
+		#[cfg(not(unix))]
+		let identity = FileIdentity::of(path);
+		Ok(Self {
+			identity,
+			bytes,
+			sha256: format!("{:x}", hash.finalize()),
+		})
 	}
 
 	pub fn same_content(&self, other: &Self) -> bool {
@@ -53,8 +73,12 @@ impl Fingerprint {
 
 	pub fn matches(&self, path: &Path) -> Result<bool> {
 		let current = Self::of(path)?;
-		Ok(self.same_content(&current) && self.identity.as_ref().zip(current.identity.as_ref())
-			.is_some_and(|(expected, actual)| expected.matches(actual)))
+		Ok(self.same_content(&current)
+			&& self
+				.identity
+				.as_ref()
+				.zip(current.identity.as_ref())
+				.is_some_and(|(expected, actual)| expected.matches(actual)))
 	}
 }
 
@@ -77,7 +101,10 @@ fn regular_file(path: &Path) -> io::Result<File> {
 }
 
 fn changed(path: &Path) -> Error {
-	Error::Io(io::Error::other(format!("{} changed while being read; original retained", path.display())))
+	Error::Io(io::Error::other(format!(
+		"{} changed while being read; original retained",
+		path.display()
+	)))
 }
 
 /// Copy into a new file, checking that the independent snapshot matches a stable source.
@@ -104,9 +131,19 @@ pub fn copy_snapshot(source: &Path, target: &Path) -> Result<Fingerprint> {
 /// Claim first, then verify. Never unlink an unchecked public pathname.
 /// On any ambiguous restore, the claimed file remains in a persistent recovery directory.
 pub fn remove_owned(path: &Path, expected: &Fingerprint) -> Result<()> {
+	if !crate::fsx::supports_durable_cleanup() {
+		return Err(io::Error::new(
+			io::ErrorKind::Unsupported,
+			"source retained: directory durability unavailable",
+		)
+		.into());
+	}
 	let path = crate::fsx::entry_path(path)?;
 	let parent = path.parent().expect("resolved parent");
-	let directory = tempfile::Builder::new().prefix(".retype-recovery.").tempdir_in(parent)?.keep();
+	let directory = tempfile::Builder::new()
+		.prefix(".retype-recovery.")
+		.tempdir_in(parent)?
+		.keep();
 	let claimed = directory.join(path.file_name().expect("resolved name"));
 	if let Err(error) = crate::fsx::rename_noreplace(&path, &claimed) {
 		fs::remove_dir(&directory)?;
@@ -119,7 +156,8 @@ pub fn remove_owned(path: &Path, expected: &Fingerprint) -> Result<()> {
 		}
 		return Err(Error::Io(io::Error::other(format!(
 			"{} no longer holds the expected file; preserved at {} or its original name",
-			path.display(), claimed.display(),
+			path.display(),
+			claimed.display(),
 		))));
 	}
 	/* A crash before unlink must leave the claimed source reachable. */

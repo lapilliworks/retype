@@ -486,12 +486,20 @@ impl Server {
 			Err(error) => return Ok(Response::error(request.id, error)),
 		};
 
-		if job.state != JobState::Partial {
+		let is_interrupted = job.state == JobState::Failed
+			&& job
+				.error
+				.as_ref()
+				.is_some_and(|error| error.code == Code::JobInterrupted.to_string());
+		if job.state != JobState::Partial && !is_interrupted {
 			return Ok(Response::error(
 				request.id,
 				WireError::new(
 					Code::JobState,
-					format!("{} is {:?}, and only a partial job resumes", job.id, job.state),
+					format!(
+						"{} is {:?}, and only partial or interrupted jobs resume",
+						job.id, job.state
+					),
 				),
 			));
 		}

@@ -169,11 +169,28 @@ fn a_partial_job_resumes_and_skips_what_it_already_produced() {
 	#[cfg(not(unix))]
 	let _ = before;
 	assert!(
-		!state
+		state
 			.join("undo")
 			.read_dir()
 			.map(|mut entries| entries.next().is_some())
 			.unwrap_or(false),
-		"a finished job needs no undo record"
+		"a successful resume keeps its original and undo record"
 	);
+	let undone = retype()
+		.args(["undo", "--last"])
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+	if !retype_core::fsx::supports_durable_cleanup() {
+		assert!(!undone.status.success());
+		assert_eq!(fs::read(&source).unwrap(), b"pixels");
+		assert!(produced.exists());
+		assert!(blocked.exists());
+		return;
+	}
+	assert!(undone.status.success(), "{}", String::from_utf8_lossy(&undone.stderr));
+	assert_eq!(fs::read(&source).unwrap(), b"pixels");
+	assert!(!produced.exists());
+	assert!(!blocked.exists());
 }

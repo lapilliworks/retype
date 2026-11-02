@@ -23,9 +23,11 @@ pub const TEMP_IN_PREFIX: &str = ".retype-in.";
 
 /// Whether a path is one of our temporary files.
 pub fn is_temp_file(path: &Path) -> bool {
-	path.file_name()
-		.and_then(|name| name.to_str())
-		.is_some_and(|name| name.starts_with(TEMP_PREFIX))
+	path.components().any(|component| {
+		component.as_os_str().to_str().is_some_and(|name| {
+			name.starts_with(TEMP_PREFIX) || name.starts_with(TEMP_IN_PREFIX) || name.starts_with(".retype-recovery.")
+		})
+	})
 }
 
 /// Write `target` atomically.
@@ -81,6 +83,10 @@ impl StagedOutput {
 		Ok(staged)
 	}
 
+	pub fn target(&self) -> &Path {
+		&self.target
+	}
+
 	/// Path the writer should create.
 	pub fn temp(&self) -> &Path {
 		&self.temp
@@ -91,7 +97,7 @@ impl StagedOutput {
 		if !fs::symlink_metadata(&self.temp)?.file_type().is_file() {
 			return Err(Error::Io(std::io::Error::other("staged output is not a regular file")));
 		}
-		fs::File::open(&self.temp)?.sync_all()?;
+		crate::fsx::sync_file(&self.temp)?;
 		crate::fsx::sync_directory(self._directory.path())?;
 		if self.should_replace {
 			crate::fsx::rename(&self.temp, &self.target)?;
@@ -109,36 +115,38 @@ impl StagedOutput {
 /// the file directly would see the wrong extension. Rather than lie about the
 /// content for the duration of the conversion, the file is renamed back to its
 /// source name first: the name matches the bytes at every instant, a crash
-/// leaves a correctly named file, and filesystems without hard links need no
-/// copy.
+/// leaves a correctly named file.
 ///
-/// The temporary link exists only for the case where the source name is taken
-/// by something else and the file therefore cannot be renamed back.
+/// An independent temporary copy is used when the source name is occupied.
+/// The original target remains untouched and cannot be overwritten by ordinary publication.
 #[derive(Debug)]
 pub enum PreparedInput {
 	/// The file is at its source name. The converter reads it there.
 	Restored { input: PathBuf, target: PathBuf },
-	/// The file could not be renamed back, so its bytes are reachable through
-	/// a temporary link, or a copy where links are unsupported.
-	Linked { input: PathBuf, target: PathBuf, directory: tempfile::TempDir },
+	/// The source name is occupied, so read an independently owned snapshot.
+	Snapshot {
+		input: PathBuf,
+		target: PathBuf,
+		directory: tempfile::TempDir,
+	},
 }
 
 impl PreparedInput {
 	pub fn input(&self) -> &Path {
 		match self {
-			Self::Restored { input, .. } | Self::Linked { input, .. } => input,
+			Self::Restored { input, .. } | Self::Snapshot { input, .. } => input,
 		}
 	}
 
 	pub fn target(&self) -> &Path {
 		match self {
-			Self::Restored { target, .. } | Self::Linked { target, .. } => target,
+			Self::Restored { target, .. } | Self::Snapshot { target, .. } => target,
 		}
 	}
 
 	/// Whether the input is a temporary name that must be removed afterwards.
 	pub fn is_temporary(&self) -> bool {
-		matches!(self, Self::Linked { .. })
+		matches!(self, Self::Snapshot { .. })
 	}
 }
 
@@ -155,7 +163,11 @@ pub fn prepare_input(target: &Path, stem: &str, source_format: &str) -> Result<P
 			let directory = tempfile::Builder::new().prefix(TEMP_IN_PREFIX).tempdir_in(parent)?;
 			let input = directory.path().join(format!("{stem}.{source_format}"));
 			crate::safety::copy_snapshot(target, &input)?;
-			Ok(PreparedInput::Linked { input, target: target.to_path_buf(), directory })
+			Ok(PreparedInput::Snapshot {
+				input,
+				target: target.to_path_buf(),
+				directory,
+			})
 		}
 		Err(error) => Err(error),
 	}
@@ -175,6 +187,8 @@ pub fn restore_source_name(path: &Path, stem: &str, source_format: &str) -> Resu
 		}
 		return Err(Error::Io(error));
 	}
+	crate::fsx::sync_file(&restored)?;
+	crate::fsx::sync_directory(parent)?;
 	Ok(restored)
 }
 
@@ -265,6 +279,9 @@ mod tests {
 		assert!(is_temp_file(Path::new("/dir/.retype-tmp.photo.jpg")));
 		assert!(!is_temp_file(Path::new("/dir/photo.jpg")));
 		assert!(!is_temp_file(Path::new("/dir/.hidden")));
+		assert!(is_temp_file(Path::new("/dir/.retype-tmp.job/photo.webp")));
+		assert!(is_temp_file(Path::new("/dir/.retype-in.job/photo.png")));
+		assert!(is_temp_file(Path::new("/dir/.retype-recovery.job/photo.png")));
 	}
 
 	#[test]
@@ -346,7 +363,11 @@ mod tests {
 		let input_meta = fs::metadata(prepared.input()).unwrap();
 		let target_meta = fs::metadata(&target).unwrap();
 
-		assert_ne!(input_meta.ino(), target_meta.ino(), "an independent copy, not a hard link");
+		assert_ne!(
+			input_meta.ino(),
+			target_meta.ino(),
+			"an independent copy, not a hard link"
+		);
 	}
 
 	#[test]

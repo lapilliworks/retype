@@ -133,7 +133,7 @@ fn a_rename_in_a_watched_directory_is_converted() {
 	};
 
 	assert!(journal.contains("holiday.webp"), "{journal}");
-	assert!(!source.exists(), "the source name does not come back");
+	assert!(source.exists(), "an unvalidated copy backend retains its source");
 
 	let _ = daemon.child.kill();
 }
@@ -202,5 +202,5 @@ fn one_rename_with_two_outputs_converts_both() {
 	assert_eq!(fs::read(&first).unwrap(), b"pixels");
 	assert_eq!(fs::read(&second).unwrap(), b"pixels");
 	assert!(journal.contains("\"state\":\"done\""), "{journal}");
-	assert!(!source.exists(), "the source name does not come back");
+	assert!(source.exists(), "an unvalidated copy backend retains its source");
 }

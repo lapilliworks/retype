@@ -815,8 +815,6 @@ fn supersede(shared: &Shared, pool: &Pool, earlier: &[Job]) -> PathBuf {
 			eprintln!("retype: {} was replaced by a later rename before it started", job.id);
 			retire(shared, &work, JobState::Superseded);
 		}
-
-		let _ = retype_core::undo::Store::open(&shared.state_dir).remove(&job.id);
 	}
 
 	// The name the bytes belong under is the one the earliest job was reading: a
@@ -1052,65 +1050,13 @@ fn run(
 	// same way `convert` derives its paths.
 	let derived = retype_core::output::derive(&stem, &format, &resolved.groups);
 
-	// Keep the bytes before touching them: an undo has to be possible even if this
-	// process dies mid-conversion. Retention and quota are policy, so a machine that
-	// does not keep records, or has no room for this one, does not pay for it and
-	// the conversion runs anyway.
 	let store = retype_core::undo::Store::open(&shared.state_dir);
-	let registry = shared.registry();
-	let policy = registry.undo();
-	let bytes = match &input {
-		Input::Renamed { renamed } => renamed.clone(),
-		Input::Named => source.to_path_buf(),
-	};
-	let mut disposal = execute::Disposal::Remove;
-	let undo = if !policy.enabled {
-		None
-	} else {
-		match store.make_room(&bytes, policy) {
-			Ok(retype_core::undo::Room::Kept { dropped }) => {
-				for id in &dropped {
-					eprintln!("retype: dropped undo record {id} to stay within the quota");
-				}
-
-				Some(
-					store.save(retype_core::undo::Subject {
-						id: id.clone(),
-						intent: print::intent(&resolved, &shared.registry()),
-						machine: shared.machine.clone(),
-						bytes: bytes.clone(),
-						// The path the bytes belong to, which is not `root` plus the
-						// name: a file inside a subdirectory would be restored one
-						// directory too high.
-						source_path: source.to_path_buf(),
-						source_ext: format.clone(),
-						consume_source: true,
-						outputs: derived
-							.iter()
-							.map(|derived| retype_core::undo::Output {
-								path: target.parent().unwrap_or(Path::new("")).join(&derived.path),
-								ext: derived.format.clone(),
-							})
-							.collect(),
-					}),
-				)
-			}
-			Ok(retype_core::undo::Room::NoRoom(reason)) => {
-				// Nothing can be kept, so the source goes where the user can still find
-				// it. A quota that is full is not a quota problem, so nothing is evicted
-				// for a record that will not exist.
-				disposal = match reason {
-					retype_core::undo::NoRoom::TooLarge => execute::Disposal::Trash,
-					retype_core::undo::NoRoom::Policy => execute::Disposal::Remove,
-				};
-
-				eprintln!("retype: {}: no undo record: {}", target.display(), reason.reason());
-				None
-			}
-			Err(error) => {
-				eprintln!("retype: cannot measure {} for undo: {error}", target.display());
-				None
-			}
+	let lease = match store.lease(&id) {
+		Ok(lease) => lease,
+		Err(error) => {
+			eprintln!("retype: cannot acquire job ownership: {error}");
+			publish(shared, &settled(shared, &id, now, source, &format, &resolved, &plans, outputs, JobState::Failed));
+			return;
 		}
 	};
 
@@ -1121,7 +1067,7 @@ fn run(
 	// input is consumed below.
 	let named = matches!(input, Input::Named);
 
-	let mut renamed = match input {
+	let renamed = match input {
 		Input::Renamed { renamed } => match execute::Rename::open(&renamed, &stem, &format) {
 			Ok(renamed) => {
 				// The bytes are back under the source name because this process moved them.
@@ -1132,7 +1078,6 @@ fn run(
 			}
 			Err(error) => {
 				eprintln!("retype: {}: {error}", target.display());
-				store.remove(&id).ok();
 
 				// The file the job was about to read is gone, usually because a later
 				// rename moved it. A job must not stay `running` for that: say which
@@ -1154,7 +1099,10 @@ fn run(
 					));
 				}
 
-				publish(shared, &settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state));
+				publish(
+					shared,
+					&settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state),
+				);
 				return;
 			}
 		},
@@ -1165,6 +1113,88 @@ fn run(
 		Some(renamed) => renamed.input().to_path_buf(),
 		None => source.to_path_buf(),
 	};
+	let snapshot = match retype_core::safety::Snapshot::open(&read_from) {
+		Ok(snapshot) => snapshot,
+		Err(error) => {
+			eprintln!("retype: cannot snapshot {}: {error}", read_from.display());
+			publish(
+				shared,
+				&settled(
+					shared,
+					&id,
+					now,
+					source,
+					&format,
+					&resolved,
+					&plans,
+					outputs,
+					JobState::Failed,
+				),
+			);
+			return;
+		}
+	};
+	let registry = shared.registry();
+	let undo = store.save_with_policy(
+		retype_core::undo::Subject {
+			id: id.clone(),
+			intent: print::intent(&resolved, &registry),
+			machine: shared.machine.clone(),
+			bytes: read_from.clone(),
+			source_path: source.to_path_buf(),
+			source_ext: format.clone(),
+			consume_source: true,
+			outputs: derived
+				.iter()
+				.filter(|output| !output.keep_source)
+				.map(|output| retype_core::undo::Output {
+					path: target.parent().unwrap_or(Path::new("")).join(&output.path),
+					ext: output.format.clone(),
+				})
+				.collect(),
+		},
+		registry.undo(),
+	);
+	let has_backup = match &undo {
+		Ok(Some(record)) => {
+			if record.source_fingerprint.as_ref() != Some(&snapshot.original) {
+				eprintln!("retype: input changed while its recovery copy was being prepared; source retained");
+				publish(
+					shared,
+					&settled(
+						shared,
+						&id,
+						now,
+						source,
+						&format,
+						&resolved,
+						&plans,
+						outputs,
+						JobState::Failed,
+					),
+				);
+				return;
+			}
+			true
+		}
+		Ok(None) => false,
+		Err(error) => {
+			eprintln!("retype: source retained because undo could not be saved: {error}");
+			false
+		}
+	};
+	let mut all_validated = true;
+	let checkpoint = settled(
+		shared,
+		&id,
+		now,
+		source,
+		&format,
+		&resolved,
+		&plans,
+		Vec::new(),
+		JobState::Running,
+	);
 
 	for plan in &plans {
 		// Plans carry their group, because a kept source has one and no plan.
@@ -1199,20 +1229,33 @@ fn run(
 
 		shared.recent.note(source, &output);
 
-		let log = crate::state::log_path(&shared.state_dir, &id);
-
-		match execute::run_logged(plan, &read_from, &output, cancellation, Some(&log)) {
-			Ok(report) => outputs.push(record(
-				&output,
-				plan,
-				OutputState::Done,
-				Some(report.bytes),
-				match report.stderr.trim().is_empty() {
-					true => None,
-					false => Some(report.stderr.clone()),
-				},
-				None,
-			)),
+		let publication = if force {
+			retype_core::convert::Publication::Replace
+		} else {
+			retype_core::convert::Publication::Create
+		};
+		let transaction = super::transaction::OutputTransaction {
+			shared,
+			job: &checkpoint,
+			original: &read_from,
+			completed: &outputs,
+			store: has_backup.then_some(&store),
+		};
+		match transaction.run(plan, &snapshot.path, &output, cancellation, publication) {
+			Ok(report) => {
+				all_validated &= report.validated;
+				outputs.push(record(
+					&output,
+					plan,
+					OutputState::Done,
+					Some(report.bytes),
+					match report.stderr.trim().is_empty() {
+						true => None,
+						false => Some(report.stderr.clone()),
+					},
+					None,
+				));
+			}
 			Err(error) => {
 				// A superseded job did not fail: the work was overtaken, so its output
 				// is skipped rather than failed, `docs/dev/architecture/state.md` §5.3.
@@ -1258,41 +1301,35 @@ fn run(
 		(false, false) => JobState::Failed,
 	};
 
-	if let Some(Err(error)) = &undo {
-		eprintln!("retype: cannot keep {} for undo: {error}", target.display());
-	}
-
-	// The job either used the source up or left it alone: a job with any output
-	// consumed its source, and one that produced nothing puts the source name back so
-	// no path keeps bytes its name denies.
-	match state {
-		JobState::Done | JobState::Partial => {
-			let disposed = match renamed.take() {
-				Some(renamed) => renamed.consume(disposal),
-				None => execute::consume(source, disposal),
-			};
-
-			if let Err(error) = disposed {
-				eprintln!("retype: cannot dispose of {}: {error}", target.display());
-			}
-		}
-		_ => {
-			if let Some(renamed) = renamed {
-				renamed.keep();
-			}
-		}
-	}
-
 	let job = settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state);
-
-	publish(shared, &job);
-	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
-
-	// Nothing was produced, so there is nothing to undo: the source is where it
-	// always was and the record would only describe a file that never changed.
-	if state != JobState::Done && state != JobState::Partial {
-		let _ = store.remove(&id);
+	if state == JobState::Done && !all_validated {
+		eprintln!("retype: original retained: the backend has no complete independent output validator");
 	}
+	let can_dispose = state == JobState::Done
+		&& !plans.is_empty()
+		&& all_validated
+		&& has_backup
+		&& !resolved.groups.iter().any(|group| group.keep_source);
+	if let Err(error) = persist(shared, &job) {
+		eprintln!("retype: original retained because completion could not be persisted: {error}");
+		return;
+	}
+	if can_dispose {
+		if let Err(error) = cancellation.commit(|| {
+			store.verify_disposal(&id)?;
+			retype_core::safety::remove_owned(&read_from, &snapshot.original)
+		}) {
+			eprintln!("retype: source retained or preserved for recovery: {error}");
+		}
+	}
+	if has_backup && state == JobState::Done {
+		if let Err(error) = store.finish(&id) {
+			eprintln!("retype: undo record remains pinned: {error}");
+		}
+	}
+	drop(lease);
+	publish_persisted(shared, &job);
+	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
 }
 
 /// A job's last word, whether it got as far as an output or not.
@@ -1374,13 +1411,22 @@ pub fn mark(shared: &Shared, outputs: &[Output], intent: &str) {
 /// The journal is the record; the list is the same records, kept in memory so a
 /// client does not read a file per request. A later snapshot for the same id
 /// replaces the earlier one in both.
-pub fn publish(shared: &Shared, job: &Job) {
-	if let Ok(mut journal) = shared.journal.lock() {
-		if let Err(error) = journal.append(job) {
-			eprintln!("retype: cannot journal {}: {error}", job.id);
-		}
-	}
+pub fn persist(shared: &Shared, job: &Job) -> retype_core::error::Result<()> {
+	let mut journal = shared
+		.journal
+		.lock()
+		.map_err(|_| retype_core::error::Error::Io(std::io::Error::other("journal lock poisoned")))?;
+	journal.append(job)
+}
 
+pub fn publish(shared: &Shared, job: &Job) {
+	if let Err(error) = persist(shared, job) {
+		eprintln!("retype: cannot journal {}: {error}", job.id);
+	}
+	publish_persisted(shared, job);
+}
+
+pub fn publish_persisted(shared: &Shared, job: &Job) {
 	// One event per snapshot, so a client polling `events` sees the same
 	// transitions the journal records, `docs/dev/architecture/ipc.md` §7.
 	if let Ok(mut events) = shared.events.lock() {

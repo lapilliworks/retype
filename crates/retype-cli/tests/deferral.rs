@@ -209,7 +209,10 @@ fn an_expensive_rename_is_parked_under_its_own_name_and_runs_when_the_timer_fire
 
 	assert_eq!(done["state"], "done");
 	assert!(fixture.photos.join("a.webp").exists(), "the output is there");
-	assert!(!fixture.photos.join("a.png").exists(), "the source is consumed");
+	assert!(
+		fixture.photos.join("a.png").exists(),
+		"an unvalidated copy backend retains its source"
+	);
 }
 
 #[test]
@@ -250,7 +253,10 @@ fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
 	assert_eq!(
 		listed
 			.lines()
-			.filter(|line| line.split_whitespace().next().is_some_and(|handle| id.starts_with(handle)))
+			.filter(|line| line
+				.split_whitespace()
+				.next()
+				.is_some_and(|handle| id.starts_with(handle)))
 			.count(),
 		1,
 		"the job has one record, not a parked one and a running one: {listed}"
@@ -333,7 +339,10 @@ fn repair_converts_without_the_token_it_could_not_carry_and_says_what_it_dropped
 	assert_eq!(done["parked"]["corrected"], "webp", "{done}");
 	assert_eq!(done["parked"]["dropped"], serde_json::json!(["zzz"]), "{done}");
 	assert!(fixture.photos.join("e.webp").exists(), "the result is there");
-	assert!(!fixture.photos.join("e.png").exists(), "the source is consumed");
+	assert!(
+		fixture.photos.join("e.png").exists(),
+		"an unvalidated copy backend retains its source"
+	);
 }
 
 #[test]
@@ -413,5 +422,8 @@ fn force_replaces_a_file_that_appeared_during_the_pause() {
 	let done = fixture.wait_for(|record| record["state"] == "done" && Fixture::id(record) == Fixture::id(&parked));
 	assert_eq!(done["state"], "done");
 	assert_eq!(fs::read(&theirs).unwrap(), b"pixels", "the output replaced it");
-	assert!(!fixture.photos.join("e.png").exists(), "the source is consumed");
+	assert!(
+		fixture.photos.join("e.png").exists(),
+		"an unvalidated copy backend retains its source"
+	);
 }

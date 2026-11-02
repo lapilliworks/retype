@@ -168,10 +168,10 @@ fn a_restart_requeues_the_queued_and_declares_the_running() {
 		"an interrupted job is not silently re-run"
 	);
 
-	// The queued job came from a rename, so it consumes its source when it commits.
+	// A synthetic copy is not independent format validation, even after requeueing.
 	assert!(
-		!dir.path().join("queued.png").exists(),
-		"a requeued rename consumes its source"
+		dir.path().join("queued.png").exists(),
+		"unvalidated output retains the original"
 	);
 }
 

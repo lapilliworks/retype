@@ -76,4 +76,3 @@ fn staged_symlink_is_rejected_without_touching_its_referent() {
 	assert_eq!(fs::read(input).unwrap(), b"original");
 	assert!(!output.exists());
 }
-

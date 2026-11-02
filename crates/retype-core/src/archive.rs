@@ -51,17 +51,34 @@ pub fn repack(
 	output: &Path,
 	cancellation: &Cancellation,
 ) -> Result<Report> {
-	repack_published(tool, from, to, input, output, cancellation, crate::convert::Publication::Create, &|_, _| Ok(()))
+	repack_published(
+		tool,
+		from,
+		to,
+		input,
+		output,
+		cancellation,
+		crate::convert::Publication::Create,
+		&|_, _| Ok(()),
+	)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn repack_published(
-	tool: Option<&str>, from: Native, to: Native, input: &Path, output: &Path,
-	cancellation: &Cancellation, publication: crate::convert::Publication,
+	tool: Option<&str>,
+	from: Native,
+	to: Native,
+	input: &Path,
+	output: &Path,
+	cancellation: &Cancellation,
+	publication: crate::convert::Publication,
 	before_commit: &dyn Fn(&Path, &Report) -> Result<()>,
 ) -> Result<Report> {
 	if crate::fsx::protects_input(input, output)? {
-		return Err(Error::Diagnostic(Diagnostic::global(Code::UsageConflict, "archive output aliases its input")));
+		return Err(Error::Diagnostic(Diagnostic::global(
+			Code::UsageConflict,
+			"archive output aliases its input",
+		)));
 	}
 	let original = crate::safety::Fingerprint::of(input)?;
 	// Absolute, because a repack through a tool changes the child's working directory:
@@ -95,7 +112,10 @@ pub fn repack_published(
 		return Err(malformed("the input", &"archive changed during conversion"));
 	}
 	let report = Report {
-		output: output.to_path_buf(), bytes, validated: !from.needs_tool() && !to.needs_tool(), stderr,
+		output: staged.target().to_path_buf(),
+		bytes,
+		validated: !from.needs_tool() && !to.needs_tool(),
+		stderr,
 	};
 	cancellation.commit(|| {
 		before_commit(staged.temp(), &report)?;
@@ -189,7 +209,9 @@ impl Source {
 			loop {
 				stop_if_cancelled(cancellation)?;
 				let read = reader.read(&mut buffer)?;
-				if read == 0 { break; }
+				if read == 0 {
+					break;
+				}
 				trailing += read as u64;
 				if trailing > MAX_BYTES || buffer[..read].iter().any(|byte| *byte != 0) {
 					return Err(malformed("the tar trailer", &"unexpected trailing data"));
@@ -432,15 +454,18 @@ impl Sink {
 	fn commit(self) -> Result<()> {
 		match self {
 			Self::Zip(writer) => {
-				(*writer).finish().map_err(|error| unwritable(&error))?;
+				(*writer).finish().map_err(|error| unwritable(&error))?.sync_all()?;
 			}
 			Self::Tar(builder) => {
 				let mut builder = builder;
 				builder.finish().map_err(|error| unwritable(&error))?;
 
-				if let TarSink::Gzip(encoder) = builder.into_inner().map_err(|error| unwritable(&error))? {
-					encoder.finish().map_err(|error| unwritable(&error))?;
-				}
+				let file = match builder.into_inner().map_err(|error| unwritable(&error))? {
+					TarSink::Plain(file) => file,
+					TarSink::Gzip(encoder) => encoder.finish().map_err(|error| unwritable(&error))?,
+				};
+				/* Sync the writing handle so delayed writeback errors cannot be lost on close. */
+				file.sync_all()?;
 			}
 			Self::Tree(_) => {}
 		}
@@ -598,9 +623,8 @@ impl StagedTree {
 			name.to_string_lossy()
 		));
 
-		// A leftover from a process that was killed must not be read as this job's tree.
-		let _ = fs::remove_dir_all(&path);
-		fs::create_dir_all(&path)?;
+		/* The parent is this job's private output stage; never reuse an existing tree. */
+		fs::create_dir(&path)?;
 
 		Ok(Self { path })
 	}

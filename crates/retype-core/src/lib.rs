@@ -29,6 +29,7 @@ pub mod registry;
 pub mod resolve;
 pub mod safety;
 pub mod synced;
+mod tool_process;
 pub mod tools;
 pub mod undo;
 pub mod value;

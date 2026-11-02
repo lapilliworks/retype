@@ -118,12 +118,15 @@ fn validate(request: &Request, paths: &[PathBuf]) -> std::result::Result<(), Dia
 		))),
 	}
 
-	let input = std::path::absolute(&request.input).unwrap_or_else(|_| request.input.clone());
-
 	for path in paths {
-		let absolute = std::path::absolute(path).unwrap_or_else(|_| path.clone());
-
-		if absolute == input {
+		let aliases_input = match retype_core::fsx::protects_input(&request.input, path) {
+			Ok(aliases) => aliases,
+			Err(error) => {
+				problems.push(Error::Io(error));
+				continue;
+			}
+		};
+		if aliases_input {
 			problems.push(Error::Diagnostic(Diagnostic::global(
 				Code::UsageConflict,
 				format!(
@@ -241,33 +244,63 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 		}
 	};
 
-	// A convert is undoable too: the record removes the outputs and leaves the
-	// source where the request found it. The source bytes are not copied because
-	// the name never moves, `docs/dev/architecture/state.md` §5.3.
+	/* A submitted conversion retains its live source and an independent recovery input. */
 	let store = retype_core::undo::Store::open(&shared.state_dir);
-	let undo_record = store.save(retype_core::undo::Subject {
-		id: id.clone(),
-		intent: print::intent(&prepared.resolved, &shared.registry()),
-		machine: shared.machine.clone(),
-		bytes: prepared.input.clone(),
-		source_path: prepared.input.clone(),
-		source_ext: prepared.format.clone(),
-		outputs: prepared
-			.plans
-			.iter()
-			.zip(&prepared.paths)
-			.map(|(plan, path)| retype_core::undo::Output {
-				path: path.clone(),
-				ext: plan.format.clone(),
-			})
-			.collect(),
-		consume_source: false,
-	});
+	let lease = match store.lease(id) {
+		Ok(lease) => lease,
+		Err(error) => {
+			let mut failed = queued(shared, &prepared, id);
+			failed.fail(JobError::new(error.code().to_string(), error.to_string()));
+			publish(shared, &failed);
+			return;
+		}
+	};
+	let snapshot = match retype_core::safety::Snapshot::open(&prepared.input) {
+		Ok(snapshot) => snapshot,
+		Err(error) => {
+			let mut failed = queued(shared, &prepared, id);
+			failed.fail(JobError::new(error.code().to_string(), error.to_string()));
+			publish(shared, &failed);
+			return;
+		}
+	};
+	let undo_record = store.save_with_policy(
+		retype_core::undo::Subject {
+			id: id.clone(),
+			intent: print::intent(&prepared.resolved, &shared.registry()),
+			machine: shared.machine.clone(),
+			bytes: prepared.input.clone(),
+			source_path: prepared.input.clone(),
+			source_ext: prepared.format.clone(),
+			outputs: prepared
+				.plans
+				.iter()
+				.zip(&prepared.paths)
+				.map(|(plan, path)| retype_core::undo::Output {
+					path: path.clone(),
+					ext: plan.format.clone(),
+				})
+				.collect(),
+			consume_source: false,
+		},
+		shared.registry().undo(),
+	);
 
 	if let Err(error) = &undo_record {
 		eprintln!("retype: cannot keep {} for undo: {error}", prepared.input.display());
 	}
 
+	if let Ok(Some(record)) = &undo_record {
+		if record.source_fingerprint.as_ref() != Some(&snapshot.original) {
+			let mut failed = queued(shared, &prepared, id);
+			failed.fail(JobError::new(
+				Code::IoFailed.to_string(),
+				"input changed while its recovery copy was prepared",
+			));
+			publish(shared, &failed);
+			return;
+		}
+	}
 	let mut started = queued(shared, &prepared, id);
 	started.set_state(JobState::Running);
 	publish(shared, &started);
@@ -287,9 +320,19 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 			continue;
 		}
 
-		let log = crate::state::log_path(&shared.state_dir, id);
-
-		match execute::run_logged(plan, &prepared.input, path, cancellation, Some(&log)) {
+		let publication = if request.force {
+			retype_core::convert::Publication::Replace
+		} else {
+			retype_core::convert::Publication::Create
+		};
+		let transaction = super::transaction::OutputTransaction {
+			shared,
+			job: &started,
+			original: &prepared.input,
+			completed: &outputs,
+			store: matches!(undo_record, Ok(Some(_))).then_some(&store),
+		};
+		match transaction.run(plan, &snapshot.path, path, cancellation, publication) {
 			Ok(report) => outputs.push(record(
 				path,
 				plan,
@@ -331,14 +374,18 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 	job.outputs = outputs;
 	job.state = state;
 	job.updated = now_ms();
-	publish(shared, &job);
-	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
-
-	// Nothing was produced, so there is nothing to undo; keeping the record would
-	// describe a file that never changed.
-	if !matches!(job.state, JobState::Done | JobState::Partial) && undo_record.is_ok() {
-		let _ = store.remove(id);
+	if let Err(error) = crate::daemon::watcher::persist(shared, &job) {
+		eprintln!("retype: recovery record retained because completion could not be persisted: {error}");
+		return;
 	}
+	if job.state == JobState::Done && matches!(undo_record, Ok(Some(_))) {
+		if let Err(error) = store.finish(id) {
+			eprintln!("retype: undo record remains pinned: {error}");
+		}
+	}
+	drop(lease);
+	crate::daemon::watcher::publish_persisted(shared, &job);
+	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
 }
 
 /// The stderr tail, when the tool said anything worth keeping.

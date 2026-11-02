@@ -200,7 +200,10 @@ fn a_stop_signal_drains_the_job_it_interrupted() {
 	// The job that was in flight finished, and the file is where its bytes belong.
 	assert_eq!(fixture.state_of_job().as_deref(), Some("done"), "{}", fixture.journal());
 	assert!(fixture.photos.join("slow.webp").exists(), "the output is there");
-	assert!(!fixture.photos.join("slow.png").exists(), "the source is consumed");
+	assert!(
+		fixture.photos.join("slow.png").exists(),
+		"an unvalidated copy backend retains its source"
+	);
 	assert!(
 		!fixture.state.join("endpoint").exists(),
 		"no path looks like a live daemon"
