@@ -1,0 +1,113 @@
+   Compiling retype-cli v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-fixes/crates/retype-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.99s
+     Running tests/archives.rs (target/debug/deps/archives-3d0e463d5fb5a974)
+
+running 6 tests
+test a_tarball_becomes_a_zip ... ok
+test a_zip_becomes_a_tarball_with_its_entries_intact ... ok
+test a_seven_zip_holding_a_symlink_is_refused_whole ... ok
+test repacking_an_archive_into_its_own_format_is_a_no_op ... ok
+test a_directory_is_not_an_archive_and_says_so ... ok
+test a_seven_zip_becomes_a_tarball_and_back_through_the_tool ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.50s
+
+     Running tests/data_safety_audit_additional.rs (target/debug/deps/data_safety_audit_additional-4794906b42f4a335)
+
+running 8 tests
+test a_failed_competing_stage_cannot_delete_another_jobs_output ... ok
+test native_archive_finalization_produces_a_readable_complete_archive ... ok
+test rejects_a_tar_gzip_source_with_an_invalid_gzip_checksum ... ok
+test carries_every_member_of_a_valid_multi_member_gzip_tar ... ok
+test undo_backup_is_a_snapshot_not_mutable_through_the_live_source ... ok
+test undo_does_not_delete_a_new_file_at_an_old_output_path ... ok
+test failed_child_keeps_the_original_and_does_not_commit_partial_bytes ... ok
+test staged_output_symlinks_cannot_truncate_the_original_or_its_backup ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s
+
+     Running tests/data_safety_transactions.rs (target/debug/deps/data_safety_transactions-265af41ea839089b)
+
+running 20 tests
+
+running 1 test
+
+running 1 test
+test cancellation_before_native_finalization_prevents_publication ... ok
+
+running 1 test
+test competing_runners_cannot_evict_each_others_newly_reserved_snapshots ... ok
+test crash_worker ... ok
+test an_active_job_cannot_be_undone_or_have_its_recovery_removed ... ok
+test a_manifest_write_failure_prevents_output_publication ... ok
+test an_undo_policy_without_a_record_retains_the_native_source ... ok
+
+running 1 test
+test a_partial_native_conversion_retains_the_original_even_with_a_valid_first_output ... ok
+test a_published_output_that_changes_cannot_authorize_source_disposal ... ok
+test a_native_keep_source_group_prevents_disposal ... ok
+test failed_backup_creation_cannot_authorize_even_a_valid_native_conversion_to_delete ... ok
+test crash_after_source_disposal_still_leaves_complete_outputs_and_an_undoable_original ... ok
+test forcing_a_native_output_cannot_overwrite_a_hard_link_to_the_input ... ok
+test valid_native_output_does_not_authorize_removing_a_replacement_source ... ok
+test a_verified_native_conversion_disposes_only_after_all_entries_are_committed ... ok
+test crash_after_publication_recovers_the_committed_identity_and_resumes_only_the_missing_output ... ok
+test unfinished_recovery_records_survive_expiry ... ok
+test crash_before_publication_leaves_a_verified_source_and_resumable_intent ... ok
+test undo_restore_failure_after_a_cross_directory_rename_does_not_delete_outputs ... ok
+test recovery_does_not_trust_a_substituted_output_at_a_committed_path ... ok
+test cancellation_racing_a_commit_is_ordered_before_any_later_disposal ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/deferral.rs (target/debug/deps/deferral-0814c28b22cf9460)
+
+running 8 tests
+test the_interactive_walk_refuses_a_pipe_rather_than_reading_a_script ... ok
+test repair_converts_without_the_token_it_could_not_carry_and_says_what_it_dropped ... ok
+test a_file_that_appeared_during_the_pause_is_not_overwritten ... ok
+test a_parked_job_can_be_refused_before_its_time_comes ... ok
+test force_replaces_a_file_that_appeared_during_the_pause ... ok
+test an_intent_that_cannot_be_carried_waits_with_a_string_to_fix ... ok
+test ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it ... ok
+test an_expensive_rename_is_parked_under_its_own_name_and_runs_when_the_timer_fires ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.66s
+
+     Running tests/fidelity.rs (target/debug/deps/fidelity-2937ea08f05c5b4f)
+
+running 4 tests
+test a_run_earns_a_claim_and_records_the_build ... ok
+test the_claims_table_is_rendered_between_the_markers ... ok
+test competing_fidelity_runs_have_independent_scratch_files ... ok
+test a_stale_exact_claim_fails_the_run ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/fidelity_axes.rs (target/debug/deps/fidelity_axes-17f4c6b4b8d8e066)
+
+running 4 tests
+test every_fixture_carries_the_property_it_declares ... ok
+test a_transparent_fixture_told_the_truth_about_jpeg ... ok
+test an_exact_pair_without_a_fixture_is_a_failure ... ok
+test an_exact_pair_with_fixtures_records_what_it_kept ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.28s
+
+     Running tests/supersede.rs (target/debug/deps/supersede-8590704e386c1b1b)
+
+running 2 tests
+test a_prepublication_output_checkpoint_is_not_a_completed_supersession ... ok
+test a_second_rename_replaces_the_job_the_first_one_started ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.83s
+
+     Running tests/video.rs (target/debug/deps/video-3e94ea112273b546)
+
+running 3 tests
+test a_container_comes_out_as_the_other_container ... ok
+test extracting_the_sound_is_a_conversion ... ok
+test a_cap_scales_without_stretching_and_mute_removes_the_sound ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.41s
+

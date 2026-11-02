@@ -142,29 +142,36 @@ pub fn value(value: &Value) -> String {
 /// not say which one the user had in mind, and the larger unit that fits exactly
 /// is the one they would have written.
 pub fn size(bytes: u64) -> String {
+	// A byte count below one unit is said in bytes; a fraction of a kilobyte reads
+	// as a measurement that lost its precision.
+	match bytes {
+		0 => return "0 bytes".to_string(),
+		1 => return "1 byte".to_string(),
+		2..=999 => return format!("{bytes} bytes"),
+		_ => {}
+	}
+
 	let bytes = u128::from(bytes);
 
-	for floor in [1_000u128, 0] {
-		for (unit, scale) in UNITS {
-			let scale = u128::from(scale);
+	for (unit, scale) in UNITS {
+		let scale = u128::from(scale);
 
-			// Thousandths of this unit, if the count lands on one exactly.
-			let thousandths = bytes * 1_000;
-			if thousandths % scale != 0 || thousandths / scale < floor {
-				continue;
-			}
-
-			let thousandths = thousandths / scale;
-			let mut text = format!("{}.{:03}", thousandths / 1_000, thousandths % 1_000);
-			while text.ends_with('0') {
-				text.pop();
-			}
-			if text.ends_with('.') {
-				text.pop();
-			}
-
-			return format!("{text}{unit}");
+		// Thousandths of this unit, if the count lands on one exactly.
+		let thousandths = bytes * 1_000;
+		if thousandths % scale != 0 || thousandths / scale < 1_000 {
+			continue;
 		}
+
+		let thousandths = thousandths / scale;
+		let mut text = format!("{}.{:03}", thousandths / 1_000, thousandths % 1_000);
+		while text.ends_with('0') {
+			text.pop();
+		}
+		if text.ends_with('.') {
+			text.pop();
+		}
+
+		return format!("{text}{unit}");
 	}
 
 	unreachable!("a kb is a thousand bytes, so three decimal places always suffice")
@@ -394,7 +401,10 @@ param = { class = 'int', min = 1, max = 100 }
 		assert_eq!(size(1_234), "1.234kb");
 		assert_eq!(size(1_234_500), "1234.5kb");
 		assert_eq!(size(500_000), "500kb");
-		assert_eq!(size(500), "0.5kb");
+		assert_eq!(size(0), "0 bytes");
+		assert_eq!(size(1), "1 byte");
+		assert_eq!(size(999), "999 bytes");
+		assert_eq!(size(1_000), "1kb");
 	}
 
 	#[test]

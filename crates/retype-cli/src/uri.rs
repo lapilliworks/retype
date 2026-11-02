@@ -10,43 +10,66 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use retype_core::error::Code;
+use retype_core::identifier::normalize;
 use serde_json::json;
 
 use crate::error::Result;
 use crate::output;
 
-pub fn run(state_dir: &Path, uri: &str, json: bool) -> Result<ExitCode> {
-	let Some(rest) = uri.strip_prefix("retype://") else {
-		return Ok(ExitCode::from(output::fail(
-			&Code::UsageArgs,
-			format!("'{uri}' is not a retype:// URI"),
-		)));
+/// What a URI asks for, with every name in its canonical spelling.
+struct Parsed {
+	id: String,
+	action: String,
+}
+
+/// Read `retype://job/<id>[?action=...]`.
+///
+/// The scheme, the object name and the action are identifiers a person may have
+/// typed, so they are read in either case and normalized. The job id itself is
+/// normalized by the same rule as a handle on the command line.
+fn parse(uri: &str) -> std::result::Result<Parsed, String> {
+	let Some((scheme, rest)) = uri.split_once("://") else {
+		return Err(format!("'{uri}' is not a retype:// URI"));
 	};
+
+	if !scheme.eq_ignore_ascii_case("retype") {
+		return Err(format!("'{uri}' is not a retype:// URI"));
+	}
 
 	let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
 	let mut parts = path.split('/').filter(|part| !part.is_empty());
 
-	if parts.next() != Some("job") {
-		return Ok(ExitCode::from(output::fail(
-			&Code::UsageArgs,
-			format!("'{uri}' names no job"),
-		)));
+	match parts.next() {
+		Some(kind) if kind.eq_ignore_ascii_case("job") => {}
+		_ => return Err(format!("'{uri}' names no job")),
 	}
 
 	let Some(id) = parts.next() else {
-		return Ok(ExitCode::from(output::fail(
-			&Code::UsageArgs,
-			format!("'{uri}' names no job id"),
-		)));
+		return Err(format!("'{uri}' names no job id"));
 	};
 
 	let action = query
 		.split('&')
-		.find_map(|pair| pair.strip_prefix("action="))
+		.find_map(|pair| {
+			let (name, value) = pair.split_once('=')?;
+			name.eq_ignore_ascii_case("action").then_some(value)
+		})
 		.unwrap_or("undo");
 
-	match action {
-		"undo" => crate::undo::run(state_dir, Some(id), false, json),
+	Ok(Parsed {
+		id: normalize(id),
+		action: normalize(action),
+	})
+}
+
+pub fn run(state_dir: &Path, uri: &str, json: bool) -> Result<ExitCode> {
+	let Parsed { id, action } = match parse(uri) {
+		Ok(parsed) => parsed,
+		Err(message) => return Ok(ExitCode::from(output::fail(&Code::UsageArgs, message))),
+	};
+
+	match action.as_str() {
+		"undo" => crate::undo::run(state_dir, Some(&id), false, json),
 		"cancel" | "resolve" => {
 			let mut client = match crate::client::connect(state_dir) {
 				Ok(client) => client,
@@ -58,11 +81,11 @@ pub fn run(state_dir: &Path, uri: &str, json: bool) -> Result<ExitCode> {
 				}
 			};
 
-			let method = match action {
+			let method = match action.as_str() {
 				"cancel" => "jobs.cancel",
 				_ => "jobs.resolve",
 			};
-			let params = match action {
+			let params = match action.as_str() {
 				"cancel" => json!({"id": id}),
 				_ => json!({"id": id, "mode": "now"}),
 			};
@@ -81,5 +104,32 @@ pub fn run(state_dir: &Path, uri: &str, json: bool) -> Result<ExitCode> {
 			&Code::UsageArgs,
 			format!("'{other}' is not an action this build handles; use undo, cancel or resolve"),
 		))),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::parse;
+
+	#[test]
+	fn a_uri_is_read_in_either_case() {
+		let parsed = parse("RETYPE://JOB/01M6B4RARARX3WrTTKRGPP1783?ACTION=UNDO").expect("a URI");
+
+		assert_eq!(parsed.id, "01m6b4rararx3wrttkrgpp1783");
+		assert_eq!(parsed.action, "undo");
+	}
+
+	#[test]
+	fn the_action_defaults_to_undo() {
+		let parsed = parse("retype://job/01m6b4rararx3wrttkrgpp1783").expect("a URI");
+
+		assert_eq!(parsed.action, "undo");
+	}
+
+	#[test]
+	fn a_uri_without_a_job_is_refused() {
+		assert!(parse("retype://photo/01m6b4rararx3wrttkrgpp1783").is_err());
+		assert!(parse("retype://job").is_err());
+		assert!(parse("https://job/01m6b4rararx3wrttkrgpp1783").is_err());
 	}
 }

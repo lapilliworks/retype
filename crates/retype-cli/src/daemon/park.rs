@@ -472,16 +472,17 @@ fn repair(
 	// the file is not mislabelled while the conversion happens.
 	let source = retype_core::convert::restore_source_name(target, stem, format).ok()?;
 	shared.recent.note(&source, target);
+	let source_metadata = fs::metadata(&source).ok();
 
 	let job = Job {
 		id: id.clone(),
 		created: now_ms(),
 		updated: now_ms(),
 		source: Source {
-			size: bytes,
+			size: source_metadata.as_ref().map(|metadata| metadata.len()).unwrap_or(bytes),
 			path: source.clone(),
 			format: format.to_string(),
-			mtime_ns: 0,
+			mtime_ns: source_metadata.as_ref().map(mtime_ns).unwrap_or_default(),
 		},
 		intent: Some(correction.text.clone()),
 		outputs: Vec::new(),
@@ -530,6 +531,15 @@ fn repair(
 			},
 		)),
 	}
+}
+
+fn mtime_ns(metadata: &fs::Metadata) -> i64 {
+	metadata
+		.modified()
+		.ok()
+		.and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+		.map(|elapsed| elapsed.as_nanos() as i64)
+		.unwrap_or_default()
 }
 
 /// What a request would cost, for a repair that has to know before it guesses.
@@ -617,17 +627,20 @@ fn park(
 		})
 		.collect();
 
+	let source_metadata = fs::metadata(&source_path).ok();
+
 	let job = Job {
 		id: id.clone(),
 		created: now_ms(),
 		updated: now_ms(),
 		source: Source {
-			size: fs::metadata(&source_path)
+			size: source_metadata
+				.as_ref()
 				.map(|metadata| metadata.len())
 				.unwrap_or_default(),
 			path: source_path,
 			format: format.to_string(),
-			mtime_ns: 0,
+			mtime_ns: source_metadata.as_ref().map(mtime_ns).unwrap_or_default(),
 		},
 		intent: parking
 			.resolved
@@ -701,6 +714,26 @@ mod tests {
 		Registry::builtin().expect("the shipped registry loads")
 	}
 
+	/// Whether this machine can carry the pair the reduced request asks for.
+	///
+	/// The correction is an offer to run something, so it compiles with the real
+	/// machine. A host with no usable image backend has nothing to offer, and the
+	/// test proves nothing there.
+	fn can_carry_png_to_webp(registry: &Registry) -> bool {
+		let parsed = intent::parse("webp+quality80").expect("scans");
+		let resolved = resolve::resolve(
+			&parsed,
+			Origin {
+				format: "png",
+				is_directory: false,
+			},
+			registry,
+		)
+		.expect("resolves");
+
+		plan::compile(registry, &retype_core::tools::Machine, &resolved).is_ok()
+	}
+
 	/// A directory with no policy file, which narrows nothing.
 	fn nothing() -> (tempfile::TempDir, Policy) {
 		let dir = tempfile::tempdir().expect("a directory");
@@ -711,6 +744,12 @@ mod tests {
 	#[test]
 	fn a_request_that_cannot_be_carried_is_reduced_to_one_that_can() {
 		let registry = registry();
+
+		if !can_carry_png_to_webp(&registry) {
+			eprintln!("no backend on this machine can carry png to webp, so this test proves nothing");
+			return;
+		}
+
 		let (_dir, policy) = nothing();
 		let parsed = intent::parse("webp+quality80+zzz").expect("scans");
 

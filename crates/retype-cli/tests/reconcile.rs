@@ -168,11 +168,60 @@ fn a_restart_requeues_the_queued_and_declares_the_running() {
 		"an interrupted job is not silently re-run"
 	);
 
-	// The queued job came from a rename, so it consumes its source when it commits.
+	// A synthetic copy is not independent format validation, even after requeueing.
 	assert!(
-		!dir.path().join("queued.png").exists(),
-		"a requeued rename consumes its source"
+		dir.path().join("queued.png").exists(),
+		"unvalidated output retains the original"
 	);
+}
+
+#[test]
+fn a_queued_job_does_not_run_against_a_replacement_source() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	fs::create_dir_all(&state).unwrap();
+	let config = copy_config(dir.path());
+
+	let id = JobId::parse(&format!("01J{:023}", 4)).unwrap();
+	let source = dir.path().join("replaced.png");
+	let output = dir.path().join("replaced.webp");
+	fs::write(&source, b"pixels").unwrap();
+
+	let job = record(&id, &source, &output, JobState::Queued);
+	let journal = state.join("jobs.jsonl");
+	fs::write(&journal, format!("{}\n", job.to_line().unwrap())).unwrap();
+
+	// The daemon was down; the path now holds a different file.
+	fs::write(&source, b"a replacement source").unwrap();
+
+	let _daemon = Daemon(
+		retype()
+			.args(["daemon", "--detached"])
+			.arg("--state-dir")
+			.arg(&state)
+			.env("RETYPE_CONFIG", &config)
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.spawn()
+			.unwrap(),
+	);
+
+	let deadline = Instant::now() + Duration::from_secs(20);
+	loop {
+		let record = last_record(&journal, &id);
+		if record["state"] == "failed" {
+			assert_eq!(record["error"]["code"], "E_JOB_INTERRUPTED", "{record}");
+			break;
+		}
+		assert!(
+			Instant::now() < deadline,
+			"the changed source was not refused: {record}"
+		);
+		std::thread::sleep(Duration::from_millis(50));
+	}
+
+	assert!(!output.exists(), "nothing was written from the replacement");
+	assert_eq!(fs::read(&source).unwrap(), b"a replacement source");
 }
 
 #[test]

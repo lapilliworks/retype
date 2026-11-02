@@ -82,12 +82,10 @@ pub fn load_from(path: &Path) -> std::result::Result<Registry, Error> {
 	Registry::with_user(&text, &label).map_err(Error::Config)
 }
 
+/// XDG on every Unix, macOS included: one path to document, and the same tree
+/// the state and data directories already use there, `docs/config.md` §2.
 #[cfg(unix)]
 fn config_dir() -> Option<PathBuf> {
-	if cfg!(target_os = "macos") {
-		return std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library").join("Application Support"));
-	}
-
 	std::env::var_os("XDG_CONFIG_HOME")
 		.map(PathBuf::from)
 		.filter(|path| path.is_absolute())

@@ -3,6 +3,9 @@
 //!
 //! The tool copies, so the test proves the claim machinery rather than an encoder.
 
+#[path = "support/tools.rs"]
+mod tool_support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,17 +14,37 @@ fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
 
+/// Skip when this machine cannot check a fixture property, naming what is missing.
+///
+/// The axes come from ImageMagick, `docs/fidelity.md` §4, so a host without it can
+/// run the conversion but cannot say what the conversion kept.
+fn skip_if_no_decoder(fixtures: &Path) -> bool {
+	match retype_core::axis::Probe::read(&fixtures.join("alpha.png")) {
+		Ok(_) => false,
+		Err(error) => {
+			tool_support::unavailable(error);
+			true
+		}
+	}
+}
+
 fn config(dir: &Path, sample: &Path) -> PathBuf {
-	let (command, layout, args) = match cfg!(windows) {
+	// The probe has to answer on every host: BSD `cp` has no `--version`, and a
+	// tool that declares a probe but reports no version is unusable, so the
+	// fixture found no backend at all on macOS. `sh` and `cmd` carry the copy and
+	// can answer with a version, which the claim also records as a fingerprint.
+	let (command, probe, layout, args) = match cfg!(windows) {
 		true => (
 			"cmd",
-			"layout = ['/c', 'copy', '{input}', '{ops}', '{output}']",
+			"['/c', 'echo retype-fidelity 1.0']",
+			"layout = ['/c', 'copy', '{input}', '{output}', '{ops}']",
 			format!("['/c', 'copy', '{}', '{{output}}']", sample.display()),
 		),
 		false => (
-			"cp",
-			"layout = ['{input}', '{ops}', '{output}']",
-			format!("['{}', '{{output}}']", sample.display()),
+			"sh",
+			"['-c', 'echo retype-fidelity 1.0']",
+			"layout = ['-c', 'cp \"$1\" \"$2\"', '-', '{input}', '{output}', '{ops}']",
+			format!("['-c', 'cp \"$1\" \"$2\"', '-', '{}', '{{output}}']", sample.display()),
 		),
 	};
 
@@ -37,7 +60,7 @@ prefer = ['copy']
 
 [tools.copy]
 command = '{command}'
-probe = ['--version']
+probe = {probe}
 {layout}
 
 [formats.png]
@@ -127,6 +150,9 @@ axes = ['alpha']
 #[test]
 fn a_run_earns_a_claim_and_records_the_build() {
 	let fixture = Fixture::new();
+	if skip_if_no_decoder(&fixture.fixtures) {
+		return;
+	}
 
 	let ran = fixture.run(&["--write", fixture.manifest.to_str().unwrap()]);
 	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
@@ -143,6 +169,9 @@ fn a_run_earns_a_claim_and_records_the_build() {
 #[test]
 fn a_stale_exact_claim_fails_the_run() {
 	let fixture = Fixture::new();
+	if skip_if_no_decoder(&fixture.fixtures) {
+		return;
+	}
 
 	let first = fixture.run(&["--write", fixture.manifest.to_str().unwrap()]);
 	assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
@@ -177,8 +206,29 @@ fn a_stale_exact_claim_fails_the_run() {
 }
 
 #[test]
+fn competing_fidelity_runs_have_independent_scratch_files() {
+	let fixture = Fixture::new();
+	if skip_if_no_decoder(&fixture.fixtures) {
+		return;
+	}
+	std::thread::scope(|scope| {
+		let first = scope.spawn(|| fixture.run(&["--json"]));
+		let second = scope.spawn(|| fixture.run(&["--json"]));
+		for ran in [first.join().unwrap(), second.join().unwrap()] {
+			assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+			assert!(String::from_utf8_lossy(&ran.stdout).contains("\"kind\":\"claim\""));
+		}
+	});
+	assert_eq!(fs::read_dir(fixture.state.join("fidelity")).unwrap().count(), 0);
+}
+
+#[test]
 fn the_claims_table_is_rendered_between_the_markers() {
 	let fixture = Fixture::new();
+	if skip_if_no_decoder(&fixture.fixtures) {
+		return;
+	}
+
 	let document = fixture.dir.path().join("fidelity.md");
 	fs::write(
 		&document,

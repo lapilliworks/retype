@@ -33,6 +33,8 @@ in the manifest. A manifest earned elsewhere is reported `unverified`.
 | macOS | `macos/Info.plist`, `macos/com.lapilliworks.retype.plist` | The app bundle and launchd |
 | Windows | `windows/retype.manifest`, `windows/retype.rc` | The executable's manifest resource and the Start-menu shortcut |
 
+The launchd plist and the systemd unit name the install prefix as `@PREFIX@`; the package substitutes it before installing.
+
 Signing is not optional for a published binary. Linux ships a detached minisign
 or Sigstore signature beside the checksum. macOS ships a Developer ID signed,
 hardened, notarised archive. Windows ships an Authenticode-signed executable with

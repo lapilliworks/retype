@@ -1,0 +1,1081 @@
+   Compiling retype-core v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-fixes/crates/retype-core)
+   Compiling retype-watch v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-fixes/crates/retype-watch)
+   Compiling retype-ipc v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-fixes/crates/retype-ipc)
+   Compiling retype-cli v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-fixes/crates/retype-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.83s
+     Running unittests src/lib.rs (target/debug/deps/retype_cli-a7ed09c8e4245f6d)
+
+running 61 tests
+test client::tests::uptime_is_readable_at_every_scale ... ok
+test client::tests::a_missing_daemon_is_refused_before_spawning ... ok
+test client::tests::a_stale_endpoint_does_not_throw ... ok
+test daemon::batches::tests::a_batch_whose_only_job_was_forgotten_never_answers ... ok
+test daemon::batches::tests::a_job_nobody_asked_about_is_not_in_a_batch ... ok
+test daemon::batches::tests::a_batch_is_answered_when_its_last_job_finishes ... ok
+test daemon::events::tests::an_event_carries_the_job_it_describes ... ok
+test daemon::events::tests::a_client_ahead_of_the_daemon_gets_nothing_rather_than_an_error ... ok
+test client::tests::the_endpoint_survives_being_written_and_read ... ok
+test daemon::events::tests::events_are_numbered_from_one_and_replayed_after_a_sequence ... ok
+test daemon::peer::tests::another_user_is_refused_and_an_unknown_one_is_not ... ok
+test daemon::peer::tests::our_own_effective_user_is_known ... ok
+test daemon::peer::tests::the_system_call_answers_for_a_real_socket ... ok
+test daemon::queue::tests::an_immediate_job_goes_ahead_of_waiting_renames ... ok
+test daemon::lock::tests::a_held_lock_refuses_a_second_daemon ... ok
+test daemon::lock::tests::the_lock_records_its_owner ... ok
+test daemon::resume::tests::an_occupied_output_is_only_replaced_on_purpose ... ok
+test daemon::signals::tests::a_first_signal_drains_and_a_second_one_does_not_wait ... ok
+test daemon::resume::tests::an_output_without_identity_is_not_safe_to_overwrite ... ok
+test daemon::supervision::tests::a_supervisor_is_recognised_by_its_own_environment ... ok
+test daemon::supervision::tests::systemd_wins_when_both_are_present ... ok
+test error::tests::a_missing_tool_is_an_environment_failure ... ok
+test error::tests::job_lifecycle_failures_are_state_conflicts ... ok
+test daemon::queue::tests::a_full_queue_drops_and_says_so ... ok
+test jobs::tests::a_key_is_read_case_insensitively ... ok
+test jobs::tests::a_key_offers_only_what_the_job_can_do ... ok
+test jobs::tests::a_listing_prints_the_shortest_handle_that_is_unique ... ok
+test jobs::tests::an_estimate_reads_as_a_person_would_say_it ... ok
+test notify::tests::a_batch_of_conversions_names_what_became_what ... ok
+test notify::tests::a_batch_that_needs_attention_says_where_to_decide ... ok
+test notify::tests::a_batch_with_nothing_to_say_says_nothing ... ok
+test notify::tests::a_cancelled_job_and_a_superseded_one_are_named_and_kept_apart ... ok
+test notify::tests::a_command_is_encoded_as_utf16_little_endian ... ok
+test notify::tests::a_failure_is_named_rather_than_counted ... ok
+test notify::tests::a_failure_without_a_job_error_takes_the_outputs_reason ... ok
+test notify::tests::a_long_batch_names_a_few_and_counts_the_rest ... ok
+test notify::tests::a_partial_conversion_names_the_output_it_missed ... ok
+test notify::tests::a_pending_batch_names_the_file_and_what_ends_the_wait ... ok
+test notify::tests::a_repaired_conversion_says_what_it_dropped ... ok
+test notify::tests::a_toast_carries_both_lines_and_registers_the_identifier ... ok
+test notify::tests::several_outputs_of_one_job_are_all_named ... ok
+test notify::tests::the_encoding_pads_the_tail ... ok
+test notify::tests::with_undo_disabled_there_is_no_button ... ok
+test report::tests::the_stamp_is_a_date_and_a_time_in_utc ... ok
+test state::tests::an_over_long_socket_path_is_refused_by_name ... ok
+test state::tests::the_configured_directory_wins ... ok
+test uri::tests::a_uri_is_read_in_either_case ... ok
+test uri::tests::a_uri_without_a_job_is_refused ... ok
+test uri::tests::the_action_defaults_to_undo ... ok
+test verbose::tests::a_level_is_a_number_or_a_word ... ok
+test config::tests::a_broken_user_file_is_a_configuration_error ... ok
+test daemon::park::tests::a_request_whose_target_survives_nothing_has_no_correction ... ok
+test daemon::watcher::tests::a_failed_checkpoint_does_not_publish_a_job ... ok
+test daemon::watcher::tests::a_visible_journal_record_cannot_race_a_not_found_from_the_job_list ... ok
+test config::tests::a_user_file_reaches_the_registry ... ok
+test init::tests::the_example_is_configuration_this_build_loads ... ok
+test daemon::park::tests::a_request_that_cannot_be_carried_is_reduced_to_one_that_can ... ok
+test config::tests::a_missing_user_file_is_the_built_in_table ... ok
+test daemon::queue::tests::every_submitted_job_is_run_once ... ok
+test daemon::events::tests::the_oldest_events_fall_out_and_a_gap_asks_for_a_resync ... ok
+test daemon::queue::tests::a_runner_waits_for_the_next_job_instead_of_exiting ... ok
+
+test result: ok. 61 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.62s
+
+     Running unittests src/main.rs (target/debug/deps/retype-be0ece104f293ddc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/archives.rs (target/debug/deps/archives-3d0e463d5fb5a974)
+
+running 6 tests
+test repacking_an_archive_into_its_own_format_is_a_no_op ... ok
+test a_directory_is_not_an_archive_and_says_so ... ok
+test a_zip_becomes_a_tarball_with_its_entries_intact ... ok
+test a_tarball_becomes_a_zip ... ok
+test a_seven_zip_becomes_a_tarball_and_back_through_the_tool ... ok
+test a_seven_zip_holding_a_symlink_is_refused_whole ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.04s
+
+     Running tests/bench.rs (target/debug/deps/bench-b8f7e8ad85b62c79)
+
+running 3 tests
+test a_pair_that_is_not_a_pair_is_a_usage_error ... ok
+test a_measured_pair_is_written_and_then_used_by_explain ... ok
+test repeated_measurements_do_not_reuse_or_overwrite_previous_artifacts ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests/client.rs (target/debug/deps/client-019b49dae7a9f78a)
+
+running 6 tests
+test a_client_without_an_endpoint_reports_the_daemon_missing ... ok
+test the_status_lines_are_what_a_human_needs ... ok
+test shutting_down_through_the_client_stops_the_daemon ... ok
+test a_client_greets_and_reads_status_through_the_published_endpoint ... ok
+test the_daemon_answers_a_config_reload ... ok
+test the_daemon_owns_watch_registration_while_it_is_reachable ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/convert.rs (target/debug/deps/convert-d47901c0cfcc6405)
+
+running 17 tests
+test a_submitted_job_can_be_cancelled_while_it_runs ... ok
+test a_convert_can_be_undone_and_leaves_its_source ... ok
+test an_output_path_needs_one_output ... ok
+test a_terminal_job_cannot_be_cancelled_or_resumed ... ok
+test a_missing_source_is_a_filesystem_error_before_a_job_exists ... ok
+test a_kept_source_is_not_an_output ... ok
+test a_submitted_job_is_visible_and_reachable_by_id ... ok
+test an_output_that_is_the_source_is_refused_even_with_force ... ok
+test a_dry_run_honours_the_output_path_and_checks_the_source ... ok
+test an_existing_target_stops_the_whole_conversion_before_writing ... ok
+test an_existing_output_is_refused_without_force ... ok
+test a_name_with_no_declared_suffix_is_refused ... ok
+test dry_run_prints_the_plan_and_writes_nothing ... ok
+test the_journal_records_the_job ... ok
+test without_a_daemon_and_without_spawning_there_is_nothing_to_convert ... ok
+test converts_and_writes_beside_the_input ... ok
+test jobs_list_since_filters_older_records ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.14s
+
+     Running tests/daemon.rs (target/debug/deps/daemon-90ce069962c07a2b)
+
+running 4 tests
+test an_unknown_method_is_refused_by_name ... ok
+test a_client_greets_then_reads_status_and_stops_the_daemon ... ok
+test a_client_from_another_protocol_major_is_refused ... ok
+test a_method_before_hello_is_refused_and_the_connection_closes ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/data_safety_audit.rs (target/debug/deps/data_safety_audit-79725890a91e420c)
+
+running 25 tests
+test a_dangling_symlink_is_an_occupied_restore_destination ... ok
+test interrupted_job_worker ... ok
+test a_stale_temporary_input_is_not_truncated_through_a_hard_link ... ok
+
+running 1 test
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+test a_forced_output_hard_link_to_the_input_is_refused ... ok
+test does_not_accept_a_stale_staged_file_from_an_earlier_run ... ok
+test an_output_that_appears_while_converting_is_not_overwritten_without_force ... ok
+test output_staging_does_not_share_a_path_between_jobs ... ok
+test an_unvalidated_custom_output_cannot_authorize_source_deletion ... ok
+test output_paths_through_a_directory_symlink_cannot_overwrite_the_input ... ok
+test honors_an_explicit_keep_source_group ... ok
+test keeps_the_source_when_undo_save_fails ... ok
+test quota_eviction_does_not_remove_an_active_jobs_backup ... ok
+test an_occupied_source_name_and_missing_undo_capacity_do_not_allow_replacing_the_original ... ok
+test loss_of_the_journal_directory_prevents_publication_and_source_disposal ... ok
+test keeps_the_original_when_one_requested_output_fails ... ok
+test cancellation_after_one_output_keeps_the_input_and_undo_for_committed_outputs ... ok
+test rejects_a_parent_that_exits_before_its_detached_writer_finishes ... ok
+test rejects_an_empty_output_before_deleting_the_source ... ok
+test a_resumed_tool_cannot_modify_the_retained_original_through_its_input ... ok
+test finishing_a_partial_resume_keeps_the_original_backup_for_undo ... ok
+test source_disposal_does_not_delete_a_file_that_replaced_the_input ... ok
+test undo_does_not_remove_a_blocking_file_the_partial_job_never_produced ... ok
+test an_actual_interrupted_runner_recovers_its_first_output_instead_of_losing_resume_state ... ok
+test undo_cannot_remove_a_running_jobs_snapshot_or_race_its_publication ... ok
+test resume_reads_the_recorded_original_not_a_new_file_at_the_source_name ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.21s
+
+     Running tests/data_safety_audit_additional.rs (target/debug/deps/data_safety_audit_additional-4794906b42f4a335)
+
+running 8 tests
+test a_failed_competing_stage_cannot_delete_another_jobs_output ... ok
+test rejects_a_tar_gzip_source_with_an_invalid_gzip_checksum ... ok
+test undo_backup_is_a_snapshot_not_mutable_through_the_live_source ... ok
+test native_archive_finalization_produces_a_readable_complete_archive ... ok
+test undo_does_not_delete_a_new_file_at_an_old_output_path ... ok
+test carries_every_member_of_a_valid_multi_member_gzip_tar ... ok
+test failed_child_keeps_the_original_and_does_not_commit_partial_bytes ... ok
+test staged_output_symlinks_cannot_truncate_the_original_or_its_backup ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/data_safety_transactions.rs (target/debug/deps/data_safety_transactions-265af41ea839089b)
+
+running 20 tests
+
+running 1 test
+
+running 1 test
+test cancellation_before_native_finalization_prevents_publication ... ok
+
+running 1 test
+test competing_runners_cannot_evict_each_others_newly_reserved_snapshots ... ok
+test crash_worker ... ok
+test an_undo_policy_without_a_record_retains_the_native_source ... ok
+test an_active_job_cannot_be_undone_or_have_its_recovery_removed ... ok
+
+running 1 test
+test a_published_output_that_changes_cannot_authorize_source_disposal ... ok
+test a_manifest_write_failure_prevents_output_publication ... ok
+test forcing_a_native_output_cannot_overwrite_a_hard_link_to_the_input ... ok
+test a_native_keep_source_group_prevents_disposal ... ok
+test failed_backup_creation_cannot_authorize_even_a_valid_native_conversion_to_delete ... ok
+test crash_after_source_disposal_still_leaves_complete_outputs_and_an_undoable_original ... ok
+test a_partial_native_conversion_retains_the_original_even_with_a_valid_first_output ... ok
+test crash_after_publication_recovers_the_committed_identity_and_resumes_only_the_missing_output ... ok
+test valid_native_output_does_not_authorize_removing_a_replacement_source ... ok
+test a_verified_native_conversion_disposes_only_after_all_entries_are_committed ... ok
+test unfinished_recovery_records_survive_expiry ... ok
+test recovery_does_not_trust_a_substituted_output_at_a_committed_path ... ok
+test undo_restore_failure_after_a_cross_directory_rename_does_not_delete_outputs ... ok
+test crash_before_publication_leaves_a_verified_source_and_resumable_intent ... ok
+test cancellation_racing_a_commit_is_ordered_before_any_later_disposal ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/deferral.rs (target/debug/deps/deferral-0814c28b22cf9460)
+
+running 8 tests
+test the_interactive_walk_refuses_a_pipe_rather_than_reading_a_script ... ok
+test a_parked_job_can_be_refused_before_its_time_comes ... ok
+test repair_converts_without_the_token_it_could_not_carry_and_says_what_it_dropped ... ok
+test a_file_that_appeared_during_the_pause_is_not_overwritten ... ok
+test force_replaces_a_file_that_appeared_during_the_pause ... ok
+test an_intent_that_cannot_be_carried_waits_with_a_string_to_fix ... ok
+test ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it ... ok
+test an_expensive_rename_is_parked_under_its_own_name_and_runs_when_the_timer_fires ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.85s
+
+     Running tests/directory_policy.rs (target/debug/deps/directory_policy-7a229069c808ee5a)
+
+running 6 tests
+test a_denied_operation_parks_with_the_file_s_name_intact ... ok
+test a_limited_parameter_is_clamped_and_the_name_says_so ... ok
+test a_paused_directory_is_not_watched_and_is_refused_by_watch ... ok
+test confirm_false_suppresses_the_cost_confirmation_in_that_directory ... ok
+test a_pattern_keeps_a_file_out_of_the_directory_s_business ... ok
+test debounce_ms_holds_a_rename_until_the_file_stops_changing ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.67s
+
+     Running tests/doctor.rs (target/debug/deps/doctor-adb2274c57494fda)
+
+running 3 tests
+test check_fails_for_an_absent_tool ... ok
+test doctor_lists_tools_and_succeeds ... ok
+test check_fails_for_an_unknown_tool ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/documents.rs (target/debug/deps/documents-878cc6d79cf739cd)
+
+running 3 tests
+test markdown_becomes_a_readable_document_in_every_declared_target ... FAILED
+test the_pdf_engine_is_recorded_with_the_job ... FAILED
+test a_pdf_is_a_target_and_never_a_source ... ok
+
+failures:
+
+---- markdown_becomes_a_readable_document_in_every_declared_target stdout ----
+
+thread 'markdown_becomes_a_readable_document_in_every_declared_target' (81417) panicked at crates/retype-cli/tests/documents.rs:102:9:
+pdf: retype: E_TOOL_MISSING: tool 'pandoc' needs an engine for 'pdf', and none of typst, xelatex, lualatex, pdflatex, weasyprint, wkhtmltopdf is installed
+
+
+---- the_pdf_engine_is_recorded_with_the_job stdout ----
+
+thread 'the_pdf_engine_is_recorded_with_the_job' (81418) panicked at crates/retype-cli/tests/documents.rs:141:5:
+stdout: {"error":{"category":"environment","code":"E_TOOL_MISSING","message":"the backend this plan needs is not installed"},"intent":"pdf","ok":false,"outputs":[{"argv":"pandoc {input} --pdf-engine typst -o {output}","available":false,"backend":"pandoc","command":"pandoc","engine":{"name":"pdf","resolved":"typst"},"estimate":{"basis":"family","bytes":5280,"seconds":0.1},"format":"pdf","kept":false,"path":"report.pdf","tier":"converted"}],"says":"convert from md to pdf","source":"/tmp/.tmpWnA7C9/report.md","v":"retype-cli-json-1"}
+
+stderr: 
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    markdown_becomes_a_readable_document_in_every_declared_target
+    the_pdf_engine_is_recorded_with_the_job
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.03s
+
+error: test failed, to rerun pass `-p retype-cli --test documents`
+     Running tests/events.rs (target/debug/deps/events-cb999629fdfded00)
+
+running 1 test
+test a_conversion_shows_up_in_the_event_ring_and_replays_from_a_sequence ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests/explain.rs (target/debug/deps/explain-ec64ca25373201f6)
+
+running 14 tests
+test a_cross_family_conversion_is_unsupported ... ok
+test a_name_with_no_declared_suffix_is_not_ours ... ok
+test a_conflicting_intent_is_a_diagnosis ... ok
+test a_json_refusal_is_an_envelope_with_every_diagnostic ... ok
+test an_unknown_source_format_is_refused ... ok
+test a_preset_expands_into_the_operations_it_stands_for ... ok
+test a_bare_format_names_a_source_without_a_file ... ok
+test an_alias_is_a_bare_format_too ... ok
+test explain_does_not_need_a_state_directory ... ok
+test explains_the_actions_in_words ... ok
+test an_alias_names_the_format_it_means ... ok
+test quiet_still_reports_diagnostics ... ok
+test json_carries_the_envelope_version ... ok
+test explains_an_intent_without_a_file ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/fidelity.rs (target/debug/deps/fidelity-2937ea08f05c5b4f)
+
+running 4 tests
+test competing_fidelity_runs_have_independent_scratch_files ... ok
+test a_run_earns_a_claim_and_records_the_build ... ok
+test the_claims_table_is_rendered_between_the_markers ... ok
+test a_stale_exact_claim_fails_the_run ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+     Running tests/fidelity_axes.rs (target/debug/deps/fidelity_axes-17f4c6b4b8d8e066)
+
+running 4 tests
+test every_fixture_carries_the_property_it_declares ... ok
+test a_transparent_fixture_told_the_truth_about_jpeg ... ok
+test an_exact_pair_without_a_fixture_is_a_failure ... ok
+test an_exact_pair_with_fixtures_records_what_it_kept ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.14s
+
+     Running tests/handles.rs (target/debug/deps/handles-8cd02da0f39e1391)
+
+running 4 tests
+test an_unknown_state_is_rejected_by_the_parser ... ok
+test a_state_filter_is_read_in_either_case ... ok
+test the_state_filter_lists_its_values ... ok
+test a_handle_shorter_than_four_characters_is_a_usage_error ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/init.rs (target/debug/deps/init-2ebd18ea044aeaae)
+
+running 7 tests
+test init_writes_where_it_is_told_and_refuses_to_overwrite ... ok
+test doctor_write_leaves_an_existing_configuration_alone ... ok
+test init_prints_a_configuration_that_loads ... ok
+test config_names_the_file_for_one_invocation ... ok
+test doctor_emit_pins_what_the_machine_resolved ... ok
+test doctor_write_creates_a_configuration_where_there_is_none ... ok
+test a_daemon_started_by_a_client_reads_the_same_file ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.05s
+
+     Running tests/jobs_cancel.rs (target/debug/deps/jobs_cancel-e1befdd35a9a0d92)
+
+running 1 test
+test a_running_job_can_be_cancelled ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.83s
+
+     Running tests/jobs_resume.rs (target/debug/deps/jobs_resume-111cdb1045076ac6)
+
+running 1 test
+test a_partial_job_resumes_and_skips_what_it_already_produced ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests/list.rs (target/debug/deps/list-2c90d39cc7ac9b47)
+
+running 9 tests
+test list_names_the_formats_the_operations_and_the_backends ... ok
+test verbose_says_which_configuration_was_read ... ok
+test quiet_wins_over_verbose ... ok
+test retype_log_sets_the_same_level ... ok
+test tiers_claims_one_line_per_pair ... ok
+test a_pair_nothing_can_carry_says_why ... ok
+test an_impossible_pair_keeps_the_code_out_of_the_backend_field ... ok
+test json_writes_one_object_per_line ... ok
+test a_pair_that_no_single_tool_carries_is_not_offered ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.18s
+
+     Running tests/logs.rs (target/debug/deps/logs-df1cead59c8942bf)
+
+running 2 tests
+test the_record_still_answers_when_the_log_is_gone ... ok
+test the_log_file_holds_what_the_tool_said ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.04s
+
+     Running tests/notify.rs (target/debug/deps/notify-63906820b5ed0e9c)
+
+running 3 tests
+test nothing_is_said_when_the_platform_has_no_notifier ... ok
+test the_undo_button_puts_the_source_back ... ok
+test a_batch_that_converted_a_file_is_one_notification_with_an_undo_button ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
+
+     Running tests/reconcile.rs (target/debug/deps/reconcile-024014b5498ed089)
+
+running 2 tests
+test a_requeued_submission_leaves_its_source_in_place ... ok
+test a_restart_requeues_the_queued_and_declares_the_running ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/report.rs (target/debug/deps/report-70bce7e2bbbc986f)
+
+running 3 tests
+test a_report_and_a_snippet_together_are_a_usage_error ... ok
+test the_report_carries_the_build_the_tools_and_what_happened ... ok
+test the_report_lands_in_the_current_directory_when_no_path_is_given ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/retention.rs (target/debug/deps/retention-b1b080668b68261d)
+
+running 1 test
+test the_daemon_drops_records_past_retention_and_keeps_the_rest ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/signals.rs (target/debug/deps/signals-f1f6933f331f2e2d)
+
+running 2 tests
+test a_second_signal_cancels_what_the_first_one_waited_for ... ok
+test a_stop_signal_drains_the_job_it_interrupted ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.15s
+
+     Running tests/spawn.rs (target/debug/deps/spawn-80a682448f39fe59)
+
+running 4 tests
+test no_spawn_is_honoured_on_the_command_line ... ok
+test suppressed_spawn_reports_the_daemon_missing ... ok
+test starting_twice_is_not_an_error ... ok
+test the_binary_starts_a_daemon_and_stops_it ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.09s
+
+     Running tests/supersede.rs (target/debug/deps/supersede-8590704e386c1b1b)
+
+running 2 tests
+test a_prepublication_output_checkpoint_is_not_a_completed_supersession ... ok
+test a_second_rename_replaces_the_job_the_first_one_started ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.36s
+
+     Running tests/supervision.rs (target/debug/deps/supervision-4b5ae57c069ee619)
+
+running 2 tests
+test a_supervised_daemon_refuses_to_stop_and_says_why ... ok
+test a_stop_now_cancels_a_running_job_and_records_it ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.43s
+
+     Running tests/tool_management.rs (target/debug/deps/tool_management-f37f7cc1b4524726)
+
+running 1 test
+test the_cli_has_no_tool_management_command ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/undo.rs (target/debug/deps/undo-5466e9b158602f3b)
+
+running 3 tests
+test undo_without_a_target_is_a_usage_error ... ok
+test undo_with_nothing_to_do_says_so ... ok
+test undo_puts_the_source_back_and_removes_the_output ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s
+
+     Running tests/version.rs (target/debug/deps/version-d89b9a708eb68902)
+
+running 6 tests
+test a_shell_this_build_does_not_know_is_a_usage_error ... ok
+test version_names_the_build_and_every_schema_it_reads ... ok
+test a_parser_error_is_an_envelope_when_json_was_asked_for ... ok
+test version_as_json_carries_the_same_facts ... ok
+test the_version_flag_answers_in_json_when_asked ... ok
+test a_completion_script_is_written_for_the_installed_name ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/video.rs (target/debug/deps/video-3e94ea112273b546)
+
+running 3 tests
+test extracting_the_sound_is_a_conversion ... ok
+test a_container_comes_out_as_the_other_container ... ok
+test a_cap_scales_without_stretching_and_mute_removes_the_sound ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.38s
+
+     Running tests/watch.rs (target/debug/deps/watch-7b178f0089ab156c)
+
+running 12 tests
+test unwatch_needs_a_directory ... ok
+test unwatching_a_path_that_does_not_exist_succeeds ... ok
+test a_policy_pause_refuses_resume ... ok
+test a_directory_that_does_not_exist_is_refused ... ok
+test registering_a_directory_records_it ... ok
+test a_policy_file_is_summarised_in_the_listing ... ok
+test a_non_recursive_registration_says_so ... ok
+test a_cloud_mirror_is_refused_unless_allowed ... ok
+test registering_twice_is_not_an_error_and_keeps_one_entry ... ok
+test unwatch_removes_and_is_idempotent ... ok
+test a_vanished_registration_can_still_be_removed ... ok
+test pause_and_resume_are_state_that_the_listing_shows ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/watch_convert.rs (target/debug/deps/watch_convert-f9b485fba5d4c64a)
+
+running 2 tests
+test one_rename_with_two_outputs_converts_both ... ok
+test a_rename_in_a_watched_directory_is_converted ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.39s
+
+     Running tests/watch_policy.rs (target/debug/deps/watch_policy-128b2eaf16325e9f)
+
+running 4 tests
+test a_rename_inside_a_built_in_directory_is_not_a_job ... ok
+test a_user_glob_adds_to_the_list ... ok
+test a_source_over_the_ceiling_is_passed_over_and_counted ... ok
+test a_hidden_directory_is_skipped_unless_asked_for ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.49s
+
+     Running tests/why.rs (target/debug/deps/why-d1e5796d25be7c44)
+
+running 7 tests
+test the_record_names_the_intent_the_backend_and_the_store ... ok
+test renaming_the_file_keeps_the_record_pointing_at_it ... ok
+test the_journal_outranks_the_attribute_for_the_same_path ... ok
+test a_file_no_job_produced_is_said_so ... ok
+test the_answer_is_json_with_a_stable_shape ... ok
+test attributes_can_be_turned_off ... ok
+test without_the_journal_the_file_still_says_what_made_it ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.13s
+
+     Running unittests src/lib.rs (target/debug/deps/retype_core-7856b9c9a8cb841b)
+
+running 406 tests
+test archive::seven_rule_tests::a_name_that_would_escape_is_refused_from_a_listing ... ok
+test archive::seven_rule_tests::a_listing_is_read_into_entries_with_their_modes ... ok
+test archive::seven_rule_tests::a_symbolic_link_in_a_listing_is_refused_by_name ... ok
+test archive::seven_rule_tests::a_listing_that_expands_beyond_the_budget_is_refused_before_anything_is_copied ... ok
+test archive::seven_rule_tests::a_device_entry_is_refused ... ok
+test archive::seven_rule_tests::an_absolute_name_is_refused_from_a_listing ... ok
+test archive::tests::a_name_from_windows_is_written_with_forward_slashes ... ok
+test archive::tests::an_absolute_or_traversing_name_is_refused ... ok
+test axis::tests::a_palette_may_shrink_but_not_grow ... ok
+test axis::tests::a_tag_that_is_not_an_orientation_is_not_read_as_one ... ok
+test axis::tests::a_tiff_in_either_byte_order_yields_its_orientation ... ok
+test axis::tests::alpha_is_lost_when_the_output_says_it_is_opaque ... ok
+test axis::tests::an_animation_compared_with_a_single_frame_is_lost ... ok
+test axis::tests::an_icc_profile_that_was_there_and_is_not_is_lost ... ok
+test axis::tests::an_orientation_tag_beside_baked_pixels_was_applied_twice ... ok
+test axis::tests::depth_may_grow_but_not_shrink ... ok
+test archive::tests::a_directory_is_not_an_archive_to_repack ... ok
+test convert::tests::failure_keeps_existing_target ... ok
+test convert::tests::failed_conversion_then_restore_round_trip ... ok
+test convert::tests::failure_leaves_no_temp_and_no_target ... ok
+test convert::tests::restore_refuses_to_clobber ... ok
+test convert::tests::fallback_input_does_not_share_the_mutable_source_inode ... ok
+test archive::tests::a_symlink_in_a_tar_is_refused ... ok
+test convert::tests::temp_file_detection ... ok
+test convert::tests::restores_a_compound_source_format ... ok
+test convert::tests::leaves_no_temp_on_success ... ok
+test convert::tests::input_is_restored_to_the_source_name ... ok
+test correlate::tests::a_batch_that_forgets_the_old_name_keeps_the_new_identity ... ok
+test correlate::tests::a_case_only_rename_is_a_fact_even_though_it_means_nothing ... ok
+test archive::tests::a_name_that_would_escape_is_refused ... ok
+test correlate::tests::a_compound_format_is_paired_like_any_other ... ok
+test convert::tests::input_falls_back_to_an_independent_snapshot_when_the_source_name_is_taken ... ok
+test correlate::tests::a_stem_change_is_not_paired ... ok
+test correlate::tests::capacity_evicts_oldest ... ok
+test correlate::tests::chain_collapses_to_one_fact ... ok
+test convert::tests::restores_source_extension ... ok
+test correlate::tests::cross_directory_is_a_move ... ok
+test correlate::tests::directory_rename_invalidates_children ... ok
+test convert::tests::writes_target ... ok
+test correlate::tests::duplicates_are_removed ... ok
+test correlate::tests::forgetting_a_path_drops_the_identity ... ok
+test correlate::tests::identity_under_a_new_path_is_a_rename ... ok
+test convert::tests::success_overwrites_existing_target ... ok
+test correlate::tests::first_sighting_is_not_a_rename ... ok
+test correlate::tests::interleaved_split_events_are_paired_without_adjacency ... ok
+test correlate::tests::a_hard_linked_file_that_moved_is_a_rename ... ok
+test correlate::tests::pair_reports_without_identity ... ok
+test correlate::tests::pair_keeps_identity_tracking ... ok
+test correlate::tests::pair_with_different_stems_is_ignored ... ok
+test correlate::tests::a_hard_link_beside_the_known_name_is_not_a_rename ... ok
+test archive::tests::a_cancelled_repack_writes_nothing ... ok
+test correlate::tests::split_rename_in_another_directory_is_a_move ... ok
+test correlate::tests::split_rename_events_are_paired ... ok
+test convert::tests::temporary_input_is_removed_on_drop ... ok
+test correlate::tests::primed_file_renames_correctly ... ok
+test correlate::tests::unrelated_facts_are_not_collapsed ... ok
+test deferral::tests::a_job_without_a_record_has_the_lower_bar ... ok
+test deferral::tests::a_reason_knows_which_state_it_parks_in ... ok
+test deferral::tests::the_defaults_are_the_ones_the_document_states ... ok
+test deferral::tests::the_tokens_parse_and_print_the_same_way ... ok
+test error::tests::a_diagnostic_is_never_retried_and_carries_its_span ... ok
+test error::tests::an_internal_failure_exits_one ... ok
+test error::tests::a_known_code_round_trips_through_its_string ... ok
+test error::tests::an_unknown_code_is_preserved_rather_than_mapped ... ok
+test error::tests::codes_serialise_as_their_string ... ok
+test error::tests::every_variant_has_a_code_and_a_category ... ok
+test error::tests::io_kinds_decide_the_code_rather_than_the_caller ... ok
+test error::tests::the_categories_are_the_documented_four ... ok
+test error::tests::every_known_code_is_unique_and_well_formed ... ok
+test estimate::tests::a_family_with_no_constant_has_no_estimate ... ok
+test estimate::tests::a_measured_pair_answers_from_the_measurement ... ok
+test estimate::tests::a_measurement_is_matched_on_its_backend_too ... ok
+test correlate::tests::pending_sources_are_bounded ... ok
+test estimate::tests::an_unmeasured_pair_falls_back_to_the_family_constant ... ok
+test estimate::tests::measuring_the_same_pair_twice_replaces_the_answer ... ok
+test correlate::tests::three_step_chain_collapses ... ok
+test error::tests::the_documented_codes_and_the_known_codes_are_the_same_set ... ok
+test correlate::tests::unmatched_source_is_dropped_at_batch_end ... ok
+test estimate::tests::a_missing_file_is_an_empty_calibration ... ok
+test archive::tests::a_tarball_becomes_a_zip_with_the_same_entries ... ok
+test estimate::tests::a_calibration_from_another_schema_is_refused ... ok
+test estimate::tests::the_calibration_round_trips_through_its_file ... ok
+test estimate::tests::the_identity_file_is_not_world_readable ... ok
+test archive::tests::a_zip_becomes_a_tarball_with_the_same_entries ... ok
+test estimate::tests::the_identity_is_created_once_and_reused ... ok
+test execute::tests::a_failed_run_leaves_the_output_absent ... ok
+test execute::tests::process_completion_rejects_a_persistently_live_helper ... ok
+test estimate::tests::taking_an_identity_keeps_what_was_measured ... ok
+test execute::tests::the_stderr_tail_is_kept ... ok
+test fidelity::tests::a_claim_is_unverified_when_the_build_changed ... ok
+test fidelity::tests::a_document_without_markers_is_refused ... ok
+test fidelity::tests::a_manifest_round_trips_through_its_file ... ok
+test fidelity::tests::a_pair_has_one_claim_and_recording_twice_replaces_it ... ok
+test fidelity::tests::claims_are_rendered_in_a_stable_order ... ok
+test fidelity::tests::rendering_replaces_only_what_the_markers_enclose ... ok
+test fsx::tests::a_rename_moves_the_file ... ok
+test fsx::tests::renaming_something_absent_is_an_error ... ok
+test identifier::tests::non_ascii_is_left_for_the_parser_to_reject ... ok
+test identifier::tests::uppercase_ascii_is_normalized ... ok
+test intent::tests::a_character_outside_the_set_is_a_diagnosis_with_its_span ... ok
+test intent::tests::a_compact_range_keeps_its_hyphen ... ok
+test intent::tests::a_compound_format_is_one_group ... ok
+test intent::tests::a_format_that_is_not_a_format_is_a_diagnosis ... ok
+test intent::tests::a_plain_rename_carries_no_intent ... ok
+test intent::tests::a_plus_in_a_stem_is_not_a_separator ... ok
+test intent::tests::a_second_equals_is_a_diagnosis ... ok
+test intent::tests::a_token_that_is_not_a_name_is_a_diagnosis ... ok
+test intent::tests::a_value_may_be_absent ... ok
+test intent::tests::an_alias_form_is_a_token_even_though_it_is_not_a_name ... ok
+test intent::tests::an_empty_intent_is_a_diagnosis ... ok
+test intent::tests::an_empty_token_is_a_diagnosis ... ok
+test intent::tests::an_over_long_intent_is_a_diagnosis ... ok
+test intent::tests::an_unanchored_name_with_intent_syntax_is_an_error ... ok
+test intent::tests::anchoring_uses_the_source_stem ... ok
+test intent::tests::asking_wins_over_demanding_now ... ok
+test intent::tests::empty_groups_are_diagnosed ... ok
+test intent::tests::every_span_stays_inside_the_string_it_belongs_to ... ok
+test intent::tests::formats_and_names_are_canonicalised ... ok
+test intent::tests::groups_are_split_and_keep_their_order ... ok
+test intent::tests::independent_diagnoses_are_ordered_by_offset_and_capped ... ok
+test intent::tests::the_meta_suffixes_are_read_from_the_end ... ok
+test intent::tests::the_simplest_intent_is_one_format ... ok
+test intent::tests::tokens_carry_their_spans ... ok
+test intent::tests::too_many_groups_is_a_diagnosis ... ok
+test intent::tests::too_many_tokens_is_a_diagnosis ... ok
+test job::handle_tests::a_handle_is_at_least_four_crockford_characters ... ok
+test job::handle_tests::a_handle_is_matched_in_either_case ... ok
+test job::tests::a_finished_job_says_so ... ok
+test job::tests::a_job_that_was_never_parked_has_no_parked_object ... ok
+test job::tests::a_parked_job_carries_why_and_until_when ... ok
+test correlate::tests::model_agrees_on_random_rename_sequences ... ok
+test job::tests::ids_are_lowercase_and_parse_in_either_case ... ok
+test job::tests::ids_order_by_timestamp_first ... ok
+test job::tests::malformed_ids_are_refused ... ok
+test job::tests::states_are_kebab_case ... ok
+test job::tests::the_machine_identity_is_not_part_of_the_id ... ok
+test job::tests::the_record_matches_the_documented_shape ... ok
+test journal::tests::a_job_replays_as_its_last_snapshot ... ok
+test journal::tests::a_record_from_another_version_is_skipped ... ok
+test journal::tests::a_small_journal_is_left_alone ... ok
+test journal::tests::a_torn_tail_is_removed_before_the_next_append ... ok
+test job::tests::ids_are_crockford_and_sort_by_creation ... ok
+test journal::tests::an_interrupted_write_is_dropped_from_the_end_only ... ok
+test journal::tests::corruption_before_the_end_is_quarantined ... ok
+test journal::tests::compaction_keeps_live_records_and_drops_those_past_the_horizon ... ok
+test journal::tests::jobs_keep_the_order_they_were_first_seen ... ok
+test journal::tests::intermediate_and_partial_snapshots_survive_reopening ... ok
+test journal::tests::the_journal_is_not_world_readable ... ok
+test notify::tests::the_defaults_are_on_for_both ... ok
+test output::tests::a_compound_target_format_keeps_both_parts ... ok
+test output::tests::a_dot_in_a_value_becomes_an_underscore ... ok
+test output::tests::a_kept_source_produces_no_second_name ... ok
+test output::tests::a_derived_name_never_carries_intent_syntax ... ok
+test output::tests::every_output_maps_back_to_its_group ... ok
+test output::tests::one_group_derives_the_plain_name ... ok
+test output::tests::the_two_quality_variants_of_one_source_coexist ... ok
+test output::tests::tokens_appear_in_the_order_written_with_their_values ... ok
+test plan::tests::a_backend_that_could_carry_the_group_but_is_absent_is_a_missing_tool ... ok
+test plan::tests::a_format_fragment_comes_before_the_operation_fragments ... ok
+test plan::tests::a_group_no_backend_carries_is_unsupported ... ok
+test plan::tests::a_missing_engine_is_a_missing_tool ... ok
+test plan::tests::a_target_that_can_only_be_read_is_unsupported ... ok
+test plan::tests::a_tool_that_names_families_is_not_chosen_outside_them ... ok
+test output::tests::two_groups_with_the_same_tokens_get_numbered ... ok
+test plan::tests::a_value_is_printed_canonically ... ok
+test plan::tests::an_engine_is_resolved_and_recorded ... ok
+test plan::tests::an_operation_no_backend_declares_is_unsupported ... ok
+test plan::tests::argv_fills_the_paths_it_was_given ... ok
+test plan::tests::every_output_gets_its_own_plan ... ok
+test plan::tests::operations_are_spliced_in_the_order_written ... ok
+test plan::tests::the_plan_records_the_executable_that_resolved ... ok
+test plan::tests::the_preference_list_decides_and_skips_what_is_absent ... ok
+test plan::tests::an_operation_with_no_fragment_is_unsupported_even_though_it_is_declared ... ok
+test plan::tests::the_tier_comes_from_the_target_format ... ok
+test policy::tests::a_directory_may_ask_for_a_longer_debounce ... ok
+test policy::tests::a_directory_may_not_define_a_tool_a_format_or_a_machine_setting ... ok
+test policy::tests::a_directory_that_only_narrows_loads ... ok
+test policy::tests::a_directory_without_a_file_narrows_nothing ... ok
+test policy::tests::a_glob_is_star_and_question_mark_and_nothing_else ... ok
+test plan::tests::the_shipped_table_plans_an_image_conversion_through_magick ... ok
+test policy::tests::a_version_this_build_does_not_read_is_refused ... ok
+test policy::tests::patterns_match_the_name_or_the_path ... ok
+test policy::tests::a_limit_is_a_ceiling_and_a_deny_is_a_refusal ... ok
+test policy::tests::the_nearest_file_wins_and_the_walk_stops_at_the_root ... ok
+test print::tests::a_binary_count_prints_in_binary_units ... ok
+test print::tests::a_count_that_reads_naturally_in_neither_keeps_the_larger_unit ... ok
+test print::tests::a_duration_prints_in_tagged_form ... ok
+test print::tests::a_kept_source_says_so ... ok
+test print::tests::a_plain_group_prints_its_format ... ok
+test archive::seven_tests::zip_into_seven_zip_through_the_tool ... ok
+test execute::tests::process_completion_wait_is_cancellable ... ok
+test execute::tests::a_failed_rename_conversion_puts_the_source_name_back ... ok
+test execute::tests::a_run_that_is_not_cancelled_finishes_normally ... ok
+test execute::tests::a_rename_is_relabelled_before_it_is_converted ... ok
+test print::tests::a_sentence_lists_the_actions_in_the_order_they_run ... ok
+test print::tests::a_size_prints_in_the_largest_unit_that_reads_naturally ... ok
+test execute::tests::a_tool_that_writes_nothing_is_a_failure ... ok
+test execute::tests::a_successful_run_writes_the_output ... ok
+test print::tests::an_operation_without_a_phrase_still_reads ... ok
+test policy::tests::the_cache_notices_a_file_that_changed ... ok
+test print::tests::groups_keep_their_written_order ... ok
+test print::tests::every_output_gets_a_clause ... ok
+test print::tests::a_sentence_without_actions_names_the_formats ... ok
+test print::tests::asking_prints_before_demanding_now ... ok
+test print::tests::leading_zeros_are_not_printed ... ok
+test provenance::tests::a_file_no_job_produced_is_unknown ... ok
+test print::tests::asking_is_part_of_the_sentence ... ok
+test provenance::tests::a_file_that_was_renamed_is_still_the_one_the_record_produced ... ok
+test provenance::tests::a_file_the_journal_forgot_still_says_what_made_it ... ok
+test provenance::tests::a_record_about_the_path_has_the_last_word_over_the_file ... ok
+test provenance::tests::the_newest_job_that_produced_the_file_answers ... ok
+test provenance::tests::the_same_path_with_other_bytes_is_only_a_path_match ... ok
+test registry::tests::a_backslash_in_a_command_is_refused_where_a_shell_reads_it ... ok
+test print::tests::the_control_tokens_print_as_words ... ok
+test registry::tests::a_backend_that_is_not_declared_is_refused ... ok
+test registry::tests::a_bench_seed_may_outlive_its_generator ... ok
+test registry::tests::a_bench_generator_must_name_a_tool_and_take_only_an_output ... ok
+test registry::tests::a_command_alias_with_a_shell_metacharacter_is_refused ... ok
+test registry::tests::a_command_cannot_also_be_an_alias ... ok
+test registry::tests::a_bench_seed_must_name_a_declared_format_of_its_family ... ok
+test registry::tests::a_declared_engine_keeps_its_order ... ok
+test registry::tests::a_command_with_a_shell_metacharacter_is_refused ... ok
+test registry::tests::a_deferral_knob_that_is_not_what_it_says_is_refused ... ok
+test registry::tests::a_declared_preference_is_kept_in_order ... ok
+test registry::tests::a_direction_that_is_not_one_of_the_three_is_refused ... ok
+test registry::tests::a_dotted_format_name_toml_reads_as_nesting_is_restored ... ok
+test registry::tests::a_format_fragment_is_kept_verbatim ... ok
+test registry::tests::a_format_says_which_way_it_can_be_used ... ok
+test registry::tests::a_fragment_naming_an_undeclared_tool_is_refused ... ok
+test print::tests::an_alias_prints_as_its_primary_name ... ok
+test registry::tests::a_longer_format_wins_over_a_shorter_one_that_also_matches ... ok
+test registry::tests::a_layout_without_the_three_holes_is_refused ... ok
+test registry::tests::a_mis_spelled_key_inside_an_operation_is_refused_too ... ok
+test registry::tests::a_layout_hole_is_not_a_fragment_placeholder ... ok
+test registry::tests::a_mis_spelled_key_is_refused_and_named ... ok
+test print::tests::an_alias_form_prints_as_the_operation_it_became ... ok
+test registry::tests::a_nested_table_that_is_not_a_format_is_refused ... ok
+test registry::tests::a_parameter_must_be_interpolated_by_some_fragment ... ok
+test registry::tests::a_parameter_with_min_above_max_is_refused ... ok
+test registry::tests::a_pause_of_zero_is_refused ... ok
+test registry::tests::a_phrase_must_agree_with_the_parameter ... ok
+test print::tests::tokens_keep_the_order_they_were_written_in ... ok
+test registry::tests::a_phrase_takes_only_the_value_hole ... ok
+test registry::tests::a_placeholder_may_sit_inside_an_argument ... ok
+test registry::tests::a_preset_cycle_is_refused ... ok
+test registry::tests::a_name_splits_at_the_longest_declared_format ... ok
+test registry::tests::a_preset_may_not_smuggle_a_control_token ... ok
+test registry::tests::a_preset_joins_the_name_space ... ok
+test registry::tests::a_name_without_a_value_resolves_without_one ... ok
+test registry::tests::a_quota_spelled_without_a_unit_is_refused ... ok
+test registry::tests::a_preset_names_only_real_tokens ... ok
+test registry::tests::a_retention_that_is_not_a_duration_is_refused ... ok
+test registry::tests::a_size_that_does_not_parse_is_a_validation_error_naming_the_key ... ok
+test registry::tests::a_preset_parameter_must_match_its_tokens ... ok
+test registry::tests::a_name_without_a_declared_format_has_no_format ... ok
+test registry::tests::a_compound_format_is_disabled_in_either_spelling ... ok
+test registry::tests::a_reserved_operation_is_known_but_not_implemented ... ok
+test registry::tests::a_value_needs_a_declared_parameter ... ok
+test registry::tests::a_version_floor_that_does_not_parse_is_refused ... ok
+test registry::tests::a_version_floor_without_a_probe_is_refused ... ok
+test registry::tests::a_wrong_schema_version_is_refused ... ok
+test registry::tests::a_user_may_not_redefine_an_operation_identity ... ok
+test registry::tests::an_engine_placeholder_needs_a_declared_engine ... ok
+test registry::tests::an_engine_with_no_candidate_is_refused ... ok
+test registry::tests::a_user_file_must_declare_its_version ... ok
+test registry::tests::an_exclusive_group_of_one_is_refused ... ok
+test print::tests::the_shorthand_and_the_word_canonicalise_the_same_way ... ok
+test registry::tests::an_operation_cannot_apply_to_an_undeclared_format ... ok
+test registry::tests::an_overflow_policy_that_is_not_one_of_the_three_is_refused ... ok
+test registry::tests::an_unknown_family_is_refused ... ok
+test registry::tests::an_unknown_placeholder_is_refused ... ok
+test registry::tests::a_user_may_add_a_tool_and_an_operation ... ok
+test registry::tests::a_user_may_change_how_a_shipped_operation_runs ... ok
+test registry::tests::malformed_toml_is_a_parse_failure ... ok
+test registry::tests::provenance_defaults_on_and_can_be_turned_off ... ok
+test registry::tests::an_equals_forces_the_exact_name ... ok
+test registry::tests::a_user_operation_may_not_take_a_shipped_preset_name ... ok
+test registry::tests::an_operation_applies_only_to_the_formats_it_names ... ok
+test print::tests::a_reparse_yields_the_same_operations ... ok
+test registry::tests::the_builtin_registry_loads_and_names_every_format_it_uses ... ok
+test registry::tests::an_array_is_replaced_rather_than_joined ... ok
+test registry::tests::the_deferral_policy_defaults_and_reads_its_knobs ... ok
+test registry::tests::every_builtin_flag_matches_the_operations_document ... ok
+test registry::tests::the_notification_policy_defaults_on_and_reads_its_knobs ... ok
+test registry::tests::the_quota_and_the_overflow_policy_are_read ... ok
+test registry::tests::the_builtin_bench_names_a_seed_and_a_generator_for_every_family_it_measures ... ok
+test registry::tests::the_quoted_spelling_declares_the_same_format ... ok
+test registry::tests::the_watch_policy_defaults_and_reads_its_knobs ... ok
+test registry::tests::tool_aliases_keep_their_order ... ok
+test registry::tests::two_operations_cannot_share_a_name_or_alias ... ok
+test registry::tests::undo_policy_defaults_and_reads_its_knobs ... ok
+test registry::tests::the_builtin_declares_the_tools_the_matrix_names ... ok
+test registry::tests::enabled_false_removes_what_was_shipped ... ok
+test resolve::tests::a_preset_expands_where_it_stands ... ok
+test resolve::tests::a_preset_out_of_range_is_a_value_range ... ok
+test resolve::tests::a_preset_that_expands_into_a_conflict_still_conflicts ... ok
+test resolve::tests::a_preset_that_repeats_an_operation_is_a_duplicate ... ok
+test resolve::tests::a_preset_value_is_read_with_its_own_class ... ok
+test registry::tests::the_longest_name_wins_over_a_shorter_one_that_also_matches ... ok
+test resolve::tests::a_group_with_tokens_re_encodes_even_the_source_format ... ok
+test registry::tests::the_builtin_states_its_preference ... ok
+test registry::tests::removing_a_tool_removes_what_named_it ... ok
+test resolve::tests::a_known_token_becomes_its_operation ... ok
+test registry::tests::replacing_a_shipped_preset_is_a_warning_rather_than_a_failure ... ok
+test resolve::tests::a_missing_value_is_a_diagnosis ... ok
+test resolve::tests::a_rename_that_changes_the_stem_carries_nothing ... ok
+test resolve::tests::a_rename_that_keeps_the_stem_carries_the_new_format ... ok
+test resolve::tests::a_reserved_operation_is_unsupported_rather_than_unknown ... ok
+test resolve::tests::a_rename_that_only_changes_the_case_carries_nothing ... ok
+test resolve::tests::a_written_but_unreadable_source_is_unsupported ... ok
+test resolve::tests::a_rename_that_asks_for_the_same_format_carries_nothing ... ok
+test resolve::tests::a_source_with_no_declared_format_carries_nothing ... ok
+test resolve::tests::a_value_inside_its_bounds_is_accepted_and_parsed ... ok
+test resolve::tests::an_alias_resolves_but_is_never_printed ... ok
+test resolve::tests::a_value_on_an_operation_that_takes_none_is_a_diagnosis ... ok
+test resolve::tests::an_operation_that_does_not_apply_to_the_format_is_a_diagnosis ... ok
+test execute::tests::process_completion_waits_for_accounting_to_reach_zero ... ok
+test resolve::tests::an_unknown_format_is_a_diagnosis ... ok
+test resolve::tests::an_unanchored_name_that_looks_like_an_intent_is_a_diagnosis ... ok
+test execute::tests::one_rename_feeds_every_output_of_its_job ... ok
+test resolve::tests::an_unknown_name_suggests_a_near_one ... ok
+test resolve::tests::keeping_the_source_beside_a_conversion_is_fine ... ok
+test resolve::tests::the_source_stem_comes_from_the_registry_not_the_last_dot ... ok
+test resolve::tests::folder_requires_a_directory ... ok
+test synced::tests::a_cloud_storage_mirror_names_its_provider ... ok
+test synced::tests::a_fuse_mirror_is_named_by_its_filesystem ... ok
+test resolve::tests::independent_problems_are_all_reported ... ok
+test synced::tests::a_gvfs_mount_is_named ... ok
+test synced::tests::a_onedrive_profile_names_its_provider ... ok
+test synced::tests::an_ordinary_directory_is_not_a_provider ... ok
+test synced::tests::an_ordinary_remote_filesystem_is_not_refused ... ok
+test synced::tests::the_longest_mount_point_wins ... ok
+test synced::tests::a_placeholder_is_a_file_that_is_not_read ... ok
+test tools::tests::a_bare_command_tries_its_aliases_in_order ... ok
+test tools::tests::a_floor_is_part_of_usability ... ok
+test tools::tests::a_tool_without_a_floor_accepts_what_it_finds ... ok
+test tools::tests::an_absolute_command_pins_the_executable ... ok
+test resolve::tests::keeping_the_source_alone_is_a_no_op ... ok
+test tools::tests::a_tool_without_a_probe_is_found_and_not_run ... ok
+test tools::tests::non_executable_file_is_not_found ... ok
+test tools::tests::the_fingerprint_follows_the_probe_output_and_not_the_path ... ok
+test tools::tests::path_lookup_ignores_empty_entries ... ok
+test tools::tests::version_absent ... ok
+test tools::tests::version_from_ffmpeg ... ok
+test tools::tests::version_from_imagemagick ... ok
+test tools::tests::version_from_pandoc ... ok
+test tools::tests::version_from_sevenzip ... ok
+test tools::tests::version_ordering ... ok
+test resolve::tests::one_operation_twice_in_a_group_is_a_diagnosis ... ok
+test tools::tests::probing_takes_the_first_usable_alias ... ok
+test undo::tests::a_file_larger_than_the_whole_quota_is_not_kept_and_evicts_nothing ... ok
+test resolve::tests::the_pipeline_is_the_order_written ... ok
+test undo::tests::an_unknown_id_has_no_record ... ok
+test undo::tests::a_skip_policy_keeps_no_record_and_evicts_nothing ... ok
+test resolve::tests::aliases_desugar_whole_tokens ... ok
+test resolve::tests::the_same_operation_in_two_groups_is_not_a_duplicate ... ok
+test undo::tests::a_record_that_fits_is_kept ... ok
+test resolve::tests::two_operations_in_one_exclusive_group_are_a_diagnosis ... ok
+test resolve::tests::a_value_outside_the_declared_bounds_is_out_of_range ... ok
+test undo::tests::asking_whether_a_record_fits_changes_nothing ... ok
+test value::tests::a_binary_fraction_must_still_be_a_whole_byte ... ok
+test value::tests::a_duration_keeps_its_units_in_order_and_may_skip_one ... ok
+test value::tests::a_duration_may_not_reorder_its_units_or_end_without_one ... ok
+test value::tests::a_language_tag_keeps_its_case ... ok
+test value::tests::a_range_checks_both_of_its_ends ... ok
+test value::tests::a_range_of_times_reads_its_scalars_as_durations ... ok
+test value::tests::a_range_takes_either_end_or_both ... ok
+test value::tests::a_range_that_ends_before_it_starts_is_out_of_range ... ok
+test value::tests::a_ratio_has_no_auto_side ... ok
+test value::tests::a_size_may_have_a_fraction_because_it_is_exact ... ok
+test value::tests::a_size_that_is_not_a_whole_number_of_bytes_is_refused ... ok
+test value::tests::an_auto_side_is_not_measured_against_the_bounds ... ok
+test value::tests::an_enum_matches_case_insensitively_and_returns_the_declared_spelling ... ok
+test value::tests::an_integer_is_digits_and_nothing_else ... ok
+test value::tests::binary_and_decimal_units_are_different_quantities ... ok
+test value::tests::bounds_are_checked_after_the_class ... ok
+test value::tests::dimensions_allow_one_auto_side ... ok
+test value::tests::preset_arguments_are_short_and_plain ... ok
+test value::tests::sizes_are_decimal ... ok
+test watch::tests::a_built_in_directory_prunes_everything_under_it ... ok
+test watch::tests::a_file_named_like_a_built_in_directory_is_still_a_file ... ok
+test watch::tests::a_user_glob_adds_to_the_list_and_cannot_remove_from_it ... ok
+test watch::tests::hidden_names_are_skipped_unless_asked_for ... ok
+test watch::tests::the_size_ceiling_admits_its_own_value_and_nothing_larger ... ok
+test watches::tests::a_directory_that_does_not_exist_cannot_be_registered ... ok
+test watches::tests::a_hand_edited_file_is_read_like_any_other ... ok
+test watches::tests::a_registration_round_trips ... ok
+test watches::tests::a_relative_path_and_its_canonical_form_are_one_registration ... ok
+test undo::tests::saving_keeps_the_bytes_and_the_manifest ... ok
+test watches::tests::an_absent_file_has_no_registrations ... ok
+test watches::tests::an_unknown_version_is_refused ... ok
+test watches::tests::registering_twice_keeps_one_entry ... ok
+test watches::tests::removal_is_by_canonical_path_and_is_idempotent ... ok
+test xattr::tests::a_file_without_an_intent_says_nothing ... ok
+test xattr::tests::writing_to_a_file_that_is_not_there_is_declined_rather_than_fatal ... ok
+test xattr::tests::an_intent_survives_a_write_and_a_read ... ok
+test undo::tests::the_mode_comes_back_with_the_file ... ok
+test undo::tests::expired_records_go_before_anything_is_evicted ... ok
+test undo::tests::undo_puts_the_source_back_and_removes_the_output ... ok
+test undo::tests::the_oldest_records_go_until_the_new_one_fits ... ok
+test undo::tests::restoring_into_an_occupied_path_is_refused_before_outputs_are_touched ... ok
+test resolve::tests::a_value_is_read_as_its_class_requires ... ok
+test undo::tests::sweeping_drops_what_is_past_retention_and_keeps_the_rest ... ok
+test undo::tests::listing_answers_newest_first ... ok
+test print::tests::printing_is_idempotent_over_a_corpus ... ok
+test execute::tests::a_cancelled_run_stops_the_tool_and_leaves_no_output ... ok
+
+test result: ok. 406 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+     Running tests/conformance.rs (target/debug/deps/conformance-a0714f9f23f36344)
+
+running 6 tests
+test t5_every_declared_name_resolves_and_a_duplicate_refuses_to_load ... ok
+test t6_a_diagnosis_points_at_the_offending_part_and_not_at_the_whole_string ... ok
+test t3_every_string_either_parses_or_carries_a_diagnosis ... ok
+test t4_a_derived_name_is_never_an_intent ... ok
+test t1_a_canonical_intent_parses_back_to_the_same_job ... ok
+test t2_printing_a_parsed_intent_is_idempotent ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.49s
+
+     Running tests/safety.rs (target/debug/deps/safety-d4b73f4b46564199)
+
+running 6 tests
+test a_late_destination_cannot_be_clobbered_by_publication ... ok
+test snapshot_creation_never_overwrites_an_existing_copy ... ok
+test staged_symlink_is_rejected_without_touching_its_referent ... ok
+test disposal_claims_and_checks_a_replacement_before_unlinking ... ok
+test disposal_detects_an_in_place_edit_even_with_the_same_length ... ok
+test a_snapshot_does_not_change_with_a_live_source_edit ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/retype_ipc-ee68a39cc7a4035e)
+
+running 11 tests
+test tests::a_frame_that_is_not_json_is_refused ... ok
+test tests::an_empty_stream_is_a_clean_close ... ok
+test tests::an_error_response_carries_its_code ... ok
+test tests::a_request_without_params_omits_them ... ok
+test tests::a_request_round_trips ... ok
+test tests::a_stream_ending_inside_a_frame_is_malformed ... ok
+test tests::a_success_response_has_no_error_field ... ok
+test tests::only_the_major_version_has_to_match ... ok
+test tests::the_handshake_names_the_daemon ... ok
+test tests::two_frames_in_one_packet_both_survive ... ok
+test tests::an_oversized_frame_is_refused ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/retype_macros-eca2f65d4c06faf8)
+
+running 4 tests
+test tests::a_single_word_keeps_its_shape ... ok
+test tests::acronym_runs_stay_together ... ok
+test tests::digits_and_acronym_ends_split_where_they_should ... ok
+test tests::words_are_separated ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/retype_watch-8a8be872bf9edb92)
+
+running 19 tests
+test tests::a_batch_that_says_events_were_dropped_asks_for_a_rescan ... ok
+test tests::a_rescan_names_a_rename_whose_events_were_lost ... ok
+test tests::a_cross_directory_pair_is_not_a_fact ... ok
+test tests::both_strategies_on_one_batch_agree ... ok
+test tests::linux_triple_report_is_deduped ... ok
+test tests::a_symlink_is_never_tracked ... ok
+test tests::the_daemons_own_state_is_not_part_of_the_batch ... ok
+test tests::one_event_with_both_paths_is_a_fact ... ok
+test tests::split_from_and_to_are_one_fact ... ok
+test tests::watcher_errors_are_kept ... ok
+test tests::a_directory_is_never_a_rename ... ok
+test tests::a_single_path_event_is_not_a_name_pair ... ok
+test tests::identity_ignores_a_rename_that_was_then_deleted ... ok
+test tests::a_rename_after_the_process_restored_the_name_is_still_a_fact ... ok
+test tests::identity_finds_what_names_missed ... ok
+test tests::an_own_sighting_outlives_batches_that_name_only_the_old_path ... ok
+test tests::our_restore_does_not_chain_into_the_users_rename ... ok
+test tests::a_write_is_not_a_rename ... ok
+test tests::priming_lets_a_pre_existing_file_correlate_by_identity ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/rename_detection.rs (target/debug/deps/rename_detection-e0d75f08c59439ac)
+
+running 3 tests
+test a_stem_change_is_neither_paired_nor_an_intent ... ok
+test a_case_only_rename_is_a_fact_with_no_intent ... ok
+test an_in_place_rename_is_detected ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+
+   Doc-tests retype_cli
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests retype_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests retype_ipc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests retype_macros
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests retype_watch
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 1 target failed:
+    `-p retype-cli --test documents`

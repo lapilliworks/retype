@@ -9,6 +9,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "support/journal.rs"]
+mod journal;
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -34,6 +38,9 @@ fn slow_config(dir: &Path) -> PathBuf {
 		format!(
 			"\
 version = 'retype-config-1'
+
+[notify]
+enabled = false
 
 [backends]
 prefer = ['slow']
@@ -90,14 +97,20 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 		.output()
 		.unwrap();
 
+	// Outside the watched root: debug logging would otherwise be a stream of events in
+	// the directory the test is reasoning about.
+	let _logs = tempfile::tempdir().unwrap();
+	let err = _logs.path().join("daemon.err");
 	let _daemon = Daemon(
 		retype()
 			.args(["daemon", "--detached"])
 			.arg("--state-dir")
 			.arg(&state)
 			.env("RETYPE_CONFIG", &config)
+			// The daemon's decisions are what a failure needs to explain.
+			.env("RETYPE_LOG", "debug")
 			.stdout(Stdio::null())
-			.stderr(Stdio::null())
+			.stderr(Stdio::from(fs::File::create(&err).unwrap()))
 			.spawn()
 			.unwrap(),
 	);
@@ -113,29 +126,46 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 	std::thread::sleep(Duration::from_millis(1500));
 
 	let source = photos.join("photo.png");
+	let before = support::observed(&state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
 	fs::rename(&source, photos.join("photo.webp")).unwrap();
 
-	// The first job is running by now and has not finished: the tool sleeps longer
-	// than this. While it runs the file shows its source name again, so that is the
-	// name a person renames, `docs/dev/architecture/state.md` §5.4.
-	std::thread::sleep(Duration::from_millis(1200));
-	assert!(
-		!photos.join("photo.webp").exists(),
-		"the target must not exist while converting"
-	);
-	fs::rename(photos.join("photo.png"), photos.join("photo.jpg")).unwrap();
-
+	// The first job is running and has not finished: the tool sleeps longer than
+	// this. While it runs the file shows its source name again, so that is the name
+	// a person renames, `docs/dev/architecture/state.md` §5.4.
 	let journal_path = state.join("jobs.jsonl");
+	let deadline = Instant::now() + Duration::from_secs(20);
+	while !fs::read_to_string(&journal_path)
+		.unwrap_or_default()
+		.contains("\"state\":\"running\"")
+		|| photos.join("photo.webp").exists()
+	{
+		assert!(
+			Instant::now() < deadline,
+			"the job never started\ndaemon: {}",
+			fs::read_to_string(&err).unwrap_or_default()
+		);
+		std::thread::sleep(Duration::from_millis(50));
+	}
+
+	let before = support::observed(&state);
+	fs::rename(photos.join("photo.png"), photos.join("photo.jpg")).unwrap();
+	support::observe(&state, before);
+
 	let deadline = Instant::now() + Duration::from_secs(30);
 	let journal = loop {
 		let recorded = fs::read_to_string(&journal_path).unwrap_or_default();
 
-		if recorded.contains("\"state\":\"done\"") && recorded.contains("\"state\":\"superseded\"") {
+		if supersession_finished(&recorded) {
 			break recorded;
 		}
 
-		assert!(Instant::now() < deadline, "no supersession: {recorded}");
+		assert!(
+			Instant::now() < deadline,
+			"no supersession: {recorded}\ndaemon: {}",
+			fs::read_to_string(&err).unwrap_or_default()
+		);
 		std::thread::sleep(Duration::from_millis(100));
 	};
 
@@ -143,7 +173,10 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 	// jpg, which is what the user asked for in the end.
 	assert!(photos.join("photo.jpg").exists(), "{journal}");
 	assert!(!photos.join("photo.webp").exists(), "the intermediate name is consumed");
-	assert!(!photos.join("photo.png").exists(), "the source name is consumed");
+	assert!(
+		photos.join("photo.png").exists(),
+		"an unvalidated copy backend retains its source"
+	);
 
 	// The job that was overtaken says so, and did not produce anything.
 	let superseded = journal
@@ -151,4 +184,22 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 		.find(|line| line.contains("\"state\":\"superseded\""))
 		.expect("a superseded record");
 	assert!(superseded.contains("\"skipped\""), "{superseded}");
+}
+
+fn supersession_finished(contents: &str) -> bool {
+	let jobs = journal::latest(contents);
+	jobs.iter().any(|job| job["state"] == "done") && jobs.iter().any(|job| job["state"] == "superseded")
+}
+
+#[test]
+fn a_prepublication_output_checkpoint_is_not_a_completed_supersession() {
+	const CHECKPOINTS: &str = concat!(
+		"{\"id\":\"old\",\"state\":\"superseded\",\"outputs\":[{\"state\":\"skipped\"}]}\n",
+		"{\"id\":\"new\",\"state\":\"running\",\"outputs\":[{\"state\":\"done\"}]}\n",
+	);
+	assert!(!supersession_finished(CHECKPOINTS));
+	let complete = format!("{CHECKPOINTS}{{\"id\":\"new\",\"state\":\"done\"}}\n");
+	assert!(supersession_finished(&complete));
+	let running_again = format!("{complete}{{\"id\":\"new\",\"state\":\"running\"}}\n");
+	assert!(!supersession_finished(&running_again), "latest snapshots win");
 }

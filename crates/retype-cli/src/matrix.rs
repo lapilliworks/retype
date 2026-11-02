@@ -101,6 +101,13 @@ pub fn plan_for(registry: &Registry, source: &str, target: &str) -> Option<Plan>
 		.next()
 }
 
+/// Scratch files belong to one invocation, never an earlier or competing run.
+pub fn workspace(state_dir: &Path, command: &str) -> Result<tempfile::TempDir> {
+	let parent = state_dir.join(command);
+	fs::create_dir_all(&parent)?;
+	Ok(tempfile::Builder::new().prefix("run-").tempdir_in(parent)?)
+}
+
 /// The samples one run needs, made once each.
 ///
 /// A sample is generated in its family's seed format and converted where the source
@@ -238,7 +245,10 @@ fn generate(registry: &Registry, family: &str, path: &Path) -> Result<PathBuf> {
 			.map(|argument| argument.replace("{output}", &path.to_string_lossy()))
 			.collect();
 
-		let ran = Command::new(command)
+		let mut command_line = Command::new(command);
+		retype_core::process::hide_console(&mut command_line);
+
+		let ran = command_line
 			.args(&argv)
 			.stdin(Stdio::null())
 			.stdout(Stdio::null())

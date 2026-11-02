@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -24,6 +26,9 @@ fn copy_config(dir: &Path) -> PathBuf {
 		format!(
 			"\
 version = 'retype-config-1'
+
+[notify]
+enabled = false
 
 [backends]
 prefer = ['copy']
@@ -105,7 +110,9 @@ fn a_rename_in_a_watched_directory_is_converted() {
 	}
 
 	let source = photos.join("holiday.png");
+	let before = support::observed(&state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
 	fs::rename(&source, photos.join("holiday.webp")).unwrap();
 
 	// The record is written after the bytes, so the wait covers both.
@@ -126,7 +133,7 @@ fn a_rename_in_a_watched_directory_is_converted() {
 	};
 
 	assert!(journal.contains("holiday.webp"), "{journal}");
-	assert!(!source.exists(), "the source name does not come back");
+	assert!(source.exists(), "an unvalidated copy backend retains its source");
 
 	let _ = daemon.child.kill();
 }
@@ -170,7 +177,9 @@ fn one_rename_with_two_outputs_converts_both() {
 	}
 
 	let source = photos.join("holiday.png");
+	let before = support::observed(&state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
 	fs::rename(&source, photos.join("holiday.webp,jpg")).unwrap();
 
 	let first = photos.join("holiday.webp");
@@ -193,5 +202,5 @@ fn one_rename_with_two_outputs_converts_both() {
 	assert_eq!(fs::read(&first).unwrap(), b"pixels");
 	assert_eq!(fs::read(&second).unwrap(), b"pixels");
 	assert!(journal.contains("\"state\":\"done\""), "{journal}");
-	assert!(!source.exists(), "the source name does not come back");
+	assert!(source.exists(), "an unvalidated copy backend retains its source");
 }

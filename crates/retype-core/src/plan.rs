@@ -622,7 +622,14 @@ args = ['--pdf-engine', '{engine.pdf}']
 
 	#[test]
 	fn a_tool_that_names_families_is_not_chosen_outside_them() {
-		let registry = Registry::load(
+		// The machine is asked for real, so the command has to exist on the host:
+		// `true` on Unix, `cmd` on Windows where it runs `rem`, a comment.
+		let (command, layout) = match cfg!(windows) {
+			true => ("cmd", "layout = ['/c', 'rem', '{input}', '{ops}', '{output}']"),
+			false => ("true", "layout = ['{input}', '{ops}', '{output}']"),
+		};
+
+		let registry = Registry::load(&format!(
 			"\
 version = 'retype-config-1'
 
@@ -630,9 +637,9 @@ version = 'retype-config-1'
 prefer = ['painter']
 
 [tools.painter]
-command = 'true'
+command = '{command}'
 families = ['image']
-layout = ['{input}', '{ops}', '{output}']
+{layout}
 
 [formats.png]
 family = 'image'
@@ -652,7 +659,7 @@ lossy = true
 alpha = false
 tier = 'converted'
 ",
-		)
+		))
 		.expect("a configuration");
 
 		let codes = |from: &str, written: &str| {

@@ -3,14 +3,20 @@
 //! The `notify-send` here is a script that records what it was asked to say and answers
 //! with the action it was told to answer with, so the delivery path is proven without a
 //! desktop session, and so is the Undo button.
+//!
+//! macOS picks its own channel, `Plain` through `osascript`, which carries no action,
+//! so the scripted `notify-send` is never asked: these tests are about the Linux
+//! tiers and are skipped there.
 
-#![cfg(unix)]
+#![cfg(all(unix, not(target_os = "macos")))]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+mod support;
 
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
@@ -138,7 +144,9 @@ impl Fixture {
 
 	fn rename(&self, from: &str, to: &str) {
 		let source = self.photos.join(from);
+		let before = support::observed(&self.state);
 		fs::write(&source, b"pixels").unwrap();
+		support::observe(&self.state, before);
 		fs::rename(&source, self.photos.join(to)).unwrap();
 	}
 
@@ -171,7 +179,7 @@ fn a_batch_that_converted_a_file_is_one_notification_with_an_undo_button() {
 	assert!(recorded.contains("--app-name"), "{recorded}");
 	assert!(recorded.contains("--wait"), "{recorded}");
 	assert!(recorded.contains("undo=Undo"), "{recorded}");
-	assert!(recorded.contains("1 converted"), "{recorded}");
+	assert!(recorded.contains("1 converted (a.png → a.webp)"), "{recorded}");
 	assert!(fixture.photos.join("a.webp").exists(), "the conversion stands");
 }
 
@@ -240,7 +248,9 @@ fn nothing_is_said_when_the_platform_has_no_notifier() {
 	}
 
 	let source = photos.join("c.png");
+	let before = support::observed(&state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
 	fs::rename(&source, photos.join("c.webp")).unwrap();
 
 	let output = photos.join("c.webp");

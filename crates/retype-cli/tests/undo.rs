@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -22,6 +24,9 @@ fn copy_config(dir: &Path) -> PathBuf {
 		format!(
 			"\
 version = 'retype-config-1'
+
+[notify]
+enabled = false
 
 [backends]
 prefer = ['copy']
@@ -92,7 +97,9 @@ fn undo_puts_the_source_back_and_removes_the_output() {
 	}
 
 	let source = photos.join("photo.png");
+	let before = support::observed(&state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
 	fs::rename(&source, photos.join("photo.webp")).unwrap();
 
 	// The rename itself already puts the bytes at the new name, so the conversion
@@ -120,6 +127,12 @@ fn undo_puts_the_source_back_and_removes_the_output() {
 		.output()
 		.unwrap();
 
+	if !retype_core::fsx::supports_durable_cleanup() {
+		assert!(!undo.status.success());
+		assert_eq!(fs::read(&source).unwrap(), b"pixels");
+		assert!(output.exists());
+		return;
+	}
 	assert!(undo.status.success(), "{}", String::from_utf8_lossy(&undo.stderr));
 	assert!(String::from_utf8_lossy(&undo.stdout).contains("photo.png"));
 
@@ -149,4 +162,20 @@ fn undo_with_nothing_to_do_says_so() {
 
 	assert_eq!(output.status.code(), Some(7));
 	assert!(String::from_utf8_lossy(&output.stderr).contains("E_JOB_STATE"));
+}
+
+#[test]
+fn undo_without_a_target_is_a_usage_error() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+
+	let output = retype()
+		.args(["undo", "--state-dir"])
+		.arg(&state)
+		.output()
+		.unwrap();
+
+	assert_eq!(output.status.code(), Some(2));
+	assert!(String::from_utf8_lossy(&output.stderr).contains("E_USAGE_ARGS"));
+	assert!(String::from_utf8_lossy(&output.stderr).contains("--last"));
 }

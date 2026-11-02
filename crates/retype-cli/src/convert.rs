@@ -14,6 +14,7 @@ use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::Duration;
 
+use retype_core::print;
 use retype_core::registry::Registry;
 use serde_json::Value;
 
@@ -96,7 +97,8 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	let job = wait(request.state_dir, request.allow_spawn, &id, request.quiet)?;
 
 	if request.json {
-		output::success(job.clone());
+		// The job keeps its own `v`; the envelope names the CLI shape.
+		output::success(serde_json::json!({"job": job.clone()}));
 	}
 
 	let outputs = job
@@ -114,9 +116,9 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 			"done" => {
 				if !request.quiet && !request.json {
 					println!(
-						"{path}  {}  {} bytes",
+						"{path}  {}  {}",
 						output.get("tier").and_then(Value::as_str).unwrap_or_default(),
-						output.get("bytes").and_then(Value::as_u64).unwrap_or_default()
+						print::size(output.get("bytes").and_then(Value::as_u64).unwrap_or_default())
 					);
 				}
 			}

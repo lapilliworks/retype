@@ -115,6 +115,7 @@ fn the_status_lines_are_what_a_human_needs() {
 			"skipped",
 			"placeholders",
 			"primed",
+			"observed",
 			"watches",
 			"journal",
 			"endpoint",
@@ -140,7 +141,10 @@ fn the_daemon_owns_watch_registration_while_it_is_reachable() {
 	assert_eq!(added["recursive"], true);
 
 	let listed = client.call_without_params("watch.list").unwrap();
-	assert_eq!(listed["watches"][0]["path"], photos.display().to_string());
+	assert_eq!(
+		listed["watches"][0]["path"],
+		photos.canonicalize().unwrap().display().to_string()
+	);
 	assert_eq!(listed["watches"][0]["available"], true);
 
 	let removed = client

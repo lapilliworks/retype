@@ -224,7 +224,7 @@ part of this document. Deferral is complete without it: the timer fires, and
 
 ## 13. Not built yet
 
-- Windows toast delivery and the signed notifier bundle. Linux actions, the macOS plain notification and the log fallback are built
+- Notification buttons on Windows and the signed notifier bundle. Linux actions, the macOS plain notification, the Windows toast and the log fallback are built
 - `retype://job/<id>` actions beyond the CLI's `undo`, `cancel` and `resolve`
 - The editor's view of a parked job
 

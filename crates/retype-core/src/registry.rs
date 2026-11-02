@@ -1399,7 +1399,7 @@ fn validate_command(tool: &Tool, label: &str, kind: &str, command: &str) -> Vec<
 		)];
 	}
 
-	match command.chars().find(|c| SHELL_METACHARACTERS.contains(c)) {
+	match command.chars().find(|c| is_metacharacter(*c)) {
 		Some(byte) => vec![fail(
 			Code::CfgValidation,
 			format!("{label}: tool '{name}' has {kind} '{command}', which contains the shell metacharacter '{byte}'"),
@@ -1409,10 +1409,16 @@ fn validate_command(tool: &Tool, label: &str, kind: &str, command: &str) -> Vec<
 }
 
 /// V5: characters that only mean something to a shell, which would make the
-/// command a program rather than a name.
-const SHELL_METACHARACTERS: &[char] = &[
-	';', '|', '&', '$', '<', '>', '`', '(', ')', '\\', '\'', '"', '*', '?', '[', ']', '#', '~',
-];
+/// command a program rather than a name. A backslash separates path components on
+/// Windows and is how a tool is named by absolute path there, so it is only an
+/// escape where a shell reads it as one.
+fn is_metacharacter(character: char) -> bool {
+	const SHELL_METACHARACTERS: &[char] = &[
+		';', '|', '&', '$', '<', '>', '`', '(', ')', '\'', '"', '*', '?', '[', ']', '#', '~',
+	];
+
+	SHELL_METACHARACTERS.contains(&character) || (!cfg!(windows) && character == '\\')
+}
 
 fn collect_format_names(formats: &BTreeMap<String, Format>) -> Vec<(String, String)> {
 	let mut names = Vec::new();
@@ -2493,6 +2499,19 @@ tier = 'exact'
 			codes(&with_tool(&command_tool("magick -density 300"))),
 			[Code::CfgValidation]
 		);
+	}
+
+	#[test]
+	#[cfg(unix)]
+	fn a_backslash_in_a_command_is_refused_where_a_shell_reads_it() {
+		assert_eq!(codes(&with_tool(&command_tool(r"magick\ alt"))), [Code::CfgValidation]);
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn a_windows_path_is_not_a_shell_metacharacter() {
+		Registry::load(&with_tool(&command_tool(r"C:\Tools\magick.exe")))
+			.expect("an absolute path names a tool rather than a program");
 	}
 
 	#[test]

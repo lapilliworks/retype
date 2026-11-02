@@ -12,11 +12,11 @@ Raw transcripts are kept in `docs/dev/measurement/probe/`, named `<platform>-<da
 
 Each run creates a temporary directory, watches it, and replays a scenario suite. Scenarios are split into a setup and an action so the correlation starts from a primed state, the way it does in the daemon when a file has existed for a while. For each action it prints the raw events, then what the name-pair strategy concluded, then what the identity strategy concluded.
 
-A conclusion is a fact, which says only that this name became that name in the same directory, and the intent the grammar reads from it. `intent=none` is therefore the answer for a rename that means nothing, such as a change of case: correlation does not know formats, and deciding where a stem ends needs the registry. The macOS and Windows transcripts predate that split; their raw events are unchanged and a re-run replaces them.
+A conclusion is a fact, which says only that this name became that name in the same directory, and the intent the grammar reads from it. `intent=none` is therefore the answer for a rename that means nothing, such as a change of case: correlation does not know formats, and deciding where a stem ends needs the registry. Every transcript here is from the probe revision that printed it; the 2026-10-29 files are kept as history.
 
 ## 1. Linux (inotify, notify 8)
 
-Measured 2026-10-29, transcript `docs/dev/measurement/probe/linux-2026-10-29.txt`.
+Measured 2026-11-02, transcript `docs/dev/measurement/probe/linux-2026-11-02.txt`.
 
 ### 1.1 Raw events
 
@@ -38,20 +38,22 @@ Alongside them, ordinary noise: `Create(File)`, `Access(Open(Any))`, `Modify(Dat
 | Rename case only | fact, no intent | fact, no intent |
 | Rename stem and extension | none | none |
 | Rename across directories | none | none |
-| Two renames in one window | two facts: `e.heic -> e.jpg`, `e.jpg -> e.webp` | one fact: `e.heic -> e.webp`, intent `webp` |
+| Two renames in one window | `e.heic -> e.webp`, intent `webp` | Same |
 | Rename over an existing file | `f.heic -> f.jpg` | Same |
 | Twenty renames in one gesture | twenty facts | twenty facts |
 | Rename then write | `h.heic -> h.jpg`, once | Same, once |
 | Rename then delete | `i.heic -> i.jpg` | none |
+| Rename while a job's files appear | `j.heic -> j.jpg` | Same |
 
 ### 1.3 What this establishes
 
 - **Identity correlation and name pairing agree on the simple cases**, so the fallback is safe
-- **They disagree on double renames, and identity is right.** The user's final intent was `webp`; the intermediate `jpg` never existed for long enough to convert, and converting it would produce a file the user did not ask for. Identity reports the net rename
+- **Both report the net rename.** A double rename is two moves; identity sees only where the file ended, and pairing sees both and collapses them with `coalesce`. The user's final intent was `webp`; the intermediate `jpg` never existed for long enough to convert, and converting it would produce a file nobody asked for
 - **Rename then delete yields nothing under identity**, which is correct and is worth relying on: the file is gone, so there is nothing to convert. The pair strategy would report a job for a path that no longer exists, and the dispatcher would have to fail it
 - **The filters behave**: case-only, stem change and cross-directory produce no fact under either strategy, per
 - **Batches are fine**: twenty renames in one gesture yield twenty facts, no loss, which the previous debouncer-based design could not promise
 - **Data events must be filtered**: a write after a rename arrives as an ordinary modify, and it is not a second trigger
+- **A new subdirectory's contents may not be in the batch.** In the churn scenario inotify reported the created directory but neither file created inside it, so the rename was still named by identity. The watch for a directory created at runtime is added after the event that announced it, and a file created before that happens is not in the stream
 
 ### 1.4 Duplicates
 
@@ -70,7 +72,7 @@ Getting this backwards is invisible on Linux, because inotify also reports both 
 
 ## 2. Windows (ReadDirectoryChangesW, notify 8)
 
-Measured 2026-10-29, transcript `docs/dev/measurement/probe/windows-2026-10-29.txt`, from the probe that ships. Two earlier runs are in the history and neither describes the platform: the first predated cross-event pairing, so its empty pairing column described the probe, and the second predated chain coalescing, so it showed a double rename as two facts.
+Measured 2026-11-02, transcript `docs/dev/measurement/probe/windows-2026-11-02.txt`, from the probe that ships. Earlier runs are in the history and none describes the platform: the first predated cross-event pairing, so its empty pairing column described the probe; the second predated chain coalescing and the file id read through a handle, so it showed a double rename as two facts and identity as empty.
 
 ### 2.1 Raw events
 
@@ -85,15 +87,16 @@ No `Both` event exists on this platform. A rename is always two events, each car
 
 | Scenario | Pair | Identity | Raw events of note |
 |---|---|---|---|
-| Rename in place | `a.heic -> a.jpg` | none | `From`, `To` |
+| Rename in place | `a.heic -> a.jpg` | same | `From`, `To` |
 | Rename case only | fact, no intent | fact, no intent | `Remove(Any)` first |
 | Rename stem and extension | none | none | `From`, `To` |
 | Rename across directories | none | none | `Remove(Any)`, `Create(Any)`, `Modify(Any)` on the parent |
-| Two renames in one window | `e.heic -> e.webp` | none | four events; coalesced to one fact |
-| Rename over an existing file | `f.heic -> f.jpg` | none | `Remove(Any)` for the victim first |
-| Twenty renames in one gesture | twenty facts | none | forty events, strictly interleaved |
-| Rename then write | `h.heic -> h.jpg`, once | none | two `Modify(Any)` afterwards |
+| Two renames in one window | `e.heic -> e.webp` | same | four events; coalesced to one fact |
+| Rename over an existing file | `f.heic -> f.jpg` | same | `Remove(Any)` for the victim first |
+| Twenty renames in one gesture | twenty facts | twenty facts | forty events, strictly interleaved |
+| Rename then write | `h.heic -> h.jpg`, once | same | two `Modify(Any)` afterwards |
 | Rename then delete | `i.heic -> i.jpg` | none | `Remove(Any)` afterwards |
+| Rename while a job's files appear | `j.heic -> j.jpg` | none | the created directory and its contents appear; the hard link takes the identity |
 
 ### 2.3 What this establishes
 
@@ -102,8 +105,8 @@ No `Both` event exists on this platform. A rename is always two events, each car
 - **Chains must be collapsed.** A double rename arrives as two facts with an intermediate file the user never asked for. Converting the intermediate would re-encode twice, which is why `coalesce` exists and why it lives in the library rather than in a caller
 - **Moves are not renames on Windows**, which satisfies for free. The opposite of Linux, where the same gesture arrives as a rename and is rejected only by the parent check
 - **Victims of a rename produce removals**, so a removal is not a failure and not a trigger
-- **`rename then delete` produces a fact here**, exactly where Linux suppresses it, because identity is unavailable. Dispatch therefore has to check that the target still exists and is a regular file, which `docs/watch.md` §7 requires and this transcript demonstrates. The gesture is rare, but the failure it prevents is not: a deleted name can be recreated within the same window by an unrelated file, and dispatching on the name alone would convert bytes the user never touched
-- **File identity is still unavailable.** `std` exposes no file id on Windows, so the identity column is empty by construction. Pairing plus coalescing covers every scenario above, which downgrades the Win32 shim from "required for correctness" to "required for robustness against a lost pair"
+- **`rename then delete` produces a fact here**, exactly where Linux suppresses it: pairing names both paths while identity has no sighting of the target, because the target is gone. Dispatch therefore has to check that the target still exists and is a regular file, which `docs/watch.md` §7 requires and this transcript demonstrates. The gesture is rare, but the failure it prevents is not: a deleted name can be recreated within the same window by an unrelated file, and dispatching on the name alone would convert bytes the user never touched
+- **File identity comes from a handle.** `std` metadata has no file id on Windows, so the watcher reads the volume and file index through `FileIdInfo`, with `BY_HANDLE_FILE_INFORMATION` as the fallback, the same source the journal uses for a produced output. The probe measures it now, and it agrees with pairing wherever the target still exists. The hard-link rule in `docs/watch.md` §7 is what keeps a link made beside the file from being read as a rename
 
 ### 2.4 Consequences
 
@@ -111,7 +114,7 @@ Three rules were written because of this platform, not guessed from it: cross-ev
 
 ## 3. macOS (FSEvents, notify 8)
 
-Measured 2026-10-29, transcript `docs/dev/measurement/probe/macos-2026-10-29.txt`. Paths in the transcript are normalised to `<tmp>`.
+Measured 2026-11-02, transcript `docs/dev/measurement/probe/macos-2026-11-02.txt`. Paths in the transcript are normalised to `<tmp>`.
 
 ### 3.1 Raw events
 
@@ -136,12 +139,15 @@ One event per path, never two, and no `From`, `To` or `Both`. A rename is indist
 | Twenty renames in one gesture | none | twenty facts |
 | Rename then write | none | one fact |
 | Rename then delete | none | none |
+| Rename while a job's files appear | none | none, the hard link takes the identity |
 
 ### 3.3 What this establishes
 
 - **Identity is the only mechanism here.** There is no pair of names to match, so `rename_from` and `rename_to` are dead code on this platform and the feed-order rule from §1.5 is load bearing rather than defensive
 - **No fallback exists.** On Linux and Windows a lost pair or a missing identity still leaves the other strategy. On macOS, a file whose identity is unreliable, such as one on a network mount or a dataless iCloud placeholder, is silently not converted. That is one more reason network filesystems are a separate stage rather than an afternoon of work
 - **Cross-directory moves are reported as renames** and rejected only by the parent check, which is the third distinct platform behaviour for the same gesture: a rename on Linux, delete plus create on Windows, a rename-shaped event here
+- **The watched root is reported.** Creating a subdirectory inside it delivers metadata events for the root itself, `Modify(Metadata(Any))` and sometimes `Create(Folder)` as well, and the daemon sees the same around the time a job creates its undo record. A directory is not a sighting, so the correlator forgets it; treating it as a file would make a directory whose name carries an extension a conversion, which `Sighting::of` already refuses
+- **Our own link under the watch takes the identity.** In the churn scenario the hard link is observed before the user's target, so the identity moves to a name in the subdirectory, where no in-place rename can be reported, and the target is then a second name the identity already has. That is why the daemon drops its state directory from the batch, `docs/watch.md` §7
 - **A rename followed by a delete yields nothing**, because identity correlation refuses a fact whose target is gone. The dispatch-time existence check is therefore redundant here and necessary on Windows, which is why it lives in the dispatcher rather than in the correlator
 - **Paths must be canonical.** FSEvents reports resolved paths, so `/var` arrives as `/private/var`. A watch root that is a symlink, or a path that traverses one, would otherwise produce two identities for one file. The daemon canonicalises roots at registration and canonicalises event paths before lookup. This is also why the probe canonicalises its temporary root, or every printed path is absolute
 
@@ -157,9 +163,9 @@ Not yet measured, and not before the port. The backend reports a single-path `An
 | Rename as separate `From` and `To` | yes, in addition | yes | no | no (expected) |
 | Cross-directory move reported as rename | yes | no | yes | unknown |
 | Rename followed by delete yields a fact | no | yes | no | unknown |
-| Parent directory appears in the stream | no | yes, on a move | no | unknown |
-| File identity available | yes | needs Win32 | yes | yes |
-| Primary strategy | identity, pairing as backup | pairing plus coalescing | identity only | identity only (expected) |
+| Directory paths in the stream | a created directory only | a created directory, and the target's parent on a move | a created directory, and the watched root when one is created | unknown |
+| File identity available | yes | yes, from a handle | yes | yes |
+| Primary strategy | identity, pairing as backup | pairing, identity as backup | identity only | identity only (expected) |
 | Rules the platform forced | duplicate suppression, feed order | cross-event pairing, chain coalescing, existence check | canonical paths; no fallback when identity is unavailable | pending |
 
 No single event shape covers all three, so the correlator accepts a two-path event, a pair of events, and a batch of single-path events with no rename kind at all. The translation lives in one place, `crates/retype-watch/src/lib.rs`, and is asserted twice: by unit tests over synthetic events for every shape, including shapes the running platform never produces, and by an integration test against a real watcher for the three outcomes that matter, in `crates/retype-watch/tests/rename_detection.rs`. `docs/watch.md` §7 records the resulting obligations.

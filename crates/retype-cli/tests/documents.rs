@@ -5,6 +5,9 @@
 //! declarations produce a readable file of the target format when the tool is
 //! there.
 
+#[path = "support/tools.rs"]
+mod tool_support;
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -77,6 +80,7 @@ fn convert(dir: &Path, state: &Path, target: &str) -> (std::process::Output, std
 #[test]
 fn markdown_becomes_a_readable_document_in_every_declared_target() {
 	if !pandoc() {
+		tool_support::unavailable("Pandoc on PATH");
 		return;
 	}
 
@@ -113,6 +117,7 @@ fn markdown_becomes_a_readable_document_in_every_declared_target() {
 #[test]
 fn the_pdf_engine_is_recorded_with_the_job() {
 	if !pandoc() {
+		tool_support::unavailable("Pandoc on PATH");
 		return;
 	}
 
@@ -135,7 +140,8 @@ fn the_pdf_engine_is_recorded_with_the_job() {
 
 	assert!(
 		explained.status.success(),
-		"{}",
+		"stdout: {}\nstderr: {}",
+		String::from_utf8_lossy(&explained.stdout),
 		String::from_utf8_lossy(&explained.stderr)
 	);
 

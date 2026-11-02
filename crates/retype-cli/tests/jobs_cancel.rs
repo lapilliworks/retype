@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -28,6 +30,9 @@ fn slow_config(dir: &Path) -> PathBuf {
 		format!(
 			"\
 version = 'retype-config-1'
+
+[notify]
+enabled = false
 
 [backends]
 prefer = ['slow']
@@ -98,7 +103,9 @@ fn a_running_job_can_be_cancelled() {
 	}
 
 	let source = photos.join("slow.png");
+	let before = support::observed(&state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
 	fs::rename(&source, photos.join("slow.webp")).unwrap();
 
 	// The job appears while it runs, which is what makes its id reachable.

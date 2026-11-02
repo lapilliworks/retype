@@ -56,6 +56,25 @@ impl Batch {
 	pub fn is_empty(&self) -> bool {
 		self.events.is_empty() && self.errors.is_empty()
 	}
+
+	/// Drop the events whose every path is under `prefix`.
+	///
+	/// The daemon's own state normally lives outside every watch, but nothing stops a
+	/// root from containing it, and the undo record is a hard link to a file the user
+	/// may rename. Correlated, it would take the identity of that file and the user's
+	/// rename would be silent.
+	pub fn without_prefix(self, prefix: &Path) -> Self {
+		let events = self
+			.events
+			.into_iter()
+			.filter(|event| !event.paths.iter().all(|path| path.starts_with(prefix)))
+			.collect();
+
+		Self {
+			events,
+			errors: self.errors,
+		}
+	}
 }
 
 /// Watch a directory and its subtree, sending events to the returned receiver.
@@ -104,11 +123,59 @@ pub fn collect(receiver: &mpsc::Receiver<notify::Result<Event>>, window: Window)
 
 /// Feed a batch through both strategies and return the facts it supports.
 pub fn feed(correlator: &mut Correlator, batch: &Batch) -> Vec<RenameFact> {
+	coalesce(raw_facts(correlator, batch))
+}
+
+/// The facts a batch supports, one per strategy, before rename chains collapse.
+///
+/// Kept apart from [`feed`] because a chain must not be joined through a rename
+/// this process made itself: the job's restore is not a step the user took.
+fn raw_facts(correlator: &mut Correlator, batch: &Batch) -> Vec<RenameFact> {
 	invalidate_renamed_directories(correlator, batch);
 	let mut facts = observe_names(correlator, batch);
 	facts.extend(observe_identity(correlator, batch));
 	correlator.end_batch();
-	coalesce(dedupe(facts))
+	dedupe(facts)
+}
+
+/// Feed a batch, keeping the sightings this process made itself current.
+///
+/// A job restores a renamed file to its source name before converting it, and records
+/// that move rather than trusting the platform to report it. By the time the restore's
+/// own batch is decided the file may have been renamed again, so the batch forgets the
+/// name the identity was recorded under. The identity is what carries the chain, so it
+/// is put back under the last name this process knows, and the rename that follows has
+/// something to correlate against.
+/// A sighting stays in `own` until the watcher has seen the file again under some
+/// name, so a platform that reports one path per event cannot lose the identity in a
+/// batch that names only the old one; the rename that follows would have nothing to
+/// correlate against.
+pub fn feed_with(correlator: &mut Correlator, batch: &Batch, own: &mut Vec<Sighting>) -> Vec<RenameFact> {
+	for sighting in own.iter() {
+		correlator.observe(sighting.clone());
+	}
+
+	let facts: Vec<RenameFact> = raw_facts(correlator, batch)
+		.into_iter()
+		// A fact that ends at a name this process just restored is the restore
+		// itself, and a chain through it would start at the job's output name.
+		.filter(|fact| !own.iter().any(|sighting| sighting.path == fact.target))
+		.collect();
+
+	for sighting in own.iter() {
+		if !correlator.knows_identity(&sighting.identity) {
+			correlator.observe(sighting.clone());
+		}
+	}
+
+	let seen: HashSet<_> = sightings(batch)
+		.iter()
+		.filter_map(|(_, sighting)| sighting.as_ref())
+		.map(|sighting| sighting.identity)
+		.collect();
+	own.retain(|sighting| !seen.contains(&sighting.identity));
+
+	coalesce(facts)
 }
 
 /// Record the identity of every file under a root, so a file that existed
@@ -122,10 +189,47 @@ pub fn prime(
 	correlator: &mut Correlator,
 	root: &Path,
 	recursive: bool,
+	admit: impl FnMut(&Path) -> bool,
+	stop: impl FnMut() -> bool,
+) -> usize {
+	scan(correlator, root, recursive, admit, stop).1
+}
+
+/// Record the identity of every file under a root and return the renames the tree
+/// itself proves.
+///
+/// A platform that dropped events says so in a batch (`needs_rescan`), and the events
+/// it lost are gone: a file that moved is under its new name with the identity the
+/// correlator remembers, so walking the tree recovers the rename the batch could not
+/// describe. [`prime`] discards these facts, because at startup there is nothing to
+/// have moved from.
+pub fn rescan(
+	correlator: &mut Correlator,
+	root: &Path,
+	recursive: bool,
+	admit: impl FnMut(&Path) -> bool,
+	stop: impl FnMut() -> bool,
+) -> (Vec<RenameFact>, usize) {
+	scan(correlator, root, recursive, admit, stop)
+}
+
+/// Whether the platform dropped events in this batch.
+///
+/// Such a batch is not a description of what happened: `docs/dev/measurement/events.md`
+/// §1.5 is void for it, and the caller has to take the tree itself as the truth.
+pub fn needs_rescan(batch: &Batch) -> bool {
+	!batch.errors.is_empty() || batch.events.iter().any(Event::need_rescan)
+}
+
+fn scan(
+	correlator: &mut Correlator,
+	root: &Path,
+	recursive: bool,
 	mut admit: impl FnMut(&Path) -> bool,
 	mut stop: impl FnMut() -> bool,
-) -> usize {
+) -> (Vec<RenameFact>, usize) {
 	let mut primed = 0;
+	let mut facts = Vec::new();
 
 	fn walk(
 		correlator: &mut Correlator,
@@ -134,6 +238,7 @@ pub fn prime(
 		admit: &mut impl FnMut(&Path) -> bool,
 		stop: &mut impl FnMut() -> bool,
 		primed: &mut usize,
+		facts: &mut Vec<RenameFact>,
 	) {
 		if stop() {
 			return;
@@ -156,7 +261,7 @@ pub fn prime(
 
 			if meta.is_dir() {
 				if recursive && admit(&path) {
-					walk(correlator, &path, true, admit, stop, primed);
+					walk(correlator, &path, true, admit, stop, primed, facts);
 				}
 				continue;
 			}
@@ -166,14 +271,16 @@ pub fn prime(
 			}
 
 			if let Some(sighting) = sighting(&path) {
-				correlator.observe(sighting);
+				if let Some(fact) = correlator.observe(sighting) {
+					facts.push(fact);
+				}
 				*primed += 1;
 			}
 		}
 	}
 
-	walk(correlator, root, recursive, &mut admit, &mut stop, &mut primed);
-	primed
+	walk(correlator, root, recursive, &mut admit, &mut stop, &mut primed, &mut facts);
+	(coalesce(dedupe(facts)), primed)
 }
 
 /// A directory rename changes every path beneath it without per-file events, so
@@ -289,46 +396,7 @@ fn sightings(batch: &Batch) -> Vec<(PathBuf, Option<Sighting>)> {
 }
 
 fn sighting(path: &Path) -> Option<Sighting> {
-	let meta = fs::symlink_metadata(path).ok()?;
-	// Directories appear in the stream, Windows reports the parent on a move,
-	// and a symlink is not a file we may convert. Recording them as absent
-	// forgets them instead of correlating them: without this a directory named
-	// `a.heic` renamed to `a.jpg` is a conversion.
-	if !meta.is_file() {
-		return None;
-	}
-
-	Some(Sighting {
-		path: path.to_path_buf(),
-		identity: identity(&meta)?,
-		links: links(&meta),
-	})
-}
-
-#[cfg(unix)]
-fn identity(meta: &fs::Metadata) -> Option<retype_core::correlate::Identity> {
-	use std::os::unix::fs::MetadataExt;
-	Some(retype_core::correlate::Identity {
-		device: meta.dev(),
-		inode: meta.ino(),
-	})
-}
-
-#[cfg(not(unix))]
-fn identity(_meta: &fs::Metadata) -> Option<retype_core::correlate::Identity> {
-	// `std` exposes no file identifier on Windows: `docs/dev/measurement/events.md` §2.
-	None
-}
-
-#[cfg(unix)]
-fn links(meta: &fs::Metadata) -> u64 {
-	use std::os::unix::fs::MetadataExt;
-	meta.nlink()
-}
-
-#[cfg(not(unix))]
-fn links(_meta: &fs::Metadata) -> u64 {
-	1
+	Sighting::of(path)
 }
 
 #[cfg(test)]
@@ -390,6 +458,57 @@ mod tests {
 	}
 
 	#[test]
+	fn the_daemons_own_state_is_not_part_of_the_batch() {
+		let state = Path::new("/watch/state");
+		let batch = batch(vec![
+			created(Path::new("/watch/state/undo/source.png")),
+			created(Path::new("/watch/photo.png")),
+			rename(RenameMode::Any, &[Path::new("/watch/photo.png")]),
+		]);
+
+		let kept = batch.without_prefix(state);
+
+		assert_eq!(kept.events.len(), 2, "the state event is dropped, the photo ones stay");
+		assert!(kept.events.iter().all(|event| event.paths.iter().any(|path| path == Path::new("/watch/photo.png"))));
+	}
+
+	#[test]
+	fn a_batch_that_says_events_were_dropped_asks_for_a_rescan() {
+		let dropped = Event::new(EventKind::Other)
+			.set_flag(notify::event::Flag::Rescan)
+			.add_path(PathBuf::from("/dir/photos"));
+
+		assert!(needs_rescan(&batch(vec![dropped])));
+
+		let renamed = rename(RenameMode::Any, &[Path::new("/dir/photos/a.heic")]);
+		assert!(!needs_rescan(&batch(vec![renamed])));
+
+		// An error from the watcher means the same thing: events may be missing.
+		let mut failed = batch(Vec::new());
+		failed.errors.push(notify::Error::generic("stream invalidated"));
+		assert!(needs_rescan(&failed));
+	}
+
+	#[test]
+	fn a_rescan_names_a_rename_whose_events_were_lost() {
+		let dir = dir();
+		let source = dir.path().join("photo.png");
+		let target = dir.path().join("photo.jpg");
+		fs::write(&source, b"pixels").unwrap();
+
+		let mut correlator = fresh();
+		prime(&mut correlator, dir.path(), true, |_| true, || false);
+
+		// The platform dropped the events; nothing reached the correlator.
+		fs::rename(&source, &target).unwrap();
+
+		let (facts, scanned) = rescan(&mut correlator, dir.path(), true, |_| true, || false);
+
+		assert_eq!(scanned, 1);
+		assert_eq!(sources(&facts), vec![(source, target)]);
+	}
+
+	#[test]
 	fn one_event_with_both_paths_is_a_fact() {
 		let dir = dir();
 		let source = dir.path().join("a.heic");
@@ -444,6 +563,149 @@ mod tests {
 		);
 
 		assert_eq!(facts.len(), 1, "one gesture, three events, one fact");
+	}
+
+	#[test]
+	fn a_rename_after_the_process_restored_the_name_is_still_a_fact() {
+		let dir = dir();
+		let source = dir.path().join("photo.png");
+		fs::write(&source, b"pixels").unwrap();
+
+		let mut correlator = fresh();
+		correlator.observe(retype_core::correlate::Sighting::of(&source).unwrap());
+
+		// macOS reports one path per event and the batch is decided after the move, so
+		// the old name is gone and the new one carries the identity.
+		let webp = dir.path().join("photo.webp");
+		fs::rename(&source, &webp).unwrap();
+		let facts = feed(
+			&mut correlator,
+			&batch(vec![
+				rename(RenameMode::Any, &[&source]),
+				rename(RenameMode::Any, &[&webp]),
+			]),
+		);
+		assert_eq!(sources(&facts), vec![(source.clone(), webp.clone())]);
+
+		// A job restores the bytes under the source name and records the move at the
+		// moment it makes it, because the platform may not report it.
+		fs::rename(&webp, &source).unwrap();
+		let own = retype_core::correlate::Sighting::of(&source).unwrap();
+
+		// The user renames again before the restore's own batch is decided, so that
+		// batch finds both names gone and forgets the identity it was recorded under.
+		let jpg = dir.path().join("photo.jpg");
+		fs::rename(&source, &jpg).unwrap();
+		let facts = feed_with(
+			&mut correlator,
+			&batch(vec![
+				rename(RenameMode::Any, &[&webp]),
+				rename(RenameMode::Any, &[&source]),
+			]),
+			&mut vec![own],
+		);
+		assert!(facts.is_empty(), "the restore's own batch is not a user rename");
+
+		// The user's rename still correlates, because the sighting this process made
+		// survived that batch.
+		let facts = feed_with(
+			&mut correlator,
+			&batch(vec![
+				rename(RenameMode::Any, &[&source]),
+				rename(RenameMode::Any, &[&jpg]),
+			]),
+			&mut Vec::new(),
+		);
+		assert_eq!(sources(&facts), vec![(source.clone(), jpg.clone())]);
+	}
+
+	#[test]
+	fn our_restore_does_not_chain_into_the_users_rename() {
+		let dir = dir();
+		let source = dir.path().join("photo.png");
+		let webp = dir.path().join("photo.webp");
+		let jpg = dir.path().join("photo.jpg");
+		fs::write(&source, b"pixels").unwrap();
+
+		// Linux reports the pair, and the job starts.
+		let mut correlator = fresh();
+		correlator.observe(Sighting::of(&source).unwrap());
+		fs::rename(&source, &webp).unwrap();
+		let facts = feed(&mut correlator, &batch(vec![rename(RenameMode::Both, &[&source, &webp])]));
+		assert_eq!(sources(&facts), vec![(source.clone(), webp.clone())]);
+
+		// The job restores the source name and records that move. The user renames the
+		// restored file before the restore's own pair is decided, so one batch carries
+		// both pairs.
+		fs::rename(&webp, &source).unwrap();
+		let mut own = vec![Sighting::of(&source).unwrap()];
+		fs::rename(&source, &jpg).unwrap();
+
+		let facts = feed_with(
+			&mut correlator,
+			&batch(vec![
+				rename(RenameMode::Both, &[&webp, &source]),
+				rename(RenameMode::Both, &[&source, &jpg]),
+			]),
+			&mut own,
+		);
+
+		assert_eq!(
+			sources(&facts),
+			vec![(source.clone(), jpg.clone())],
+			"the chain starts at the name the user renamed, not at our output"
+		);
+		assert!(own.is_empty(), "the watcher saw the file again");
+	}
+
+	#[test]
+	fn an_own_sighting_outlives_batches_that_name_only_the_old_path() {
+		let dir = dir();
+		let source = dir.path().join("photo.png");
+		let webp = dir.path().join("photo.webp");
+		let jpg = dir.path().join("photo.jpg");
+		fs::write(&source, b"pixels").unwrap();
+
+		let mut correlator = fresh();
+		correlator.observe(Sighting::of(&source).unwrap());
+		fs::rename(&source, &webp).unwrap();
+		feed(
+			&mut correlator,
+			&batch(vec![
+				rename(RenameMode::Any, &[&source]),
+				rename(RenameMode::Any, &[&webp]),
+			]),
+		);
+
+		// Our restore, then the user's rename: macOS reports one path per event, so the
+		// old name going away and the new one arriving land in different batches.
+		fs::rename(&webp, &source).unwrap();
+		let mut own = vec![Sighting::of(&source).unwrap()];
+
+		let facts = feed_with(
+			&mut correlator,
+			&batch(vec![rename(RenameMode::Any, &[&webp])]),
+			&mut own,
+		);
+		assert!(facts.is_empty());
+		assert_eq!(own.len(), 1, "the watcher has not seen the restored file yet");
+
+		fs::rename(&source, &jpg).unwrap();
+		let facts = feed_with(
+			&mut correlator,
+			&batch(vec![rename(RenameMode::Any, &[&source])]),
+			&mut own,
+		);
+		assert!(facts.is_empty(), "an absent path is not a sighting");
+		assert_eq!(own.len(), 1, "the identity outlives a batch that names only the old path");
+
+		let facts = feed_with(
+			&mut correlator,
+			&batch(vec![rename(RenameMode::Any, &[&jpg])]),
+			&mut own,
+		);
+		assert_eq!(sources(&facts), vec![(source.clone(), jpg.clone())]);
+		assert!(own.is_empty(), "the watcher saw the file again");
 	}
 
 	#[test]

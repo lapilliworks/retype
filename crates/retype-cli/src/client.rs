@@ -36,7 +36,7 @@ pub fn connect_or_spawn(state_dir: &Path, allow_spawn: bool) -> Result<Client> {
 		return Ok(client);
 	}
 
-	if !allow_spawn || autostart_suppressed() {
+	if !allow_spawn || spawn_suppressed() {
 		return Err(Error::DaemonUnavailable);
 	}
 
@@ -70,16 +70,54 @@ pub fn spawn_detached(state_dir: &Path) -> Result<PathBuf> {
 		command.env("RETYPE_CONFIG", config);
 	}
 
+	// This daemon was started by the CLI, not by the supervisor that started the
+	// CLI's shell. The variables are inherited down the whole session, and a
+	// systemd user unit for the terminal or a launchd-launched app sets them, so
+	// passing them on would claim a supervision that would never restart it.
+	command.env_remove("INVOCATION_ID").env_remove("XPC_SERVICE_NAME");
+
 	// Without this the child inherits the console and dies with it.
 	#[cfg(windows)]
 	{
 		use std::os::windows::process::CommandExt;
 		const DETACHED_PROCESS: u32 = 0x0000_0008;
 		command.creation_flags(DETACHED_PROCESS);
+		detach_handles()?;
 	}
 
 	command.spawn()?;
 	Ok(log)
+}
+
+/// Stop the daemon from inheriting the standard handles this process was given.
+///
+/// Windows hands every inheritable handle to a child, and the handles a caller
+/// uses to read this process's output must be inheritable or they could not have
+/// been passed to it at all. A daemon holding one would keep that pipe open for
+/// as long as it lives: `retype convert | cat` would not see the end of the output
+/// until the daemon stopped, and a caller that waits for the end of the output
+/// before it stops the daemon would wait for itself. The daemon's own standard
+/// handles are the log file and the null device, set above, so it needs none of
+/// ours.
+#[cfg(windows)]
+fn detach_handles() -> std::io::Result<()> {
+	use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation};
+	use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+
+	for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+		let handle = unsafe { GetStdHandle(which) };
+
+		// A process with no console has no standard handles to clear.
+		if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+			continue;
+		}
+
+		if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+			return Err(std::io::Error::last_os_error());
+		}
+	}
+
+	Ok(())
 }
 
 /// Wait for a daemon that was just spawned to answer.
@@ -114,8 +152,8 @@ pub fn wait_for_stop(state_dir: &Path, timeout: Duration) -> bool {
 	false
 }
 
-fn autostart_suppressed() -> bool {
-	std::env::var_os("RETYPE_NO_AUTOSTART").is_some_and(|value| value != "0" && !value.is_empty())
+fn spawn_suppressed() -> bool {
+	std::env::var_os("RETYPE_NO_SPAWN").is_some_and(|value| value != "0" && !value.is_empty())
 }
 
 /// `docs/dev/architecture/ipc.md` §1: the daemon's own account of itself, minus what a human does
@@ -140,6 +178,7 @@ pub fn describe_status(status: &Value) -> Vec<(String, String)> {
 		("skipped".to_string(), field("skipped")),
 		("placeholders".to_string(), field("placeholders")),
 		("primed".to_string(), field("primed")),
+		("observed".to_string(), field("observed")),
 		("watches".to_string(), watch_line(&status["watches"])),
 		("journal".to_string(), field("journal")),
 		("endpoint".to_string(), field("endpoint")),

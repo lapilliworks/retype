@@ -42,8 +42,9 @@ pub struct Request<'a> {
 }
 
 pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Result<ExitCode> {
-	let work = state_dir.join("fidelity");
-	let mut samples = Samples::new(registry, &work)?;
+	let workspace = crate::matrix::workspace(state_dir, "fidelity")?;
+	let work = workspace.path();
+	let mut samples = Samples::new(registry, work)?;
 
 	let directory = request
 		.fixtures
@@ -131,7 +132,7 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 			continue;
 		}
 
-		let checks = check_axes(&fixtures, &directory, source, &plan, &work);
+		let checks = check_axes(&fixtures, &directory, source, &plan, work);
 		let mut claim = claim_of(&plan, source, target, &samples);
 		claim.axes = kept(&checks);
 		claim.lost = dropped(&checks);

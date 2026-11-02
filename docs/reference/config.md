@@ -34,10 +34,14 @@ Environment variables, all optional:
 |---|---|
 | `RETYPE_STATE_DIR` | State directory, overriding platform defaults |
 | `RETYPE_CONFIG` | User configuration path, instead of the platform default. A daemon started by a client inherits the path the client used, so both read the same file |
+| `RETYPE_NO_SPAWN` | Clients never start the daemon; the command-line spelling is `--no-spawn` |
+| `RETYPE_LOG` | Verbosity, the same number `--verbose` counts, as a digit or a word: `error`, `warn`, `info`, `debug`, `trace` |
+| `RETYPE_FIXTURES` | Property fixtures for `retype fidelity`, instead of `fixtures/fidelity`; `--fixtures` wins |
+| `RETYPE_FIDELITY_MANIFEST` | Manifest `retype why` and `retype fidelity` read when no path is given; `retype fidelity`'s flags win |
 
 `--config <path>` names the user file for one invocation and wins over `RETYPE_CONFIG`. A file named that way has to exist: falling back to the built-in table would answer a different question than the one asked, so a missing one is `E_CFG_MISSING` rather than silence.
-| `RETYPE_NO_AUTOSTART` | Clients never start the daemon |
-| `RETYPE_LOG` | Verbosity, the same number `--verbose` counts, as a digit or a word: `error`, `warn`, `info`, `debug`, `trace` |
+
+Without either, the user file is `$XDG_CONFIG_HOME/retype/retype.toml` on Unix and `%APPDATA%\retype\retype.toml` on Windows; `XDG_CONFIG_HOME` defaults to `~/.config`. macOS is Unix here: the user file lives in `~/.config` and not in `~/Library/Application Support`, so configuration, state and data share one tree on the one platform where the two conventions disagree. There is no alternate path and no symlink between them.
 
 Merge rules per key type:
 
@@ -300,7 +304,7 @@ on_overflow = 'ask'
 
 `retention` is read as the grammar's duration class, so it is spelled the way an intent spells one: `w`, `d`, `h`, `m` and `s`, in that order, and a unit may be skipped. Months are not a unit, because a month is not a fixed number of seconds. `quota` is read as the size class, so `gb` is decimal and `gib` binary, `docs/grammar.md` §7.
 
-Retention decides two things at once, deliberately rather than incidentally: how long an undo record survives, and therefore how long the job it describes can be resumed, `docs/dev/architecture/state.md` §5.2. Records are dropped at startup and never during a conversion.
+Retention expires completed, unpinned undo records. Unfinished recovery records remain pinned against both expiry and quota eviction, including across restart. A record also stays pinned when a failed disposal cannot prove the live source is still the original, because the backup may then be the only copy. A successful resume releases the pin but retains its backup. Disabling undo, insufficient quota, or unexpected backup failure retains the live original rather than silently permitting permanent removal, `docs/dev/architecture/state.md` §5.
 
 The quota is a second, independent bound: retention bounds records by age and the quota bounds them by size. `ask` is the intended answer and behaves as `evict` until notifications exist to ask with.
 
@@ -323,7 +327,7 @@ repair = 'ask'
 |---|---|---|
 | `mode` | `ask` | `ask` defers by `docs/deferral.md` §3; `now` skips the two cost triggers and still parks a job that cannot run as asked |
 | `above` | `10s` | Estimated duration above which a watched rename is parked |
-| `above_without_undo` | `2s` | The same, for a job that consumes its source and keeps no record of it |
+| `above_without_undo` | `2s` | The same when no undo record can be kept; the source is retained |
 | `pause` | `1h` | How long a parked job waits before it runs anyway |
 | `repair` | `ask` | `ask` parks a job that cannot run as asked; `convert` runs it without the tokens that could not be carried, `docs/deferral.md` §4 |
 
@@ -402,7 +406,7 @@ A key the entry does not declare is refused as `E_CFG_UNKNOWN_KEY` before any ru
 | V9 | A format or tool referenced by an operation, fragment or `backends.prefer` but not declared |
 | V10 | A tier outside `exact`, `converted`, `delegated`, `docs/fidelity.md` |
 | V11 | `version_min` that does not parse as a version |
-| V13 | A per-directory file defining `tools`, `formats`, `ops`, `presets`, or any key of the `[watch]` table |
+| V13 | A per-directory file defining `tools`, `formats`, `ops`, `presets`, `backends`, `undo`, or any key of the `[watch]` table |
 | V16 | `components` declared by a tool that declares no `probe` |
 | V17 | `version_min` declared by a tool that declares no `probe`, since the floor could then never be met |
 | V18 | A `families` entry naming a family that does not exist |
@@ -410,7 +414,7 @@ A key the entry does not declare is refused as `E_CFG_UNKNOWN_KEY` before any ru
 | V20 | A `[bench.sample]` naming a family with no `[bench.seed]`, or a tool that is not declared |
 | V21 | A sample argv naming a placeholder other than `{output}` |
 | V22 | A `native` codec on a format whose family is not `archive` |
-| V23 | A `[deferral]` key in a directory file, other than `confirm` |
+| V23 | A `[deferral]` key in a directory file, other than `confirm`, which is the same key as the top-level spelling |
 | V24 | A `pause` of zero, a deferral value that is not a duration, or a `mode` or `repair` outside the two it accepts |
 
 V12 named an in-process backend and was retired with it. The number is not reused, so that a configuration error reported against an older build stays identifiable.
@@ -470,6 +474,6 @@ actions = true
 | `enabled` | `true` | Whether the daemon says what a batch did. Off is a supported answer: it then says nothing except in its own log |
 | `actions` | `true` | Whether the notification carries an Undo button, on a platform that has buttons |
 
-One notification per rename batch, after its last job settles, so a directory of photographs is one interruption rather than twelve. It says what happened, not what was attempted: `3 converted`, or `1 converted, 1 failed (a.heic: magick is not installed)`, or `1 parked; retype jobs --interactive decides what happens`.
+One notification per rename batch, after its last job settles, so a directory of photographs is one interruption rather than twelve. It says what happened, not what was attempted, and it names every file and what came of it: `3 converted (a.heic → a.jpg, b.heic → b.jpg, c.heic → c.jpg)`, `1 converted (d.heic → d.jpg), 1 failed (e.heic: magick exited 1: no decode delegate)`, `1 converted (f.heic → f.jpg; dropped quality80)`, `1 cancelled (g.heic), 1 superseded (h.heic)`, or `1 parked (i.heic: cost); the deferral timer will run it`. A failure carries the tool's own diagnosis, a partial conversion names the output it missed, and a job that needs attention says where to decide: `1 parked (j.heic: intent); retype jobs --interactive decides what happens`. Any group with more than three jobs says `and N more` rather than growing without bound.
 
 The button is Undo, and it reverses every job of the batch that has a record. Tweak belongs to the editor and to the `retype://` handler, both of which are a later release's later half.

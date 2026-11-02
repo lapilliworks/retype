@@ -19,10 +19,53 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 /// Filesystem identity of a file: device and inode, or volume and file id.
+///
+/// `high` is the top half of a 128-bit Windows file id, which ReFS uses; NTFS
+/// and every Unix filesystem leave it zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Identity {
 	pub device: u64,
 	pub inode: u64,
+	pub high: u64,
+}
+
+impl Identity {
+	/// The identity this platform reports for the file at `path`.
+	///
+	/// Unix reads the device and inode from the metadata. Windows has neither in
+	/// `std`, so the volume and file id come from a handle, the same source the
+	/// journal records for a produced output.
+	pub fn of(path: &Path) -> Option<Self> {
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::MetadataExt;
+
+			let metadata = std::fs::metadata(path).ok()?;
+
+			Some(Self {
+				device: metadata.dev(),
+				inode: metadata.ino(),
+				high: 0,
+			})
+		}
+
+		#[cfg(windows)]
+		{
+			let (device, file, _) = crate::job::windows_file_id(path)?;
+
+			Some(Self {
+				device,
+				inode: file as u64,
+				high: (file >> 64) as u64,
+			})
+		}
+
+		#[cfg(not(any(unix, windows)))]
+		{
+			let _ = path;
+			None
+		}
+	}
 }
 
 /// What a rename fact says: this path became that path, in one directory.
@@ -42,9 +85,59 @@ pub struct RenameFact {
 pub struct Sighting {
 	pub path: PathBuf,
 	pub identity: Identity,
-	/// Link count. Above one, identity is ambiguous between paths, so it is not
-	/// used for correlation.
+	/// Link count. Multiple names are ambiguous while the previously known name still exists.
 	pub links: u64,
+}
+
+impl Sighting {
+	/// The sighting this platform reports for the file at `path`, or nothing when
+	/// the path is gone or is not a regular file.
+	pub fn of(path: &Path) -> Option<Self> {
+		let metadata = std::fs::symlink_metadata(path).ok()?;
+
+		// Directories appear in the stream, Windows reports the parent on a move, and
+		// a symlink is not a file we may convert. Recording them as absent forgets them
+		// instead of correlating them: without this a directory named `a.heic` renamed
+		// to `a.jpg` is a conversion.
+		if !metadata.is_file() {
+			return None;
+		}
+
+		#[cfg(unix)]
+		let (identity, links) = {
+			use std::os::unix::fs::MetadataExt;
+			(
+				Identity {
+					device: metadata.dev(),
+					inode: metadata.ino(),
+					high: 0,
+				},
+				metadata.nlink(),
+			)
+		};
+
+		#[cfg(windows)]
+		let (identity, links) = {
+			let info = crate::job::windows_file_info(path)?;
+			(
+				Identity {
+					device: info.volume,
+					inode: info.file as u64,
+					high: (info.file >> 64) as u64,
+				},
+				info.links,
+			)
+		};
+
+		#[cfg(not(any(unix, windows)))]
+		let (identity, links) = (Identity::of(path)?, 1);
+
+		Some(Self {
+			path: path.to_path_buf(),
+			identity,
+			links,
+		})
+	}
 }
 
 /// Bounded identity map with insertion-order eviction.
@@ -88,9 +181,21 @@ impl Correlator {
 	/// last seen under a different path.
 	pub fn observe(&mut self, sighting: Sighting) -> Option<RenameFact> {
 		if sighting.links > 1 {
-			// Ambiguous between names; do not correlate by identity.
-			self.forget(&sighting.path);
-			return None;
+			// A hard link gives one identity more than one name, and that is ambiguous
+			// only while the name we knew is still there: a link created beside it must
+			// not read as a rename, while a rename leaves the old name gone.
+			//
+			// User-created hard links must not trigger conversions. Identity is also
+			// the only way some platforms report a genuine rename.
+			let crowded = self
+				.by_identity
+				.get(&sighting.identity)
+				.is_some_and(|previous| previous != &sighting.path && previous.exists());
+
+			if crowded {
+				self.forget(&sighting.path);
+				return None;
+			}
 		}
 
 		let fact = match self.by_identity.get(&sighting.identity) {
@@ -140,10 +245,23 @@ impl Correlator {
 		fact
 	}
 
+	/// Whether this identity is still recorded under some path.
+	pub fn knows_identity(&self, identity: &Identity) -> bool {
+		self.by_identity.contains_key(identity)
+	}
+
 	/// Forget a path that no longer exists.
+	///
+	/// The identity is dropped only when this path is still the one it belongs to.
+	/// A batch that reports a rename names both the old and the new path, and the
+	/// new one is observed before the old one is forgotten; dropping the identity
+	/// then would leave the file that just moved with no identity at all, and the
+	/// next rename of it would be silent.
 	pub fn forget(&mut self, path: &Path) {
 		if let Some(identity) = self.by_path.remove(path) {
-			self.by_identity.remove(&identity);
+			if self.by_identity.get(&identity).is_some_and(|current| current == path) {
+				self.by_identity.remove(&identity);
+			}
 		}
 	}
 
@@ -163,10 +281,22 @@ impl Correlator {
 	}
 
 	fn remember(&mut self, path: PathBuf, identity: Identity) {
+		// A path that now carries another identity does not stand for the old one.
 		if let Some(previous) = self.by_path.insert(path.clone(), identity) {
-			self.by_identity.remove(&previous);
+			if self.by_identity.get(&previous).is_some_and(|current| current == &path) {
+				self.by_identity.remove(&previous);
+			}
 		}
-		self.by_identity.insert(identity, path.clone());
+
+		// One identity belongs to one path: a rename moves it, and the old name has
+		// to leave `by_path` too, or forgetting that stale name would drop the
+		// identity that now belongs here.
+		if let Some(old) = self.by_identity.insert(identity, path.clone()) {
+			if old != path {
+				self.by_path.remove(&old);
+			}
+		}
+
 		self.order.push_back(path);
 
 		while self.by_identity.len() > self.capacity {
@@ -265,9 +395,14 @@ fn stem_prefix(name: &str) -> &str {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::fs;
 
 	fn id(inode: u64) -> Identity {
-		Identity { device: 1, inode }
+		Identity {
+			device: 1,
+			inode,
+			high: 0,
+		}
 	}
 
 	fn sighting(path: &str, inode: u64) -> Sighting {
@@ -294,6 +429,26 @@ mod tests {
 
 		assert_eq!(rename.source, PathBuf::from("/dir/photo.heic"));
 		assert_eq!(rename.target, PathBuf::from("/dir/photo.webp+q80"));
+	}
+
+	#[test]
+	fn a_batch_that_forgets_the_old_name_keeps_the_new_identity() {
+		// macOS reports one path per event, so a rename arrives as the old name and
+		// the new name in the same batch. The new one is observed first and the old
+		// one forgotten second, and the file that just moved has to keep its identity
+		// for the rename that follows.
+		let mut correlator = Correlator::new(16);
+		correlator.observe(sighting("/dir/photo.heic", 1));
+
+		let moved = correlator.observe(sighting("/dir/photo.jpg", 1)).unwrap();
+		assert_eq!(moved.source, PathBuf::from("/dir/photo.heic"));
+		correlator.forget(Path::new("/dir/photo.heic"));
+
+		let next = correlator
+			.observe(sighting("/dir/photo.webp", 1))
+			.expect("the moved file still has an identity");
+		assert_eq!(next.source, PathBuf::from("/dir/photo.jpg"));
+		assert_eq!(next.target, PathBuf::from("/dir/photo.webp"));
 	}
 
 	#[test]
@@ -343,22 +498,46 @@ mod tests {
 	}
 
 	#[test]
-	fn hard_link_is_not_correlated() {
-		let mut correlator = Correlator::new(16);
-		correlator.observe(Sighting {
-			path: PathBuf::from("/dir/photo.heic"),
-			identity: id(1),
-			links: 2,
-		});
-		assert!(correlator.is_empty());
+	fn a_hard_link_beside_the_known_name_is_not_a_rename() {
+		let dir = tempfile::tempdir().unwrap();
+		let source = dir.path().join("photo.heic");
+		let link = dir.path().join("photo.png");
+		fs::write(&source, b"heic").unwrap();
 
-		let mut linked = Correlator::new(16);
-		linked.observe(Sighting {
-			path: PathBuf::from("/dir/photo.heic"),
-			identity: id(1),
-			links: 2,
-		});
-		assert!(linked.observe(sighting("/dir/photo.jpg", 1)).is_none());
+		let mut correlator = Correlator::new(16);
+		correlator.observe(Sighting::of(&source).unwrap());
+
+		fs::hard_link(&source, &link).unwrap();
+		let linked = Sighting::of(&link).unwrap();
+		assert_eq!(linked.links, 2, "the fixture is a hard link");
+		assert!(correlator.observe(linked).is_none(), "a link is not a rename");
+	}
+
+	#[test]
+	fn a_hard_linked_file_that_moved_is_a_rename() {
+		let dir = tempfile::tempdir().unwrap();
+		let undo = dir.path().join("undo");
+		fs::create_dir(&undo).unwrap();
+		let source = dir.path().join("photo.png");
+		let target = dir.path().join("photo.jpg");
+		fs::write(&source, b"pixels").unwrap();
+
+		// The first sighting is before any link exists, as the watcher sees it.
+		let mut correlator = Correlator::new(16);
+		correlator.observe(Sighting::of(&source).unwrap());
+
+		// A second user-created link must not hide a genuine rename.
+		fs::hard_link(&source, undo.join("source.png")).unwrap();
+		fs::rename(&source, &target).unwrap();
+
+		let moved = Sighting::of(&target).unwrap();
+		assert_eq!(moved.links, 2, "the fixture still has another link");
+		let fact = correlator
+			.observe(moved)
+			.expect("the old name is gone, so nothing is ambiguous");
+
+		assert_eq!(fact.source, source);
+		assert_eq!(fact.target, target);
 	}
 
 	#[test]

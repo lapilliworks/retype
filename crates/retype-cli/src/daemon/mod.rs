@@ -21,6 +21,7 @@ mod server;
 pub mod signals;
 pub mod supervision;
 pub mod timer;
+mod transaction;
 pub mod watcher;
 
 pub use server::Server;
@@ -55,6 +56,7 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	}
 
 	let mut server = Server::open(&state_dir)?;
+	server.set_supervisor(supervision::supervisor());
 	let shared = server.shared();
 	let pool = server.pool();
 	let watcher = watcher::start(shared, std::sync::Arc::clone(&pool), &state_dir)?;
@@ -111,6 +113,7 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 
 	let _lock = Lock::acquire(&state_dir.join("lock"), &state_dir)?;
 	let mut server = Server::open(&state_dir)?;
+	server.set_supervisor(supervision::supervisor());
 	let shared = server.shared();
 	let pool = server.pool();
 	let watcher = watcher::start(shared, std::sync::Arc::clone(&pool), &state_dir)?;

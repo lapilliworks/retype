@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -22,6 +24,9 @@ fn slow_config(dir: &Path, seconds: u32) -> PathBuf {
 		format!(
 			"\
 version = 'retype-config-1'
+
+[notify]
+enabled = false
 
 [backends]
 prefer = ['slow']
@@ -134,7 +139,9 @@ impl Fixture {
 	/// Start a job and wait until it is running, so the signal arrives mid-flight.
 	fn start_job(&self) {
 		let source = self.photos.join("slow.png");
+		let before = support::observed(&self.state);
 		fs::write(&source, b"pixels").unwrap();
+		support::observe(&self.state, before);
 		fs::rename(&source, self.photos.join("slow.webp")).unwrap();
 
 		let deadline = Instant::now() + Duration::from_secs(20);
@@ -193,7 +200,10 @@ fn a_stop_signal_drains_the_job_it_interrupted() {
 	// The job that was in flight finished, and the file is where its bytes belong.
 	assert_eq!(fixture.state_of_job().as_deref(), Some("done"), "{}", fixture.journal());
 	assert!(fixture.photos.join("slow.webp").exists(), "the output is there");
-	assert!(!fixture.photos.join("slow.png").exists(), "the source is consumed");
+	assert!(
+		fixture.photos.join("slow.png").exists(),
+		"an unvalidated copy backend retains its source"
+	);
 	assert!(
 		!fixture.state.join("endpoint").exists(),
 		"no path looks like a live daemon"

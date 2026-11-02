@@ -1,0 +1,170 @@
+   Compiling retype-cli v0.1.0 (/home/i/Works/retype/worktrees/data-safety-review/crates/retype-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+     Running tests/data_safety_audit.rs (target/debug/deps/data_safety_audit-e2c5338a7d0044b0)
+
+running 18 tests
+test a_dangling_symlink_is_an_occupied_restore_destination ... FAILED
+test a_stale_temporary_input_is_not_truncated_through_a_hard_link ... FAILED
+test an_output_that_appears_while_converting_is_not_overwritten_without_force ... FAILED
+test cancellation_after_a_linked_output_keeps_the_only_original_copy ... FAILED
+test does_not_accept_a_stale_staged_file_from_an_earlier_run ... FAILED
+test finishing_a_partial_resume_keeps_the_original_backup_for_undo ... FAILED
+test honors_an_explicit_keep_source_group ... FAILED
+test keeps_the_original_when_one_requested_output_fails ... FAILED
+test keeps_the_source_when_undo_save_fails ... FAILED
+test output_paths_through_a_directory_symlink_cannot_overwrite_the_input ... FAILED
+test output_staging_does_not_share_a_path_between_jobs ... FAILED
+test quota_eviction_does_not_remove_an_active_jobs_backup ... FAILED
+test rejects_an_empty_output_before_deleting_the_source ... FAILED
+test rejects_invalid_format_bytes_before_deleting_the_source ... FAILED
+test resume_reads_the_recorded_original_not_a_new_file_at_the_source_name ... FAILED
+test source_disposal_does_not_delete_a_file_that_replaced_the_input ... FAILED
+test undo_does_not_remove_a_blocking_file_the_partial_job_never_produced ... FAILED
+test waits_for_a_detached_writer_before_committing_and_deleting_the_source ... FAILED
+
+failures:
+
+---- a_dangling_symlink_is_an_occupied_restore_destination stdout ----
+
+thread 'a_dangling_symlink_is_an_occupied_restore_destination' (7718) panicked at crates/retype-cli/tests/data_safety_audit.rs:299:5:
+restore clobbered a symlink
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- a_stale_temporary_input_is_not_truncated_through_a_hard_link stdout ----
+
+thread 'a_stale_temporary_input_is_not_truncated_through_a_hard_link' (7719) panicked at crates/retype-cli/tests/data_safety_audit.rs:284:5:
+assertion `left == right` failed: copy fallback truncated its own source inode
+  left: []
+ right: [137, 80, 78, 71, 32, 111, 114, 105, 103, 105, 110, 97, 108, 32, 98, 121, 116, 101, 115, 32, 116, 104, 97, 116, 32, 109, 117, 115, 116, 32, 115, 117, 114, 118, 105, 118, 101]
+
+---- an_output_that_appears_while_converting_is_not_overwritten_without_force stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'an_output_that_appears_while_converting_is_not_overwritten_without_force' (7720) panicked at crates/retype-cli/tests/data_safety_audit.rs:239:5:
+assertion `left != right` failed: commit clobbered a newly occupied output
+  left: Done
+ right: Done
+
+---- cancellation_after_a_linked_output_keeps_the_only_original_copy stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'cancellation_after_a_linked_output_keeps_the_only_original_copy' (7728) panicked at crates/retype-cli/tests/data_safety_audit.rs:212:5:
+cancel removed the only original backup
+
+---- does_not_accept_a_stale_staged_file_from_an_earlier_run stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'does_not_accept_a_stale_staged_file_from_an_earlier_run' (7739) panicked at crates/retype-cli/tests/data_safety_audit.rs:137:5:
+no-op committed stale data
+
+---- finishing_a_partial_resume_keeps_the_original_backup_for_undo stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'finishing_a_partial_resume_keeps_the_original_backup_for_undo' (7746) panicked at crates/retype-cli/tests/data_safety_audit.rs:377:5:
+successful resume deleted the original backup
+
+---- honors_an_explicit_keep_source_group stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'honors_an_explicit_keep_source_group' (7757) panicked at crates/retype-cli/tests/data_safety_audit.rs:159:5:
+keep-source group was ignored
+
+---- keeps_the_original_when_one_requested_output_fails stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+retype: /tmp/.tmprNlV1S/photo.jpg: sh exited exit status: 1
+
+thread 'keeps_the_original_when_one_requested_output_fails' (7765) panicked at crates/retype-cli/tests/data_safety_audit.rs:151:5:
+partial job deleted its source
+
+---- keeps_the_source_when_undo_save_fails stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+retype: cannot keep /tmp/.tmpGjIamB/photo.webp for undo: Is a directory (os error 21)
+
+thread 'keeps_the_source_when_undo_save_fails' (7775) panicked at crates/retype-cli/tests/data_safety_audit.rs:180:5:
+undo failed but original was permanently removed
+
+---- output_paths_through_a_directory_symlink_cannot_overwrite_the_input stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'output_paths_through_a_directory_symlink_cannot_overwrite_the_input' (7783) panicked at crates/retype-cli/tests/data_safety_audit.rs:263:5:
+assertion `left == right` failed: aliased output overwrote the original input
+  left: [99, 111, 110, 118, 101, 114, 116, 101, 100]
+ right: [137, 80, 78, 71, 32, 111, 114, 105, 103, 105, 110, 97, 108, 32, 98, 121, 116, 101, 115, 32, 116, 104, 97, 116, 32, 109, 117, 115, 116, 32, 115, 117, 114, 118, 105, 118, 101]
+
+---- output_staging_does_not_share_a_path_between_jobs stdout ----
+
+thread 'output_staging_does_not_share_a_path_between_jobs' (7790) panicked at crates/retype-cli/tests/data_safety_audit.rs:312:5:
+assertion `left != right` failed: concurrent jobs share staged output ownership
+  left: "/tmp/.tmp6XsoNz/.retype-tmp.photo.webp"
+ right: "/tmp/.tmp6XsoNz/.retype-tmp.photo.webp"
+
+---- quota_eviction_does_not_remove_an_active_jobs_backup stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'quota_eviction_does_not_remove_an_active_jobs_backup' (7791) panicked at crates/retype-cli/tests/data_safety_audit.rs:358:5:
+quota discarded a running job's backup
+
+---- rejects_an_empty_output_before_deleting_the_source stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'rejects_an_empty_output_before_deleting_the_source' (7796) panicked at crates/retype-cli/tests/data_safety_audit.rs:109:5:
+zero-byte output was accepted and the original was deleted: Done
+
+---- rejects_invalid_format_bytes_before_deleting_the_source stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'rejects_invalid_format_bytes_before_deleting_the_source' (7803) panicked at crates/retype-cli/tests/data_safety_audit.rs:121:5:
+invalid WebP was accepted and the original was deleted: Done
+
+---- resume_reads_the_recorded_original_not_a_new_file_at_the_source_name stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'resume_reads_the_recorded_original_not_a_new_file_at_the_source_name' (7810) panicked at crates/retype-cli/tests/data_safety_audit.rs:395:5:
+assertion `left == right` failed: resume converted the unrelated replacement instead of the recorded original
+  left: [97, 32, 110, 101, 119, 32, 117, 110, 114, 101, 108, 97, 116, 101, 100, 32, 115, 111, 117, 114, 99, 101, 32, 102, 105, 108, 101]
+ right: [137, 80, 78, 71, 32, 111, 114, 105, 103, 105, 110, 97, 108, 32, 98, 121, 116, 101, 115, 32, 116, 104, 97, 116, 32, 109, 117, 115, 116, 32, 115, 117, 114, 118, 105, 118, 101]
+
+---- source_disposal_does_not_delete_a_file_that_replaced_the_input stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'source_disposal_does_not_delete_a_file_that_replaced_the_input' (7821) panicked at crates/retype-cli/tests/data_safety_audit.rs:226:5:
+disposal deleted a replacement file it never converted
+
+---- undo_does_not_remove_a_blocking_file_the_partial_job_never_produced stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'undo_does_not_remove_a_blocking_file_the_partial_job_never_produced' (7830) panicked at crates/retype-cli/tests/data_safety_audit.rs:409:5:
+undo deleted an unrelated collision file
+
+---- waits_for_a_detached_writer_before_committing_and_deleting_the_source stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'waits_for_a_detached_writer_before_committing_and_deleting_the_source' (7838) panicked at crates/retype-cli/tests/data_safety_audit.rs:424:5:
+assertion `left == right` failed: parent exited, but helper had not finished when output was committed
+  left: [112, 97, 114, 116, 105, 97, 108]
+ right: [112, 97, 114, 116, 105, 97, 108, 99, 111, 109, 112, 108, 101, 116, 101, 100]
+
+
+failures:
+    a_dangling_symlink_is_an_occupied_restore_destination
+    a_stale_temporary_input_is_not_truncated_through_a_hard_link
+    an_output_that_appears_while_converting_is_not_overwritten_without_force
+    cancellation_after_a_linked_output_keeps_the_only_original_copy
+    does_not_accept_a_stale_staged_file_from_an_earlier_run
+    finishing_a_partial_resume_keeps_the_original_backup_for_undo
+    honors_an_explicit_keep_source_group
+    keeps_the_original_when_one_requested_output_fails
+    keeps_the_source_when_undo_save_fails
+    output_paths_through_a_directory_symlink_cannot_overwrite_the_input
+    output_staging_does_not_share_a_path_between_jobs
+    quota_eviction_does_not_remove_an_active_jobs_backup
+    rejects_an_empty_output_before_deleting_the_source
+    rejects_invalid_format_bytes_before_deleting_the_source
+    resume_reads_the_recorded_original_not_a_new_file_at_the_source_name
+    source_disposal_does_not_delete_a_file_that_replaced_the_input
+    undo_does_not_remove_a_blocking_file_the_partial_job_never_produced
+    waits_for_a_detached_writer_before_committing_and_deleting_the_source
+
+test result: FAILED. 0 passed; 18 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.84s
+
+error: test failed, to rerun pass `-p retype-cli --test data_safety_audit`

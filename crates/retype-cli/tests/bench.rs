@@ -119,6 +119,35 @@ fn a_measured_pair_is_written_and_then_used_by_explain() {
 }
 
 #[test]
+fn repeated_measurements_do_not_reuse_or_overwrite_previous_artifacts() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let sample = dir.path().join("pixels.png");
+	fs::write(&sample, b"sample bytes").unwrap();
+	let config = config(dir.path(), &sample);
+	let old_output = state.join("bench/png-to-webp.webp");
+	fs::create_dir_all(old_output.parent().unwrap()).unwrap();
+	fs::write(&old_output, b"an earlier artifact").unwrap();
+
+	for _ in 0..2 {
+		let ran = retype()
+			.args(["bench", "--pair", "png:webp"])
+			.arg("--state-dir")
+			.arg(&state)
+			.env("RETYPE_CONFIG", &config)
+			.output()
+			.unwrap();
+		assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+		assert_eq!(fs::read(&old_output).unwrap(), b"an earlier artifact");
+		assert_eq!(
+			fs::read_dir(state.join("bench")).unwrap().count(),
+			1,
+			"scratch directories are retired"
+		);
+	}
+}
+
+#[test]
 fn a_pair_that_is_not_a_pair_is_a_usage_error() {
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");

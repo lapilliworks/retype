@@ -61,3 +61,29 @@ fn a_shell_this_build_does_not_know_is_a_usage_error() {
 
 	assert_eq!(ran.status.code(), Some(2), "clap rejects the value");
 }
+
+#[test]
+fn the_version_flag_answers_in_json_when_asked() {
+	let ran = retype().args(["--json", "--version"]).output().unwrap();
+	assert!(ran.status.success());
+
+	let parsed: serde_json::Value =
+		serde_json::from_slice(&ran.stdout).expect("one JSON object, not plain text");
+	assert_eq!(parsed["v"], "retype-cli-json-1");
+	assert_eq!(parsed["ok"], true);
+	assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
+fn a_parser_error_is_an_envelope_when_json_was_asked_for() {
+	let ran = retype().args(["--json", "uncompressed"]).output().unwrap();
+
+	assert_eq!(ran.status.code(), Some(2));
+	assert!(ran.stderr.is_empty(), "{}", String::from_utf8_lossy(&ran.stderr));
+
+	let parsed: serde_json::Value = serde_json::from_slice(&ran.stdout).expect("one JSON object");
+	assert_eq!(parsed["v"], "retype-cli-json-1");
+	assert_eq!(parsed["ok"], false);
+	assert_eq!(parsed["error"]["code"], "E_USAGE_ARGS");
+	assert_eq!(parsed["error"]["category"], "usage");
+}

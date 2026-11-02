@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -23,6 +25,9 @@ fn copy_config(dir: &Path) -> PathBuf {
 		format!(
 			"\
 version = 'retype-config-1'
+
+[notify]
+enabled = false
 
 [backends]
 prefer = ['copy']
@@ -104,7 +109,9 @@ fn a_partial_job_resumes_and_skips_what_it_already_produced() {
 	fs::create_dir(&blocked).unwrap();
 
 	let source = photos.join("photo.png");
+	let before = support::observed(&state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
 	fs::rename(&source, photos.join("photo.webp+fliph,png+flipv")).unwrap();
 
 	let journal_path = state.join("jobs.jsonl");
@@ -162,11 +169,28 @@ fn a_partial_job_resumes_and_skips_what_it_already_produced() {
 	#[cfg(not(unix))]
 	let _ = before;
 	assert!(
-		!state
+		state
 			.join("undo")
 			.read_dir()
 			.map(|mut entries| entries.next().is_some())
 			.unwrap_or(false),
-		"a finished job needs no undo record"
+		"a successful resume keeps its original and undo record"
 	);
+	let undone = retype()
+		.args(["undo", "--last"])
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+	if !retype_core::fsx::supports_durable_cleanup() {
+		assert!(!undone.status.success());
+		assert_eq!(fs::read(&source).unwrap(), b"pixels");
+		assert!(produced.exists());
+		assert!(blocked.exists());
+		return;
+	}
+	assert!(undone.status.success(), "{}", String::from_utf8_lossy(&undone.stderr));
+	assert_eq!(fs::read(&source).unwrap(), b"pixels");
+	assert!(!produced.exists());
+	assert!(!blocked.exists());
 }

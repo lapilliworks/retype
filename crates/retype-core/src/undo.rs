@@ -4,10 +4,9 @@
 //! The record is the durable truth for recoverability: the journal is a cache of
 //! history and progress, so losing it costs listing and never undo.
 //!
-//! The bytes are a hard link when the store shares a filesystem with the source and
-//! a copy otherwise, and the manifest says which, because a restore has to know
-//! whether moving the file is enough or whether the mode and mtime have to be put
-//! back by hand.
+//! New records hold independent snapshots with source and output content fingerprints.
+//! Publication intents are persisted before output rename; recovery verifies final objects.
+//! Unfinished records stay pinned against expiry and quota eviction.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,6 +16,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Code, Diagnostic, Error, Result};
 use crate::job::JobId;
+use crate::safety::Fingerprint;
+
+static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Commit {
+	pub output: crate::job::Output,
+	pub fingerprint: Fingerprint,
+}
 
 /// Schema identifier, `docs/dev/architecture/state.md` §5.
 pub const UNDO_VERSION: &str = "retype-undo-1";
@@ -28,7 +36,7 @@ pub struct Output {
 	pub ext: String,
 }
 
-/// How the source bytes are held.
+/// How the source bytes are held. `Hard` is retained only for reading legacy manifests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Link {
@@ -55,8 +63,14 @@ pub struct Record {
 	pub source_mtime_ns: i64,
 	pub link: Link,
 	pub outputs: Vec<Output>,
-	/// Whether the job removed the source when it committed. A rename does; a
-	/// `convert` does not, so its undo removes the outputs and leaves the source.
+	#[serde(default)]
+	pub commits: Vec<Commit>,
+	#[serde(default)]
+	pub source_fingerprint: Option<Fingerprint>,
+	#[serde(default)]
+	pub pinned: bool,
+	/// Source-disposal eligibility, not proof of disposal. Rename jobs may retain their input.
+	/// A `convert` undo only removes verified outputs and never replaces the live source.
 	#[serde(default = "consumed_default")]
 	pub consume_source: bool,
 }
@@ -80,6 +94,9 @@ impl Record {
 			source_mtime_ns: 0,
 			link: Link::Copy,
 			outputs: Vec::new(),
+			commits: Vec::new(),
+			source_fingerprint: None,
+			pinned: true,
 			consume_source: true,
 		}
 	}
@@ -213,13 +230,98 @@ impl Store {
 		self.root.join(id.as_str())
 	}
 
+	/// An OS lease prevents undo or eviction from racing a publication or source disposal.
+	pub fn lease(&self, id: &JobId) -> Result<JobLease> {
+		let state = self.root.parent().expect("state directory");
+		fs::create_dir_all(state)?;
+		let mut options = fs::OpenOptions::new();
+		options.read(true).write(true).create(true);
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::OpenOptionsExt;
+			options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+		}
+		let file = options.open(state.join(format!("undo-job.{}.lock", id.as_str())))?;
+		#[cfg(unix)]
+		{
+			use std::os::fd::AsRawFd;
+			if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+				let error = std::io::Error::last_os_error();
+				if error.kind() != std::io::ErrorKind::WouldBlock {
+					return Err(error.into());
+				}
+				return Err(leased(id));
+			}
+		}
+		#[cfg(windows)]
+		{
+			use std::os::windows::io::AsRawHandle;
+			use windows_sys::Win32::Storage::FileSystem::{
+				LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY, LockFileEx,
+			};
+			let mut overlapped = unsafe { std::mem::zeroed() };
+			if unsafe {
+				LockFileEx(
+					file.as_raw_handle() as _,
+					LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+					0,
+					1,
+					0,
+					&mut overlapped,
+				)
+			} == 0
+			{
+				let error = std::io::Error::last_os_error();
+				if error.raw_os_error() != Some(33) {
+					return Err(error.into());
+				}
+				return Err(leased(id));
+			}
+		}
+		Ok(JobLease { _file: file })
+	}
+
 	/// Keep the source bytes and a manifest before converting, `docs/dev/architecture/state.md` §5.
 	///
 	/// `bytes` is the file as it is now: after a rename that is the source content
 	/// under the target's name, which is exactly what an undo has to put back.
 	pub fn save(&self, subject: Subject) -> Result<Record> {
+		let _guard = store_lock(&self.root)?;
+		self.save_locked(subject)
+	}
+
+	/// Reserve quota and create the pinned record under the same store lock.
+	pub fn save_with_policy(&self, subject: Subject, policy: &Policy) -> Result<Option<Record>> {
+		let _guard = store_lock(&self.root)?;
+		if !policy.enabled {
+			return Ok(None);
+		}
+		let room = self.room_for_locked(fs::metadata(&subject.bytes)?.len(), policy)?;
+		let Room::Kept { dropped } = room else {
+			return Ok(None);
+		};
+
+		/* Reserve every record before any is removed, then create the new backup before
+		 * dropping the old ones. A failed save must not leave the store with neither. */
+		let mut leases = Vec::with_capacity(dropped.len());
+		for id in &dropped {
+			leases.push(self.lease(id)?);
+		}
+
+		let record = self.save_locked(subject)?;
+		for id in dropped {
+			self.remove_locked(&id)?;
+		}
+
+		drop(leases);
+		Ok(Some(record))
+	}
+
+	fn save_locked(&self, subject: Subject) -> Result<Record> {
+		fs::create_dir_all(&self.root)?;
+		set_mode(&self.root, 0o700)?;
 		let directory = self.directory(&subject.id);
-		fs::create_dir_all(&directory)?;
+		fs::create_dir(&directory)?;
 		set_mode(&directory, 0o700)?;
 
 		let metadata = fs::metadata(&subject.bytes)?;
@@ -238,21 +340,11 @@ impl Store {
 
 		let held = directory.join(record.source_file());
 
-		// A convert leaves its source where it is, so there are no bytes to keep:
-		// the record exists to remove the outputs. A rename needs them because its
-		// source name is gone.
-		record.link = match subject.consume_source {
-			true => match fs::hard_link(&subject.bytes, &held) {
-				Ok(()) => Link::Hard,
-				Err(_) => {
-					fs::copy(&subject.bytes, &held)?;
-					Link::Copy
-				}
-			},
-			false => Link::Copy,
-		};
-
+		record.source_fingerprint = Some(crate::safety::copy_snapshot(&subject.bytes, &held)?);
+		record.link = Link::Copy;
 		write_manifest(&directory, &record)?;
+		crate::fsx::sync_directory(&self.root)?;
+		crate::fsx::sync_directory(self.root.parent().expect("state directory"))?;
 		Ok(record)
 	}
 
@@ -317,60 +409,58 @@ impl Store {
 
 	/// Put the source back and remove what the job produced, `docs/dev/architecture/state.md` §5.
 	pub fn restore(&self, id: &JobId) -> Result<Record> {
+		let _guard = store_lock(&self.root)?;
+		let _lease = self.lease(id)?;
 		let Some(record) = self.load(id)? else {
 			return Err(Error::Diagnostic(Diagnostic::global(
-				Code::JobState,
+				Code::JobNotFound,
 				format!("{id} has no undo record"),
 			)));
 		};
 
-		if !record.consume_source {
-			// The source never moved. Undo is the removal of what the job produced,
-			// and the record goes with it.
-			remove_outputs(&record)?;
-			self.remove(id)?;
-			return Ok(record);
+		/* Refuse changed outputs before touching anything, including the original. */
+		for commit in &record.commits {
+			if fs::symlink_metadata(&commit.output.path).is_ok() && !commit.fingerprint.matches(&commit.output.path)? {
+				return Err(Error::Exists(commit.output.path.clone()));
+			}
 		}
-
-		let held = self.directory(id).join(record.source_file());
-
-		// Every refusal happens before an output is touched. Removing the outputs
-		// first and then discovering that the source name is occupied would destroy
-		// the result without restoring anything.
-		if record.source_path.exists() {
-			return Err(Error::Diagnostic(Diagnostic::global(
-				Code::IoExists,
-				format!(
-					"{} is occupied, so the source cannot be put back",
-					record.source_path.display()
-				),
+		if record.consume_source {
+			let held = self
+				.source(id)?
+				.ok_or_else(|| Error::Io(std::io::Error::other("no verified original to restore")))?;
+			if fs::symlink_metadata(&record.source_path).is_ok() {
+				let expected = record.source_fingerprint.as_ref().expect("verified record");
+				if !expected.matches(&record.source_path)? {
+					return Err(Error::Exists(record.source_path.clone()));
+				}
+			} else {
+				let staged = crate::convert::StagedOutput::new(&record.source_path)?;
+				crate::safety::copy_snapshot(&held, staged.temp())?;
+				staged.commit()?;
+			}
+			restore_times(&record)?;
+			crate::fsx::sync_file(&record.source_path)?;
+			crate::fsx::sync_directory(record.source_path.parent().unwrap_or(Path::new(".")))?;
+		}
+		if !crate::fsx::supports_durable_cleanup() {
+			return Err(Error::Io(std::io::Error::new(
+				std::io::ErrorKind::Unsupported,
+				"original restored or retained; output removal requires directory durability",
 			)));
 		}
-
-		if !held.exists() {
-			return Err(Error::Diagnostic(Diagnostic::global(
-				Code::IoNotFound,
-				format!("{} has no source bytes to restore", self.directory(id).display()),
-			)));
-		}
-
 		remove_outputs(&record)?;
-
-		// A rename is enough when the store shares a filesystem; otherwise the copy
-		// is carried back and the original removed.
-		if crate::fsx::rename(&held, &record.source_path).is_err() {
-			fs::copy(&held, &record.source_path)?;
-			fs::remove_file(&held)?;
-		}
-
-		restore_times(&record)?;
-		self.remove(id)?;
-
+		self.remove_locked(id)?;
 		Ok(record)
 	}
 
-	/// Forget a record, which is what a successful undo or a finished resume does.
+	/// Forget a record after successful undo or explicit history removal.
 	pub fn remove(&self, id: &JobId) -> Result<()> {
+		let _guard = store_lock(&self.root)?;
+		let _lease = self.lease(id)?;
+		self.remove_locked(id)
+	}
+
+	fn remove_locked(&self, id: &JobId) -> Result<()> {
 		let directory = self.directory(id);
 
 		match fs::remove_dir_all(&directory) {
@@ -383,12 +473,14 @@ impl Store {
 	/// Drop every record older than `retention`, and report what went. Called at
 	/// startup, `docs/dev/architecture/state.md` §6, and never during a conversion.
 	pub fn sweep(&self, retention: Duration) -> Result<Vec<JobId>> {
+		let _guard = store_lock(&self.root)?;
 		let now = SystemTime::now();
 		let mut dropped = Vec::new();
 
 		for record in self.list()? {
-			if age(&record, now) > retention {
-				self.remove(&record.id)?;
+			if !record.pinned && age(&record, now) > retention {
+				let _lease = self.lease(&record.id)?;
+				self.remove_locked(&record.id)?;
 				dropped.push(record.id);
 			}
 		}
@@ -405,11 +497,13 @@ impl Store {
 	/// record is dropped for a job that will not have one, because a conversion must
 	/// never be blocked and the history is worth more than nothing.
 	pub fn make_room(&self, path: &Path, policy: &Policy) -> Result<Room> {
-		let room = self.room_for(fs::metadata(path)?.len(), policy)?;
+		let _guard = store_lock(&self.root)?;
+		let room = self.room_for_locked(fs::metadata(path)?.len(), policy)?;
 
 		if let Room::Kept { dropped } = &room {
 			for id in dropped {
-				self.remove(id)?;
+				let _lease = self.lease(id)?;
+				self.remove_locked(id)?;
 			}
 		}
 
@@ -420,6 +514,11 @@ impl Store {
 	/// needs: whether a record could be kept if it came to that, `docs/deferral.md`
 	/// §3.
 	pub fn room_for(&self, wanted: u64, policy: &Policy) -> Result<Room> {
+		let _guard = store_lock(&self.root)?;
+		self.room_for_locked(wanted, policy)
+	}
+
+	fn room_for_locked(&self, wanted: u64, policy: &Policy) -> Result<Room> {
 		let now = SystemTime::now();
 		let mut dropped = Vec::new();
 		let mut held: u64 = 0;
@@ -427,7 +526,7 @@ impl Store {
 
 		// Expiry is retention rather than overflow, so it applies whoever is asking.
 		for record in self.list()? {
-			if age(&record, now) > policy.retention {
+			if !record.pinned && age(&record, now) > policy.retention {
 				dropped.push(record.id);
 			} else {
 				held += record.source_size;
@@ -451,7 +550,7 @@ impl Store {
 
 		// `list` answers newest first, and the oldest record is the one a user is
 		// least likely to undo.
-		for record in kept.iter().rev() {
+		for record in kept.iter().rev().filter(|record| !record.pinned) {
 			if held.saturating_add(wanted) <= policy.quota {
 				break;
 			}
@@ -460,7 +559,67 @@ impl Store {
 			dropped.push(record.id.clone());
 		}
 
+		if held.saturating_add(wanted) > policy.quota {
+			return Ok(Room::NoRoom(NoRoom::Policy));
+		}
 		Ok(Room::Kept { dropped })
+	}
+
+	/// Write the output's identity before publication. Recovery verifies it at the final path.
+	pub fn prepare_output(&self, id: &JobId, output: crate::job::Output, staged: &Path) -> Result<()> {
+		let _guard = store_lock(&self.root)?;
+		let mut record = self
+			.load(id)?
+			.ok_or_else(|| Error::Io(std::io::Error::other("undo record disappeared")))?;
+		record.commits.retain(|commit| commit.output.path != output.path);
+		record.commits.push(Commit {
+			output,
+			fingerprint: Fingerprint::of(staged)?,
+		});
+		write_manifest(&self.directory(id), &record)
+	}
+
+	/// Recheck the retained input and every published object immediately before disposal.
+	pub fn verify_disposal(&self, id: &JobId) -> Result<()> {
+		let record = self
+			.load(id)?
+			.ok_or_else(|| Error::Io(std::io::Error::other("recovery record disappeared")))?;
+		if self.source(id)?.is_none() || record.outputs.is_empty() {
+			return Err(Error::Io(std::io::Error::other(
+				"no verified original or output inventory; source retained",
+			)));
+		}
+		for output in &record.outputs {
+			let commit = record
+				.commits
+				.iter()
+				.find(|commit| commit.output.path == output.path)
+				.ok_or_else(|| Error::Exists(output.path.clone()))?;
+			if !commit.fingerprint.matches(&output.path)? {
+				return Err(Error::Io(std::io::Error::other(format!(
+					"{} changed after publication; source retained",
+					output.path.display()
+				))));
+			}
+		}
+		Ok(())
+	}
+
+	pub fn pin(&self, id: &JobId) -> Result<()> {
+		self.set_pinned(id, true)
+	}
+
+	pub fn finish(&self, id: &JobId) -> Result<()> {
+		self.set_pinned(id, false)
+	}
+
+	fn set_pinned(&self, id: &JobId, pinned: bool) -> Result<()> {
+		let _guard = store_lock(&self.root)?;
+		let mut record = self
+			.load(id)?
+			.ok_or_else(|| Error::Io(std::io::Error::other("undo record disappeared")))?;
+		record.pinned = pinned;
+		write_manifest(&self.directory(id), &record)
 	}
 
 	/// The bytes held for a job, when a source has to be read again: resume needs
@@ -471,21 +630,100 @@ impl Store {
 		};
 
 		let path = self.directory(id).join(record.source_file());
-		Ok(path.exists().then_some(path))
+		let Some(expected) = &record.source_fingerprint else {
+			return Ok(None);
+		};
+		if !path.try_exists()? {
+			return Ok(None);
+		}
+		let actual = Fingerprint::of(&path)?;
+		if !expected.same_content(&actual) {
+			return Err(Error::Io(std::io::Error::other(
+				"retained original failed its content check",
+			)));
+		}
+		Ok(Some(path))
 	}
 }
 
 /// Remove every output a record says the job produced.
 fn remove_outputs(record: &Record) -> Result<()> {
-	for output in &record.outputs {
-		match fs::remove_file(&output.path) {
-			Ok(()) => {}
+	for commit in &record.commits {
+		match fs::symlink_metadata(&commit.output.path) {
+			Ok(_) => crate::safety::remove_owned(&commit.output.path, &commit.fingerprint)?,
 			Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-			Err(error) => return Err(Error::Io(error)),
+			Err(error) => return Err(error.into()),
 		}
 	}
-
 	Ok(())
+}
+
+pub struct JobLease {
+	_file: fs::File,
+}
+
+fn leased(id: &JobId) -> Error {
+	Error::Diagnostic(Diagnostic::global(
+		Code::IoLocked,
+		format!("{id} is still running or being recovered; cancel it and wait before undoing"),
+	))
+}
+
+struct StoreLock {
+	_process: std::sync::MutexGuard<'static, ()>,
+	_file: fs::File,
+}
+
+fn store_lock(root: &Path) -> Result<StoreLock> {
+	let process = STORE_LOCK
+		.lock()
+		.map_err(|_| Error::Io(std::io::Error::other("undo store lock poisoned")))?;
+	let state = root.parent().expect("state directory");
+	fs::create_dir_all(state)?;
+	let mut options = fs::OpenOptions::new();
+	options.read(true).write(true).create(true);
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt;
+		options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+	}
+	let file = options.open(state.join("undo.lock"))?;
+	#[cfg(unix)]
+	{
+		use std::os::fd::AsRawFd;
+		loop {
+			if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+				break;
+			}
+			let error = std::io::Error::last_os_error();
+			if error.kind() != std::io::ErrorKind::Interrupted {
+				return Err(error.into());
+			}
+		}
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::io::AsRawHandle;
+		use windows_sys::Win32::Storage::FileSystem::{LOCKFILE_EXCLUSIVE_LOCK, LockFileEx};
+		let mut overlapped = unsafe { std::mem::zeroed() };
+		if unsafe {
+			LockFileEx(
+				file.as_raw_handle() as _,
+				LOCKFILE_EXCLUSIVE_LOCK,
+				0,
+				1,
+				0,
+				&mut overlapped,
+			)
+		} == 0
+		{
+			return Err(std::io::Error::last_os_error().into());
+		}
+	}
+	Ok(StoreLock {
+		_process: process,
+		_file: file,
+	})
 }
 
 fn write_manifest(directory: &Path, record: &Record) -> Result<()> {
@@ -497,8 +735,14 @@ fn write_manifest(directory: &Path, record: &Record) -> Result<()> {
 	})?;
 
 	let path = directory.join("meta.toml");
-	fs::write(&path, text)?;
-	set_mode(&path, 0o600)?;
+	crate::convert::write_atomically(&path, |temporary| {
+		use std::io::Write;
+		let mut file = fs::OpenOptions::new().write(true).create_new(true).open(temporary)?;
+		set_mode(temporary, 0o600)?;
+		file.write_all(text.as_bytes())?;
+		file.sync_all()?;
+		Ok(())
+	})?;
 	Ok(())
 }
 
@@ -595,6 +839,7 @@ mod tests {
 	/// Backdate a record the way only time can, by rewriting its manifest.
 	fn backdate(store: &Store, record: &mut Record, days: i64) {
 		record.created = crate::job::now_ms() - days * 24 * 60 * 60 * 1_000;
+		record.pinned = false;
 		fs::write(
 			store.directory(&record.id).join("meta.toml"),
 			toml::to_string(&record).unwrap(),
@@ -648,6 +893,7 @@ mod tests {
 		fs::write(&newest, vec![b'x'; 400]).unwrap();
 
 		let oldest = store.save(sized(1, state.path(), 400)).unwrap();
+		store.finish(&oldest.id).unwrap();
 		std::thread::sleep(Duration::from_millis(2));
 		let middle = store.save(sized(2, state.path(), 400)).unwrap();
 
@@ -673,6 +919,7 @@ mod tests {
 		fs::write(&source, vec![b'x'; 400]).unwrap();
 		let existing = store.save(sized(1, state.path(), 400)).unwrap();
 
+		store.finish(&existing.id).unwrap();
 		// One record of 400 in a quota of 900 leaves 500, and 600 does not fit, so the
 		// record has to go. This call says which without removing it.
 		let room = store.room_for(600, &policy(900)).unwrap();
@@ -700,6 +947,25 @@ mod tests {
 		assert!(
 			store.load(&existing.id).unwrap().is_some(),
 			"nothing is evicted for a record that will not exist"
+		);
+	}
+
+	#[test]
+	fn a_failed_new_record_does_not_evict_an_old_one() {
+		let state = state();
+		let store = Store::open(state.path());
+		let old = store.save(sized(1, state.path(), 400)).unwrap();
+		store.finish(&old.id).unwrap();
+
+		let new = sized(2, state.path(), 400);
+		// Force the new record creation to fail after room has been selected.
+		fs::create_dir_all(store.directory(&new.id)).unwrap();
+		let result = store.save_with_policy(new, &policy(500));
+
+		assert!(result.is_err());
+		assert!(
+			store.load(&old.id).unwrap().is_some(),
+			"the old backup must survive a failed new record"
 		);
 	}
 
@@ -813,10 +1079,21 @@ mod tests {
 			})
 			.unwrap();
 
+		let mut committed = crate::job::Output::pending(output.clone(), "jpg", crate::job::Tier::Converted);
+		committed.state = crate::job::OutputState::Done;
+		store.prepare_output(&id(2), committed, &output).unwrap();
 		// A rename leaves the bytes at the target and the source name gone.
 		fs::remove_file(&source).unwrap();
 
-		let restored = store.restore(&id(2)).expect("restores");
+		let outcome = store.restore(&id(2));
+		if !crate::fsx::supports_durable_cleanup() {
+			assert!(outcome.is_err(), "unsupported durability must refuse output removal");
+			assert_eq!(fs::read(&source).unwrap(), b"heic bytes");
+			assert!(output.exists());
+			assert!(store.source(&id(2)).unwrap().is_some());
+			return;
+		}
+		let restored = outcome.expect("restores");
 
 		assert_eq!(restored.id, id(2));
 		assert_eq!(fs::read(&source).unwrap(), b"heic bytes");
@@ -848,10 +1125,11 @@ mod tests {
 			})
 			.unwrap();
 
+		fs::write(&source, b"another user's file").unwrap();
 		let error = store.restore(&id(3)).unwrap_err();
 
 		assert_eq!(error.code(), Code::IoExists);
-		assert_eq!(fs::read(&source).unwrap(), b"heic bytes", "nothing was lost");
+		assert_eq!(fs::read(&source).unwrap(), b"another user's file", "nothing was lost");
 		assert_eq!(fs::read(&output).unwrap(), b"jpeg bytes", "the output was not removed");
 		assert!(store.load(&id(3)).unwrap().is_some(), "the record is kept for a retry");
 	}

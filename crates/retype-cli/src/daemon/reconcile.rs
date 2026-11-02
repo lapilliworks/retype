@@ -46,6 +46,13 @@ fn requeue(shared: &Shared, pool: &Pool, job: &Job) {
 		return;
 	};
 
+	// A queued job did not record an output yet, so the live path is still the only
+	// evidence of what it was. Refuse to run it against a replacement.
+	if !source_still_matches(shared, job) {
+		interrupted(shared, job);
+		return;
+	}
+
 	let request = immediate::Request {
 		input: job.source.path.clone(),
 		intent,
@@ -90,13 +97,82 @@ fn requeue(shared: &Shared, pool: &Pool, job: &Job) {
 	}
 }
 
+/// Whether the live source is still the file the queued job recorded.
+fn source_still_matches(shared: &Shared, job: &Job) -> bool {
+	let Ok(metadata) = std::fs::symlink_metadata(&job.source.path) else {
+		return false;
+	};
+
+	if !metadata.file_type().is_file() {
+		return false;
+	}
+
+	if metadata.len() != job.source.size {
+		return false;
+	}
+
+	if job.source.mtime_ns != 0 {
+		let Ok(modified) = metadata.modified() else {
+			return false;
+		};
+		let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH) else {
+			return false;
+		};
+		let Ok(mtime_ns) = i64::try_from(since.as_nanos()) else {
+			return false;
+		};
+		if mtime_ns != job.source.mtime_ns {
+			return false;
+		}
+	}
+
+	let Some(name) = job.source.path.file_name().and_then(|name| name.to_str()) else {
+		return false;
+	};
+
+	shared
+		.registry()
+		.split(name)
+		.is_some_and(|(_, format)| format == job.source.format)
+}
+
 fn interrupted(shared: &Shared, job: &Job) {
 	let mut failed = job.clone();
-
+	let store = retype_core::undo::Store::open(&shared.state_dir);
+	match store.load(&job.id) {
+		Ok(Some(record)) => {
+			failed.outputs = record
+				.outputs
+				.iter()
+				.map(|planned| {
+					let committed = record.commits.iter().find(|commit| commit.output.path == planned.path);
+					if let Some(commit) = committed {
+						if matches!(commit.fingerprint.matches(&planned.path), Ok(true)) {
+							return commit.output.clone();
+						}
+					}
+					retype_core::job::Output::pending(
+						planned.path.clone(),
+						&planned.ext,
+						retype_core::job::Tier::Converted,
+					)
+				})
+				.collect();
+		}
+		Ok(None) => {}
+		Err(error) => eprintln!("retype: cannot read recovery ledger for {}: {error}", job.id),
+	}
 	failed.fail(JobError {
 		code: Code::JobInterrupted.to_string(),
-		message: "the daemon stopped before this job finished".to_string(),
+		message: "the daemon stopped before this job finished; verified recovery bytes are required to resume"
+			.to_string(),
 	});
-
+	if failed
+		.outputs
+		.iter()
+		.any(|output| output.state == retype_core::job::OutputState::Done)
+	{
+		failed.state = JobState::Partial;
+	}
 	watcher::publish(shared, &failed);
 }

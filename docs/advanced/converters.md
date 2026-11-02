@@ -73,13 +73,15 @@ What is not done, and is not a gap: an archive is never unpacked into a director
 
 Native handling is not only fewer dependencies. Entry names, symlinks, size limits, permissions and cancellation are decisions that belong in our code, not in another tool's argv. The rules this build applies when repacking, measured 2026-10-31:
 
-- An entry name must be relative and free of `..`. A name that would escape the archive is refused rather than copied into another container
+- An entry name must be relative and free of `..`. Backslashes are read as separators before that check, so a name that would escape under either convention is refused rather than copied into another container
 - A symbolic link refuses the archive. Carrying one is how a repack becomes a traversal for whoever unpacks it next
 - Directories, files and their permission bits are carried; devices, FIFOs and anything else are refused by name
 - The declared size of every entry is checked against a budget before a byte is copied: 100,000 entries and 8 GiB of declared expansion. Both are fixed and documented as fixed
+- A PAX size override is authoritative over the raw header, and the bytes actually read must match it
 - Names are written with `/` separators, so a zip made on Windows becomes a tarball a Unix can read
 - Entries keep the order the source lists them, so repacking one archive twice produces the same bytes
-- The output is staged and renamed into place, so a cancelled or failed repack leaves no partial archive
+- The staged output is reopened before publication and compared with the source inventory: every entry's name, kind, size and SHA-256 digest must agree, so an incomplete or altered repack is refused
+- The output is renamed into place only after that check, so a cancelled or failed repack leaves no partial archive
 
 A repack through a tool keeps the same rules, and where the rules cannot be kept, it says so:
 

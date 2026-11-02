@@ -262,7 +262,10 @@ fn probe_command<'a>(tool: &'a Tool, command: &str, path_env: &OsStr) -> ToolSta
 		};
 	}
 
-	match Command::new(&path).args(&tool.probe).output() {
+	let mut probe = Command::new(&path);
+	crate::process::hide_console(&mut probe);
+
+	match probe.args(&tool.probe).output() {
 		Ok(output) => {
 			let stdout = String::from_utf8_lossy(&output.stdout);
 			let stderr = String::from_utf8_lossy(&output.stderr);

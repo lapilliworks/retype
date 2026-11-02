@@ -5,6 +5,9 @@
 //! keeps them says so, a pair that does not says which one it lost, and a pair declared
 //! `exact` cannot be earned without either.
 
+#[path = "support/tools.rs"]
+mod tool_support;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -35,10 +38,25 @@ fn fixtures() -> PathBuf {
 	Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/fidelity")
 }
 
+/// Skip when this machine cannot check a fixture property, naming what is missing.
+fn skip_if_no_decoder() -> bool {
+	match Probe::read(&fixtures().join("alpha.png")) {
+		Ok(_) => false,
+		Err(error) => {
+			tool_support::unavailable(error);
+			true
+		}
+	}
+}
+
 /// The fixtures are evidence, so the declaration beside them has to be true of the bytes.
 #[test]
 fn every_fixture_carries_the_property_it_declares() {
 	let directory = fixtures();
+	if skip_if_no_decoder() {
+		return;
+	}
+
 	let declared = Fixtures::open(&directory).expect("the fixture declaration");
 
 	assert!(!declared.fixture.is_empty(), "no fixtures were declared");
@@ -66,6 +84,10 @@ fn every_fixture_carries_the_property_it_declares() {
 #[test]
 fn a_transparent_fixture_told_the_truth_about_jpeg() {
 	let directory = fixtures();
+	if skip_if_no_decoder() {
+		return;
+	}
+
 	let alpha = Probe::read(&directory.join("alpha.png")).expect("a readable fixture");
 
 	let work = tempfile::tempdir().unwrap();
@@ -141,6 +163,10 @@ fn fidelity(config: &Path, fixtures: &Path, state: &Path) -> Output {
 #[test]
 fn an_exact_pair_without_a_fixture_is_a_failure() {
 	let work = tempfile::tempdir().unwrap();
+	if skip_if_no_decoder() {
+		return;
+	}
+
 	let empty = work.path().join("no-fixtures");
 	fs::create_dir(&empty).unwrap();
 	let config_path = work.path().join("retype.toml");
@@ -157,6 +183,10 @@ fn an_exact_pair_without_a_fixture_is_a_failure() {
 #[test]
 fn an_exact_pair_with_fixtures_records_what_it_kept() {
 	let work = tempfile::tempdir().unwrap();
+	if skip_if_no_decoder() {
+		return;
+	}
+
 	let config_path = work.path().join("retype.toml");
 	config(&config_path, "exact");
 	let state = work.path().join("state");

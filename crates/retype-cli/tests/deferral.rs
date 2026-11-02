@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "support/journal.rs"]
+mod journal;
+mod support;
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -27,6 +31,9 @@ fn config(dir: &Path, pause: &str, repair: &str) -> PathBuf {
 		format!(
 			"\
 version = 'retype-config-1'
+
+[notify]
+enabled = false
 
 [backends]
 prefer = ['copy']
@@ -80,6 +87,7 @@ struct Fixture {
 	photos: PathBuf,
 	state: PathBuf,
 	config: PathBuf,
+	err: PathBuf,
 	_daemon: Daemon,
 }
 
@@ -102,6 +110,7 @@ impl Fixture {
 			.output()
 			.unwrap();
 
+		let err = dir.path().join("daemon.err");
 		let daemon = Daemon(
 			retype()
 				.args(["daemon", "--detached"])
@@ -109,7 +118,7 @@ impl Fixture {
 				.arg(&state)
 				.env("RETYPE_CONFIG", &config)
 				.stdout(Stdio::null())
-				.stderr(Stdio::null())
+				.stderr(Stdio::from(fs::File::create(&err).unwrap()))
 				.spawn()
 				.unwrap(),
 		);
@@ -126,6 +135,7 @@ impl Fixture {
 			photos,
 			state,
 			config,
+			err,
 			_daemon: daemon,
 		}
 	}
@@ -133,7 +143,9 @@ impl Fixture {
 	/// Rename a file into an intent and answer with the job the daemon recorded.
 	fn rename(&self, from: &str, to: &str) -> serde_json::Value {
 		let source = self.photos.join(from);
+		let before = support::observed(&self.state);
 		big_file(&source);
+		support::observe(&self.state, before);
 		fs::rename(&source, self.photos.join(to)).unwrap();
 
 		self.wait_for(|record| record["state"] != "running")
@@ -142,10 +154,7 @@ impl Fixture {
 	fn records(&self) -> Vec<serde_json::Value> {
 		let contents = fs::read_to_string(self.state.join("jobs.jsonl")).unwrap_or_default();
 
-		contents
-			.lines()
-			.filter_map(|line| serde_json::from_str(line).ok())
-			.collect()
+		journal::latest(&contents)
 	}
 
 	/// The newest record at or after `from` that satisfies `done`.
@@ -157,7 +166,12 @@ impl Fixture {
 				return record;
 			}
 
-			assert!(Instant::now() < deadline, "no record appeared: {:?}", self.records());
+			assert!(
+				Instant::now() < deadline,
+				"no record appeared: {:?}\ndaemon: {}",
+				self.records(),
+				fs::read_to_string(&self.err).unwrap_or_default()
+			);
 			std::thread::sleep(Duration::from_millis(50));
 		}
 	}
@@ -194,14 +208,19 @@ fn an_expensive_rename_is_parked_under_its_own_name_and_runs_when_the_timer_fire
 
 	assert_eq!(done["state"], "done");
 	assert!(fixture.photos.join("a.webp").exists(), "the output is there");
-	assert!(!fixture.photos.join("a.png").exists(), "the source is consumed");
+	assert!(
+		fixture.photos.join("a.png").exists(),
+		"an unvalidated copy backend retains its source"
+	);
 }
 
 #[test]
 fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
 	let fixture = Fixture::new("1h");
 	let small = fixture.photos.join("b.png");
+	let before = support::observed(&fixture.state);
 	fs::write(&small, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("b.webp+ask")).unwrap();
 
 	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");
@@ -225,12 +244,19 @@ fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
 	let asked = fixture.command().args(["jobs", "get", &id]).output().unwrap();
 	assert!(asked.status.success(), "{}", String::from_utf8_lossy(&asked.stderr));
 	let record: serde_json::Value = serde_json::from_slice(&asked.stdout).unwrap();
+	assert_eq!(record["v"], "retype-journal-1", "{record}");
 	assert_eq!(record["state"], "done", "{record}");
 
 	let listing = fixture.command().args(["jobs", "list"]).output().unwrap();
 	let listed = String::from_utf8_lossy(&listing.stdout);
 	assert_eq!(
-		listed.lines().filter(|line| line.starts_with(&id)).count(),
+		listed
+			.lines()
+			.filter(|line| line
+				.split_whitespace()
+				.next()
+				.is_some_and(|handle| id.starts_with(handle)))
+			.count(),
 		1,
 		"the job has one record, not a parked one and a running one: {listed}"
 	);
@@ -240,7 +266,9 @@ fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
 fn an_intent_that_cannot_be_carried_waits_with_a_string_to_fix() {
 	let fixture = Fixture::new("1h");
 	let small = fixture.photos.join("c.png");
+	let before = support::observed(&fixture.state);
 	fs::write(&small, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("c.webp+zzz")).unwrap();
 
 	let parked = fixture.wait_for(|record| record["state"] == "needs-attention");
@@ -298,7 +326,9 @@ fn a_parked_job_can_be_refused_before_its_time_comes() {
 fn repair_converts_without_the_token_it_could_not_carry_and_says_what_it_dropped() {
 	let fixture = Fixture::with("1h", "convert");
 	let small = fixture.photos.join("e.png");
+	let before = support::observed(&fixture.state);
 	fs::write(&small, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("e.webp+zzz")).unwrap();
 
 	let done = fixture.wait_for(|record| record["state"] == "done");
@@ -308,7 +338,10 @@ fn repair_converts_without_the_token_it_could_not_carry_and_says_what_it_dropped
 	assert_eq!(done["parked"]["corrected"], "webp", "{done}");
 	assert_eq!(done["parked"]["dropped"], serde_json::json!(["zzz"]), "{done}");
 	assert!(fixture.photos.join("e.webp").exists(), "the result is there");
-	assert!(!fixture.photos.join("e.png").exists(), "the source is consumed");
+	assert!(
+		fixture.photos.join("e.png").exists(),
+		"an unvalidated copy backend retains its source"
+	);
 }
 
 #[test]
@@ -335,7 +368,9 @@ fn the_interactive_walk_refuses_a_pipe_rather_than_reading_a_script() {
 fn a_file_that_appeared_during_the_pause_is_not_overwritten() {
 	let fixture = Fixture::new("1h");
 	let small = fixture.photos.join("d.png");
+	let before = support::observed(&fixture.state);
 	fs::write(&small, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("d.webp+ask")).unwrap();
 
 	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");
@@ -367,7 +402,9 @@ fn a_file_that_appeared_during_the_pause_is_not_overwritten() {
 fn force_replaces_a_file_that_appeared_during_the_pause() {
 	let fixture = Fixture::new("1h");
 	let small = fixture.photos.join("e.png");
+	let before = support::observed(&fixture.state);
 	fs::write(&small, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("e.webp+ask")).unwrap();
 
 	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");
@@ -384,5 +421,8 @@ fn force_replaces_a_file_that_appeared_during_the_pause() {
 	let done = fixture.wait_for(|record| record["state"] == "done" && Fixture::id(record) == Fixture::id(&parked));
 	assert_eq!(done["state"], "done");
 	assert_eq!(fs::read(&theirs).unwrap(), b"pixels", "the output replaced it");
-	assert!(!fixture.photos.join("e.png").exists(), "the source is consumed");
+	assert!(
+		fixture.photos.join("e.png").exists(),
+		"an unvalidated copy backend retains its source"
+	);
 }

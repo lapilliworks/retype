@@ -10,6 +10,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
+/// The name a path is recorded under: the journal holds canonical paths, and a
+/// source that was renamed to its target no longer exists to canonicalise.
+fn recorded(path: &Path) -> PathBuf {
+	let Some(name) = path.file_name() else {
+		return path.to_path_buf();
+	};
+
+	match path.parent().and_then(|parent| parent.canonicalize().ok()) {
+		Some(parent) => parent.join(name),
+		None => path.to_path_buf(),
+	}
+}
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -26,6 +41,9 @@ fn config(dir: &Path, watch: &str) -> PathBuf {
 		format!(
 			"\
 version = 'retype-config-1'
+
+[notify]
+enabled = false
 
 [backends]
 prefer = ['copy']
@@ -137,7 +155,9 @@ impl Fixture {
 		if let Some(parent) = source.parent() {
 			fs::create_dir_all(parent).unwrap();
 		}
+		let before = support::observed(&self.state);
 		fs::write(&source, bytes).unwrap();
+		support::observe(&self.state, before);
 
 		let target = source.with_file_name(to);
 		fs::rename(&source, &target).unwrap();
@@ -177,10 +197,12 @@ impl Fixture {
 	/// Whether any settled record names a source at this path. A job that is still
 	/// `running` has not done anything yet, so it does not count.
 	fn considered(&self, path: &Path) -> bool {
+		let wanted = recorded(path);
+
 		self.records().into_iter().any(|record| {
 			record["source"]["path"]
 				.as_str()
-				.is_some_and(|source| Path::new(source) == path)
+				.is_some_and(|source| Path::new(source) == wanted)
 				&& record["state"] != "running"
 				&& record["state"] != "queued"
 		})
@@ -268,5 +290,8 @@ fn a_source_over_the_ceiling_is_passed_over_and_counted() {
 		fixture.photos.join("small.webp").exists(),
 		"the small one was converted"
 	);
-	assert!(!fixture.photos.join("small.png").exists(), "and its source consumed");
+	assert!(
+		fixture.photos.join("small.png").exists(),
+		"an unvalidated copy backend retains its source"
+	);
 }

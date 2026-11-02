@@ -51,6 +51,120 @@ fn is_transient(error: &io::Error) -> bool {
 	matches!(error.raw_os_error(), Some(5 | 32 | 33))
 }
 
+/// Flush file contents and metadata using a handle that permits Windows FlushFileBuffers.
+pub fn sync_file(path: &Path) -> io::Result<()> {
+	#[cfg(windows)]
+	let file = std::fs::OpenOptions::new().write(true).open(path)?;
+	#[cfg(not(windows))]
+	let file = std::fs::File::open(path)?;
+	file.sync_all()
+}
+
+/// Whether directory-entry durability is implemented on this platform.
+/// Callers must retain originals and refuse destructive undo when this is false.
+pub fn supports_durable_cleanup() -> bool {
+	cfg!(unix)
+}
+
+/// Persist directory-entry changes where supported. This does not grant cleanup authority.
+/// Windows can publish outputs, but must retain originals until directory durability is implemented.
+pub fn sync_directory(path: &Path) -> io::Result<()> {
+	#[cfg(unix)]
+	{
+		std::fs::File::open(path)?.sync_all()
+	}
+	#[cfg(not(unix))]
+	{
+		let _ = path;
+		Ok(())
+	}
+}
+
+/// Atomically move a file without replacing even a dangling destination symlink.
+pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+	#[cfg(target_os = "linux")]
+	{
+		use std::os::unix::ffi::OsStrExt;
+		let from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+		let to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
+		let result = unsafe {
+			libc::renameat2(
+				libc::AT_FDCWD,
+				from.as_ptr(),
+				libc::AT_FDCWD,
+				to.as_ptr(),
+				libc::RENAME_NOREPLACE,
+			)
+		};
+		if result == 0 {
+			Ok(())
+		} else {
+			Err(io::Error::last_os_error())
+		}
+	}
+	#[cfg(target_os = "macos")]
+	{
+		use std::os::unix::ffi::OsStrExt;
+		let from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+		let to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
+		let result = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+		if result == 0 {
+			Ok(())
+		} else {
+			Err(io::Error::last_os_error())
+		}
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::ffi::OsStrExt;
+		use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
+		let from: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
+		let to: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
+		if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_WRITE_THROUGH) } != 0 {
+			Ok(())
+		} else {
+			Err(io::Error::last_os_error())
+		}
+	}
+	#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+	{
+		let _ = (from, to);
+		Err(io::Error::new(
+			io::ErrorKind::Unsupported,
+			"atomic no-replace rename is unavailable",
+		))
+	}
+}
+
+/// Resolve the parent too: absolute strings alone miss directory aliases.
+pub fn entry_path(path: &Path) -> io::Result<std::path::PathBuf> {
+	let absolute = std::path::absolute(path)?;
+	let parent = absolute
+		.parent()
+		.ok_or_else(|| io::Error::other("path has no parent"))?;
+	Ok(parent.canonicalize()?.join(
+		absolute
+			.file_name()
+			.ok_or_else(|| io::Error::other("path has no name"))?,
+	))
+}
+
+/// Reject directory aliases and existing hard-link aliases to an input.
+pub fn protects_input(input: &Path, output: &Path) -> io::Result<bool> {
+	let source = entry_path(input)?;
+	let destination = match entry_path(output) {
+		Ok(path) => path,
+		Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+		Err(error) => return Err(error),
+	};
+	if source == destination {
+		return Ok(true);
+	}
+	Ok(crate::job::FileIdentity::of(input)
+		.zip(crate::job::FileIdentity::of(output))
+		.is_some_and(|(source, target)| source.matches(&target)))
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;

@@ -45,6 +45,10 @@ cargo check --workspace --all-targets --target x86_64-unknown-freebsd
 
 `cargo check` is enough for a foreign target: no linker is involved, and it is what CI does. Clippy at the floor matters as much as clippy on stable, because a lint that exists in 1.85.0 and not in a later release fails only there.
 
+Optional external-tool guards report missing prerequisites, but their early returns still count as passes in Rust's test harness. For encoder verification, install the prerequisites and set `RETYPE_REQUIRE_TEST_TOOLS=1` so the CLI codec guards fail instead. See [test preparation and platform validation](testing.md) for tool versions, PDF engines, filesystem requirements, native Windows commands and remaining coverage limits.
+
+When a failure depends on the platform, `scripts/probe-supersede.sh` reports the stage it broke at on the host that fails: delivery, batching, correlation, a running job holding the source, or the cancellation. It runs the same gesture as `tests/supersede.rs` in a temporary tree with the daemon's own log, so a report can be attached to an issue without the test harness.
+
 ## Generated documents
 
 `measurement/events.md` is produced by the probe, and the claims table in [Fidelity](../advanced/fidelity.md) is produced by a fidelity run:

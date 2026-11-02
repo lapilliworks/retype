@@ -1,0 +1,14 @@
+   Compiling retype-core v0.1.0 (/home/i/Works/retype/worktrees/data-safety-fixes/crates/retype-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.72s
+     Running tests/safety.rs (target/debug/deps/safety-b095beee04b3afe3)
+
+running 6 tests
+test a_late_destination_cannot_be_clobbered_by_publication ... ok
+test staged_symlink_is_rejected_without_touching_its_referent ... ok
+test snapshot_creation_never_overwrites_an_existing_copy ... ok
+test disposal_claims_and_checks_a_replacement_before_unlinking ... ok
+test a_snapshot_does_not_change_with_a_live_source_edit ... ok
+test disposal_detects_an_in_place_edit_even_with_the_same_length ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

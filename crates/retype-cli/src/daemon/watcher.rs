@@ -25,10 +25,14 @@ use retype_core::plan::{self, Plan};
 use retype_core::registry::Registry;
 use retype_core::resolve::{self, Resolved, Source as Origin};
 use retype_core::{execute, intent, print, watches};
-use retype_watch::{Window, feed};
+use retype_watch::Window;
 
 use crate::daemon::queue::Pool;
 use crate::error::Result;
+
+#[cfg(test)]
+#[path = "watcher_tests.rs"]
+mod tests;
 
 /// What the daemon, its watchers and its runners share.
 pub struct Shared {
@@ -51,6 +55,20 @@ pub struct Shared {
 	pub placeholders: AtomicU64,
 	/// Identities recorded by the startup walk, `docs/watch.md` §3.
 	pub primed: AtomicU64,
+	/// Event paths the watcher has looked at, `docs/watch.md` §3. It answers "is the
+	/// watcher seeing anything", and a caller can wait for it to grow before it
+	/// renames a file it just wrote, since on macOS a create and a rename inside one
+	/// window are reported as a create and carry no identity to correlate.
+	pub observed: AtomicU64,
+	/// Paths this process moved itself and has not yet told the correlator about,
+	/// `docs/watch.md` §7. A job restores a renamed file to its source name before
+	/// converting it, and a platform that does not report its own process's renames
+	/// would leave the identity under the name the file no longer has.
+	///
+	/// The sighting is taken when the move happens, not when the watcher next looks:
+	/// the file may be renamed again before then, and asking the filesystem later
+	/// would find nothing to record.
+	pub own_renames: Mutex<Vec<retype_core::correlate::Sighting>>,
 	/// What clients replay from, `docs/dev/architecture/ipc.md` §7.
 	pub events: Mutex<crate::daemon::events::Events>,
 	/// Each directory's `.retype.toml`, read once per change rather than once per file,
@@ -102,6 +120,36 @@ impl Recent {
 }
 
 impl Shared {
+	/// Note a path this process moved itself, for the watcher to record.
+	pub fn note_own_rename(&self, path: &Path) {
+		let Some(sighting) = retype_core::correlate::Sighting::of(path) else {
+			return;
+		};
+
+		if let Ok(mut moved) = self.own_renames.lock() {
+			moved.push(sighting);
+		}
+	}
+
+	/// Put back the sightings whose rename the watcher has not seen yet.
+	fn restore_own_renames(&self, own: Vec<retype_core::correlate::Sighting>) {
+		if own.is_empty() {
+			return;
+		}
+
+		if let Ok(mut moved) = self.own_renames.lock() {
+			moved.extend(own);
+		}
+	}
+
+	/// Take the paths this process moved since the last look.
+	fn take_own_renames(&self) -> Vec<retype_core::correlate::Sighting> {
+		match self.own_renames.lock() {
+			Ok(mut moved) => std::mem::take(&mut *moved),
+			Err(_) => Vec::new(),
+		}
+	}
+
 	/// A snapshot of the configuration. The `Arc` keeps the registry alive even
 	/// if a reload replaces it while a job is using it.
 	pub fn registry(&self) -> Arc<Registry> {
@@ -148,13 +196,21 @@ impl Watcher {
 /// already running, rather than only after a restart.
 pub fn start(shared: Arc<Shared>, pool: Arc<Pool>, state_dir: &Path) -> Result<Option<Watcher>> {
 	let stop = Arc::new(AtomicBool::new(false));
+	let (ready, ready_rx) = std::sync::mpsc::channel();
 	let supervisor = {
 		let shared = Arc::clone(&shared);
 		let stop = Arc::clone(&stop);
 		let state_dir = state_dir.to_path_buf();
 
-		thread::spawn(move || supervise(&shared, &pool, &state_dir, &stop))
+		thread::spawn(move || supervise(&shared, &pool, &state_dir, &stop, ready))
 	};
+
+	// A daemon a client can reach has to be watching already. macOS reports only
+	// what happens after its event stream starts, so a rename made between the
+	// endpoint appearing and the first registration round is lost rather than late.
+	// The wait is bounded because a registration on a stalled mount must not hold
+	// the daemon before it has even installed its signal handlers.
+	let _ = ready_rx.recv_timeout(Duration::from_secs(2));
 
 	Ok(Some(Watcher {
 		stop,
@@ -165,7 +221,13 @@ pub fn start(shared: Arc<Shared>, pool: Arc<Pool>, state_dir: &Path) -> Result<O
 /// How often the registration file is re-read.
 const RELOAD: Duration = Duration::from_secs(1);
 
-fn supervise(shared: &Arc<Shared>, pool: &Arc<Pool>, state_dir: &Path, stop: &AtomicBool) {
+fn supervise(
+	shared: &Arc<Shared>,
+	pool: &Arc<Pool>,
+	state_dir: &Path,
+	stop: &AtomicBool,
+	ready: std::sync::mpsc::Sender<()>,
+) {
 	// One worker per root, keyed by the canonical path the registration holds.
 	let mut workers: BTreeMap<PathBuf, (Arc<AtomicBool>, JoinHandle<()>)> = BTreeMap::new();
 	// A missing path is retried on a slow clock so a deleted directory does not
@@ -180,6 +242,9 @@ fn supervise(shared: &Arc<Shared>, pool: &Arc<Pool>, state_dir: &Path, stop: &At
 			Ok(registrations) => registrations,
 			Err(error) => {
 				eprintln!("retype: cannot read watch registrations: {error}");
+				// Nothing can be watched, but the daemon still has to become reachable
+				// and report the error.
+				let _ = ready.send(());
 				thread::sleep(RELOAD);
 				continue;
 			}
@@ -229,6 +294,10 @@ fn supervise(shared: &Arc<Shared>, pool: &Arc<Pool>, state_dir: &Path, stop: &At
 			}
 		}
 
+		// Everything registered by now has a live watcher, so the daemon may say it
+		// is ready. Later rounds have nobody waiting, and the send is ignored.
+		let _ = ready.send(());
+
 		thread::sleep(RELOAD);
 	}
 
@@ -263,6 +332,20 @@ fn reload_config(shared: &Arc<Shared>, stamp: &mut Option<std::time::SystemTime>
 	}
 }
 
+/// The state directory the way an event names it: resolved on Unix, where a path can
+/// be written through a symlink that the platform reports resolved.
+fn as_events_name(path: &Path) -> PathBuf {
+	#[cfg(unix)]
+	{
+		path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+	}
+
+	#[cfg(not(unix))]
+	{
+		path.to_path_buf()
+	}
+}
+
 fn spawn_worker(
 	shared: Arc<Shared>,
 	pool: Arc<Pool>,
@@ -274,11 +357,16 @@ fn spawn_worker(
 	let window = Window::default();
 	let watched_root = root.to_path_buf();
 	let worker_stop = Arc::clone(&stop);
+	// Event paths are resolved, so a filter on the state directory has to be too:
+	// macOS reports `/private/var` for a path written as `/var`, and a comparison
+	// against the unresolved form matches nothing.
+	let state_dir = as_events_name(&shared.state_dir);
 
 	let handle = thread::spawn(move || {
 		// The watcher lives as long as the thread, which is what keeps the events
 		// arriving.
 		let _watcher = watcher;
+		crate::verbose::detail(format!("watching {}", watched_root.display()));
 		let mut correlator = Correlator::new(256);
 
 		// Prime before the first batch is decided: a file that existed before the
@@ -289,7 +377,11 @@ fn spawn_worker(
 			&mut correlator,
 			&watched_root,
 			recursive,
-			|path| !retype_core::convert::is_temp_file(path) && registry.watch().considers(&watched_root, path),
+			|path| {
+				!path.starts_with(&state_dir)
+					&& !retype_core::convert::is_temp_file(path)
+					&& registry.watch().considers(&watched_root, path)
+			},
 			|| worker_stop.load(Ordering::Relaxed),
 		);
 		shared.primed.fetch_add(primed as u64, Ordering::Relaxed);
@@ -304,41 +396,162 @@ fn spawn_worker(
 
 			let batch = retype_watch::collect(&receiver, less_than(&held, window));
 
+			// State is not part of the watched tree even when the tree contains it, and the
+			// undo record it holds is a hard link to a file the user may rename.
+			let batch = batch.without_prefix(&state_dir);
+
 			if batch.is_empty() {
 				continue;
 			}
+
+			if crate::verbose::level() >= 2 {
+				// The line names every path the batch still has, with the kind and any flag:
+				// a dropped-events notice is a flag, not a path.
+				let mut described: Vec<String> = Vec::new();
+
+				for event in &batch.events {
+					let paths: Vec<String> =
+						event.paths.iter().map(|path| path.display().to_string()).collect();
+
+					if paths.is_empty() {
+						continue;
+					}
+
+					let mut label = format!("{:?}", event.kind);
+
+					if let Some(flag) = event.flag() {
+						label.push_str(&format!(" {flag:?}"));
+					}
+
+					if let Some(info) = event.info() {
+						label.push_str(&format!(" {info}"));
+					}
+
+					described.push(format!("{label}: {}", paths.join(", ")));
+				}
+
+				crate::verbose::detail(format!(
+					"batch: {} event(s): {}",
+					batch.events.len(),
+					described.join("; ")
+				));
+			}
+
+			// A platform that dropped events says so in the batch. What it lost is gone, so
+			// the batch cannot be read as a description of the tree: the tree is scanned
+			// instead, and identity correlation names what moved while nothing was watching,
+			// `docs/dev/measurement/events.md` §3.
+			if retype_watch::needs_rescan(&batch) {
+				for error in &batch.errors {
+					eprintln!("retype: {}: watching: {error}", watched_root.display());
+				}
+
+				crate::verbose::note("events were dropped; scanning the tree");
+
+				// The file this process restored is under the tree the scan is about to read,
+				// so anchor its identity at the restored name first: the scan then names the
+				// user's rename from that name, not from the job's output.
+				for sighting in shared.take_own_renames() {
+					let _ = correlator.observe(sighting);
+				}
+
+				let registry = shared.registry();
+				let scanned_paths: u64 = batch.events.iter().map(|event| event.paths.len() as u64).sum();
+				let parked_batch = retype_core::job::JobId::now().ok().map(|id| id.as_str().to_string());
+				let (facts, scanned) = retype_watch::rescan(
+					&mut correlator,
+					&watched_root,
+					recursive,
+					|path| {
+						!path.starts_with(&state_dir)
+							&& !retype_core::convert::is_temp_file(path)
+							&& registry.watch().considers(&watched_root, path)
+					},
+					|| worker_stop.load(Ordering::Relaxed),
+				);
+
+				shared.primed.fetch_add(scanned as u64, Ordering::Relaxed);
+				shared.observed.fetch_add(scanned_paths, Ordering::Relaxed);
+
+				for fact in facts {
+					crate::verbose::detail(format!(
+						"rename {} -> {}",
+						fact.source.display(),
+						fact.target.display()
+					));
+					dispatch(&shared, &pool, &watched_root, fact, window, &mut held, parked_batch.as_deref());
+				}
+
+				continue;
+			}
+
+			let observed: u64 = batch.events.iter().map(|event| event.paths.len() as u64).sum();
 
 			// One batch per window, so the jobs parked in one tick can be answered
 			// together, `docs/deferral.md` §10.
 			let parked_batch = retype_core::job::JobId::now().ok().map(|id| id.as_str().to_string());
 
-			for fact in feed(&mut correlator, &batch) {
-				// A directory may ask for more settled time than the window gives, which is
-				// what `debounce_ms` is for: an application that saves by renaming twice
-				// should be converted once, under the name it finally chose.
-				let directory = fact.target.parent().unwrap_or(&watched_root);
+			// Our own renames are carried into the batch: a platform may not report a
+			// rename the process performed, and the file may have moved again by the
+			// time the batch is decided.
+			let mut own = shared.take_own_renames();
+			let facts = retype_watch::feed_with(&mut correlator, &batch, &mut own);
+			shared.restore_own_renames(own);
 
-				let debounce = match shared.policies.policy(&watched_root, directory).as_ref() {
-					Ok(policy) => policy.debounce_ms.unwrap_or_default(),
-					Err(problem) => {
-						eprintln!("retype: {problem}");
-						continue;
-					}
-				};
+			for fact in &facts {
+				crate::verbose::detail(format!(
+					"rename {} -> {}",
+					fact.source.display(),
+					fact.target.display()
+				));
+			}
 
-				let wait = std::time::Duration::from_millis(debounce);
+			// After `feed`, so a caller that sees the count has had its file recorded:
+			// the sighting is what a later rename correlates against.
+			shared.observed.fetch_add(observed, Ordering::Relaxed);
 
-				if wait > window.first_wait {
-					held.entry(directory.to_path_buf()).or_default().hold(fact, wait);
-					continue;
-				}
-
-				decide(&shared, &pool, &watched_root, fact, parked_batch.as_deref());
+			for fact in facts {
+				dispatch(&shared, &pool, &watched_root, fact, window, &mut held, parked_batch.as_deref());
 			}
 		}
+
+		crate::verbose::detail(format!("stopped watching {}", watched_root.display()));
 	});
 
 	Ok((stop, handle))
+}
+
+/// One fact from a batch or from a rescan: honour the directory's debounce, or decide.
+fn dispatch(
+	shared: &Shared,
+	pool: &Pool,
+	watched_root: &Path,
+	fact: retype_core::correlate::RenameFact,
+	window: Window,
+	held: &mut BTreeMap<PathBuf, Held>,
+	parked_batch: Option<&str>,
+) {
+	// A directory may ask for more settled time than the window gives, which is what
+	// `debounce_ms` is for: an application that saves by renaming twice should be
+	// converted once, under the name it finally chose.
+	let directory = fact.target.parent().unwrap_or(watched_root);
+
+	let debounce = match shared.policies.policy(watched_root, directory).as_ref() {
+		Ok(policy) => policy.debounce_ms.unwrap_or_default(),
+		Err(problem) => {
+			eprintln!("retype: {problem}");
+			return;
+		}
+	};
+
+	let wait = Duration::from_millis(debounce);
+
+	if wait > window.first_wait {
+		held.entry(directory.to_path_buf()).or_default().hold(fact, wait);
+		return;
+	}
+
+	decide(shared, pool, watched_root, fact, parked_batch);
 }
 
 /// One rename, decided: hold it, park it, or run it.
@@ -440,6 +653,13 @@ fn decide(
 	// the file is not what its intermediate name claimed, it is what the
 	// job that was overtaken was reading, `docs/dev/architecture/state.md` §5.3.
 	let earlier = producers(shared, pool, &fact.source);
+
+	crate::verbose::detail(format!(
+		"{} job(s) hold {} while {} is decided",
+		earlier.len(),
+		fact.source.display(),
+		fact.target.display()
+	));
 
 	let source = match earlier.is_empty() {
 		true => fact.source.clone(),
@@ -599,8 +819,6 @@ fn supersede(shared: &Shared, pool: &Pool, earlier: &[Job]) -> PathBuf {
 			eprintln!("retype: {} was replaced by a later rename before it started", job.id);
 			retire(shared, &work, JobState::Superseded);
 		}
-
-		let _ = retype_core::undo::Store::open(&shared.state_dir).remove(&job.id);
 	}
 
 	// The name the bytes belong under is the one the earliest job was reading: a
@@ -836,65 +1054,13 @@ fn run(
 	// same way `convert` derives its paths.
 	let derived = retype_core::output::derive(&stem, &format, &resolved.groups);
 
-	// Keep the bytes before touching them: an undo has to be possible even if this
-	// process dies mid-conversion. Retention and quota are policy, so a machine that
-	// does not keep records, or has no room for this one, does not pay for it and
-	// the conversion runs anyway.
 	let store = retype_core::undo::Store::open(&shared.state_dir);
-	let registry = shared.registry();
-	let policy = registry.undo();
-	let bytes = match &input {
-		Input::Renamed { renamed } => renamed.clone(),
-		Input::Named => source.to_path_buf(),
-	};
-	let mut disposal = execute::Disposal::Remove;
-	let undo = if !policy.enabled {
-		None
-	} else {
-		match store.make_room(&bytes, policy) {
-			Ok(retype_core::undo::Room::Kept { dropped }) => {
-				for id in &dropped {
-					eprintln!("retype: dropped undo record {id} to stay within the quota");
-				}
-
-				Some(
-					store.save(retype_core::undo::Subject {
-						id: id.clone(),
-						intent: print::intent(&resolved, &shared.registry()),
-						machine: shared.machine.clone(),
-						bytes: bytes.clone(),
-						// The path the bytes belong to, which is not `root` plus the
-						// name: a file inside a subdirectory would be restored one
-						// directory too high.
-						source_path: source.to_path_buf(),
-						source_ext: format.clone(),
-						consume_source: true,
-						outputs: derived
-							.iter()
-							.map(|derived| retype_core::undo::Output {
-								path: target.parent().unwrap_or(Path::new("")).join(&derived.path),
-								ext: derived.format.clone(),
-							})
-							.collect(),
-					}),
-				)
-			}
-			Ok(retype_core::undo::Room::NoRoom(reason)) => {
-				// Nothing can be kept, so the source goes where the user can still find
-				// it. A quota that is full is not a quota problem, so nothing is evicted
-				// for a record that will not exist.
-				disposal = match reason {
-					retype_core::undo::NoRoom::TooLarge => execute::Disposal::Trash,
-					retype_core::undo::NoRoom::Policy => execute::Disposal::Remove,
-				};
-
-				eprintln!("retype: {}: no undo record: {}", target.display(), reason.reason());
-				None
-			}
-			Err(error) => {
-				eprintln!("retype: cannot measure {} for undo: {error}", target.display());
-				None
-			}
+	let lease = match store.lease(&id) {
+		Ok(lease) => lease,
+		Err(error) => {
+			eprintln!("retype: cannot acquire job ownership: {error}");
+			publish(shared, &settled(shared, &id, now, source, &format, &resolved, &plans, outputs, JobState::Failed));
+			return;
 		}
 	};
 
@@ -905,12 +1071,42 @@ fn run(
 	// input is consumed below.
 	let named = matches!(input, Input::Named);
 
-	let mut renamed = match input {
+	let renamed = match input {
 		Input::Renamed { renamed } => match execute::Rename::open(&renamed, &stem, &format) {
-			Ok(renamed) => Some(renamed),
+			Ok(renamed) => {
+				// The bytes are back under the source name because this process moved them.
+				// The watcher records that, so a platform that does not report its own
+				// process's renames does not lose the identity with the old name.
+				shared.note_own_rename(source);
+				Some(renamed)
+			}
 			Err(error) => {
 				eprintln!("retype: {}: {error}", target.display());
-				store.remove(&id).ok();
+
+				// The file the job was about to read is gone, usually because a later
+				// rename moved it. A job must not stay `running` for that: say which
+				// happened, and let the cancellation decide whether it was overtaken.
+				let (state, output_state) = match cancellation.is_superseded() {
+					true => (JobState::Superseded, OutputState::Skipped),
+					false => (JobState::Failed, OutputState::Failed),
+				};
+
+				let mut outputs = Vec::new();
+				if let Some(plan) = plans.first() {
+					outputs.push(record(
+						target,
+						plan,
+						output_state,
+						None,
+						None,
+						Some((error.code(), error.to_string())),
+					));
+				}
+
+				publish(
+					shared,
+					&settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state),
+				);
 				return;
 			}
 		},
@@ -921,6 +1117,89 @@ fn run(
 		Some(renamed) => renamed.input().to_path_buf(),
 		None => source.to_path_buf(),
 	};
+	let input_is_temporary = renamed.as_ref().is_some_and(execute::Rename::is_temporary);
+	let snapshot = match retype_core::safety::Snapshot::open(&read_from) {
+		Ok(snapshot) => snapshot,
+		Err(error) => {
+			eprintln!("retype: cannot snapshot {}: {error}", read_from.display());
+			publish(
+				shared,
+				&settled(
+					shared,
+					&id,
+					now,
+					source,
+					&format,
+					&resolved,
+					&plans,
+					outputs,
+					JobState::Failed,
+				),
+			);
+			return;
+		}
+	};
+	let registry = shared.registry();
+	let undo = store.save_with_policy(
+		retype_core::undo::Subject {
+			id: id.clone(),
+			intent: print::intent(&resolved, &registry),
+			machine: shared.machine.clone(),
+			bytes: read_from.clone(),
+			source_path: source.to_path_buf(),
+			source_ext: format.clone(),
+			consume_source: true,
+			outputs: derived
+				.iter()
+				.filter(|output| !output.keep_source)
+				.map(|output| retype_core::undo::Output {
+					path: target.parent().unwrap_or(Path::new("")).join(&output.path),
+					ext: output.format.clone(),
+				})
+				.collect(),
+		},
+		registry.undo(),
+	);
+	let has_backup = match &undo {
+		Ok(Some(record)) => {
+			if record.source_fingerprint.as_ref() != Some(&snapshot.original) {
+				eprintln!("retype: input changed while its recovery copy was being prepared; source retained");
+				publish(
+					shared,
+					&settled(
+						shared,
+						&id,
+						now,
+						source,
+						&format,
+						&resolved,
+						&plans,
+						outputs,
+						JobState::Failed,
+					),
+				);
+				return;
+			}
+			true
+		}
+		Ok(None) => false,
+		Err(error) => {
+			eprintln!("retype: source retained because undo could not be saved: {error}");
+			false
+		}
+	};
+	let mut all_validated = true;
+	let checkpoint = settled(
+		shared,
+		&id,
+		now,
+		source,
+		&format,
+		&resolved,
+		&plans,
+		Vec::new(),
+		JobState::Running,
+	);
 
 	for plan in &plans {
 		// Plans carry their group, because a kept source has one and no plan.
@@ -955,20 +1234,33 @@ fn run(
 
 		shared.recent.note(source, &output);
 
-		let log = crate::state::log_path(&shared.state_dir, &id);
-
-		match execute::run_logged(plan, &read_from, &output, cancellation, Some(&log)) {
-			Ok(report) => outputs.push(record(
-				&output,
-				plan,
-				OutputState::Done,
-				Some(report.bytes),
-				match report.stderr.trim().is_empty() {
-					true => None,
-					false => Some(report.stderr.clone()),
-				},
-				None,
-			)),
+		let publication = if force {
+			retype_core::convert::Publication::Replace
+		} else {
+			retype_core::convert::Publication::Create
+		};
+		let transaction = super::transaction::OutputTransaction {
+			shared,
+			job: &checkpoint,
+			original: &read_from,
+			completed: &outputs,
+			store: has_backup.then_some(&store),
+		};
+		match transaction.run(plan, &snapshot.path, &output, cancellation, publication) {
+			Ok(report) => {
+				all_validated &= report.validated;
+				outputs.push(record(
+					&output,
+					plan,
+					OutputState::Done,
+					Some(report.bytes),
+					match report.stderr.trim().is_empty() {
+						true => None,
+						false => Some(report.stderr.clone()),
+					},
+					None,
+				));
+			}
 			Err(error) => {
 				// A superseded job did not fail: the work was overtaken, so its output
 				// is skipped rather than failed, `docs/dev/architecture/state.md` §5.3.
@@ -1014,42 +1306,89 @@ fn run(
 		(false, false) => JobState::Failed,
 	};
 
-	if let Some(Err(error)) = &undo {
-		eprintln!("retype: cannot keep {} for undo: {error}", target.display());
+	let output_count = outputs.len();
+	let job = settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state);
+	if state == JobState::Done && !all_validated {
+		eprintln!("retype: original retained: the backend has no complete independent output validator");
+	}
+	let can_dispose = state == JobState::Done
+		&& !plans.is_empty()
+		&& output_count == plans.len()
+		&& all_validated
+		&& has_backup
+		&& !resolved.groups.iter().any(|group| group.keep_source);
+	if let Err(error) = persist(shared, &job) {
+		eprintln!("retype: original retained because completion could not be persisted: {error}");
+		return;
+	}
+	let mut disposed = false;
+	if can_dispose {
+		match cancellation.commit(|| {
+			store.verify_disposal(&id)?;
+			retype_core::safety::remove_owned(&read_from, &snapshot.original)
+		}) {
+			Ok(()) => disposed = true,
+			Err(error) => eprintln!("retype: source retained or preserved for recovery: {error}"),
+		}
+	}
+	if has_backup && state == JobState::Done {
+		/* A failed or ambiguous disposal can leave the original only in the backup.
+		 * Keep that backup pinned until the live source is proven intact. */
+		let retained = disposed
+			|| source_holds_original(&snapshot.original, &read_from, target, input_is_temporary);
+		if !retained {
+			eprintln!("retype: undo record remains pinned: the source was not verified after disposal failed");
+		} else if let Err(error) = store.finish(&id) {
+			eprintln!("retype: undo record remains pinned: {error}");
+		}
+	}
+	drop(lease);
+	publish_persisted(shared, &job);
+	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
+}
+
+/// Whether the live source, or the occupied target that held it, still matches the
+/// snapshot the conversion used.
+fn source_holds_original(
+	original: &retype_core::safety::Fingerprint,
+	read_from: &Path,
+	target: &Path,
+	input_is_temporary: bool,
+) -> bool {
+	if !original.matches(read_from).unwrap_or(false) {
+		return false;
 	}
 
-	// The job either used the source up or left it alone: a job with any output
-	// consumed its source, and one that produced nothing puts the source name back so
-	// no path keeps bytes its name denies.
-	match state {
-		JobState::Done | JobState::Partial => {
-			let disposed = match renamed.take() {
-				Some(renamed) => renamed.consume(disposal),
-				None => execute::consume(source, disposal),
-			};
+	!input_is_temporary || original.matches(target).unwrap_or(false)
+}
 
-			if let Err(error) = disposed {
-				eprintln!("retype: cannot dispose of {}: {error}", target.display());
-			}
-		}
-		_ => {
-			if let Some(renamed) = renamed {
-				renamed.keep();
-			}
-		}
-	}
-
-	let job = Job {
+/// A job's last word, whether it got as far as an output or not.
+///
+/// Every path out of a job goes through this, so a job that could not start leaves a
+/// terminal record rather than a `running` one nothing will ever finish.
+#[allow(clippy::too_many_arguments)]
+fn settled(
+	shared: &Shared,
+	id: &retype_core::job::JobId,
+	now: i64,
+	source: &Path,
+	format: &str,
+	resolved: &resolve::Resolved,
+	plans: &[Plan],
+	outputs: Vec<Output>,
+	state: JobState,
+) -> Job {
+	Job {
 		id: id.clone(),
 		created: now,
 		updated: now_ms(),
 		source: Source {
 			path: source.to_path_buf(),
-			format: format.clone(),
+			format: format.to_string(),
 			size: 0,
 			mtime_ns: 0,
 		},
-		intent: Some(print::intent(&resolved, &shared.registry())),
+		intent: Some(print::intent(resolved, &shared.registry())),
 		outputs,
 		state,
 		backend: plans.first().map(|plan| plan.backend.name().to_string()),
@@ -1059,17 +1398,8 @@ fn run(
 			.map(|(name, candidate)| retype_core::job::Engine { name, candidate }),
 		machine: shared.machine.clone(),
 		error: None,
-		parked: carried(shared, &id),
+		parked: carried(shared, id),
 		consume_source: true,
-	};
-
-	publish(shared, &job);
-	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
-
-	// Nothing was produced, so there is nothing to undo: the source is where it
-	// always was and the record would only describe a file that never changed.
-	if state != JobState::Done && state != JobState::Partial {
-		let _ = store.remove(&id);
 	}
 }
 
@@ -1106,30 +1436,50 @@ pub fn mark(shared: &Shared, outputs: &[Output], intent: &str) {
 	}
 }
 
-/// Put a snapshot in the journal and in the list `jobs.list` answers from.
-///
-/// The journal is the record; the list is the same records, kept in memory so a
-/// client does not read a file per request. A later snapshot for the same id
-/// replaces the earlier one in both.
+/// Persist a checkpoint without exposing completion before publication or source cleanup.
+pub fn persist(shared: &Shared, job: &Job) -> retype_core::error::Result<()> {
+	let mut journal = shared
+		.journal
+		.lock()
+		.map_err(|_| retype_core::error::Error::Io(std::io::Error::other("journal lock poisoned")))?;
+	journal.append(job)
+}
+
+/// Journal and register a snapshot before IPC readers or events can observe it.
 pub fn publish(shared: &Shared, job: &Job) {
-	if let Ok(mut journal) = shared.journal.lock() {
-		if let Err(error) = journal.append(job) {
-			eprintln!("retype: cannot journal {}: {error}", job.id);
-		}
+	if let Err(error) = record_job(shared, job, || persist(shared, job)) {
+		eprintln!("retype: cannot publish {}: {error}", job.id);
 	}
+}
 
-	// One event per snapshot, so a client polling `events` sees the same
-	// transitions the journal records, `docs/dev/architecture/ipc.md` §7.
-	if let Ok(mut events) = shared.events.lock() {
-		events.push(job);
+/// Expose a durable snapshot after the caller has finished its destructive decisions.
+pub fn publish_persisted(shared: &Shared, job: &Job) {
+	if let Err(error) = record_job(shared, job, || Ok(())) {
+		eprintln!("retype: cannot publish persisted job {}: {error}", job.id);
 	}
+}
 
-	if let Ok(mut jobs) = shared.jobs.lock() {
-		match jobs.iter_mut().find(|existing| existing.id == job.id) {
-			Some(existing) => *existing = job.clone(),
-			None => jobs.push(job.clone()),
-		}
+fn record_job(
+	shared: &Shared,
+	job: &Job,
+	write: impl FnOnce() -> retype_core::error::Result<()>,
+) -> retype_core::error::Result<()> {
+	/* Readers must not answer "not found" while a visible journal record is still syncing. */
+	let mut jobs = shared
+		.jobs
+		.lock()
+		.map_err(|_| retype_core::error::Error::Io(std::io::Error::other("job list lock poisoned")))?;
+	write()?;
+	match jobs.iter_mut().find(|existing| existing.id == job.id) {
+		Some(existing) => *existing = job.clone(),
+		None => jobs.push(job.clone()),
 	}
+	shared
+		.events
+		.lock()
+		.map_err(|_| retype_core::error::Error::Io(std::io::Error::other("event ring lock poisoned")))?
+		.push(job);
+	drop(jobs);
 
 	// The last job of a batch is the one that speaks for it.
 	if is_settled(job.state) {
@@ -1137,6 +1487,7 @@ pub fn publish(shared: &Shared, job: &Job) {
 			announce(shared, &ids);
 		}
 	}
+	Ok(())
 }
 
 /// Whether a job has reached a state a notification could describe. `running` and

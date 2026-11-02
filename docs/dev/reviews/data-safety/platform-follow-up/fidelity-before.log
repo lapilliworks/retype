@@ -1,0 +1,26 @@
+   Compiling retype-macros v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-fixes/crates/retype-macros)
+   Compiling retype-core v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-fixes/crates/retype-core)
+   Compiling retype-ipc v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-fixes/crates/retype-ipc)
+   Compiling retype-watch v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-fixes/crates/retype-watch)
+   Compiling retype-cli v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-fixes/crates/retype-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.92s
+     Running tests/fidelity.rs (target/debug/deps/fidelity-2937ea08f05c5b4f)
+
+running 3 tests
+test a_run_earns_a_claim_and_records_the_build ... ok
+test the_claims_table_is_rendered_between_the_markers ... ok
+
+thread 'a_stale_exact_claim_fails_the_run' (59931) panicked at crates/retype-cli/tests/fidelity.rs:195:5:
+retype: png to bmp: File exists (os error 17)
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test a_stale_exact_claim_fails_the_run ... FAILED
+
+failures:
+
+failures:
+    a_stale_exact_claim_fails_the_run
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+error: test failed, to rerun pass `-p retype-cli --test fidelity`

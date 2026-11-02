@@ -20,18 +20,20 @@ Client start sequence:
 2. On failure, spawn `retype daemon --detached` and retry with backoff for up to 3 s
 3. If the socket still does not answer, report `E_IPC_UNAVAILABLE` with the spawn log path
 4. Racing clients are harmless: all spawn candidates contend for the lock, one wins, the rest exit, and every client connects to the winner
+5. The endpoint is published only once the first registration round has started a watcher for every root, or two seconds have passed if a registration is stalled. macOS reports only what happens after its event stream starts, so a rename made in that gap would be lost rather than late
 
 Suppression:
 
 | Control | Effect |
 |---|---|
 | `--no-spawn` on any command | Fail instead of starting a daemon |
-| `RETYPE_NO_AUTOSTART=1` | Global suppression, for scripts and CI |
+| `RETYPE_NO_SPAWN=1` | Global suppression, for scripts and CI |
 | `retype daemon stop` | Stops the daemon. Any later client that needs one starts it again |
 
 Supervision:
 
-- The daemon records how it was started in the state directory
+- The daemon reads how it was started from the environment the supervisor sets
+- The variables are inherited by every process in the session, so a daemon the CLI started itself clears them: its supervisor would never restart it
 - Under a supervisor, `retype daemon stop` refuses with `E_IPC_SUPERVISED`, telling the user to run the supervisor's stop command, because stopping a supervised daemon is immediately undone by the supervisor
 - `--force` overrides the refusal for the case where the unit is being removed
 - `retype daemon start` exists for tests, units and scripts that want an explicit start without the foreground
@@ -66,6 +68,8 @@ Directory configuration is not re-read only on registration. The daemon watches 
 | Windows | `\\.\pipe\retype-<machine>-<user>` | Default DACL, owner only; impersonation must succeed |
 
 A Windows pipe can only be impersonated after its client has written, so the first frame is read before the check and handed to the connection loop rather than read twice. A client that connects and sends nothing therefore holds the daemon's single connection slot until it writes or goes away, which is a self-inflicted stall: the DACL admits only the user whose daemon it is.
+
+Windows also hands a child every inheritable handle in its parent, and the pipes a caller uses to read the CLI's output are inheritable by construction. The CLI clears that flag on its own standard handles before it spawns a daemon, so a daemon cannot keep a caller's pipe open after the command exits. The daemon is detached and has no console, and every tool it runs is a console program, so each spawn carries `CREATE_NO_WINDOW`: without it Windows would give every conversion a console window of its own.
 
 `<user>` is a short stable per-user token, derived from the user SID where one exists. Windows is usually single-user, and the suffix costs nothing while removing a class of surprises on machines that are not.
 
@@ -102,7 +106,7 @@ Request timeout defaults to 5 s. No method blocks on work that can outlive it.
 
 `shutdown` reads `force` and `now`. Without `force`, a daemon a supervisor started refuses with `E_IPC_SUPERVISED` and names the supervisor, §2. With `now`, running jobs are cancelled and waiting ones are recorded as cancelled, the runners are given a moment to write those records, and the answer carries how many were stopped.
 
-`status` reports `supervised`: `systemd`, `launchd`, or null, read from the environment the supervisor sets rather than from the process tree.
+`status` reports `supervised`: `systemd`, `launchd`, or null, read from the environment of the process the supervisor actually runs rather than from the process tree. A daemon the CLI started itself has had those variables cleared, so it reports null.
 
 `jobs.submit` takes `mode`:
 
@@ -115,7 +119,7 @@ Request timeout defaults to 5 s. No method blocks on work that can outlive it.
 
 `jobs.resume` continues a `partial` job, skipping outputs that still match their recorded identity, and reports `E_JOB_RESUME_UNAVAILABLE` when neither the source path nor the undo record holds the source bytes.
 
-`jobs.get`, `undo` and `jobs.resume` accept a full ULID or a unique prefix. A prefix matching two jobs is `E_IPC_AMBIGUOUS` with the candidates.
+`jobs.get`, `undo` and `jobs.resume` accept a full ULID or a unique prefix. A prefix matching two jobs is `E_JOB_AMBIGUOUS` with the candidates; a prefix shorter than four characters is `E_USAGE_ARGS`.
 
 ## 7. Events
 
@@ -137,7 +141,7 @@ events {"since": 90}  ->  {"events": [...], "seq": 91}
 ## 8. Errors
 
 ```json
-{"id":7,"ok":false,"error":{"code":"E_JOB_STATE","message":"job 01J8Z is done","detail":{"state":"done"}}}
+{"id":7,"ok":false,"error":{"code":"E_JOB_STATE","message":"job 01j8z is done","detail":{"state":"done"}}}
 ```
 
 One error type in `retype-core`, shared by daemon, CLI and GUI. IPC codes are namespaced `E_IPC_*`; domain codes keep their specification names.

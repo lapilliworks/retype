@@ -97,17 +97,16 @@ pub fn register(state_dir: &Path, directory: &Path, recursive: bool) -> Result<R
 /// Remove a registration by canonical path. Removing something absent succeeds.
 pub fn unregister(state_dir: &Path, directory: &Path) -> Result<bool> {
 	// A registration whose path has vanished is still removable, which is the
-	// only way to clean up after a deleted directory. Compare the canonical form
-	// when it exists, and a lexical absolute form when it does not.
-	let canonical = std::fs::canonicalize(directory).ok();
-	let absolute = std::path::absolute(directory)?;
+	// only way to clean up after a deleted directory. The name a registration is
+	// stored under is canonical, so a leaf that no longer exists is resolved by
+	// canonicalising its parent and keeping the same name; that is what matches
+	// macOS's `/var` symlink and the verbatim prefix Windows adds.
+	let wanted = comparable(directory)?;
 
 	let mut registrations = load(state_dir)?;
 	let before = registrations.len();
 
-	registrations.retain(|registration| {
-		registration.path != absolute && canonical.as_ref().is_none_or(|path| registration.path != *path)
-	});
+	registrations.retain(|registration| registration.path != wanted);
 
 	if registrations.len() == before {
 		return Ok(false);
@@ -115,6 +114,22 @@ pub fn unregister(state_dir: &Path, directory: &Path) -> Result<bool> {
 
 	save(state_dir, &registrations)?;
 	Ok(true)
+}
+
+/// The name a registration for `directory` is stored under, whether or not the
+/// directory still exists.
+fn comparable(directory: &Path) -> Result<PathBuf> {
+	if let Ok(canonical) = std::fs::canonicalize(directory) {
+		return Ok(canonical);
+	}
+
+	if let (Some(parent), Some(name)) = (directory.parent(), directory.file_name()) {
+		if let Ok(parent) = std::fs::canonicalize(parent) {
+			return Ok(parent.join(name));
+		}
+	}
+
+	Ok(std::path::absolute(directory)?)
 }
 
 /// Set the paused state of a registration, creating it when absent. A path that

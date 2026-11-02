@@ -7,6 +7,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod support;
+
+/// The name a path is recorded under: the journal holds canonical paths, and a
+/// source that was renamed to its target no longer exists to canonicalise.
+fn recorded(path: &Path) -> PathBuf {
+	let Some(name) = path.file_name() else {
+		return path.to_path_buf();
+	};
+
+	match path.parent().and_then(|parent| parent.canonicalize().ok()) {
+		Some(parent) => parent.join(name),
+		None => path.to_path_buf(),
+	}
+}
+
 fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
@@ -23,6 +38,9 @@ fn config(dir: &Path, above: &str) -> PathBuf {
 		format!(
 			"\
 version = 'retype-config-1'
+
+[notify]
+enabled = false
 
 [backends]
 prefer = ['copy']
@@ -74,6 +92,7 @@ struct Fixture {
 	photos: PathBuf,
 	state: PathBuf,
 	config: PathBuf,
+	err: PathBuf,
 	_daemon: Daemon,
 }
 
@@ -101,6 +120,7 @@ impl Fixture {
 			.output()
 			.unwrap();
 
+		let err = dir.path().join("daemon.err");
 		let daemon = Daemon(
 			retype()
 				.args(["daemon", "--detached"])
@@ -108,7 +128,7 @@ impl Fixture {
 				.arg(&state)
 				.env("RETYPE_CONFIG", &config)
 				.stdout(Stdio::null())
-				.stderr(Stdio::null())
+				.stderr(Stdio::from(fs::File::create(&err).unwrap()))
 				.spawn()
 				.unwrap(),
 		);
@@ -133,15 +153,22 @@ impl Fixture {
 			photos,
 			state,
 			config,
+			err,
 			_daemon: daemon,
 		}
 	}
 
+	fn daemon(&self) -> String {
+		fs::read_to_string(&self.err).unwrap_or_default()
+	}
+
 	fn rename(&self, from: &str, to: &str, bytes: &[u8]) {
 		let source = self.photos.join(from);
+		let before = support::observed(&self.state);
 		let mut file = fs::File::create(&source).unwrap();
 		file.write_all(bytes).unwrap();
 		drop(file);
+		support::observe(&self.state, before);
 		fs::rename(&source, self.photos.join(to)).unwrap();
 	}
 
@@ -156,7 +183,15 @@ impl Fixture {
 
 	/// Wait for any record satisfying `this`, or answer `None` after a short while.
 	fn wait_for(&self, this: impl Fn(&serde_json::Value) -> bool) -> Option<serde_json::Value> {
-		let deadline = Instant::now() + Duration::from_secs(5);
+		self.wait_for_within(Duration::from_secs(5), this)
+	}
+
+	fn wait_for_within(
+		&self,
+		within: Duration,
+		this: impl Fn(&serde_json::Value) -> bool,
+	) -> Option<serde_json::Value> {
+		let deadline = Instant::now() + within;
 
 		loop {
 			if let Some(record) = self.records().into_iter().find(|record| this(record)) {
@@ -236,7 +271,12 @@ fn a_pattern_keeps_a_file_out_of_the_directory_s_business() {
 #[test]
 fn a_paused_directory_is_not_watched_and_is_refused_by_watch() {
 	let fixture = Fixture::new("1s", "paused = true\n");
-	fixture.rename("d.png", "d.webp", b"pixels");
+
+	// Nothing is watching, so there is no event to wait for before the rename that
+	// this test expects to be ignored.
+	let source = fixture.photos.join("d.png");
+	fs::write(&source, b"pixels").unwrap();
+	fs::rename(&source, fixture.photos.join("d.webp")).unwrap();
 
 	assert!(
 		fixture.wait_for(|record| record["id"].is_string()).is_none(),
@@ -266,15 +306,23 @@ fn confirm_false_suppresses_the_cost_confirmation_in_that_directory() {
 	let fixture = Fixture::new("1s", "confirm = false\n");
 
 	let source = fixture.photos.join("e.png");
+	let before = support::observed(&fixture.state);
 	let mut file = fs::File::create(&source).unwrap();
 	file.write_all(&vec![b'p'; 8 * 1024 * 1024]).unwrap();
 	drop(file);
+	support::observe(&fixture.state, before);
 
 	fs::rename(&source, fixture.photos.join("e.webp")).unwrap();
 
 	let done = fixture
-		.wait_for(|record| record["state"] == "done")
-		.expect("the job ran without being parked");
+		.wait_for_within(Duration::from_secs(30), |record| record["state"] == "done")
+		.unwrap_or_else(|| {
+			panic!(
+				"the job did not finish: {:?}\ndaemon: {}",
+				fixture.records(),
+				fixture.daemon()
+			)
+		});
 
 	assert_eq!(done["state"], "done", "{done}");
 	assert!(fixture.photos.join("e.webp").exists());
@@ -289,28 +337,37 @@ fn confirm_false_suppresses_the_cost_confirmation_in_that_directory() {
 fn debounce_ms_holds_a_rename_until_the_file_stops_changing() {
 	let fixture = Fixture::new("1h", "debounce_ms = 1500\n");
 	let source = fixture.photos.join("f.png");
+	let before = support::observed(&fixture.state);
 	fs::write(&source, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
+	// The first rename is held rather than decided, so the second one can still
+	// change the request. Waiting for the watcher to have seen it is what makes the
+	// second rename arrive inside the hold on a platform whose events are slower
+	// than the hold.
+	let held = support::observed(&fixture.state);
 	fs::rename(&source, fixture.photos.join("f.webp")).unwrap();
-
-	// Nothing decides on the daemon's own four hundred milliseconds.
-	std::thread::sleep(Duration::from_millis(700));
+	support::observe(&fixture.state, held);
 	assert!(fixture.records().is_empty(), "{:?}", fixture.records());
 
 	// The second rename arrives inside the hold and is the one that counts.
+	let before = support::observed(&fixture.state);
 	fs::rename(fixture.photos.join("f.webp"), fixture.photos.join("f.webp+q75")).unwrap();
+	support::observe(&fixture.state, before);
 
 	let done = fixture
 		.wait_for(|record| record["state"] == "done")
-		.expect("a settled job");
+		.unwrap_or_else(|| panic!("a settled job: {:?}\ndaemon: {}", fixture.records(), fixture.daemon()));
 
 	// One job, asked for what the last name asked for, and named after it.
 	assert_eq!(done["intent"], "webp+quality75", "{done:?}");
-	assert_eq!(done["source"]["path"], source.to_str().unwrap(), "{done:?}");
+	assert_eq!(done["source"]["path"], recorded(&source).to_str().unwrap(), "{done:?}");
 	assert!(fixture.photos.join("f-quality75.webp").exists());
+	let records = fixture.records();
+	let ids: std::collections::BTreeSet<_> = records.iter().map(|record| record["id"].as_str().unwrap()).collect();
 	assert_eq!(
-		fixture.records().len(),
-		2,
-		"one job, one settled record: {:?}",
-		fixture.records()
+		ids.len(),
+		1,
+		"one job, including its durable output checkpoints: {records:?}"
 	);
+	assert_eq!(records.iter().filter(|record| record["state"] == "done").count(), 1);
 }
