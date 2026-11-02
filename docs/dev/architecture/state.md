@@ -52,6 +52,10 @@ Machine identity is a separate per-install random field, stable across restarts,
 
 User-facing handle: a prefix of at least 4 characters. Resolution requires a unique match; an ambiguous prefix is an error listing the candidates. Listings print the shortest unambiguous prefix so copy-paste is short by default.
 
+The rule is general rather than a property of job ids: every identifier this build mints is lowercase ASCII in its canonical form, and input is normalized to lowercase before parsing. Non-ASCII is rejected rather than case-folded, because Unicode folding is locale-dependent and would give one identifier several spellings. This covers job handles and state filters. It does not cover secrets or values another system defines, which keep their case.
+
+An object type that needs a prefix writes `<type>_<payload>`, with `_` as the separator rather than `-`, so a payload may keep `-` as an internal grouping character. Prefixes are lowercase and reserved by object type. This build mints only job ids, which remain bare ULIDs; the journal schema does not carry a `job_` prefix.
+
 ## 3. Journal records
 
 One JSON object per line. Every line is self-contained and carries its own version.

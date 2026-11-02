@@ -232,7 +232,7 @@ enum JobsAction {
 	/// List jobs, newest first
 	List {
 		/// Only jobs in this state
-		#[arg(long, value_parser = clap::builder::PossibleValuesParser::new(retype_cli::jobs::STATES))]
+		#[arg(long, ignore_case = true, value_parser = clap::builder::PossibleValuesParser::new(retype_cli::jobs::STATES))]
 		state: Option<String>,
 
 		/// Show at most this many

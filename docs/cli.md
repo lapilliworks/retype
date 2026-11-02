@@ -28,7 +28,7 @@ retype <command> [arguments] [flags]
 
 Global flags, valid on every command: `--config <path>`, `--state-dir <path>`, `--json`, `--quiet`, `--verbose`, `--no-spawn`, `--help`, `--version`.
 
-`retype uri <retype://job/<id>[?action=undo|cancel|resolve]>` is the scheme handler a notification or desktop entry calls. It is hidden from help because it is not typed by a person, and it is the CLI half of the actions `docs/watch.md` §11 names. The default action is `undo`.
+`retype uri <retype://job/<id>[?action=undo|cancel|resolve]>` is the scheme handler a notification or desktop entry calls. It is hidden from help because it is not typed by a person, and it is the CLI half of the actions `docs/watch.md` §11 names. The default action is `undo`. The scheme, `job` and `action` are read in either case.
 
 The CLI does not install, update or verify external tools. A CLI user acquires them with the platform's package manager or manually, and the CLI uses the result on `PATH`, an absolute path in configuration, or a managed set the GUI installed, `docs/tools.md` §2. `retype doctor` reports what the machine provides.
 
@@ -175,7 +175,7 @@ retype why <path>
 
 `jobs resume` continues a partial or interrupted job from a private copy of its verified retained original. An output whose identity, size and digest still match is skipped. Any other occupied path is `E_IO_EXISTS`; `--force` reruns outputs but cannot replace the input itself. Successful resume retains the backup for normal undo retention. Jobs without verified recovery bytes cannot resume.
 
-Ids accept a unique prefix of at least four characters; an ambiguous prefix is `E_JOB_AMBIGUOUS` with the candidates printed, and a shorter one is a usage error. Listings print the shortest unambiguous prefix so copy-paste is short by default.
+Ids accept a unique prefix of at least four characters; an ambiguous prefix is `E_JOB_AMBIGUOUS` with the candidates printed, and a shorter one is a usage error. Listings print the shortest unambiguous prefix so copy-paste is short by default. Ids and `--state` values are read in either case and printed lowercase.
 
 `jobs resolve` acts on a parked job, and `jobs --interactive` walks the parked ones with one key each; both are specified in `docs/deferral.md` §8.
 

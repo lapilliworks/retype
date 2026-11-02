@@ -15,6 +15,7 @@ pub mod estimate;
 pub mod execute;
 pub mod fidelity;
 pub mod fsx;
+pub mod identifier;
 pub mod intent;
 pub mod job;
 pub mod journal;

@@ -13,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::identifier::normalize;
 
 /// Schema identifier written on every record.
 pub const JOURNAL_VERSION: &str = "retype-journal-1";
@@ -55,13 +56,14 @@ impl JobId {
 	/// Whether `raw` is a handle a listing could have printed: long enough, and
 	/// made only of Crockford characters.
 	pub fn valid_prefix(raw: &str) -> bool {
+		let raw = normalize(raw);
 		raw.len() >= Self::PREFIX_MIN && raw.bytes().all(|byte| decode(byte).is_some())
 	}
 
 	/// Whether this id starts with a handle. The comparison is case-insensitive
 	/// because a handle may be typed in either case.
 	pub fn starts_with(&self, prefix: &str) -> bool {
-		self.0.starts_with(&prefix.to_ascii_lowercase())
+		self.0.starts_with(&normalize(prefix))
 	}
 
 	pub fn as_str(&self) -> &str {
@@ -73,22 +75,23 @@ impl FromStr for JobId {
 	type Err = Error;
 
 	fn from_str(raw: &str) -> Result<Self> {
+		let raw = normalize(raw);
 		if raw.len() != ID_LENGTH {
-			return Err(Error::JobId(raw.to_string()));
+			return Err(Error::JobId(raw));
 		}
 
 		let mut value: u128 = 0;
 		for (index, byte) in raw.bytes().enumerate() {
-			let digit = decode(byte).ok_or_else(|| Error::JobId(raw.to_string()))?;
+			let digit = decode(byte).ok_or_else(|| Error::JobId(raw.clone()))?;
 			// The top two bits of a 130-bit encoding must be zero, so the first
 			// character can only carry the low three of its five bits.
 			if index == 0 && digit > 7 {
-				return Err(Error::JobId(raw.to_string()));
+				return Err(Error::JobId(raw.clone()));
 			}
 			value = (value << 5) | u128::from(digit);
 		}
 
-		Ok(Self(raw.to_ascii_lowercase()))
+		Ok(Self(raw))
 	}
 }
 
@@ -606,6 +609,7 @@ mod tests {
 		assert_eq!(id.as_str(), lowercase, "the canonical form is lowercase");
 		assert_eq!(JobId::parse(&uppercased).unwrap(), id);
 		assert_eq!(JobId::parse(&lowercase).unwrap(), id);
+		assert_eq!(JobId::parse(&uppercased).unwrap().as_str(), lowercase);
 	}
 
 	#[test]

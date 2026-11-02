@@ -48,6 +48,25 @@ fn an_unknown_state_is_rejected_by_the_parser() {
 }
 
 #[test]
+fn a_state_filter_is_read_in_either_case() {
+	let dir = tempfile::tempdir().unwrap();
+
+	let output = retype()
+		.args(["jobs", "list", "--state", "NEEDS-ATTENTION"])
+		.arg("--state-dir")
+		.arg(dir.path())
+		.arg("--no-spawn")
+		.output()
+		.unwrap();
+
+	// The value passed the parser, so the command reached the daemon and failed as
+	// unavailable rather than as a usage error.
+	assert_eq!(output.status.code(), Some(6), "{output:?}");
+	let stderr = String::from_utf8_lossy(&output.stderr);
+	assert!(!stderr.contains("invalid value"), "{stderr}");
+}
+
+#[test]
 fn the_state_filter_lists_its_values() {
 	let output = retype().args(["jobs", "list", "--help"]).output().unwrap();
 	let help = String::from_utf8_lossy(&output.stdout);

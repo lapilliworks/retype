@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use retype_core::error::Code;
+use retype_core::identifier::normalize;
 use retype_core::job::JobId;
 use retype_core::print;
 use serde_json::Value;
@@ -37,6 +38,8 @@ pub fn list(
 	json: bool,
 	allow_spawn: bool,
 ) -> Result<ExitCode> {
+	let state = state.map(normalize);
+
 	let since = match since {
 		Some(written) => match JobId::parse(written) {
 			Ok(id) => Some(id),
@@ -76,7 +79,7 @@ pub fn list(
 			}
 		}
 
-		if let Some(wanted) = state {
+		if let Some(wanted) = state.as_deref() {
 			if job_state != wanted {
 				continue;
 			}
@@ -609,7 +612,7 @@ fn one(client: &mut retype_ipc::Client, prefix: &str) -> Result<std::result::Res
 /// Every job whose id starts with `prefix`.
 fn matching(client: &mut retype_ipc::Client, prefix: &str) -> Result<Vec<JobId>> {
 	let answer = client.call_without_params("jobs.list")?;
-	let prefix = prefix.to_ascii_lowercase();
+	let prefix = normalize(prefix);
 
 	let mut found: Vec<JobId> = answer
 		.get("jobs")
