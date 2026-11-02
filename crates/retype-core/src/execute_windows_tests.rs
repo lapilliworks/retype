@@ -33,6 +33,7 @@ fn exited_parent(root: &Path) -> crate::tool_process::ToolProcess {
 }
 
 #[test]
+#[allow(clippy::zombie_processes, reason = "the fixture must exit before its job-owned descendant")]
 fn process_worker() {
 	let Some(mode) = std::env::var_os(MODE) else {
 		return;
