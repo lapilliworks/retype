@@ -40,13 +40,34 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [x86_64-pc-windows-msvc, aarch64-apple-darwin, x86_64-unknown-freebsd]
+        target: [
+          x86_64-pc-windows-msvc,
+          aarch64-pc-windows-msvc,
+          aarch64-unknown-linux-gnu,
+          aarch64-apple-darwin,
+          x86_64-unknown-freebsd,
+        ]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - run: cargo check --workspace --all-targets --target ${{ matrix.target }}
+
+  installer:
+    name: installer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n packaging/install.sh
+      - run: bash scripts/test-install.sh
+
+  site:
+    name: site checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: node site/lib/checks.mjs
 
   probe:
     name: event probe (${{ matrix.os }})
