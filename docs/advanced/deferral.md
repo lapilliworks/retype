@@ -75,7 +75,7 @@ Two rules follow from the list rather than from a special case:
 
 ## 4. Thresholds and the repair policy
 
-`[deferral]`, host-level, `docs/config.md` §10.
+`[deferral]`, host-level, `docs/reference/config.md` §10.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -86,11 +86,11 @@ Two rules follow from the list rather than from a special case:
 | `repair` | `ask` | What to do with a job that cannot run as asked: `ask` parks it, `convert` runs it without the tokens that could not be carried |
 
 Durations are the grammar's time class, so they are spelled the way an intent spells
-one, `docs/grammar.md` §7. Thresholds are compared against the whole job: the sum of
+one, `docs/reference/intents.md` §7. Thresholds are compared against the whole job: the sum of
 the per-output estimates, since one job's outputs run one after another.
 
 `repair = 'convert'` is the convenience the user opts into, and the job it repairs keeps
-what it dropped in its own record, `docs/deferral.md` §6. It is deliberately the
+what it dropped in its own record, `docs/advanced/deferral.md` §6. It is deliberately the
 non-default, it never applies without an undo record, and it is bounded by `above`
 rather than by a threshold of its own: a dropped token is a small cut on a job that
 takes a second, and a guess that spends minutes on work nobody asked for is not.
@@ -133,7 +133,7 @@ Two rules produce the table:
   own setting and a `+now` typed by the person can do that
 
 Both tokens print in the canonical form so the journal records what was asked,
-`docs/grammar.md` §10, and neither changes what the job does: they decide whether the
+`docs/reference/intents.md` §10, and neither changes what the job does: they decide whether the
 user is asked first.
 
 ## 6. The report of a job that did not run as asked

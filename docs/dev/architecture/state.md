@@ -35,7 +35,7 @@ retype/
 
 Directory mode is `0700`, files `0600`. The store holds user data in plain form, so nothing here is world-readable.
 
-The toolchain directory is owned by the GUI: it installs, updates and verifies the artifacts, while the CLI and daemon only read what is there. It holds executables, so its mode is `0700` on Unix. `tools/bin` is searched before `PATH`, `docs/tools.md` §2. An artifact is unpacked into its own directory and only then linked into `bin`, so an interrupted install cannot replace a working tool with a partial one.
+The toolchain directory is owned by the GUI: it installs, updates and verifies the artifacts, while the CLI and daemon only read what is there. It holds executables, so its mode is `0700` on Unix. `tools/bin` is searched before `PATH`, `docs/advanced/converters.md` §2. An artifact is unpacked into its own directory and only then linked into `bin`, so an interrupted install cannot replace a working tool with a partial one.
 
 ## 2. Identifiers
 
@@ -84,7 +84,7 @@ One JSON object per line. Every line is self-contained and carries its own versi
 | `backend` | Backend name that ran or will run the job: a tool's name, or the codec's, such as `zip`, when this build wrote the file itself |
 | `machine` | Per-install identity |
 | `error` | Null, or `{code, message}` with a journal-level code such as `E_JOB_INTERRUPTED`, `E_JOB_SUPERSEDED` or `E_TOOL_FAILED` |
-| `parked` | Absent, or why the job is waiting and until when: `reason`, `deadline`, `batch`, `estimate`, `requested`, `corrected` and `dropped`, `docs/deferral.md` §11 |
+| `parked` | Absent, or why the job is waiting and until when: `reason`, `deadline`, `batch`, `estimate`, `requested`, `corrected` and `dropped`, `docs/advanced/deferral.md` §11 |
 | `consume_source` | Whether the job may consume its source after the safety checks: true for a rename, false for `retype convert`. It is not proof that disposal happened |
 
 Per-output state is one of `pending`, `running`, `done`, `failed`. A `partial` job is one with at least one `done` and at least one not `done`, so the job state is derivable from its outputs and is stored anyway because a reader should not have to recompute it.
@@ -227,7 +227,7 @@ Order of decisions, for a record that costs `s` bytes:
    - `skip` keeps no record and retains the original
    - `ask` asks; until notifications exist this build reads it as `evict` and says so once at startup
 
-Accounting is retained source bytes, `docs/config.md` §9. Quota decisions, eviction and record creation are one locked transaction. Every record selected for eviction is leased first, then the new record is written, then the old ones are removed, so a failed save leaves the old records in place rather than an empty store and no new record. A process mutex and an operating-system file lock serialize store writers, including undo clients. Pins are persisted in the manifest and survive process death.
+Accounting is retained source bytes, `docs/reference/config.md` §9. Quota decisions, eviction and record creation are one locked transaction. Every record selected for eviction is leased first, then the new record is written, then the old ones are removed, so a failed save leaves the old records in place rather than an empty store and no new record. A process mutex and an operating-system file lock serialize store writers, including undo clients. Pins are persisted in the manifest and survive process death.
 
 ## 6. Startup reconciliation
 
@@ -235,7 +235,7 @@ Accounting is retained source bytes, `docs/config.md` §9. Quota decisions, evic
 2. Load `bench.toml`, then the journal, then the undo record index
 3. For every journal job in `queued`: nothing ran, so nothing was written. If the live source is still a regular file whose declared format, size and mtime match the record, put it back in the queue with the request the journal recorded, including the output path, which is the only place an explicit `-o` survives. Otherwise mark it `failed` with `E_JOB_INTERRUPTED`
 4. For every journal job in `running`: verify publication intents from its recovery manifest against final files. Reconstruct the intended outputs and mark verified publications done. Mark the job interrupted, with state `partial` when any publication survived and `failed` otherwise. Both outcomes can resume using verified retained bytes, §5.2
-5. For every journal job in `pending`: it is parked, so it keeps its deadline and its timer is re-armed rather than run, `docs/deferral.md` §7
+5. For every journal job in `pending`: it is parked, so it keeps its deadline and its timer is re-armed rather than run, `docs/advanced/deferral.md` §7
 6. Retain recovery records without journal entries for direct undo; do not infer completion from publication intents alone
 7. For every journal job whose record directory is missing, leave the state as recorded and mark undoing it as unavailable
 8. Drop undo records past retention, then compact if the thresholds are met
@@ -266,7 +266,7 @@ A measurement is keyed by the pair it was taken on, not by one format: HEIC deco
 
 The two numbers are the source bytes the machine converts per second, and the output bytes per source byte. Time follows from the first and size from the second, and both are per pair because a ratio is a property of the pair: the same photograph is 291 KB as WebP and 807 KB as AVIF.
 
-`sample_bytes` records what the rate was measured on, since a rate taken on a 240 KB file and one taken on a 2 MB file are not the same evidence. `tool_version` is the version string of the backend that ran, because a rate is evidence about a build, `docs/tools.md` §5.1.
+`sample_bytes` records what the rate was measured on, since a rate taken on a 240 KB file and one taken on a 2 MB file are not the same evidence. `tool_version` is the version string of the backend that ran, because a rate is evidence about a build, `docs/advanced/converters.md` §5.1.
 
 `retype bench` writes this file. It generates one sample per family in the format `[bench.seed]` names, using an argv `[bench.sample]` declares, and then measures every target that compiles from that source. `--pair` and `--family` narrow it. Measuring the same pair twice replaces the earlier answer rather than leaving two for one question.
 
@@ -274,7 +274,7 @@ Estimates use a measurement when the pair, backend and machine match, and a fami
 
 ## 8. Provenance
 
-Mechanisms, guarantees and failure modes are specified in `docs/provenance.md`. This document owns only the field: the journal records the identity of every output at completion.
+Mechanisms, guarantees and failure modes are specified in `docs/advanced/provenance.md`. This document owns only the field: the journal records the identity of every output at completion.
 
 ```json
 "outputs":[{"path":"/home/u/Pictures/a.jpg","format":"jpg","bytes":812345,"tier":"converted",

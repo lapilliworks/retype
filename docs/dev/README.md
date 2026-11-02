@@ -54,7 +54,7 @@ When a failure depends on the platform, `scripts/probe-supersede.sh` reports the
 `measurement/events.md` is produced by the probe, and the claims table in [Fidelity](../advanced/fidelity.md) is produced by a fidelity run:
 
 ```
-retype fidelity --write share/retype/fidelity.toml --render docs/fidelity.md
+retype fidelity --write share/retype/fidelity.toml --render docs/advanced/fidelity.md
 ```
 
 Edit the probe or the fixtures, not the generated output.

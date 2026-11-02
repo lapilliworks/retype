@@ -99,7 +99,7 @@ layout = ['{input}', '{ops}', '{output}']
 
 The layout is the whole reason a tool is configuration: `7zz` takes its output before its input and `ffmpeg` needs `-i` in front of its input, and neither fact belongs in code.
 
-A bare `command` resolves in the managed toolchain first, then in `PATH`; an absolute path is used as written and pins the user's choice. The managed directory is `<state>/tools/bin` and is populated only by the GUI from a signed distribution list, `docs/tools.md` §2; the CLI never writes to it. There is no per-tool source switch: pinning is expressed by an absolute path, and the fixed order keeps.
+A bare `command` resolves in the managed toolchain first, then in `PATH`; an absolute path is used as written and pins the user's choice. The managed directory is `<state>/tools/bin` and is populated only by the GUI from a signed distribution list, `docs/advanced/converters.md` §2; the CLI never writes to it. There is no per-tool source switch: pinning is expressed by an absolute path, and the fixed order keeps.
 
 `aliases` are other executable names for the same tool, tried in declared order after `command` when that candidate is absent or unusable. They change neither the tool's name nor its `[tools.<name>]` key, so every `argv` fragment and `backends.prefer` entry still names the declared tool. An absolute `command` is a pin and suppresses the aliases. A candidate below its version floor, or missing a required component, is skipped rather than shadowing a usable alias, and `retype doctor` reports which candidate answered.
 
@@ -107,7 +107,7 @@ A bare `command` resolves in the managed toolchain first, then in `PATH`; an abs
 
 A tool can be installed, new enough, and still lack the delegate that makes a format work: ImageMagick without libheif opens a HEIC file and fails at the codec. `components` names the substrings that have to appear in the probe output, so the answer to "why can't I convert this" is *this build has no libheif* rather than *magick failed*.
 
-The declaration is per tool because that is what the probe can observe. Of the capability tuple in `docs/tools.md` §1, the format and the direction belong to the operation; the build variant, version floor and components belong to the tool and its manifest.
+The declaration is per tool because that is what the probe can observe. Of the capability tuple in `docs/advanced/converters.md` §1, the format and the direction belong to the operation; the build variant, version floor and components belong to the tool and its manifest.
 
 ### 3.1 Engines
 
@@ -160,7 +160,7 @@ args = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart']
 |---|---|
 | `family` | `image`, `audio`, `video`, `document`, `archive`, `folder` |
 | `direction` | `decode`, `encode` or `both`, default `both`. A format that is read and never written, such as `dng`, or written and never read, such as `pdf` |
-| `native` | `zip`, `tar`, `tar.gz` or `7z`. The format is repacked rather than converted. Only the `archive` family may name one, and a native target needs a native source, because a container is converted from another container. `7z` is repacked through the declared tool, `docs/tools.md` §7 |
+| `native` | `zip`, `tar`, `tar.gz` or `7z`. The format is repacked rather than converted. Only the `archive` family may name one, and a native target needs a native source, because a container is converted from another container. `7z` is repacked through the declared tool, `docs/advanced/converters.md` §7 |
 | `lossy` | Whether the format is lossy |
 | `alpha` | Whether the format carries alpha |
 | `tier` | Default fidelity tier for pairs targeting this format |
@@ -199,12 +199,12 @@ max_source_size = '4GiB'
 | `allow_synced` | bool | `false` | Convert inside placeholder-capable cloud providers instead of refusing with the provider named |
 | `max_source_size` | size | `4GiB` | Largest source for automatic conversion. `retype convert` ignores it |
 
-All four are read. `allow_synced` decides a registration: without it, `retype watch` refuses a directory inside a provider that can hold placeholders, naming the provider, `docs/watch.md` §5.
+All four are read. `allow_synced` decides a registration: without it, `retype watch` refuses a directory inside a provider that can hold placeholders, naming the provider, `docs/reference/watch.md` §5.
 
 Three things are deliberately not configurable, so that nobody tunes them and then wonders why behaviour differs between machines:
 
-- The built-in ignore list, `docs/watch.md` §4. It is lifted only by registering a directory inside one of its entries, because naming a directory is intent
-- The batch size of 64 files per debounce window and the queue cap of 256, which are churn protection rather than policy, `docs/watch.md` §8
+- The built-in ignore list, `docs/reference/watch.md` §4. It is lifted only by registering a directory inside one of its entries, because naming a directory is intent
+- The batch size of 64 files per debounce window and the queue cap of 256, which are churn protection rather than policy, `docs/reference/watch.md` §8
 - The debounce default of 400 ms plus 200 ms of quiet, capped at 3 s, which a directory may override but a user may not, because pacing belongs to the directory being watched
 
 ## 6. Operations
@@ -231,7 +231,7 @@ args = ['-resize', '{value}']
 
 | Key | Required | Meaning |
 |---|---|---|
-| `slot` | yes | Integer presentation rank, which orders editor controls and `retype list` rows. It never reorders an intent: the string is the pipeline, `docs/grammar.md` C2 |
+| `slot` | yes | Integer presentation rank, which orders editor controls and `retype list` rows. It never reorders an intent: the string is the pipeline, `docs/reference/intents.md` C2 |
 | `exclusive` | no | Group names; two members of one group conflict |
 | `param` | when it takes a value | `class`, plus `min` and `max` for the numeric classes, `values` for `enum`, and `scalar` for `range`, which is `int` unless it says `time` |
 | `formats` | yes | Formats the operation applies to, or `['*']` |
@@ -277,7 +277,7 @@ Backend selection:
 prefer = ['magick', 'ffmpeg', 'pandoc', '7zz']
 ```
 
-`prefer` names tools and nothing else. A file that omits the table gets every declared tool in name order, which is deterministic but rarely what a user wants, so the shipped file states an order. Archive formats are not one backend: `zip` and `tar` are native, and `7zz` carries `.7z` only, `docs/tools.md` §7.
+`prefer` names tools and nothing else. A file that omits the table gets every declared tool in name order, which is deterministic but rarely what a user wants, so the shipped file states an order. Archive formats are not one backend: `zip` and `tar` are native, and `7zz` carries `.7z` only, `docs/advanced/converters.md` §7.
 
 The first backend in `prefer` that implements every operation in the plan and is available wins. Determinism is required: a plan never depends on discovery order, so a missing earlier backend moves the plan down the list rather than shuffling it.
 
@@ -302,7 +302,7 @@ on_overflow = 'ask'
 | `quota` | `5gb` | Upper bound for the store, counted in source bytes |
 | `on_overflow` | `ask` | `ask`, `evict` or `skip`, `docs/dev/architecture/state.md` §5.5 |
 
-`retention` is read as the grammar's duration class, so it is spelled the way an intent spells one: `w`, `d`, `h`, `m` and `s`, in that order, and a unit may be skipped. Months are not a unit, because a month is not a fixed number of seconds. `quota` is read as the size class, so `gb` is decimal and `gib` binary, `docs/grammar.md` §7.
+`retention` is read as the grammar's duration class, so it is spelled the way an intent spells one: `w`, `d`, `h`, `m` and `s`, in that order, and a unit may be skipped. Months are not a unit, because a month is not a fixed number of seconds. `quota` is read as the size class, so `gb` is decimal and `gib` binary, `docs/reference/intents.md` §7.
 
 Retention expires completed, unpinned undo records. Unfinished recovery records remain pinned against both expiry and quota eviction, including across restart. A record also stays pinned when a failed disposal cannot prove the live source is still the original, because the backup may then be the only copy. A successful resume releases the pin but retains its backup. Disabling undo, insufficient quota, or unexpected backup failure retains the live original rather than silently permitting permanent removal, `docs/dev/architecture/state.md` §5.
 
@@ -312,7 +312,7 @@ The journal outlives them. It is compacted at startup when it earns it, dropping
 
 ## 10. Deferral
 
-Host-level, because the thresholds describe this machine and this person's tolerance for waiting rather than a directory's contents, `docs/deferral.md`.
+Host-level, because the thresholds describe this machine and this person's tolerance for waiting rather than a directory's contents, `docs/advanced/deferral.md`.
 
 ```toml
 [deferral]
@@ -325,15 +325,15 @@ repair = 'ask'
 
 | Key | Default | Meaning |
 |---|---|---|
-| `mode` | `ask` | `ask` defers by `docs/deferral.md` §3; `now` skips the two cost triggers and still parks a job that cannot run as asked |
+| `mode` | `ask` | `ask` defers by `docs/advanced/deferral.md` §3; `now` skips the two cost triggers and still parks a job that cannot run as asked |
 | `above` | `10s` | Estimated duration above which a watched rename is parked |
 | `above_without_undo` | `2s` | The same when no undo record can be kept; the source is retained |
 | `pause` | `1h` | How long a parked job waits before it runs anyway |
-| `repair` | `ask` | `ask` parks a job that cannot run as asked; `convert` runs it without the tokens that could not be carried, `docs/deferral.md` §4 |
+| `repair` | `ask` | `ask` parks a job that cannot run as asked; `convert` runs it without the tokens that could not be carried, `docs/advanced/deferral.md` §4 |
 
 Durations are read as the grammar's time class, so they are spelled the way an intent spells one. A threshold is compared against the whole job, which is the sum of its outputs' estimates. `pause = '0s'` is refused: a parked job that never expires is a cancelled job with extra paperwork.
 
-A directory file may set `confirm = false`, which suppresses the ordinary cost trigger in that directory and nothing else, `docs/deferral.md` §5.
+A directory file may set `confirm = false`, which suppresses the ordinary cost trigger in that directory and nothing else, `docs/advanced/deferral.md` §5.
 
 ## 11. Provenance
 
@@ -348,7 +348,7 @@ xattr = true
 |---|---|---|
 | `xattr` | `true` | Record the intent on the file as an extended attribute, where the platform has them |
 
-The attribute is `user.retype.intent` on Linux and `com.retype.intent` on macOS. It is written after an output is produced and never read as a precondition: a filesystem that refuses attributes, or a policy that strips them, changes what `retype why` can answer later and nothing else. Windows streams are not written until that question is settled, `docs/provenance.md` §5.
+The attribute is `user.retype.intent` on Linux and `com.retype.intent` on macOS. It is written after an output is produced and never read as a precondition: a filesystem that refuses attributes, or a policy that strips them, changes what `retype why` can answer later and nothing else. Windows streams are not written until that question is settled, `docs/advanced/provenance.md` §5.
 
 Turning it off affects future conversions. An attribute already on a file is still read, because it is evidence about that file rather than a setting of this one.
 
@@ -369,11 +369,11 @@ paused = false
 | Key | Meaning |
 |---|---|
 | `patterns` | Globs a file must match to be considered. A pattern without `/` matches the file name; one with it matches the path relative to this directory. Empty means everything |
-| `deny` | Operations refused here, by name or alias. A job that asks for one is `E_INAPPLICABLE` and parks, `docs/deferral.md` |
+| `deny` | Operations refused here, by name or alias. A job that asks for one is `E_INAPPLICABLE` and parks, `docs/advanced/deferral.md` |
 | `limits` | Ceilings for a parameter, by operation name. A number is clamped and the derived name says the clamped value; a class with no ceiling is left alone |
-| `confirm` | `false` suppresses the cost confirmation in this directory, and not the one that exists because a source would be destroyed with no record, `docs/deferral.md` §5 |
+| `confirm` | `false` suppresses the cost confirmation in this directory, and not the one that exists because a source would be destroyed with no record, `docs/advanced/deferral.md` §5 |
 | `paused` | Whether the directory is watched at all. `retype watch` refuses it with `E_WATCH_PAUSED_BY_POLICY` naming the file, rather than accepting a registration that the next read would undo |
-| `debounce_ms` | How long a rename here waits for the file to stop changing before anything decides, `docs/watch.md` §7. Below the daemon's own window it changes nothing |
+| `debounce_ms` | How long a rename here waits for the file to stop changing before anything decides, `docs/reference/watch.md` §7. Below the daemon's own window it changes nothing |
 
 Every key is read. A `[conversions]` table was specified here once and has been dropped rather than built, for two reasons.
 
@@ -381,7 +381,7 @@ A per-pair `preset` would add operations to a rename nobody typed, and the renam
 
 A per-pair `enabled = false` is a different and much smaller idea: refusing a *target format* here, which `deny` cannot express because it refuses operations. If that is wanted it should be specified as a format refusal beside `deny`, in one line, rather than as half of a rule engine. The gap is recorded in.
 
-A file is read when it changes rather than on a second watcher: the answer is cached per directory and re-read when its modification time moves, which is the same answer `docs/watch.md` §2 asks for with less machinery.
+A file is read when it changes rather than on a second watcher: the answer is cached per directory and re-read when its modification time moves, which is the same answer `docs/reference/watch.md` §2 asks for with less machinery.
 
 An undeclared key here is ignored rather than refused, unlike the host file: every key that could widen something is refused by name, and a key nothing reads cannot change a decision. The host file has no such excuse, so it refuses one.
 
@@ -404,7 +404,7 @@ A key the entry does not declare is refused as `E_CFG_UNKNOWN_KEY` before any ru
 | V7 | A preset whose tokens do not parse, or a reference cycle |
 | V8 | An exclusive group with a single member, or a group declared but never used |
 | V9 | A format or tool referenced by an operation, fragment or `backends.prefer` but not declared |
-| V10 | A tier outside `exact`, `converted`, `delegated`, `docs/fidelity.md` |
+| V10 | A tier outside `exact`, `converted`, `delegated`, `docs/advanced/fidelity.md` |
 | V11 | `version_min` that does not parse as a version |
 | V13 | A per-directory file defining `tools`, `formats`, `ops`, `presets`, `backends`, `undo`, or any key of the `[watch]` table |
 | V16 | `components` declared by a tool that declares no `probe` |

@@ -18,7 +18,7 @@ retype <command> [arguments] [flags]
 | `undo <id\|--last>` | Reverse one job |
 | `why <path>` | Explain a file's conversion |
 | `explain <source> <intent>` | Parse, plan, backend, estimate and diagnostics without a file |
-| `list [--tiers]` | Configured pairs. `--tiers` adds one line per claim with its engine and version, `docs/fidelity.md` |
+| `list [--tiers]` | Configured pairs. `--tiers` adds one line per claim with its engine and version, `docs/advanced/fidelity.md` |
 | `doctor [--check] [--require <tool>] [--emit\|--write\|--report]` | Tool probing, availability, support bundle |
 | `bench [--pair <from>:<to>] [--family <name>]` | Measure this machine, so estimates are about it |
 | `fidelity [--pair <from>:<to>] [--family <name>] [--write <path>] [--manifest <path>] [--render <path>] [--fixtures <dir>]` | Earn the fidelity claims for this machine and record the build that earned them |
@@ -28,9 +28,9 @@ retype <command> [arguments] [flags]
 
 Global flags, valid on every command: `--config <path>`, `--state-dir <path>`, `--json`, `--quiet`, `--verbose`, `--no-spawn`, `--help`, `--version`.
 
-`retype uri <retype://job/<id>[?action=undo|cancel|resolve]>` is the scheme handler a notification or desktop entry calls. It is hidden from help because it is not typed by a person, and it is the CLI half of the actions `docs/watch.md` §11 names. The default action is `undo`. The scheme, `job` and `action` are read in either case.
+`retype uri <retype://job/<id>[?action=undo|cancel|resolve]>` is the scheme handler a notification or desktop entry calls. It is hidden from help because it is not typed by a person, and it is the CLI half of the actions `docs/reference/watch.md` §11 names. The default action is `undo`. The scheme, `job` and `action` are read in either case.
 
-The CLI does not install, update or verify external tools. A CLI user acquires them with the platform's package manager or manually, and the CLI uses the result on `PATH`, an absolute path in configuration, or a managed set the GUI installed, `docs/tools.md` §2. `retype doctor` reports what the machine provides.
+The CLI does not install, update or verify external tools. A CLI user acquires them with the platform's package manager or manually, and the CLI uses the result on `PATH`, an absolute path in configuration, or a managed set the GUI installed, `docs/advanced/converters.md` §2. `retype doctor` reports what the machine provides.
 
 `--` terminates flag parsing, for files whose names begin with a dash.
 
@@ -40,7 +40,7 @@ The CLI does not install, update or verify external tools. A CLI user acquires t
 retype convert <input> <intent> [-o <path>] [--force] [--dry-run]
 ```
 
-`<intent>` is the intent string from `docs/grammar.md`, taken as a positional. No `--intent` flag exists, and no output path is required, because the intent already names its outputs.
+`<intent>` is the intent string from `docs/reference/intents.md`, taken as a positional. No `--intent` flag exists, and no output path is required, because the intent already names its outputs.
 
 | Invocation | Result |
 |---|---|
@@ -82,7 +82,7 @@ Two positionals, the same two `convert` takes, so `convert --dry-run` and `expla
 | Argument | Purpose |
 |---|---|
 | `<name>` | The path being replaced. It need not exist, because only its stem and suffix are read |
-| `<intent>` | The intent string, `docs/grammar.md` |
+| `<intent>` | The intent string, `docs/reference/intents.md` |
 
 Prints the canonical intent, the same intent in words, the derived output names, the resolved plan in pipeline order, the chosen backend, the argv it would run, the tier and every diagnostic:
 
@@ -131,7 +131,7 @@ retype unwatch <dir>...
 
 `list` prints what the configuration declares: every format with its family, whether it is lossy and carries alpha, and the tier a pair targeting it claims; every operation by slot with its parameter class and the formats it applies to; every preset with its tokens; and the backend order with the installed version of each. It reads configuration and the filesystem only, so it never starts a daemon.
 
-`--tiers` prints one line per pair instead: the tier the pair claims and the backend that would carry it, with that backend's installed version. A pair nothing can carry prints the diagnostic code where a backend would go, in brackets, because a blank column would read as "not declared" rather than "not possible here". A tier here is a declaration, not evidence: a claim is earned by a fixture run, `docs/fidelity.md` §4, and until a run has happened the version beside it is what is installed now rather than what the claim was earned with.
+`--tiers` prints one line per pair instead: the tier the pair claims and the backend that would carry it, with that backend's installed version. A pair nothing can carry prints the diagnostic code where a backend would go, in brackets, because a blank column would read as "not declared" rather than "not possible here". A tier here is a declaration, not evidence: a claim is earned by a fixture run, `docs/advanced/fidelity.md` §4, and until a run has happened the version beside it is what is installed now rather than what the claim was earned with.
 
 `--json` writes one object per line with a `kind` of `format`, `operation`, `preset`, `backend` or `pair`. A pair that cannot be carried has a null `backend` and a separate `error` field naming the code; the human line brackets the same code where a backend would go, because a blank column would read as "not declared" rather than "not possible here".
 
@@ -169,7 +169,7 @@ retype why <path>
 
 `jobs get` answers with the whole record: its own `v`, the outputs, their bytes, their tier and their errors. It is the form a bug report or a script wants, so it prints JSON rather than a rendering of it. The record is not enveloped, because its `v` is `retype-journal-1` and an envelope would overwrite it.
 
-`why` takes a file and answers what produced it, naming the store that answered: `journal-identity` when the file is the one a record produced, which survives the rename that usually follows a conversion, `journal-path` when only the name matched, `xattr` when the intent came from the file's attribute, and `unknown` when nothing did. Its `confidence` is `exact`, `path-only` or `none`, `docs/provenance.md` §8. Identity alone is not trusted, because file ids are recycled, so the size has to agree as well. A file nothing produced is not an error: the command says so, and the record expires at twice the undo retention.
+`why` takes a file and answers what produced it, naming the store that answered: `journal-identity` when the file is the one a record produced, which survives the rename that usually follows a conversion, `journal-path` when only the name matched, `xattr` when the intent came from the file's attribute, and `unknown` when nothing did. Its `confidence` is `exact`, `path-only` or `none`, `docs/advanced/provenance.md` §8. Identity alone is not trusted, because file ids are recycled, so the size has to agree as well. A file nothing produced is not an error: the command says so, and the record expires at twice the undo retention.
 
 `undo` reads the undo store rather than the journal, so it answers even when the journal is gone, and it removes the record it used: one record, one restore target. An active conversion or recovery returns `E_IO_LOCKED`; cancel it and wait for it to stop before undoing.
 
@@ -177,11 +177,11 @@ retype why <path>
 
 Ids accept a unique prefix of at least four characters; an ambiguous prefix is `E_JOB_AMBIGUOUS` with the candidates printed, and a shorter one is a usage error. Listings print the shortest unambiguous prefix so copy-paste is short by default. Ids and `--state` values are read in either case and printed lowercase.
 
-`jobs resolve` acts on a parked job, and `jobs --interactive` walks the parked ones with one key each; both are specified in `docs/deferral.md` §8.
+`jobs resolve` acts on a parked job, and `jobs --interactive` walks the parked ones with one key each; both are specified in `docs/advanced/deferral.md` §8.
 
 `jobs --interactive` walks the parked jobs oldest first and reads one key each: `n` runs it as asked, `c` runs the corrected intent where there is one, `r` refuses it, `s` skips it and `q` stops. It refuses to run without a terminal rather than reading a script's stdin. `jobs resolve` is the same decisions for a script, one id at a time.
 
-`jobs resolve` acts on a parked job: `--now` runs it as asked, `--convert` runs the corrected intent with the tokens that could not be carried dropped. `--force` belongs to `--now` and overwrites an output that appeared while the job waited, which without it fails as `E_IO_EXISTS`. It is not accepted with `--convert`: a reduced request is not the place to decide about a file somebody else wrote. A job that cannot run as asked refuses `--now` with `E_JOB_STATE` and says why, and a job whose target format does not survive the reduction has nothing for `--convert` to run. Exactly one of the two is required; the states, the reasons and the timer are `docs/deferral.md`.
+`jobs resolve` acts on a parked job: `--now` runs it as asked, `--convert` runs the corrected intent with the tokens that could not be carried dropped. `--force` belongs to `--now` and overwrites an output that appeared while the job waited, which without it fails as `E_IO_EXISTS`. It is not accepted with `--convert`: a reduced request is not the place to decide about a file somebody else wrote. A job that cannot run as asked refuses `--now` with `E_JOB_STATE` and says why, and a job whose target format does not survive the reduction has nothing for `--convert` to run. Exactly one of the two is required; the states, the reasons and the timer are `docs/advanced/deferral.md`.
 
 `jobs logs` prints what the tool printed. The full output is in `<state>/logs/<id>.log`, which is written as it arrives, and the journal keeps the last four kilobytes, because a converter can print megabytes while a failure needs the last ten lines. A job whose log file is gone answers from the record instead, and says which it used. `--follow` prints what arrives while the job runs and stops when the job reaches a terminal state, so it ends by itself rather than waiting to be interrupted.
 
@@ -235,11 +235,11 @@ retype fidelity --pair heic:webp
 retype fidelity [--pair <from>:<to>] [--family <name>] [--write <path>] [--manifest <path>] [--render <path>] [--fixtures <dir>]
 ```
 
-The command runs the conversion each pair declares, records the tier, the backend, the resolved engine, the tool version, the build fingerprint and what the pair kept, and reports the state of every claim: `new` when no manifest had one, `earned` when the installed build is the one it was earned with, `unverified` when it is not, `docs/fidelity.md` §6.
+The command runs the conversion each pair declares, records the tier, the backend, the resolved engine, the tool version, the build fingerprint and what the pair kept, and reports the state of every claim: `new` when no manifest had one, `earned` when the installed build is the one it was earned with, `unverified` when it is not, `docs/advanced/fidelity.md` §6.
 
-Alongside the sample conversion, every fixture of the source format is converted through the same plan and probed on both sides, so the PROPERTIES column says which properties survived: `alpha,depth,icc` when all three did, `alpha; !depth` when one did not. The fixtures are the checked-in ones in `fixtures/fidelity`, or `--fixtures` names another set, `docs/fidelity.md` §4.
+Alongside the sample conversion, every fixture of the source format is converted through the same plan and probed on both sides, so the PROPERTIES column says which properties survived: `alpha,depth,icc` when all three did, `alpha; !depth` when one did not. The fixtures are the checked-in ones in `fixtures/fidelity`, or `--fixtures` names another set, `docs/advanced/fidelity.md` §4.
 
-`--write` reads that manifest, records what this run earned and writes it back; the file is a release artifact, not state, so the path is the caller's. `--manifest` compares against one without rewriting it. `--render` replaces the table between the `claims` markers in a document, which is how `docs/fidelity.md` §8 is filled.
+`--write` reads that manifest, records what this run earned and writes it back; the file is a release artifact, not state, so the path is the caller's. `--manifest` compares against one without rewriting it. `--render` replaces the table between the `claims` markers in a document, which is how `docs/advanced/fidelity.md` §8 is filled.
 
 A claim that declares `exact` and is `unverified` exits 4 rather than silently downgrading a promise of no loss. So does an `exact` claim whose source has no fixture, and one whose fixtures lost a property: `exact` means nothing was lost, and a run that cannot show it has not earned the word. Nothing earned at all exits 4 for the same reason.
 

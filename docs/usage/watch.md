@@ -1,6 +1,6 @@
 # Watching a folder
 
-A registered folder converts a file whenever its extension changes, from any program that renames it.
+A registered folder converts a file whenever its extension changes, from any program that renames it. This page is the working guide; [Watch scope](../reference/watch.md) is the exhaustive specification of what is watched, ignored and done at startup.
 
 ## Registering
 

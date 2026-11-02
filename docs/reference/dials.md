@@ -1,6 +1,6 @@
 # Quality and size dials
 
-Per-format meaning of `quality`, `effort` and `compress`. Syntax and applicability are in `docs/grammar.md` and `docs/operations.md`.
+Per-format meaning of `quality`, `effort` and `compress`. Syntax and applicability are in `docs/reference/intents.md` and `docs/reference/operations.md`.
 
 ## 1. Rule
 
@@ -29,7 +29,7 @@ Defaults policy: the reference encoder's documented default when one is document
 | `bmp` | inapplicable | | none | | none | none |
 | `ico` | inapplicable | | none | | none | none |
 
-Capability is per backend and per tool build, not only per format. The table states what a format accepts; whether a particular build can produce it is resolved by the plan compiler against `docs/tools.md`, so a format row must never be read as a promise that every backend implements it.
+Capability is per backend and per tool build, not only per format. The table states what a format accepts; whether a particular build can produce it is resolved by the plan compiler against `docs/advanced/converters.md`, so a format row must never be read as a promise that every backend implements it.
 
 Per-format rules:
 

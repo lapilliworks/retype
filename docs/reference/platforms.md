@@ -35,7 +35,7 @@ Reasoning, not preference:
 | APFS, HFS+ | device and inode | `com.*` | |
 | NTFS, ReFS | volume serial and file id | stream, pending decision | |
 | exFAT, FAT32 | volume serial and file id | none | Identity works on Windows; attributes are lost |
-| Network shares | unreliable | unreliable | See `docs/watch.md` §9 |
+| Network shares | unreliable | unreliable | See `docs/reference/watch.md` §9 |
 
 Nothing in the product requires an attribute or a stream. Identity is the mechanism of record, and it works on every filesystem in the table that reports a stable identifier.
 
@@ -82,9 +82,9 @@ A CLI user installs tools with the platform's package manager or by hand, then l
 | macOS | Homebrew or the system, then `PATH` | Managed set as a fallback when neither has the tool |
 | Windows | A manual install, then `PATH` | Managed set offered during setup or first use, with an explicit prompt |
 
-The managed set is a per-user directory described by a signed distribution list, `docs/tools.md` §2. The CLI and daemon resolve it before `PATH` when the GUI has installed it, but never install, update or verify it. An offline pack is the same artifacts and manifest on disk, for machines with no network or a controlled one. No conversion downloads anything; acquisition is an explicit GUI action or an installer prompt.
+The managed set is a per-user directory described by a signed distribution list, `docs/advanced/converters.md` §2. The CLI and daemon resolve it before `PATH` when the GUI has installed it, but never install, update or verify it. An offline pack is the same artifacts and manifest on disk, for machines with no network or a controlled one. No conversion downloads anything; acquisition is an explicit GUI action or an installer prompt.
 
-A system tool is supported but not pinned. Its version and build fingerprint are recorded, and a fidelity claim that was earned against a different build is reported as `unverified`, `docs/fidelity.md`.
+A system tool is supported but not pinned. Its version and build fingerprint are recorded, and a fidelity claim that was earned against a different build is reported as `unverified`, `docs/advanced/fidelity.md`.
 
 ## 6. Signing
 

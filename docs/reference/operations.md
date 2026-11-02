@@ -1,10 +1,10 @@
 # Operations
 
-Registry reference. Syntax is defined in `docs/grammar.md`; this document defines the operations that occupy the name space.
+Registry reference. Syntax is defined in `docs/reference/intents.md`; this document defines the operations that occupy the name space.
 
 An operation is identified by an immutable `key`. Aliases are accepted and never printed. A `slot` places it in the canonical order. An `exclusive` set makes members of the same set conflict.
 
-A group with one member is not declared: repeating one operation is `E_DUPLICATE`, so a group whose only member is `rotate` would add nothing and `docs/config.md` V8 refuses it as a probable mistake.
+A group with one member is not declared: repeating one operation is `E_DUPLICATE`, so a group whose only member is `rotate` would add nothing and `docs/reference/config.md` V8 refuses it as a probable mistake.
 
 ## 1. Name space
 
@@ -57,7 +57,7 @@ Aliases:
 
 ## 2. Geometry semantics
 
-Geometry runs in the order written, and the order changes the result: `rotate90+cap1080` rotates and then caps, while `cap1080+rotate90` caps and then rotates, and the two are not the same image. Nothing reorders a string, `docs/grammar.md` C2.
+Geometry runs in the order written, and the order changes the result: `rotate90+cap1080` rotates and then caps, while `cap1080+rotate90` caps and then rotates, and the two are not the same image. Nothing reorders a string, `docs/reference/intents.md` C2.
 
 | Operation | Rule |
 |---|---|
@@ -85,7 +85,7 @@ Orientation is always applied from EXIF and then removed, once, before any geome
 
 | Operation | Rule |
 |---|---|
-| `quality` | Fidelity dial in the target format's own scale. Range and meaning per format in `docs/quality.md` |
+| `quality` | Fidelity dial in the target format's own scale. Range and meaning per format in `docs/reference/dials.md` |
 | `effort` | Speed dial in the target encoder's own scale. Higher is slower |
 | `lossless` | Request lossless encoding. Conflicting with `quality` and `size` |
 | `size` | Re-encode to fit under a byte budget. Implementation searches `quality`, then `effort`; unreachable budgets are `E_VALUE_RANGE` after the search |
@@ -124,11 +124,11 @@ Orientation is always applied from EXIF and then removed, once, before any geome
 
 `ico` requires both dimensions at most 256. A plan that would produce a larger icon is rejected with `E_INAPPLICABLE` and a hint to add `cap256`, rather than left to the encoder to fail.
 
-Per-format constraints of this kind come from `docs/tools.md`, because they are properties of the encoder rather than of the operation.
+Per-format constraints of this kind come from `docs/advanced/converters.md`, because they are properties of the encoder rather than of the operation.
 
 ## 6. Not specified yet
 
-`at`, `fps`, `mute` and `cap` have landed for video and audio, `docs/tools.md` §3.1. Documents landed with their formats and no operations: `md`, `html`, `docx`, `odt`, `epub` and `pdf` convert through pandoc, `docs/tools.md` §5.
+`at`, `fps`, `mute` and `cap` have landed for video and audio, `docs/advanced/converters.md` §3.1. Documents landed with their formats and no operations: `md`, `html`, `docx`, `odt`, `epub` and `pdf` convert through pandoc, `docs/advanced/converters.md` §5.
 
 Archives take no operations at all: `zip`, `tar` and `tar.gz` store the bytes they are given, and an operation that changed them would make the format an encoder. A plan that asks for one is `E_UNSUPPORTED` naming the archive. A directory is not an archive source: keeps the gesture to container-to-container repacking.
 
@@ -141,7 +141,7 @@ Archives take no operations at all: `zip`, `tar` and `tar.gz` store the bytes th
 
 ## 7. Presets
 
-A preset is a named token sequence and occupies the same name space. See `docs/config.md`.
+A preset is a named token sequence and occupies the same name space. See `docs/reference/config.md`.
 
 ```toml
 [presets.thumbnail]

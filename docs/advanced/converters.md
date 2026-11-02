@@ -1,6 +1,6 @@
 # Tools
 
-External tools are dependencies with their own support matrix. A format claim in `docs/operations.md` or `docs/quality.md` is conditional on some tool in this matrix providing it, on this machine, in this build.
+External tools are dependencies with their own support matrix. A format claim in `docs/reference/operations.md` or `docs/reference/dials.md` is conditional on some tool in this matrix providing it, on this machine, in this build.
 
 ## 4. Image capabilities
 
@@ -43,7 +43,7 @@ Resolution order, first present wins:
 | 3 | `weasyprint` | Portable, no TeX, adequate for reports and web-derived documents |
 | 4 | `wkhtmltopdf` | Legacy, kept last |
 
-The order sets the default; it does not remove choice. A preset that needs LaTeX semantics pins its engine by naming it literally in `argv` and bypassing resolution, per `docs/config.md` §3.1.
+The order sets the default; it does not remove choice. A preset that needs LaTeX semantics pins its engine by naming it literally in `argv` and bypassing resolution, per `docs/reference/config.md` §3.1.
 
 The resolved engine is stored with the job and shown by `retype why`, because two PDFs from the same intent are not interchangeable across engines. It is also recorded in the fixture manifest, so a tier claim names the engine it was earned with.
 

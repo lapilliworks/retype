@@ -36,7 +36,7 @@ pub struct Error {
 
 ## 3. Codes
 
-Grammar diagnostics keep their unprefixed names, fixed by `retype-grammar-1`: `E_ANCHOR`, `E_CHARSET`, `E_INTENT_EMPTY`, `E_TOO_LONG`, `E_TOO_MANY`, `E_GROUP_EMPTY`, `E_TOKEN_EMPTY`, `E_FORMAT_UNKNOWN`, `E_FORMAT_FOLDER`, `E_NAME_UNKNOWN`, `E_VALUE_MISSING`, `E_VALUE_UNEXPECTED`, `E_VALUE_SYNTAX`, `E_VALUE_RANGE`, `E_DUPLICATE`, `E_EXCLUSIVE`, `E_META_CONFLICT`, `E_NOOP`, `E_INAPPLICABLE`, `E_UNSUPPORTED`. `E_META_CONFLICT` is the one grammar code that can be a warning rather than a diagnosis, `docs/grammar.md` §6.
+Grammar diagnostics keep their unprefixed names, fixed by `retype-grammar-1`: `E_ANCHOR`, `E_CHARSET`, `E_INTENT_EMPTY`, `E_TOO_LONG`, `E_TOO_MANY`, `E_GROUP_EMPTY`, `E_TOKEN_EMPTY`, `E_FORMAT_UNKNOWN`, `E_FORMAT_FOLDER`, `E_NAME_UNKNOWN`, `E_VALUE_MISSING`, `E_VALUE_UNEXPECTED`, `E_VALUE_SYNTAX`, `E_VALUE_RANGE`, `E_DUPLICATE`, `E_EXCLUSIVE`, `E_META_CONFLICT`, `E_NOOP`, `E_INAPPLICABLE`, `E_UNSUPPORTED`. `E_META_CONFLICT` is the one grammar code that can be a warning rather than a diagnosis, `docs/reference/intents.md` §6.
 
 A code is an enum in `retype-core::error::Code`, serialised as the string above. The variant name is the only place a code is written: `IoPermission` is `E_IO_PERMISSION` because the derive in `retype-macros` says so. Renaming a variant therefore changes a code, which is a wire-breaking change, and the test at the end of this section exists to make that loud.
 
@@ -69,7 +69,7 @@ Everything else is namespaced, and the table lists every code in full so that a 
 | `state` | The job or the store is in a state that refuses this | 7 | No | Open jobs | unchanged |
 | `internal` | A bug | 1 | No | Report | `failed`, with a report id |
 
-Exit codes are the ones in `docs/cli.md` §6. The category is text on the wire and the exit code is derived from it, so a script can branch on either without parsing messages. A code belongs to exactly one category; `docs/cli.md` §6 lists the codes behind each number.
+Exit codes are the ones in `docs/reference/cli.md` §6. The category is text on the wire and the exit code is derived from it, so a script can branch on either without parsing messages. A code belongs to exactly one category; `docs/reference/cli.md` §6 lists the codes behind each number.
 
 Rules:
 
