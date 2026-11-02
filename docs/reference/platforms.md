@@ -51,7 +51,7 @@ Nothing in the product requires an attribute or a stream. Identity is the mechan
 
 ## 5. Delivery tiers
 
-Two tiers, and the difference matters enough to be explicit in the documentation.
+Two tiers are defined, and the difference matters enough to be explicit in the documentation. A pre-release script route sits outside them.
 
 | Tier | How | Contains | Supported |
 |---|---|---|---|
@@ -60,7 +60,15 @@ Two tiers, and the difference matters enough to be explicit in the documentation
 
 `cargo install` is **CLI only and a workaround**. The binary can run the daemon in the foreground and `retype watch` registrations persist, but it cannot install a user service, register a URI scheme on macOS, or create a Start-menu shortcut on Windows. The documentation states this rather than implying feature parity.
 
-What the installer does, per platform:
+Linux and macOS have a pre-release script:
+
+```sh
+curl -fsSL https://justretype.com/install.sh | bash
+```
+
+It downloads the release archive for the host architecture, checks its SHA-256 against the release checksums, and installs the CLI, daemon and shared release assets under `~/.local`. Running it again updates the installation. It is not the installed tier: it does not register a URI scheme, install a user service or ship the notifier, and the archive is not code-signed. It exists so a pre-alpha build can be installed without a Rust toolchain. Windows uses the release archive directly.
+
+What the installed-tier installer does, per platform:
 
 | Platform | Actions |
 |---|---|
@@ -92,12 +100,14 @@ A system tool is supported but not pinned. Its version and build fingerprint are
 |---|---|---|
 | macOS | Developer ID, hardened runtime, notarisation for every distributed binary | Before the first published binary |
 | Windows | Azure Trusted Signing or an equivalent certificate; SmartScreen reputation accrues to the publisher identity | Before the first published binary |
-| Linux | Detached signatures and checksums; no central authority | With the first release artifact |
+| Linux | Detached signatures and checksums; no central authority | With the first non-preview release artifact |
 | Toolchain, Windows | Authenticode with a secure timestamp on every artifact | With the first managed artifact |
 | Toolchain, macOS | Developer ID, hardened runtime, and a notarised archive containing the signed Mach-O files | With the first managed artifact |
 | Toolchain, Linux | Detached minisign or Sigstore signature, beside the checksum | With the first managed artifact |
 
 Publisher identity is fixed: Lapilli Works LLC, `com.lapilliworks.retype`. The bundle and display name are both `retype`. Reputation is bound to that identity, so it is never changed casually.
+
+The pre-release script is not a published binary in the signing sense. Its release publishes SHA-256 checksums and GitHub build attestations. The installer rejects a corrupted download, and the attestation can be checked out of band, but neither authenticates the publisher the way a platform signature does. The installed tier remains gated on the signatures in the table above.
 
 The distribution manifest has its own Ed25519 key, kept offline and separate from the platform code-signing certificate. Its public key is embedded in the GUI that manages the set. Rotation dual-signs one release, so an old client accepts the new key before it is the only key.
 

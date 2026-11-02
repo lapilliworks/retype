@@ -22,13 +22,25 @@ Transformations ride on the same gesture: `photo.heic` becomes `photo.webp+q80`.
 
 ## Installation tiers
 
-Two tiers exist, and the difference is deliberate.
+Two tiers exist, and the difference is deliberate. A pre-release script is a
+convenience on top of the source tier, not a third tier.
 
 - **Installed**: platform installer, signed. Command line, daemon, notifier,
   URI scheme, user service. External tools are acquired separately. Supported
-- **Source**: `cargo install --git https://github.com/justretype/retype retype-cli`. The
+- **Source**: `cargo install --git https://github.com/LapilliWorks/retype retype-cli`. The
   binary includes the daemon, but no service, URI registration or notifier
   bundle is installed. A workaround, not the supported path
+
+Linux and macOS can install the pre-alpha release without a Rust toolchain:
+
+```sh
+curl -fsSL https://justretype.com/install.sh | bash
+```
+
+The script verifies the release checksum, installs the CLI, daemon and shared
+release assets under `~/.local`, and updates that installation when run again.
+It does not install a service, register a URI scheme or ship the notifier, and
+it is not code-signed. Windows uses the release archive.
 
 Tool acquisition follows the interface. The CLI does not install or manage tools: a
 CLI user uses the platform's package manager or installs them by hand. The GUI manages

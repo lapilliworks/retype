@@ -7,7 +7,7 @@ Status is pre-alpha: part of what is described here is specified and not built y
 ## What you need
 
 - A terminal
-- `retype` itself. There is no signed installer yet, so it is built from source, which needs a Rust toolchain: `cargo install --git https://github.com/justretype/retype retype-cli`
+- `retype` itself. On Linux and macOS, the pre-release script installs a release binary and updates it in place: `curl -fsSL https://justretype.com/install.sh | bash`. Without that, or on Windows, use a release archive or build from source with a Rust toolchain: `cargo install --git https://github.com/LapilliWorks/retype retype-cli`
 - A converter for each format you use. Retype converts nothing by itself; it drives programs that are already on the machine, ImageMagick for images, FFmpeg for audio and video, Pandoc for documents. `retype doctor` reports which it finds, and [Tools](advanced/converters.md) says what each of them has to be
 
 ## Convert one file
