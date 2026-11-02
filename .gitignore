@@ -5,3 +5,4 @@
 /site/*/.vitepress/cache
 /site/*/.vitepress/dist
 /site/*/.astro
+/site/dist
