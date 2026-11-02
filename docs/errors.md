@@ -90,10 +90,12 @@ Rules:
 - Each output has its own state: `pending`, `running`, `done`, `failed`, `skipped`
 - A job whose outputs are mixed is `partial`
 - A failed output leaves the others in place and is retried by `retype jobs resume`
-- Resume skips outputs whose recorded identity still matches a file on disk, and re-runs the rest. `--force` re-runs everything
-- Resume needs the source bytes, which come from the path itself while it still holds them, otherwise from the undo record. When neither is available the answer is `E_JOB_RESUME_UNAVAILABLE`, and the message says which two things are missing
+- Resume skips outputs whose recorded identity and content digest still match; other occupied paths are refused without `--force`
+- Resume reads a private working copy of the verified retained original, never an arbitrary replacement at the old source path
+- Partial, failed, cancelled and superseded jobs retain originals and required recovery records
+- Successful resume retains its backup for normal undo retention
 
-The product's invariant is about paths, not jobs: a path never carries a format it does not contain. It holds at every instant, not only after commit: the source is renamed back to its own extension before a conversion starts (`docs/dev/architecture/state.md` §5.4), and each output is written to a temporary file and renamed only when complete. The single case that could break it is a job in which no output succeeded, because then the renamed source still holds the original format. That case restores the source extension and fails the job, so the invariant holds in every branch.
+Source naming, output publication and disposal follow `docs/dev/architecture/state.md` §5. Source restoration refuses occupied destinations. A backend exit status is not permission to delete the original: every requested output must be validated and durably committed, a verified backup and completion record must be durable, and the source must still be the object the job read. Unvalidated external backends, unavailable directory durability and backup failures retain originals.
 
 ## 6. Diagnostics
 

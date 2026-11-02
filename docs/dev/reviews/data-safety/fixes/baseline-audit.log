@@ -1,0 +1,234 @@
+   Compiling retype-cli v0.1.0 (/home/i/Works/retype/worktrees/data-safety-baseline/crates/retype-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.65s
+     Running tests/data_safety_audit.rs (target/debug/deps/data_safety_audit-e2c5338a7d0044b0)
+
+running 25 tests
+test a_dangling_symlink_is_an_occupied_restore_destination ... FAILED
+test a_forced_output_hard_link_to_the_input_is_refused ... FAILED
+test a_resumed_tool_cannot_modify_the_retained_original_through_its_input ... FAILED
+test a_stale_temporary_input_is_not_truncated_through_a_hard_link ... FAILED
+test an_actual_interrupted_runner_recovers_its_first_output_instead_of_losing_resume_state ... 
+running 1 test
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+FAILED
+test an_occupied_source_name_and_missing_undo_capacity_do_not_allow_replacing_the_original ... FAILED
+test an_output_that_appears_while_converting_is_not_overwritten_without_force ... FAILED
+test an_unvalidated_custom_output_cannot_authorize_source_deletion ... FAILED
+test cancellation_after_one_output_keeps_the_input_and_undo_for_committed_outputs ... FAILED
+test does_not_accept_a_stale_staged_file_from_an_earlier_run ... FAILED
+test finishing_a_partial_resume_keeps_the_original_backup_for_undo ... FAILED
+test honors_an_explicit_keep_source_group ... FAILED
+test interrupted_job_worker ... ok
+test keeps_the_original_when_one_requested_output_fails ... FAILED
+test keeps_the_source_when_undo_save_fails ... FAILED
+test loss_of_the_journal_directory_prevents_publication_and_source_disposal ... FAILED
+test output_paths_through_a_directory_symlink_cannot_overwrite_the_input ... FAILED
+test output_staging_does_not_share_a_path_between_jobs ... FAILED
+test quota_eviction_does_not_remove_an_active_jobs_backup ... FAILED
+test rejects_a_parent_that_exits_before_its_detached_writer_finishes ... FAILED
+test rejects_an_empty_output_before_deleting_the_source ... FAILED
+test resume_reads_the_recorded_original_not_a_new_file_at_the_source_name ... FAILED
+test source_disposal_does_not_delete_a_file_that_replaced_the_input ... FAILED
+test undo_cannot_remove_a_running_jobs_snapshot_or_race_its_publication ... FAILED
+test undo_does_not_remove_a_blocking_file_the_partial_job_never_produced ... FAILED
+
+failures:
+
+---- a_dangling_symlink_is_an_occupied_restore_destination stdout ----
+
+thread 'a_dangling_symlink_is_an_occupied_restore_destination' (44137) panicked at crates/retype-cli/tests/data_safety_audit.rs:367:5:
+restore clobbered a symlink
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- a_forced_output_hard_link_to_the_input_is_refused stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'a_forced_output_hard_link_to_the_input_is_refused' (44138) panicked at crates/retype-cli/tests/data_safety_audit.rs:338:5:
+assertion failed: immediate::prepare(&fixture.shared.registry(), &request).is_err()
+
+---- a_resumed_tool_cannot_modify_the_retained_original_through_its_input stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'a_resumed_tool_cannot_modify_the_retained_original_through_its_input' (44143) panicked at crates/retype-cli/tests/data_safety_audit.rs:482:5:
+assertion `left == right` failed
+  left: Done
+ right: Partial
+
+---- a_stale_temporary_input_is_not_truncated_through_a_hard_link stdout ----
+
+thread 'a_stale_temporary_input_is_not_truncated_through_a_hard_link' (44154) panicked at crates/retype-cli/tests/data_safety_audit.rs:352:5:
+assertion `left == right` failed: copy fallback truncated its own source inode
+  left: []
+ right: [137, 80, 78, 71, 32, 111, 114, 105, 103, 105, 110, 97, 108, 32, 98, 121, 116, 101, 115, 32, 116, 104, 97, 116, 32, 109, 117, 115, 116, 32, 115, 117, 114, 118, 105, 118, 101]
+
+---- an_actual_interrupted_runner_recovers_its_first_output_instead_of_losing_resume_state stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'an_actual_interrupted_runner_recovers_its_first_output_instead_of_losing_resume_state' (44155) panicked at crates/retype-cli/tests/data_safety_audit.rs:587:5:
+assertion `left == right` failed: the committed first output must survive reconciliation
+  left: Failed
+ right: Partial
+
+---- an_occupied_source_name_and_missing_undo_capacity_do_not_allow_replacing_the_original stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+retype: /tmp/.tmpKRZ0TZ/photo.webp: no undo record: the file is larger than the undo quota
+
+thread 'an_occupied_source_name_and_missing_undo_capacity_do_not_allow_replacing_the_original' (44177) panicked at crates/retype-cli/tests/data_safety_audit.rs:196:5:
+assertion `left == right` failed
+  left: Done
+ right: Failed
+
+---- an_output_that_appears_while_converting_is_not_overwritten_without_force stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'an_output_that_appears_while_converting_is_not_overwritten_without_force' (44184) panicked at crates/retype-cli/tests/data_safety_audit.rs:291:5:
+assertion `left != right` failed: commit clobbered a newly occupied output
+  left: Done
+ right: Done
+
+---- an_unvalidated_custom_output_cannot_authorize_source_deletion stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'an_unvalidated_custom_output_cannot_authorize_source_deletion' (44193) panicked at crates/retype-cli/tests/data_safety_audit.rs:124:5:
+invalid WebP was accepted and the original was deleted: Done
+
+---- cancellation_after_one_output_keeps_the_input_and_undo_for_committed_outputs stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+retype: /tmp/.tmpTV7DSl/photo.jpg: sh was cancelled
+
+thread 'cancellation_after_one_output_keeps_the_input_and_undo_for_committed_outputs' (44200) panicked at crates/retype-cli/tests/data_safety_audit.rs:232:49:
+retained original
+
+---- does_not_accept_a_stale_staged_file_from_an_earlier_run stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'does_not_accept_a_stale_staged_file_from_an_earlier_run' (44214) panicked at crates/retype-cli/tests/data_safety_audit.rs:140:5:
+no-op committed stale data
+
+---- finishing_a_partial_resume_keeps_the_original_backup_for_undo stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'finishing_a_partial_resume_keeps_the_original_backup_for_undo' (44221) panicked at crates/retype-cli/tests/data_safety_audit.rs:445:5:
+successful resume deleted the original backup
+
+---- honors_an_explicit_keep_source_group stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'honors_an_explicit_keep_source_group' (44232) panicked at crates/retype-cli/tests/data_safety_audit.rs:162:5:
+keep-source group was ignored
+
+---- keeps_the_original_when_one_requested_output_fails stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+retype: /tmp/.tmpcKg614/photo.jpg: sh exited exit status: 1
+
+thread 'keeps_the_original_when_one_requested_output_fails' (44241) panicked at crates/retype-cli/tests/data_safety_audit.rs:154:5:
+partial job deleted its source
+
+---- keeps_the_source_when_undo_save_fails stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+retype: cannot keep /tmp/.tmp0OOq2f/photo.webp for undo: Is a directory (os error 21)
+
+thread 'keeps_the_source_when_undo_save_fails' (44251) panicked at crates/retype-cli/tests/data_safety_audit.rs:183:5:
+undo failed but original was permanently removed
+
+---- loss_of_the_journal_directory_prevents_publication_and_source_disposal stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'loss_of_the_journal_directory_prevents_publication_and_source_disposal' (44259) panicked at crates/retype-cli/tests/data_safety_audit.rs:515:43:
+called `Result::unwrap()` on an `Err` value: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+
+---- output_paths_through_a_directory_symlink_cannot_overwrite_the_input stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'output_paths_through_a_directory_symlink_cannot_overwrite_the_input' (44269) panicked at crates/retype-cli/tests/data_safety_audit.rs:315:5:
+assertion `left == right` failed: aliased output overwrote the original input
+  left: [99, 111, 110, 118, 101, 114, 116, 101, 100]
+ right: [137, 80, 78, 71, 32, 111, 114, 105, 103, 105, 110, 97, 108, 32, 98, 121, 116, 101, 115, 32, 116, 104, 97, 116, 32, 109, 117, 115, 116, 32, 115, 117, 114, 118, 105, 118, 101]
+
+---- output_staging_does_not_share_a_path_between_jobs stdout ----
+
+thread 'output_staging_does_not_share_a_path_between_jobs' (44276) panicked at crates/retype-cli/tests/data_safety_audit.rs:380:5:
+assertion `left != right` failed: concurrent jobs share staged output ownership
+  left: "/tmp/.tmpOPxfPc/.retype-tmp.photo.webp"
+ right: "/tmp/.tmpOPxfPc/.retype-tmp.photo.webp"
+
+---- quota_eviction_does_not_remove_an_active_jobs_backup stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'quota_eviction_does_not_remove_an_active_jobs_backup' (44277) panicked at crates/retype-cli/tests/data_safety_audit.rs:426:5:
+quota discarded a running job's backup
+
+---- rejects_a_parent_that_exits_before_its_detached_writer_finishes stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'rejects_a_parent_that_exits_before_its_detached_writer_finishes' (44282) panicked at crates/retype-cli/tests/data_safety_audit.rs:608:5:
+assertion `left == right` failed
+  left: Done
+ right: Failed
+
+---- rejects_an_empty_output_before_deleting_the_source stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'rejects_an_empty_output_before_deleting_the_source' (44291) panicked at crates/retype-cli/tests/data_safety_audit.rs:112:5:
+zero-byte output was accepted and the original was deleted: Done
+
+---- resume_reads_the_recorded_original_not_a_new_file_at_the_source_name stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'resume_reads_the_recorded_original_not_a_new_file_at_the_source_name' (44298) panicked at crates/retype-cli/tests/data_safety_audit.rs:463:5:
+assertion `left == right` failed: resume converted the unrelated replacement instead of the recorded original
+  left: [97, 32, 110, 101, 119, 32, 117, 110, 114, 101, 108, 97, 116, 101, 100, 32, 115, 111, 117, 114, 99, 101, 32, 102, 105, 108, 101]
+ right: [137, 80, 78, 71, 32, 111, 114, 105, 103, 105, 110, 97, 108, 32, 98, 121, 116, 101, 115, 32, 116, 104, 97, 116, 32, 109, 117, 115, 116, 32, 115, 117, 114, 118, 105, 118, 101]
+
+---- source_disposal_does_not_delete_a_file_that_replaced_the_input stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'source_disposal_does_not_delete_a_file_that_replaced_the_input' (44309) panicked at crates/retype-cli/tests/data_safety_audit.rs:278:36:
+called `Result::unwrap()` on an `Err` value: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+
+---- undo_cannot_remove_a_running_jobs_snapshot_or_race_its_publication stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+retype: /tmp/.tmprp9Re6/photo.jpg: sh was cancelled
+
+thread 'undo_cannot_remove_a_running_jobs_snapshot_or_race_its_publication' (44319) panicked at crates/retype-cli/tests/data_safety_audit.rs:262:5:
+assertion `left == right` failed
+  left: IoExists
+ right: IoLocked
+
+---- undo_does_not_remove_a_blocking_file_the_partial_job_never_produced stdout ----
+retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist
+
+thread 'undo_does_not_remove_a_blocking_file_the_partial_job_never_produced' (44333) panicked at crates/retype-cli/tests/data_safety_audit.rs:502:5:
+undo deleted an unrelated collision file
+
+
+failures:
+    a_dangling_symlink_is_an_occupied_restore_destination
+    a_forced_output_hard_link_to_the_input_is_refused
+    a_resumed_tool_cannot_modify_the_retained_original_through_its_input
+    a_stale_temporary_input_is_not_truncated_through_a_hard_link
+    an_actual_interrupted_runner_recovers_its_first_output_instead_of_losing_resume_state
+    an_occupied_source_name_and_missing_undo_capacity_do_not_allow_replacing_the_original
+    an_output_that_appears_while_converting_is_not_overwritten_without_force
+    an_unvalidated_custom_output_cannot_authorize_source_deletion
+    cancellation_after_one_output_keeps_the_input_and_undo_for_committed_outputs
+    does_not_accept_a_stale_staged_file_from_an_earlier_run
+    finishing_a_partial_resume_keeps_the_original_backup_for_undo
+    honors_an_explicit_keep_source_group
+    keeps_the_original_when_one_requested_output_fails
+    keeps_the_source_when_undo_save_fails
+    loss_of_the_journal_directory_prevents_publication_and_source_disposal
+    output_paths_through_a_directory_symlink_cannot_overwrite_the_input
+    output_staging_does_not_share_a_path_between_jobs
+    quota_eviction_does_not_remove_an_active_jobs_backup
+    rejects_a_parent_that_exits_before_its_detached_writer_finishes
+    rejects_an_empty_output_before_deleting_the_source
+    resume_reads_the_recorded_original_not_a_new_file_at_the_source_name
+    source_disposal_does_not_delete_a_file_that_replaced_the_input
+    undo_cannot_remove_a_running_jobs_snapshot_or_race_its_publication
+    undo_does_not_remove_a_blocking_file_the_partial_job_never_produced
+
+test result: FAILED. 1 passed; 24 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.66s
+
+error: test failed, to rerun pass `-p retype-cli --test data_safety_audit`

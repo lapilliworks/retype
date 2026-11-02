@@ -304,7 +304,7 @@ on_overflow = 'ask'
 
 `retention` is read as the grammar's duration class, so it is spelled the way an intent spells one: `w`, `d`, `h`, `m` and `s`, in that order, and a unit may be skipped. Months are not a unit, because a month is not a fixed number of seconds. `quota` is read as the size class, so `gb` is decimal and `gib` binary, `docs/grammar.md` §7.
 
-Retention decides two things at once, deliberately rather than incidentally: how long an undo record survives, and therefore how long the job it describes can be resumed, `docs/dev/architecture/state.md` §5.2. Records are dropped at startup and never during a conversion.
+Retention expires completed, unpinned undo records. Unfinished recovery records remain pinned against both expiry and quota eviction, including across restart. A successful resume releases the pin but retains its backup. Disabling undo, insufficient quota, or unexpected backup failure retains the live original rather than silently permitting permanent removal, `docs/dev/architecture/state.md` §5.
 
 The quota is a second, independent bound: retention bounds records by age and the quota bounds them by size. `ask` is the intended answer and behaves as `evict` until notifications exist to ask with.
 
@@ -327,7 +327,7 @@ repair = 'ask'
 |---|---|---|
 | `mode` | `ask` | `ask` defers by `docs/deferral.md` §3; `now` skips the two cost triggers and still parks a job that cannot run as asked |
 | `above` | `10s` | Estimated duration above which a watched rename is parked |
-| `above_without_undo` | `2s` | The same, for a job that consumes its source and keeps no record of it |
+| `above_without_undo` | `2s` | The same when no undo record can be kept; the source is retained |
 | `pause` | `1h` | How long a parked job waits before it runs anyway |
 | `repair` | `ask` | `ask` parks a job that cannot run as asked; `convert` runs it without the tokens that could not be carried, `docs/deferral.md` §4 |
 

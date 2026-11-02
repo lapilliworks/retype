@@ -11,6 +11,8 @@ retype/
   jobs.jsonl                  append-only journal
   jobs.jsonl.corrupt.<ts>     quarantined journal
   lock                        exclusive lock, held by the running daemon
+  undo.lock                   serializes quota reservations and store mutations
+  undo-job.<id>.lock          OS lease for active execution or undo
   endpoint                    where the running daemon listens, one line
   daemon.log                  output of an auto-started daemon
   daemon.sock                 IPC endpoint on Unix; a named pipe on Windows
@@ -26,7 +28,7 @@ retype/
   undo/
     <id>/
       meta.toml               record description
-      source.<ext>            the original bytes, hard link or copy
+      source.<ext>            an independent, content-verified original snapshot
 ```
 
 `endpoint` exists so that a client never derives the endpoint itself. On Unix the socket path is predictable, but on Windows it is a pipe name that includes the machine identity, and two places computing that name from a file that either of them may create is a race with a silent failure mode: the client waits three seconds for a name nobody listens on. The daemon publishes where it listens after it binds and removes the file when it stops, so a missing file means no daemon rather than an unknown one.
@@ -79,7 +81,7 @@ One JSON object per line. Every line is self-contained and carries its own versi
 | `machine` | Per-install identity |
 | `error` | Null, or `{code, message}` with a journal-level code such as `E_JOB_INTERRUPTED`, `E_JOB_SUPERSEDED` or `E_TOOL_FAILED` |
 | `parked` | Absent, or why the job is waiting and until when: `reason`, `deadline`, `batch`, `estimate`, `requested`, `corrected` and `dropped`, `docs/deferral.md` §11 |
-| `consume_source` | Whether committing removes the source: true for a rename, false for `retype convert`, `docs/dev/architecture/state.md` §5 |
+| `consume_source` | Whether the job may consume its source after the safety checks: true for a rename, false for `retype convert`. It is not proof that disposal happened |
 
 Per-output state is one of `pending`, `running`, `done`, `failed`. A `partial` job is one with at least one `done` and at least one not `done`, so the job state is derivable from its outputs and is stored anyway because a reader should not have to recompute it.
 
@@ -88,7 +90,8 @@ A record is a full snapshot of the job at that transition, so replay is last-win
 ## 4. Journal rules
 
 - Records are appended, never edited in place
-- `fsync` on transitions into `queued`, `pending` and `done`; other transitions are best effort, because reconciliation covers the gap
+- Sync every appended snapshot and its parent directory where supported, including running output checkpoints and partial outcomes
+- Require a durable recovery manifest and completion snapshot before source disposal
 - Line order defines time; wall-clock fields are informational
 - A trailing line that does not parse is a torn write and is dropped silently
 - A non-trailing line that does not parse is corruption: the file is moved to `jobs.jsonl.corrupt.<ts>`, a new journal is started, and the event is reported once. Records after the damage are still replayed, because losing jobs that are intact on disk would be a second failure on top of the first
@@ -114,7 +117,8 @@ source_ext = 'heic'
 source_size = 2431002
 source_mode = 0o644
 source_mtime_ns = 1690000000000
-link = 'hard'
+link = 'copy'
+pinned = true
 consume_source = true
 
 [[outputs]]
@@ -122,9 +126,15 @@ path = '/home/u/Pictures/a.jpg'
 ext = 'jpg'
 ```
 
-The source is a hard link when the source and the store share a filesystem, detected by device id, and a copy otherwise. `link` records which.
+New records always hold an independent copy. `source_fingerprint` records the original file identity, byte length and SHA-256 digest. The retained copy must match that digest whenever it is read. A hard link is not a snapshot and is no longer created. Old records without a fingerprint remain on disk but cannot authorize automatic recovery or deletion.
 
-`consume_source` is true for a rename-derived job and false for `retype convert`, whose source never moves. Undo restores the source path with `source_ext`, `source_mode` and `source_mtime_ns`, removes every output that was produced, and deletes the record. A record whose `consume_source` is false removes its outputs and leaves the source untouched. Undoing a `partial` job therefore removes the outputs that exist and leaves nothing behind. Restoring a copy sets mtime explicitly, so undo does not depend on the journal.
+`outputs` lists intended non-keep outputs. `commits` records publication intents with staged file identities and content fingerprints before each output is published. An intent counts as a committed output only when the final file matches its identity and digest. Undo never deletes an intended output merely because its pathname exists.
+
+`consume_source` is true for a rename-derived job and false for `retype convert`. Undo refuses changed or replaced outputs, restores or verifies the original source first, syncs the restoration, and only then claims and removes verified job outputs. An occupied source name is acceptable only when it still holds the recorded original. Successful undo removes the record. Unsupported directory durability refuses destructive cleanup and retains the available files.
+
+Source disposal requires every non-keep output to be fully validated and durably published, a durable independent backup, a durable completion record, no cancellation, and a successful identity/content check on the claimed source. Recheck the backup and every committed output immediately before disposal; missing or changed files retain the source. Partial, failed, cancelled and superseded jobs retain originals. Explicit keep-source groups retain originals. Native archive writers can authorize disposal; external encoders currently retain their originals because full source-to-output property validation is not implemented. Missing backup capacity or backup failure also retains originals. Windows currently retains originals because directory-durability support is not implemented.
+
+Execution and recovery hold an OS-backed per-job lease through publication and disposal. Undo and record removal require the same exclusive lease; an active job returns `E_IO_LOCKED`. Cancellation must finish before undo proceeds. Process exit releases the lease automatically. Lock files persist; their existence is not an activity indicator.
 
 Records are the durable truth for recoverability. The journal is a cache of history and progress: losing it costs listing and progress, never the ability to undo. Reconciliation therefore reads the undo store first.
 
@@ -146,15 +156,11 @@ The daemon owns this file. `watch` appends, `unwatch` removes, and the daemon re
 
 `partial` means at least one output succeeded and at least one failed or never started.
 
-Resume input, in order:
+Resume accepts partial jobs and failed jobs marked `E_JOB_INTERRUPTED`. Its input is a private working copy of the job's digest-verified retained original, never an arbitrary file at the old source pathname. Missing or unverifiable retained bytes make resume unavailable.
 
-1. The source path, if it still carries the recorded source identity, which is the case when no output has replaced it
-2. The undo record for the job, which holds the original bytes as a hard link or a copy
-3. Nothing, which is `E_JOB_RESUME_UNAVAILABLE`
+Resume skips only outputs whose recorded identity, size and digest still match. Any other occupied path is refused without `--force`, including paths whose platform identity is unavailable. `--force` reruns outputs but cannot override protection of the job's input. A successful resume retains its backup for normal undo retention and leaves any live source in place.
 
-Resume skips outputs whose recorded identity matches a file that still exists with the recorded size, and runs the rest. `--force` ignores the recorded identities and runs every output again. Identity is `(device, inode)` on Unix and the volume serial plus file id on Windows. An occupied output that does not carry the recorded identity is `E_IO_EXISTS`, because a file the job did not produce belongs to the person who put it there; `--force` is the deliberate replacement.
-
-Resume is therefore available for as long as the undo record survives retention, and unavailable afterwards. That coupling is deliberate rather than incidental: it makes retention a single, documented knob instead of two.
+Unfinished records are pinned against both quota eviction and expiry. A successful completion releases the pin, not the backup. A failed or interrupted recovery leaves its record pinned.
 
 ## 5.3 Supersession
 
@@ -169,20 +175,20 @@ Rules, in order:
 
 1. If A has already finished, B is an ordinary job from `photo.jpg`. The second encode happens because time passed, and there is nothing to undo
 2. If A is queued and has not started, cancel it and retarget: the job becomes `photo.heic` to `photo.webp`, with B's intent. Nothing was spent
-3. If A is running, cancel it, discard its partial outputs, and replace it the same way. The spent work is lost, and that is the intended outcome: the user kept changing their mind, and finishing the old job would produce a file they no longer want
+3. If A is running, request cancellation and retarget the replacement. Discard only private uncommitted stages; retain already published outputs and their recovery record
 
 Replacement is not only a target change. Two details make it safe, and the first one is not special to supersession:
 
 - **The source name is restored before any conversion**, by §5.4. A had renamed `photo.heic` to `photo.jpg` and not yet committed an output, so cancelling it leaves the source bytes at the wrong name; the replacement starts after that name is back
-- **The replacement consumes its source.** It reads `photo.heic`, writes `photo.webp`, and removes `photo.heic` on commit, because the rename that started the chain moved the file. A job therefore carries `consume_source`, true for rename-derived jobs and false for `retype convert`, which never deletes what it was given
+- **The replacement uses the same disposal checks.** A rename-derived job may remove its source only after the full validation, durability and ownership checks in §5. `consume_source` is eligibility, not permission to bypass those checks
 
 If the restored source name is already taken, by a file the user created or by another rename, the restore is refused and B becomes an ordinary job from A's target instead. A wrong file is worse than a second encode.
 
 Two renames reach the replacement, and the second is the common one. A rename of what A is writing is the decision about the result; a rename of the *source* name is the same decision taken a moment later, and it is what happens in practice, because during a conversion the file shows its source name again, §5.4. Both are the same supersession.
 
-A superseded job's outputs are `skipped` rather than `failed`: nothing went wrong with the file, the work was overtaken. Its record says `superseded` and the replacement carries the chain.
+A superseded job's uncompleted outputs are `skipped` rather than `failed`; already published outputs remain `done`. Its record says `superseded` and the replacement carries the chain.
 
-The undo record follows the bytes, not the job, and A's record is removed rather than adopted: it is a name for bytes still where A left them, so the replacement records its own when it starts. Adopting it would mean rewriting an id and an intent to say what the next record will say anyway. One record, one restore target, either way.
+A's recovery record is not removed when cancellation is requested. The replacement creates its own record. Cleanup must not assume that a superseded job published nothing or that its original still exists at the old pathname.
 
 ## 5.4 Input naming
 
@@ -191,13 +197,15 @@ A rename leaves the source bytes at the new name, so a converter reading the fil
 | Strategy | Effect during conversion | Crash leaves | exFAT |
 |---|---|---|---|
 | Restore the source name first | `photo.heic` (correct) | A correctly named file | No copy needed |
-| Temporary link to the old name | `photo.jpg` (wrong) | A mislabelled file plus a hidden link | Needs a full copy |
+| Independent temporary input when the source name is occupied | Original remains at the requested name | Original plus possible private stages | Supported by copying |
 
-Restore first, always. The file is renamed back to its source name before the conversion starts, so the name matches the bytes at every instant rather than only after commit. The temporary link survives as a fallback for the one case that defeats this: the source name being occupied by something else.
+Restore the source name with an atomic no-replace rename and persist it before conversion. If that name is occupied, preserve its occupant and read an independent private copy. Ordinary publication cannot overwrite the original-bearing target; a collision is reported instead.
 
 The cost is visible and worth stating: during a long conversion the file shows its *source* name again, so a twenty minute video transcode looks like the rename was undone and then reapplied. That is honest, and it is preferable to a file that claims to be a JPEG for twenty minutes while holding HEVC.
 
-Because the file is at its source name, every rename-derived job has the same shape: read the source path, write each output, remove the source on commit. The source is opened once per job and read by every output, because a job with two outputs must not lose its input to the first one. There is no in-place special case. A crash anywhere leaves either the correctly named source or a complete output, which is what reconciliation expects.
+Every output reads the same verified private working snapshot. Output staging uses an exclusively created private directory on the destination filesystem, with a real output extension and no predictable shared filename. Publication uses atomic no-replace semantics unless replacement was explicitly authorized. Temporary and recovery directories are excluded from watch correlation.
+
+Source removal first atomically claims the live path into a persistent recovery directory, then checks the claimed identity and digest. A changed file is restored without overwriting another file, or left at the reported recovery path. No unchecked public pathname is unlinked.
 
 ## 5.5 Quota and overflow
 
@@ -205,24 +213,24 @@ The store is bounded by age first and by size second. A record is kept only when
 
 Order of decisions, for a record that costs `s` bytes:
 
-1. Drop records past retention. This is policy rather than overflow, so it happens whatever the answer below
+1. Consider only unpinned records for expiry or eviction; unfinished recovery records are never discarded
 2. If the records kept plus `s` fit within `quota`, keep the record
-3. If `s` alone is larger than `quota`, nothing is evicted, because evicting the whole store would still not make room. The source goes to the operating system's trash instead, so the user can still get the file back
+3. If `s` alone is larger than `quota`, keep no record, evict nothing for it, and retain the live original
 4. Otherwise `on_overflow` decides:
-   - `evict` drops the oldest records until the new one fits
-   - `skip` keeps no record and the source is removed, because a quota that is full is a choice about the machine rather than a shortage
+   - `evict` drops the oldest eligible unpinned records until the new one fits; if pinned records prevent that, keep no new record and retain the original
+   - `skip` keeps no record and retains the original
    - `ask` asks; until notifications exist this build reads it as `evict` and says so once at startup
 
-Accounting is source bytes, which is what a hard link actually costs, `docs/config.md` §9. Nothing is dropped for a record that will not exist, and no record is dropped while a conversion is waiting for it.
+Accounting is retained source bytes, `docs/config.md` §9. Quota decisions, eviction and record creation are one locked transaction. A process mutex and an operating-system file lock serialize store writers, including undo clients. Pins are persisted in the manifest and survive process death.
 
 ## 6. Startup reconciliation
 
 1. Acquire the lock. Failure means another daemon owns the state directory, and the process exits with that message
 2. Load `bench.toml`, then the journal, then the undo record index
 3. For every journal job in `queued`: nothing ran, so nothing was written. If the source still exists and its ext and mtime match, put it back in the queue with the request the journal recorded, including the output path, which is the only place an explicit `-o` survives. Otherwise mark it `failed` with `E_JOB_INTERRUPTED`
-4. For every journal job in `running`: mark it `failed` with `E_JOB_INTERRUPTED`. A job that was running may have committed some of its outputs, so running it again would either overwrite them or fail on them: `retype jobs resume` is the path that skips the outputs whose recorded identity still matches, §5.2
+4. For every journal job in `running`: verify publication intents from its recovery manifest against final files. Reconstruct the intended outputs and mark verified publications done. Mark the job interrupted, with state `partial` when any publication survived and `failed` otherwise. Both outcomes can resume using verified retained bytes, §5.2
 5. For every journal job in `pending`: it is parked, so it keeps its deadline and its timer is re-armed rather than run, `docs/deferral.md` §7
-6. For every undo record without a journal entry, keep it and rebuild a `done` record from `meta.toml`
+6. Retain recovery records without journal entries for direct undo; do not infer completion from publication intents alone
 7. For every journal job whose record directory is missing, leave the state as recorded and mark undoing it as unavailable
 8. Drop undo records past retention, then compact if the thresholds are met
 

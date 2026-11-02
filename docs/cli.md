@@ -67,9 +67,9 @@ The command submits an `immediate` job to the daemon and waits for it, `docs/dev
 
 Everything that can fail before a byte moves fails at submission, with the code and the exit status the failure would have had locally, so a bad intent or a missing tool is reported without a job that only fails later. The client polls `jobs.get` while the job runs, which keeps the daemon free to answer anything else, including the cancel that stops it.
 
-A submitted conversion does not consume its source: `convert` was handed a path and leaves it where it is. Its undo record holds the outputs and no source bytes, so `retype undo` removes what it produced and leaves the source exactly where it was.
+A submitted conversion does not consume its source. Its recovery record holds an independent source snapshot and verified publication identities. Undo removes only unchanged outputs produced by the job and leaves the live source untouched. Input aliases remain protected even with `--force`.
 
-A failure writes nothing and leaves nothing behind. The output is staged in its target directory and renamed into place only when the tool exits zero, so an output path is absent or complete, never empty and never half written.
+Each output is staged in a private directory on the target filesystem. Publication requires a fresh, regular, nonempty result and checked finalization. A failed output is not published; already completed sibling outputs and required recovery records are retained. Backend success alone never permits deleting the original.
 
 ## 3. Explanation
 
@@ -171,9 +171,9 @@ retype why <path>
 
 `why` takes a file and answers what produced it, naming the store that answered: `journal-identity` when the file is the one a record produced, which survives the rename that usually follows a conversion, `journal-path` when only the name matched, `xattr` when the intent came from the file's attribute, and `unknown` when nothing did. Its `confidence` is `exact`, `path-only` or `none`, `docs/provenance.md` §8. Identity alone is not trusted, because file ids are recycled, so the size has to agree as well. A file nothing produced is not an error: the command says so, and the record expires at twice the undo retention.
 
-`undo` reads the undo store rather than the journal, so it answers even when the journal is gone, and it removes the record it used: one record, one restore target.
+`undo` reads the undo store rather than the journal, so it answers even when the journal is gone, and it removes the record it used: one record, one restore target. An active conversion or recovery returns `E_IO_LOCKED`; cancel it and wait for it to stop before undoing.
 
-`jobs resume` continues a `partial` job: an output that still carries the identity and size the job recorded is skipped, and the rest are run again from the source bytes, which come from the source path or from the undo record when a rename consumed the name. An occupied output that does not carry the recorded identity is `E_IO_EXISTS`; `--force` re-runs every output and replaces it. `jobs list --state partial` finds the candidates, and a job with neither source nor record is `E_JOB_RESUME_UNAVAILABLE`.
+`jobs resume` continues a partial or interrupted job from a private copy of its verified retained original. An output whose identity, size and digest still match is skipped. Any other occupied path is `E_IO_EXISTS`; `--force` reruns outputs but cannot replace the input itself. Successful resume retains the backup for normal undo retention. Jobs without verified recovery bytes cannot resume.
 
 Ids accept a unique prefix of at least four characters; an ambiguous prefix is `E_JOB_AMBIGUOUS` with the candidates printed, and a shorter one is a usage error. Listings print the shortest unambiguous prefix so copy-paste is short by default.
 
@@ -185,7 +185,7 @@ Ids accept a unique prefix of at least four characters; an ambiguous prefix is `
 
 `jobs logs` prints what the tool printed. The full output is in `<state>/logs/<id>.log`, which is written as it arrives, and the journal keeps the last four kilobytes, because a converter can print megabytes while a failure needs the last ten lines. A job whose log file is gone answers from the record instead, and says which it used. `--follow` prints what arrives while the job runs and stops when the job reaches a terminal state, so it ends by itself rather than waiting to be interrupted.
 
-`undo --last` reverses the most recent completed job, which is the gesture a notification button performs.
+`undo --last` selects the most recent retained job record. An active job returns `E_IO_LOCKED` rather than racing its worker.
 
 ## 6. Exit codes
 

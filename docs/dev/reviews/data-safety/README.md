@@ -1,5 +1,7 @@
 # Data safety review
 
+This is the historical pre-fix review. See [the implementation response and regression evidence](fixes/README.md) for the fixes, current preservation policy and remaining validation limits.
+
 ## Verdict
 
 **Not safe to sign off against the requirement that originals are deleted only after all requested conversions have unmistakably finished.** The current implementation can delete a source after an empty, invalid, stale or incomplete output; truncate original bytes before conversion; remove the only original backup during cancellation or resume; and silently omit files from a valid archive conversion.
