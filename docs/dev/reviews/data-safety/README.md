@@ -1,6 +1,6 @@
 # Data safety review
 
-This is the historical pre-fix review. See [the initial implementation response](fixes/README.md) and [the platform-test follow-up](platform-follow-up/README.md) for fixes, regression evidence and remaining validation limits. [Test preparation](../../testing.md) lists the prerequisites for native platform and real-codec runs.
+This is the historical pre-fix review. See [the initial implementation response](fixes/README.md), [the platform-test follow-up](platform-follow-up/README.md) and [the second review follow-up](second-review/README.md) for fixes, regression evidence and remaining validation limits. [Test preparation](../../testing.md) lists the prerequisites for native platform and real-codec runs.
 
 ## Verdict
 
