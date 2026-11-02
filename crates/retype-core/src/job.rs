@@ -321,6 +321,21 @@ impl FileIdentity {
 /// because the two are written in different widths.
 #[cfg(windows)]
 pub(crate) fn windows_file_id(path: &std::path::Path) -> Option<(u64, u128, bool)> {
+	let info = windows_file_info(path)?;
+	Some((info.volume, info.file, info.wide))
+}
+
+/// Identity and link count must describe the same open file, not two pathname lookups.
+#[cfg(windows)]
+pub(crate) struct WindowsFileInfo {
+	pub volume: u64,
+	pub file: u128,
+	pub wide: bool,
+	pub links: u64,
+}
+
+#[cfg(windows)]
+pub(crate) fn windows_file_info(path: &std::path::Path) -> Option<WindowsFileInfo> {
 	use std::ffi::c_void;
 	use std::mem::size_of;
 	use std::os::windows::fs::OpenOptionsExt;
@@ -339,6 +354,11 @@ pub(crate) fn windows_file_id(path: &std::path::Path) -> Option<(u64, u128, bool
 		.ok()?;
 	let handle = file.as_raw_handle() as HANDLE;
 
+	let mut basic: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+	if unsafe { GetFileInformationByHandle(handle, &mut basic) } == 0 {
+		return None;
+	}
+	let links = u64::from(basic.nNumberOfLinks);
 	let mut id: FILE_ID_INFO = unsafe { std::mem::zeroed() };
 	let asked = unsafe {
 		GetFileInformationByHandleEx(
@@ -350,16 +370,21 @@ pub(crate) fn windows_file_id(path: &std::path::Path) -> Option<(u64, u128, bool
 	};
 
 	if asked != 0 {
-		return Some((id.VolumeSerialNumber, u128::from_be_bytes(id.FileId.Identifier), true));
+		return Some(WindowsFileInfo {
+			volume: id.VolumeSerialNumber,
+			file: u128::from_be_bytes(id.FileId.Identifier),
+			wide: true,
+			links,
+		});
 	}
 
-	let mut fallback: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-	if unsafe { GetFileInformationByHandle(handle, &mut fallback) } == 0 {
-		return None;
-	}
-
-	let file = (u64::from(fallback.nFileIndexHigh) << 32) | u64::from(fallback.nFileIndexLow);
-	Some((u64::from(fallback.dwVolumeSerialNumber), u128::from(file), false))
+	let file = (u64::from(basic.nFileIndexHigh) << 32) | u64::from(basic.nFileIndexLow);
+	Some(WindowsFileInfo {
+		volume: u64::from(basic.dwVolumeSerialNumber),
+		file: u128::from(file),
+		wide: false,
+		links,
+	})
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

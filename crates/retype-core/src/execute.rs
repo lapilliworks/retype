@@ -17,6 +17,10 @@ use crate::convert::StagedOutput;
 use crate::error::{Code, Diagnostic, Error, Result};
 use crate::plan::{Backend, Plan};
 
+#[cfg(all(test, windows))]
+#[path = "execute_windows_tests.rs"]
+mod windows_tests;
+
 /// How often a running tool is asked whether it is finished, so a cancel lands
 /// within a poll interval rather than when the tool feels like exiting.
 const POLL: Duration = Duration::from_millis(50);
@@ -454,13 +458,15 @@ pub fn run_child(
 		}
 	};
 
-	/* A zero-exiting parent with live helpers has not finalized its output. */
-	if child.has_helpers()? {
+	/* Windows can signal the primary process before job accounting reaches zero. */
+	let grace = if cfg!(windows) {
+		Duration::from_secs(5)
+	} else {
+		Duration::ZERO
+	};
+	if let Err(error) = wait_for_helpers(command, cancellation, grace, || child.has_helpers()) {
 		kill(&mut child);
-		return Err(Error::Diagnostic(Diagnostic::global(
-			Code::ToolFailed,
-			format!("{command} exited while helper processes were still running"),
-		)));
+		return Err(error);
 	}
 
 	let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -494,6 +500,33 @@ pub fn run_child(
 	Ok(stderr)
 }
 
+fn wait_for_helpers(
+	command: &str,
+	cancellation: &Cancellation,
+	within: Duration,
+	mut has_helpers: impl FnMut() -> std::io::Result<bool>,
+) -> Result<()> {
+	let deadline = std::time::Instant::now() + within;
+	loop {
+		if cancellation.is_cancelled() {
+			return Err(Error::Diagnostic(Diagnostic::global(
+				Code::JobCancelled,
+				format!("{command} was cancelled while waiting for its process tree"),
+			)));
+		}
+		if !has_helpers()? {
+			return Ok(());
+		}
+		if std::time::Instant::now() >= deadline {
+			return Err(Error::Diagnostic(Diagnostic::global(
+				Code::ToolFailed,
+				format!("{command} exited while helper processes were still running"),
+			)));
+		}
+		thread::sleep(POLL.min(deadline.saturating_duration_since(std::time::Instant::now())));
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use std::fs;
@@ -504,6 +537,33 @@ mod tests {
 	use crate::registry::Registry;
 	use crate::resolve::{self, Source};
 	use crate::tools::Tool;
+
+	#[test]
+	fn process_completion_waits_for_accounting_to_reach_zero() {
+		let mut states = [true, true, false].into_iter();
+		wait_for_helpers("fixture", &Cancellation::default(), Duration::from_secs(1), || {
+			Ok(states.next().expect("completion must be observed"))
+		})
+		.unwrap();
+		assert_eq!(states.next(), None);
+	}
+
+	#[test]
+	fn process_completion_rejects_a_persistently_live_helper() {
+		let error = wait_for_helpers("fixture", &Cancellation::default(), Duration::ZERO, || Ok(true)).unwrap_err();
+		assert_eq!(error.code(), Code::ToolFailed);
+	}
+
+	#[test]
+	fn process_completion_wait_is_cancellable() {
+		let cancellation = Cancellation::default();
+		let error = wait_for_helpers("fixture", &cancellation, Duration::from_secs(5), || {
+			cancellation.cancel();
+			Ok(true)
+		})
+		.unwrap_err();
+		assert_eq!(error.code(), Code::JobCancelled);
+	}
 
 	/// Says every declared tool is installed: the fixture declares only the one
 	/// the test needs, so the question never comes up.

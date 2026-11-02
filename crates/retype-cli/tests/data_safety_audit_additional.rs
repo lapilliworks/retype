@@ -1,14 +1,17 @@
 //! Archive, staging and undo regressions reproduced against the pre-fix baseline.
-#![cfg(unix)]
 
 use std::fs;
 use std::path::Path;
 
 use retype_core::archive;
 use retype_core::convert::StagedOutput;
-use retype_core::execute::{self, Cancellation};
+#[cfg(unix)]
+use retype_core::execute;
+use retype_core::execute::Cancellation;
 use retype_core::job::JobId;
-use retype_core::registry::{Native, Registry};
+use retype_core::registry::Native;
+#[cfg(unix)]
+use retype_core::registry::Registry;
 use retype_core::undo::{Output, Store, Subject};
 
 const ORIGINAL: &[u8] = b"original bytes";
@@ -29,6 +32,7 @@ fn subject(id: JobId, source: &Path, output: &Path) -> Subject {
 	}
 }
 
+#[cfg(unix)]
 fn plan(registry: &Registry) -> retype_core::plan::Plan {
 	let parsed = retype_core::intent::parse("webp").unwrap();
 	let resolved = retype_core::resolve::resolve(
@@ -45,6 +49,7 @@ fn plan(registry: &Registry) -> retype_core::plan::Plan {
 		.remove(0)
 }
 
+#[cfg(unix)]
 fn shell_registry(script: &str) -> Registry {
 	Registry::load(&format!(
 		"version = 'retype-config-1'\n\
@@ -56,6 +61,7 @@ fn shell_registry(script: &str) -> Registry {
 }
 
 #[test]
+#[cfg(unix)]
 fn staged_output_symlinks_cannot_truncate_the_original_or_its_backup() {
 	let dir = tempfile::tempdir().unwrap();
 	let input = dir.path().join("photo.png");
@@ -121,11 +127,17 @@ fn undo_does_not_delete_a_new_file_at_an_old_output_path() {
 	store.save(subject(id.clone(), &source, &output)).unwrap();
 	fs::rename(&source, dir.path().join("source-moved-for-test.png")).unwrap();
 	fs::write(&output, b"an unrelated later file").unwrap();
-	store.restore(&id).unwrap();
+	let restored = store.restore(&id);
+	if retype_core::fsx::supports_durable_cleanup() {
+		restored.unwrap();
+	} else {
+		assert!(restored.is_err());
+	}
 	assert!(output.exists(), "undo deleted an unrelated replacement output");
 }
 
 #[test]
+#[cfg(unix)]
 fn failed_child_keeps_the_original_and_does_not_commit_partial_bytes() {
 	let dir = tempfile::tempdir().unwrap();
 	let input = dir.path().join("photo.png");

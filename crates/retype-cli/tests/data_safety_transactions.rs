@@ -1,5 +1,4 @@
 //! Transaction-level regressions using real native archives, process crashes and storage failures.
-#![cfg(unix)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -164,17 +163,55 @@ fn a_verified_native_conversion_disposes_only_after_all_entries_are_committed() 
 	let job = fixture.convert("zip,tar.gz", &id);
 	assert_eq!(job.state, JobState::Done);
 	check_zip(&fixture.path("bundle.zip"));
-	assert!(!fixture.path("bundle.tar").exists());
+	assert_eq!(
+		fixture.path("bundle.tar").exists(),
+		!retype_core::fsx::supports_durable_cleanup()
+	);
 	check_tar_gzip(&fixture.path("bundle.tar.gz"));
 	let store = fixture.store();
 	let record = store.load(&id).unwrap().unwrap();
 	assert_eq!(record.commits.len(), 2);
 	assert!(!record.pinned);
 	assert!(store.source(&id).unwrap().is_some());
+	if !retype_core::fsx::supports_durable_cleanup() {
+		assert_eq!(
+			fs::read(fixture.path("bundle.tar")).unwrap(),
+			fs::read(store.source(&id).unwrap().unwrap()).unwrap()
+		);
+		let error = store.restore(&id).unwrap_err();
+		assert!(matches!(error, retype_core::error::Error::Io(ref error)
+			if error.kind() == std::io::ErrorKind::Unsupported));
+		check_zip(&fixture.path("bundle.zip"));
+		check_tar_gzip(&fixture.path("bundle.tar.gz"));
+		assert!(store.source(&id).unwrap().is_some());
+		return;
+	}
 	store.restore(&id).unwrap();
 	assert!(fixture.path("bundle.tar").exists());
 	assert!(!fixture.path("bundle.zip").exists());
 	assert!(!fixture.path("bundle.tar.gz").exists());
+}
+
+#[test]
+fn forcing_a_native_output_cannot_overwrite_a_hard_link_to_the_input() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	archive(&source);
+	let original = fs::read(&source).unwrap();
+	let alias = fixture.path("alias.zip");
+	fs::hard_link(&source, &alias).unwrap();
+	let prepared = retype_cli::daemon::immediate::prepare(
+		&Registry::load(CONFIG).unwrap(),
+		&retype_cli::daemon::immediate::Request {
+			input: source.clone(),
+			intent: "zip".to_string(),
+			output: Some(alias.to_string_lossy().into_owned()),
+			force: true,
+		},
+	);
+	assert!(prepared.is_err(), "force does not override input identity protection");
+	assert_eq!(fs::read(source).unwrap(), original);
+	assert_eq!(fs::read(alias).unwrap(), original);
 }
 
 #[test]
@@ -196,8 +233,16 @@ fn a_native_keep_source_group_prevents_disposal() {
 	assert_eq!(job.state, JobState::Done);
 	check_zip(&fixture.path("bundle.zip"));
 	assert!(fixture.path("bundle.tar").exists());
-	fixture.store().restore(&job.id).unwrap();
+	let restored = fixture.store().restore(&job.id);
 	assert!(fixture.path("bundle.tar").exists());
+	if !retype_core::fsx::supports_durable_cleanup() {
+		let error = restored.unwrap_err();
+		assert!(matches!(error, retype_core::error::Error::Io(ref error)
+			if error.kind() == std::io::ErrorKind::Unsupported));
+		check_zip(&fixture.path("bundle.zip"));
+		return;
+	}
+	restored.unwrap();
 	assert!(!fixture.path("bundle.zip").exists());
 }
 
@@ -470,6 +515,30 @@ fn competing_runners_cannot_evict_each_others_newly_reserved_snapshots() {
 }
 
 #[test]
+fn an_active_job_cannot_be_undone_or_have_its_recovery_removed() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	archive(&source);
+	let id = JobId::now().unwrap();
+	let store = fixture.store();
+	store.save(subject(id.clone(), &source, Vec::new())).unwrap();
+	let lease = store.lease(&id).unwrap();
+	assert_eq!(
+		store.restore(&id).unwrap_err().code(),
+		retype_core::error::Code::IoLocked
+	);
+	assert_eq!(
+		store.remove(&id).unwrap_err().code(),
+		retype_core::error::Code::IoLocked
+	);
+	assert!(store.source(&id).unwrap().is_some());
+	drop(lease);
+	store.remove(&id).unwrap();
+	assert!(source.exists());
+	assert!(store.load(&id).unwrap().is_none());
+}
+
+#[test]
 fn unfinished_recovery_records_survive_expiry() {
 	let fixture = Fixture::new();
 	let source = fixture.path("bundle.tar");
@@ -623,6 +692,7 @@ fn crash_after_publication_recovers_the_committed_identity_and_resumes_only_the_
 }
 
 #[test]
+#[cfg(unix)]
 fn crash_after_source_disposal_still_leaves_complete_outputs_and_an_undoable_original() {
 	let dir = tempfile::tempdir().unwrap();
 	start_crash(dir.path(), "after_disposal");

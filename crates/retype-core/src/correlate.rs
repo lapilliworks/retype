@@ -85,8 +85,7 @@ pub struct RenameFact {
 pub struct Sighting {
 	pub path: PathBuf,
 	pub identity: Identity,
-	/// Link count. Above one, identity is ambiguous between paths, so it is not
-	/// used for correlation.
+	/// Link count. Multiple names are ambiguous while the previously known name still exists.
 	pub links: u64,
 }
 
@@ -105,17 +104,37 @@ impl Sighting {
 		}
 
 		#[cfg(unix)]
-		let links = {
+		let (identity, links) = {
 			use std::os::unix::fs::MetadataExt;
-			metadata.nlink()
+			(
+				Identity {
+					device: metadata.dev(),
+					inode: metadata.ino(),
+					high: 0,
+				},
+				metadata.nlink(),
+			)
 		};
 
-		#[cfg(not(unix))]
-		let links = 1;
+		#[cfg(windows)]
+		let (identity, links) = {
+			let info = crate::job::windows_file_info(path)?;
+			(
+				Identity {
+					device: info.volume,
+					inode: info.file as u64,
+					high: (info.file >> 64) as u64,
+				},
+				info.links,
+			)
+		};
+
+		#[cfg(not(any(unix, windows)))]
+		let (identity, links) = (Identity::of(path)?, 1);
 
 		Some(Self {
 			path: path.to_path_buf(),
-			identity: Identity::of(path)?,
+			identity,
 			links,
 		})
 	}
@@ -166,9 +185,8 @@ impl Correlator {
 			// only while the name we knew is still there: a link created beside it must
 			// not read as a rename, while a rename leaves the old name gone.
 			//
-			// It matters more than it looks. The undo store keeps a rename's source as a
-			// hard link, so for the rest of that job's life the file has two names, and on
-			// macOS identity is the only way a rename is seen at all.
+			// User-created hard links must not trigger conversions. Identity is also
+			// the only way some platforms report a genuine rename.
 			let crowded = self
 				.by_identity
 				.get(&sighting.identity)
@@ -508,13 +526,15 @@ mod tests {
 		let mut correlator = Correlator::new(16);
 		correlator.observe(Sighting::of(&source).unwrap());
 
-		// The undo record keeps the source as a hard link, `undo::Store::record`.
+		// A second user-created link must not hide a genuine rename.
 		fs::hard_link(&source, undo.join("source.png")).unwrap();
 		fs::rename(&source, &target).unwrap();
 
 		let moved = Sighting::of(&target).unwrap();
-		assert_eq!(moved.links, 2, "the fixture has the undo link");
-		let fact = correlator.observe(moved).expect("the old name is gone, so nothing is ambiguous");
+		assert_eq!(moved.links, 2, "the fixture still has another link");
+		let fact = correlator
+			.observe(moved)
+			.expect("the old name is gone, so nothing is ambiguous");
 
 		assert_eq!(fact.source, source);
 		assert_eq!(fact.target, target);
