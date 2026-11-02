@@ -109,6 +109,22 @@ fn scenarios() -> Vec<Scenario> {
 				Ok(())
 			}),
 		},
+		Scenario {
+			name: "rename while a job's own files appear",
+			setup: create("j.heic"),
+			// What a job does beside the file it takes: a directory for its state, a hard
+			// link that keeps the bytes for undo, and a log. The watched root itself shows
+			// up in the stream around here on macOS, and this is the closest the probe can
+			// come to the daemon without running one.
+			act: Box::new(|root: &Path| {
+				let state = root.join("state");
+				fs::create_dir(&state)?;
+				fs::hard_link(root.join("j.heic"), state.join("j.heic"))?;
+				fs::write(state.join("j.log"), b"a job log")?;
+				fs::rename(root.join("j.heic"), root.join("j.jpg"))?;
+				Ok(())
+			}),
+		},
 	]
 }
 
@@ -150,6 +166,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 		for error in &batch.errors {
 			println!("raw: error: {error}");
 		}
+
+		// The watched root is the renamed file's parent. A platform that names it is
+		// reporting the directory, not the file, and the correlator has to see that as a
+		// directory rather than as a rename of the root.
+		let root_reported = batch
+			.events
+			.iter()
+			.any(|event| event.paths.iter().any(|path| path == &root));
+		println!("root: {}", if root_reported { "reported" } else { "not reported" });
 
 		report(&root, &registry, "pair", &feed_names(&mut names, &batch));
 		report(&root, &registry, "identity", &feed_identity(&mut identity, &batch));
