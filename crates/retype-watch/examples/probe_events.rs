@@ -183,11 +183,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 	println!("## notes");
 	println!();
-	if cfg!(windows) {
-		println!(
-			"- file identity is not exposed by `std` on Windows, so this probe cannot test the identity strategy there"
-		);
-	}
 	Ok(())
 }
 

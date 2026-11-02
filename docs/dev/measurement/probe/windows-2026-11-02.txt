@@ -1,0 +1,166 @@
+# filesystem events
+
+platform: windows
+
+## rename in place
+raw: Modify(Name(From)) a.heic
+raw: Modify(Name(To)) a.jpg
+root: not reported
+pair: a.heic -> a.jpg intent=jpg
+identity: a.heic -> a.jpg intent=jpg
+
+## rename case only
+raw: Remove(Any) b.heic
+raw: Modify(Name(From)) b.heic
+raw: Modify(Name(To)) b.HEIC
+root: not reported
+pair: b.heic -> b.HEIC intent=none
+identity: b.heic -> b.HEIC intent=none
+
+## rename stem and extension
+raw: Modify(Name(From)) c.heic
+raw: Modify(Name(To)) c-renamed.jpg
+root: not reported
+pair: no rename facts
+identity: no rename facts
+
+## rename across directories
+raw: Remove(Any) d.heic
+raw: Create(Any) sub\d.jpg
+raw: Modify(Any) sub
+root: not reported
+pair: no rename facts
+identity: no rename facts
+
+## two renames in one window
+raw: Modify(Name(From)) e.heic
+raw: Modify(Name(To)) e.jpg
+raw: Modify(Name(From)) e.jpg
+raw: Modify(Name(To)) e.webp
+root: not reported
+pair: e.heic -> e.webp intent=webp
+identity: e.heic -> e.webp intent=webp
+
+## rename over an existing file
+raw: Remove(Any) f.jpg
+raw: Modify(Name(From)) f.heic
+raw: Modify(Name(To)) f.jpg
+root: not reported
+pair: f.heic -> f.jpg intent=jpg
+identity: f.heic -> f.jpg intent=jpg
+
+## twenty renames in one gesture
+raw: Modify(Name(From)) g0.heic
+raw: Modify(Name(To)) g0.jpg
+raw: Modify(Name(From)) g1.heic
+raw: Modify(Name(To)) g1.jpg
+raw: Modify(Name(From)) g2.heic
+raw: Modify(Name(To)) g2.jpg
+raw: Modify(Name(From)) g3.heic
+raw: Modify(Name(To)) g3.jpg
+raw: Modify(Name(From)) g4.heic
+raw: Modify(Name(To)) g4.jpg
+raw: Modify(Name(From)) g5.heic
+raw: Modify(Name(To)) g5.jpg
+raw: Modify(Name(From)) g6.heic
+raw: Modify(Name(To)) g6.jpg
+raw: Modify(Name(From)) g7.heic
+raw: Modify(Name(To)) g7.jpg
+raw: Modify(Name(From)) g8.heic
+raw: Modify(Name(To)) g8.jpg
+raw: Modify(Name(From)) g9.heic
+raw: Modify(Name(To)) g9.jpg
+raw: Modify(Name(From)) g10.heic
+raw: Modify(Name(To)) g10.jpg
+raw: Modify(Name(From)) g11.heic
+raw: Modify(Name(To)) g11.jpg
+raw: Modify(Name(From)) g12.heic
+raw: Modify(Name(To)) g12.jpg
+raw: Modify(Name(From)) g13.heic
+raw: Modify(Name(To)) g13.jpg
+raw: Modify(Name(From)) g14.heic
+raw: Modify(Name(To)) g14.jpg
+raw: Modify(Name(From)) g15.heic
+raw: Modify(Name(To)) g15.jpg
+raw: Modify(Name(From)) g16.heic
+raw: Modify(Name(To)) g16.jpg
+raw: Modify(Name(From)) g17.heic
+raw: Modify(Name(To)) g17.jpg
+raw: Modify(Name(From)) g18.heic
+raw: Modify(Name(To)) g18.jpg
+raw: Modify(Name(From)) g19.heic
+raw: Modify(Name(To)) g19.jpg
+root: not reported
+pair: g0.heic -> g0.jpg intent=jpg
+pair: g1.heic -> g1.jpg intent=jpg
+pair: g2.heic -> g2.jpg intent=jpg
+pair: g3.heic -> g3.jpg intent=jpg
+pair: g4.heic -> g4.jpg intent=jpg
+pair: g5.heic -> g5.jpg intent=jpg
+pair: g6.heic -> g6.jpg intent=jpg
+pair: g7.heic -> g7.jpg intent=jpg
+pair: g8.heic -> g8.jpg intent=jpg
+pair: g9.heic -> g9.jpg intent=jpg
+pair: g10.heic -> g10.jpg intent=jpg
+pair: g11.heic -> g11.jpg intent=jpg
+pair: g12.heic -> g12.jpg intent=jpg
+pair: g13.heic -> g13.jpg intent=jpg
+pair: g14.heic -> g14.jpg intent=jpg
+pair: g15.heic -> g15.jpg intent=jpg
+pair: g16.heic -> g16.jpg intent=jpg
+pair: g17.heic -> g17.jpg intent=jpg
+pair: g18.heic -> g18.jpg intent=jpg
+pair: g19.heic -> g19.jpg intent=jpg
+identity: g0.heic -> g0.jpg intent=jpg
+identity: g1.heic -> g1.jpg intent=jpg
+identity: g2.heic -> g2.jpg intent=jpg
+identity: g3.heic -> g3.jpg intent=jpg
+identity: g4.heic -> g4.jpg intent=jpg
+identity: g5.heic -> g5.jpg intent=jpg
+identity: g6.heic -> g6.jpg intent=jpg
+identity: g7.heic -> g7.jpg intent=jpg
+identity: g8.heic -> g8.jpg intent=jpg
+identity: g9.heic -> g9.jpg intent=jpg
+identity: g10.heic -> g10.jpg intent=jpg
+identity: g11.heic -> g11.jpg intent=jpg
+identity: g12.heic -> g12.jpg intent=jpg
+identity: g13.heic -> g13.jpg intent=jpg
+identity: g14.heic -> g14.jpg intent=jpg
+identity: g15.heic -> g15.jpg intent=jpg
+identity: g16.heic -> g16.jpg intent=jpg
+identity: g17.heic -> g17.jpg intent=jpg
+identity: g18.heic -> g18.jpg intent=jpg
+identity: g19.heic -> g19.jpg intent=jpg
+
+## rename then write
+raw: Modify(Name(From)) h.heic
+raw: Modify(Name(To)) h.jpg
+raw: Modify(Any) h.jpg
+raw: Modify(Any) h.jpg
+root: not reported
+pair: h.heic -> h.jpg intent=jpg
+identity: h.heic -> h.jpg intent=jpg
+
+## rename then delete
+raw: Modify(Name(From)) i.heic
+raw: Modify(Name(To)) i.jpg
+raw: Remove(Any) i.jpg
+root: not reported
+pair: i.heic -> i.jpg intent=jpg
+identity: no rename facts
+
+## rename while a job's own files appear
+raw: Create(Any) state
+raw: Create(Any) state\j.heic
+raw: Modify(Any) state
+raw: Create(Any) state\j.log
+raw: Modify(Any) state\j.log
+raw: Modify(Name(From)) j.heic
+raw: Modify(Name(To)) j.jpg
+root: not reported
+pair: j.heic -> j.jpg intent=jpg
+identity: no rename facts
+
+## notes
+
+- file identity is not exposed by `std` on Windows, so this probe cannot test the identity strategy there
