@@ -1,0 +1,11 @@
+   Compiling retype-core v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-fixes/crates/retype-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.01s
+     Running unittests src/lib.rs (target/debug/deps/retype_core-3254e90cf38b6718)
+
+running 3 tests
+test execute::tests::process_completion_rejects_a_persistently_live_helper ... ok
+test execute::tests::process_completion_wait_is_cancellable ... ok
+test execute::tests::process_completion_waits_for_accounting_to_reach_zero ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 401 filtered out; finished in 0.10s
+

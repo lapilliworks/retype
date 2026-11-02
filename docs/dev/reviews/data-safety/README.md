@@ -1,6 +1,6 @@
 # Data safety review
 
-This is the historical pre-fix review. See [the implementation response and regression evidence](fixes/README.md) for the fixes, current preservation policy and remaining validation limits.
+This is the historical pre-fix review. See [the initial implementation response](fixes/README.md) and [the platform-test follow-up](platform-follow-up/README.md) for fixes, regression evidence and remaining validation limits. [Test preparation](../../testing.md) lists the prerequisites for native platform and real-codec runs.
 
 ## Verdict
 

@@ -1,6 +1,6 @@
 # Data safety fixes and regression evidence
 
-Implementation response to [F1–F15](../README.md). The original review remains a historical record of the pre-fix implementation.
+Initial implementation response to [F1–F15](../README.md), at the revision recorded below. See [the subsequent platform-test follow-up](../platform-follow-up/README.md) for later fixes, expanded Windows coverage and real-tool validation. The original review remains a historical record of the pre-fix implementation.
 
 ## Disposal policy
 

@@ -89,7 +89,9 @@ One JSON object per line. Every line is self-contained and carries its own versi
 
 Per-output state is one of `pending`, `running`, `done`, `failed`. A `partial` job is one with at least one `done` and at least one not `done`, so the job state is derivable from its outputs and is stored anyway because a reader should not have to recompute it.
 
-A record is a full snapshot of the job at that transition, so replay is last-wins per id and no record depends on another. Snapshots are affordable because a job has a handful of transitions.
+A record is a full snapshot of the job at that transition, so replay is last-wins per id and no record depends on another. Snapshots are affordable because a job has a handful of transitions. Per-output publication checkpoints can carry a `done` output inside a `running` job; only the latest top-level job state establishes terminal completion.
+
+Initial publication holds the job-list mutex across journal append, synchronization and cache registration. IPC readers wait through that interval rather than returning `E_JOB_NOT_FOUND` for an already journaled job. Emit the event only after the snapshot is registered in the job list. A failed checkpoint is not published to the cache or event ring.
 
 ## 4. Journal rules
 

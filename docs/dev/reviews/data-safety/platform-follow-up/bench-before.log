@@ -1,0 +1,25 @@
+   Compiling retype-macros v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-baseline/crates/retype-macros)
+   Compiling retype-core v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-baseline/crates/retype-core)
+   Compiling retype-ipc v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-baseline/crates/retype-ipc)
+   Compiling retype-watch v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-baseline/crates/retype-watch)
+   Compiling retype-cli v0.1.0 (/home/i/Works/retype/worktrees/platform-safety-baseline/crates/retype-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.97s
+     Running tests/bench.rs (target/debug/deps/bench-b8f7e8ad85b62c79)
+
+running 1 test
+
+thread 'repeated_measurements_do_not_reuse_or_overwrite_previous_artifacts' (74553) panicked at crates/retype-cli/tests/bench.rs:140:9:
+retype: png to webp: File exists (os error 17)
+retype: E_TOOL_FAILED: nothing could be measured on this machine
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test repeated_measurements_do_not_reuse_or_overwrite_previous_artifacts ... FAILED
+
+failures:
+
+failures:
+    repeated_measurements_do_not_reuse_or_overwrite_previous_artifacts
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `-p retype-cli --test bench`
