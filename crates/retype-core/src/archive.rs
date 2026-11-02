@@ -26,6 +26,8 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 use crate::convert::StagedOutput;
 use crate::error::{Code, Diagnostic, Error, Result};
 use crate::execute::{Cancellation, Report};
@@ -279,7 +281,7 @@ impl Source {
 					if entry.is_dir() || kind == 0o040000 {
 						let name = inventory_name(&name, true)?;
 						sink.directory(&name, mode)?;
-						inventory.push(name, true, 0);
+						inventory.push(name, true, 0, String::new());
 						continue;
 					}
 
@@ -299,12 +301,17 @@ impl Source {
 					let size = entry.size();
 					let name = inventory_name(&name, false)?;
 					spend(&name, size, budget)?;
-					sink.file(&name, mode, size, &mut entry)?;
+					let mut reader = DigestReader::new(&mut entry);
+					sink.file(&name, mode, size, &mut reader)?;
+					let (sha256, read) = reader.finish();
+					if read != size {
+						return Err(short(&name, size, read));
+					}
 					let mut extra = [0u8; 1];
 					if entry.read(&mut extra)? != 0 {
 						return Err(malformed("the zip", &"entry exceeds its declared size"));
 					}
-					inventory.push(name, false, size);
+					inventory.push(name, false, size, sha256);
 				}
 			}
 			Self::Tar(archive) => {
@@ -322,7 +329,7 @@ impl Source {
 						tar::EntryType::Directory => {
 							let name = inventory_name(&name, true)?;
 							sink.directory(&name, mode)?;
-							inventory.push(name, true, 0);
+							inventory.push(name, true, 0, String::new());
 							continue;
 						}
 						tar::EntryType::Regular | tar::EntryType::Continuous => {}
@@ -341,8 +348,13 @@ impl Source {
 					let size = entry.size();
 					let name = inventory_name(&name, false)?;
 					spend(&name, size, budget)?;
-					sink.file(&name, mode, size, &mut entry)?;
-					inventory.push(name, false, size);
+					let mut reader = DigestReader::new(&mut entry);
+					sink.file(&name, mode, size, &mut reader)?;
+					let (sha256, read) = reader.finish();
+					if read != size {
+						return Err(short(&name, size, read));
+					}
+					inventory.push(name, false, size, sha256);
 				}
 			}
 			Self::Tree { entries, root, at } => {
@@ -355,7 +367,7 @@ impl Source {
 
 					if entry.directory {
 						sink.directory(&name, entry.mode)?;
-						inventory.push(name, true, 0);
+						inventory.push(name, true, 0, String::new());
 						continue;
 					}
 
@@ -363,9 +375,13 @@ impl Source {
 
 					let mut file = File::open(root.join(&entry.name))
 						.map_err(|error| unreadable(&root.join(&entry.name), &error))?;
-
-					sink.file(&name, entry.mode, entry.size, &mut file)?;
-					inventory.push(name, false, entry.size);
+					let mut reader = DigestReader::new(&mut file);
+					sink.file(&name, entry.mode, entry.size, &mut reader)?;
+					let (sha256, read) = reader.finish();
+					if read != entry.size {
+						return Err(short(&name, entry.size, read));
+					}
+					inventory.push(name, false, entry.size, sha256);
 				}
 			}
 		}
@@ -380,6 +396,7 @@ struct InventoryEntry {
 	name: String,
 	directory: bool,
 	size: u64,
+	sha256: String,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -388,8 +405,43 @@ struct Inventory {
 }
 
 impl Inventory {
-	fn push(&mut self, name: String, directory: bool, size: u64) {
-		self.entries.push(InventoryEntry { name, directory, size });
+	fn push(&mut self, name: String, directory: bool, size: u64, sha256: String) {
+		self.entries.push(InventoryEntry {
+			name,
+			directory,
+			size,
+			sha256,
+		});
+	}
+}
+
+/// Hash the bytes a sink consumes, so the write can be checked byte for byte.
+struct DigestReader<'a> {
+	inner: &'a mut dyn Read,
+	hash: Sha256,
+	bytes: u64,
+}
+
+impl<'a> DigestReader<'a> {
+	fn new(inner: &'a mut dyn Read) -> Self {
+		Self {
+			inner,
+			hash: Sha256::new(),
+			bytes: 0,
+		}
+	}
+
+	fn finish(self) -> (String, u64) {
+		(format!("{:x}", self.hash.finalize()), self.bytes)
+	}
+}
+
+impl Read for DigestReader<'_> {
+	fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+		let read = self.inner.read(buffer)?;
+		self.hash.update(&buffer[..read]);
+		self.bytes += read as u64;
+		Ok(read)
 	}
 }
 
