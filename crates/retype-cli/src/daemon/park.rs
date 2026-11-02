@@ -472,16 +472,17 @@ fn repair(
 	// the file is not mislabelled while the conversion happens.
 	let source = retype_core::convert::restore_source_name(target, stem, format).ok()?;
 	shared.recent.note(&source, target);
+	let source_metadata = fs::metadata(&source).ok();
 
 	let job = Job {
 		id: id.clone(),
 		created: now_ms(),
 		updated: now_ms(),
 		source: Source {
-			size: bytes,
+			size: source_metadata.as_ref().map(|metadata| metadata.len()).unwrap_or(bytes),
 			path: source.clone(),
 			format: format.to_string(),
-			mtime_ns: 0,
+			mtime_ns: source_metadata.as_ref().map(mtime_ns).unwrap_or_default(),
 		},
 		intent: Some(correction.text.clone()),
 		outputs: Vec::new(),
@@ -530,6 +531,15 @@ fn repair(
 			},
 		)),
 	}
+}
+
+fn mtime_ns(metadata: &fs::Metadata) -> i64 {
+	metadata
+		.modified()
+		.ok()
+		.and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+		.map(|elapsed| elapsed.as_nanos() as i64)
+		.unwrap_or_default()
 }
 
 /// What a request would cost, for a repair that has to know before it guesses.
@@ -617,17 +627,20 @@ fn park(
 		})
 		.collect();
 
+	let source_metadata = fs::metadata(&source_path).ok();
+
 	let job = Job {
 		id: id.clone(),
 		created: now_ms(),
 		updated: now_ms(),
 		source: Source {
-			size: fs::metadata(&source_path)
+			size: source_metadata
+				.as_ref()
 				.map(|metadata| metadata.len())
 				.unwrap_or_default(),
 			path: source_path,
 			format: format.to_string(),
-			mtime_ns: 0,
+			mtime_ns: source_metadata.as_ref().map(mtime_ns).unwrap_or_default(),
 		},
 		intent: parking
 			.resolved

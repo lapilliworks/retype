@@ -46,6 +46,13 @@ fn requeue(shared: &Shared, pool: &Pool, job: &Job) {
 		return;
 	};
 
+	// A queued job did not record an output yet, so the live path is still the only
+	// evidence of what it was. Refuse to run it against a replacement.
+	if !source_still_matches(shared, job) {
+		interrupted(shared, job);
+		return;
+	}
+
 	let request = immediate::Request {
 		input: job.source.path.clone(),
 		intent,
@@ -88,6 +95,45 @@ fn requeue(shared: &Shared, pool: &Pool, job: &Job) {
 	if !pool.submit(work) {
 		interrupted(shared, job);
 	}
+}
+
+/// Whether the live source is still the file the queued job recorded.
+fn source_still_matches(shared: &Shared, job: &Job) -> bool {
+	let Ok(metadata) = std::fs::symlink_metadata(&job.source.path) else {
+		return false;
+	};
+
+	if !metadata.file_type().is_file() {
+		return false;
+	}
+
+	if metadata.len() != job.source.size {
+		return false;
+	}
+
+	if job.source.mtime_ns != 0 {
+		let Ok(modified) = metadata.modified() else {
+			return false;
+		};
+		let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH) else {
+			return false;
+		};
+		let Ok(mtime_ns) = i64::try_from(since.as_nanos()) else {
+			return false;
+		};
+		if mtime_ns != job.source.mtime_ns {
+			return false;
+		}
+	}
+
+	let Some(name) = job.source.path.file_name().and_then(|name| name.to_str()) else {
+		return false;
+	};
+
+	shared
+		.registry()
+		.split(name)
+		.is_some_and(|(_, format)| format == job.source.format)
 }
 
 fn interrupted(shared: &Shared, job: &Job) {
