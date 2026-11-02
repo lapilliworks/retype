@@ -188,7 +188,6 @@ identity: no rename facts
 ## rename while a job's own files appear
 raw: Create(Folder) state
 raw: Create(File) state/j.heic
-raw: Create(Folder) 
 raw: Modify(Metadata(Any)) 
 raw: Create(File) state/j.log
 raw: Modify(Data(Content)) state/j.log
