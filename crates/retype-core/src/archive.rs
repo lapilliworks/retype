@@ -98,9 +98,10 @@ pub fn repack_published(
 			let mut sink = Sink::open(to, staged.temp())?;
 
 			let mut budget = MAX_BYTES;
-			source.each(&mut sink, cancellation, &mut budget)?;
+			let expected = source.each(&mut sink, cancellation, &mut budget)?;
 			source.finish(cancellation)?;
 			sink.commit()?;
+			verify_inventory(to, staged.temp(), &expected, cancellation)?;
 			String::new()
 		}
 	};
@@ -151,7 +152,7 @@ fn through(
 			let mut sink = Sink::Tree(TreeSink::new(tree)?);
 
 			let mut budget = MAX_BYTES;
-			source.each(&mut sink, cancellation, &mut budget)?;
+			let _ = source.each(&mut sink, cancellation, &mut budget)?;
 			source.finish(cancellation)?;
 			sink.commit()?;
 		}
@@ -165,7 +166,7 @@ fn through(
 			let mut sink = Sink::open(other, target)?;
 
 			let mut budget = MAX_BYTES;
-			source.each(&mut sink, cancellation, &mut budget)?;
+			let _ = source.each(&mut sink, cancellation, &mut budget)?;
 			source.finish(cancellation)?;
 			sink.commit()?;
 		}
@@ -258,7 +259,12 @@ impl Source {
 	}
 
 	/// Hand every entry to `sink`, in the order the source lists them.
-	fn each(&mut self, sink: &mut Sink, cancellation: &Cancellation, budget: &mut u64) -> Result<()> {
+	///
+	/// The returned inventory is what the writer should have produced. Native output
+	/// is reopened and compared against it before the result can be published.
+	fn each(&mut self, sink: &mut Sink, cancellation: &Cancellation, budget: &mut u64) -> Result<Inventory> {
+		let mut inventory = Inventory::default();
+
 		match self {
 			Self::Zip(archive) => {
 				for index in 0..archive.len() {
@@ -268,23 +274,37 @@ impl Source {
 
 					let name = entry.name().to_string();
 					let mode = entry.unix_mode().unwrap_or(0o644);
+					let kind = mode & 0o170000;
 
-					if entry.is_dir() {
+					if entry.is_dir() || kind == 0o040000 {
+						let name = inventory_name(&name, true)?;
 						sink.directory(&name, mode)?;
+						inventory.push(name, true, 0);
 						continue;
 					}
 
-					if is_link(mode) {
+					if kind == 0o120000 {
 						return Err(link_refused(&name));
 					}
 
+					if kind != 0 && kind != 0o100000 {
+						return Err(Error::Diagnostic(Diagnostic::global(
+							Code::Unsupported,
+							format!(
+								"'{name}' is mode {mode:o}, and an archive of files and directories is all this carries"
+							),
+						)));
+					}
+
 					let size = entry.size();
+					let name = inventory_name(&name, false)?;
 					spend(&name, size, budget)?;
 					sink.file(&name, mode, size, &mut entry)?;
 					let mut extra = [0u8; 1];
 					if entry.read(&mut extra)? != 0 {
 						return Err(malformed("the zip", &"entry exceeds its declared size"));
 					}
+					inventory.push(name, false, size);
 				}
 			}
 			Self::Tar(archive) => {
@@ -300,7 +320,9 @@ impl Source {
 
 					match header.entry_type() {
 						tar::EntryType::Directory => {
+							let name = inventory_name(&name, true)?;
 							sink.directory(&name, mode)?;
+							inventory.push(name, true, 0);
 							continue;
 						}
 						tar::EntryType::Regular | tar::EntryType::Continuous => {}
@@ -315,9 +337,12 @@ impl Source {
 						}
 					}
 
-					let size = header.size().map_err(|error| malformed("the tar", &error))?;
+					/* The PAX size override is authoritative, not the raw header field. */
+					let size = entry.size();
+					let name = inventory_name(&name, false)?;
 					spend(&name, size, budget)?;
 					sink.file(&name, mode, size, &mut entry)?;
+					inventory.push(name, false, size);
 				}
 			}
 			Self::Tree { entries, root, at } => {
@@ -326,24 +351,78 @@ impl Source {
 
 					let entry = entries[*at].clone();
 					*at += 1;
+					let name = inventory_name(&entry.name, entry.directory)?;
 
 					if entry.directory {
-						sink.directory(&entry.name, entry.mode)?;
+						sink.directory(&name, entry.mode)?;
+						inventory.push(name, true, 0);
 						continue;
 					}
 
-					spend(&entry.name, entry.size, budget)?;
+					spend(&name, entry.size, budget)?;
 
 					let mut file = File::open(root.join(&entry.name))
 						.map_err(|error| unreadable(&root.join(&entry.name), &error))?;
 
-					sink.file(&entry.name, entry.mode, entry.size, &mut file)?;
+					sink.file(&name, entry.mode, entry.size, &mut file)?;
+					inventory.push(name, false, entry.size);
 				}
 			}
 		}
 
-		Ok(())
+		Ok(inventory)
 	}
+}
+
+/// One entry a finished archive must carry.
+#[derive(Debug, PartialEq, Eq)]
+struct InventoryEntry {
+	name: String,
+	directory: bool,
+	size: u64,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Inventory {
+	entries: Vec<InventoryEntry>,
+}
+
+impl Inventory {
+	fn push(&mut self, name: String, directory: bool, size: u64) {
+		self.entries.push(InventoryEntry { name, directory, size });
+	}
+}
+
+/// The name an entry is stored under, after the writer's normalisation.
+fn inventory_name(name: &str, directory: bool) -> Result<String> {
+	let name = archive_name(name)?;
+
+	Ok(match directory {
+		true => name.trim_end_matches('/').to_string(),
+		false => name,
+	})
+}
+
+/// Reopen a native output and prove it carries the source inventory.
+fn verify_inventory(codec: Native, path: &Path, expected: &Inventory, cancellation: &Cancellation) -> Result<()> {
+	let mut source = Source::open(codec, path)?;
+	let mut sink = Sink::Count;
+	let mut budget = MAX_BYTES;
+	let actual = source.each(&mut sink, cancellation, &mut budget)?;
+	source.finish(cancellation)?;
+
+	if &actual != expected {
+		return Err(Error::Diagnostic(Diagnostic::global(
+			Code::IoFailed,
+			format!(
+				"the output archive does not carry the source inventory: expected {} entries, wrote {}",
+				expected.entries.len(),
+				actual.entries.len()
+			),
+		)));
+	}
+
+	Ok(())
 }
 
 /// The target archive, written as the source is walked.
@@ -352,6 +431,8 @@ enum Sink {
 	Tar(Box<tar::Builder<TarSink>>),
 	/// Write the entries into a directory a tool can archive from.
 	Tree(TreeSink),
+	/// Read an output back and count what it carries, without writing another one.
+	Count,
 }
 
 enum TarSink {
@@ -401,6 +482,7 @@ impl Sink {
 				.add_directory(&name, zip_options(mode))
 				.map_err(|error| unwritable(&error)),
 			Self::Tar(builder) => {
+				let name = name.trim_end_matches('/');
 				let mut header = tar::Header::new_gnu();
 				header.set_entry_type(tar::EntryType::Directory);
 				header.set_size(0);
@@ -413,6 +495,10 @@ impl Sink {
 					.map_err(|error| unwritable(&error))
 			}
 			Self::Tree(tree) => tree.directory(&name, mode),
+			Self::Count => {
+				let _ = archive_name(&name)?;
+				Ok(())
+			}
 		}
 	}
 
@@ -441,11 +527,26 @@ impl Sink {
 				header.set_mtime(0);
 				header.set_cksum();
 
+				let mut limited = bytes.take(size);
 				builder
-					.append_data(&mut header, &name, bytes.take(size))
-					.map_err(|error| unwritable(&error))
+					.append_data(&mut header, &name, &mut limited)
+					.map_err(|error| unwritable(&error))?;
+
+				match limited.limit() {
+					0 => Ok(()),
+					remaining => Err(short(&name, size, size - remaining)),
+				}
 			}
 			Self::Tree(tree) => tree.file(&name, mode, size, bytes),
+			Self::Count => {
+				let mut limited = bytes.take(size);
+				let copied = std::io::copy(&mut limited, &mut std::io::sink()).map_err(|error| unwritable(&error))?;
+
+				match copied == size {
+					true => Ok(()),
+					false => Err(short(&name, size, copied)),
+				}
+			}
 		}
 	}
 
@@ -467,7 +568,7 @@ impl Sink {
 				/* Sync the writing handle so delayed writeback errors cannot be lost on close. */
 				file.sync_all()?;
 			}
-			Self::Tree(_) => {}
+			Self::Tree(_) | Self::Count => {}
 		}
 
 		Ok(())
@@ -795,25 +896,41 @@ fn zip_options(mode: u32) -> zip::write::SimpleFileOptions {
 
 /// The name an entry is allowed to have: relative, not empty, and with `/`
 /// separators, so a Windows-made zip becomes a tar a Unix can read.
+///
+/// Normalise before validating. `Path` treats backslashes as ordinary characters on
+/// Unix, so checking the raw name would accept `..\escape` there and write
+/// `../escape` into the output.
 fn archive_name(name: &str) -> Result<String> {
 	if name.is_empty() {
 		return Err(refused(name, "an entry with no name has nowhere to go"));
 	}
 
-	let path = Path::new(name);
+	if name.contains('\0') {
+		return Err(refused(name, "a name with a NUL byte cannot be carried"));
+	}
 
-	if path.is_absolute() || path.has_root() {
+	let normalized = name.replace('\\', "/");
+	let path = Path::new(&normalized);
+
+	if path.is_absolute() || path.has_root() || normalized.starts_with("//") {
 		return Err(refused(name, "an absolute name would escape the archive"));
 	}
 
 	if path
 		.components()
-		.any(|part| matches!(part, std::path::Component::ParentDir))
+		.any(|part| matches!(part, std::path::Component::ParentDir | std::path::Component::RootDir))
 	{
 		return Err(refused(name, "a name with '..' would escape the archive"));
 	}
 
-	Ok(name.replace('\\', "/"))
+	let first = normalized.split('/').next().unwrap_or_default();
+	let bytes = first.as_bytes();
+
+	if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+		return Err(refused(name, "a drive-qualified name would escape the archive"));
+	}
+
+	Ok(normalized)
 }
 
 /// Take `size` out of the budget, before any of it is copied.
@@ -837,10 +954,6 @@ fn stop_if_cancelled(cancellation: &Cancellation) -> Result<()> {
 		))),
 		false => Ok(()),
 	}
-}
-
-fn is_link(mode: u32) -> bool {
-	mode & 0o170_000 == 0o120_000
 }
 
 fn refused(name: &str, why: &str) -> Error {
@@ -1088,11 +1201,22 @@ mod tests {
 
 	#[test]
 	fn an_absolute_or_traversing_name_is_refused() {
-		for name in ["/etc/passwd", "tree/../../etc/passwd", ""] {
+		for name in [
+			"/etc/passwd",
+			"tree/../../etc/passwd",
+			"",
+			r"..\escape.txt",
+			r"\absolute",
+			r"C:\drive.txt",
+			"C:relative.txt",
+			r"\\server\share",
+			"tree/..\\escape.txt",
+		] {
 			assert!(archive_name(name).is_err(), "{name} was accepted");
 		}
 
 		assert!(archive_name("tree/one.txt").is_ok());
+		assert!(archive_name(r"tree\one.txt").is_ok());
 	}
 }
 
