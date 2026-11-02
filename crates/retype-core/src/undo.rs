@@ -300,11 +300,21 @@ impl Store {
 		let Room::Kept { dropped } = room else {
 			return Ok(None);
 		};
+
+		/* Reserve every record before any is removed, then create the new backup before
+		 * dropping the old ones. A failed save must not leave the store with neither. */
+		let mut leases = Vec::with_capacity(dropped.len());
+		for id in &dropped {
+			leases.push(self.lease(id)?);
+		}
+
+		let record = self.save_locked(subject)?;
 		for id in dropped {
-			let _lease = self.lease(&id)?;
 			self.remove_locked(&id)?;
 		}
-		self.save_locked(subject).map(Some)
+
+		drop(leases);
+		Ok(Some(record))
 	}
 
 	fn save_locked(&self, subject: Subject) -> Result<Record> {
@@ -937,6 +947,25 @@ mod tests {
 		assert!(
 			store.load(&existing.id).unwrap().is_some(),
 			"nothing is evicted for a record that will not exist"
+		);
+	}
+
+	#[test]
+	fn a_failed_new_record_does_not_evict_an_old_one() {
+		let state = state();
+		let store = Store::open(state.path());
+		let old = store.save(sized(1, state.path(), 400)).unwrap();
+		store.finish(&old.id).unwrap();
+
+		let new = sized(2, state.path(), 400);
+		// Force the new record creation to fail after room has been selected.
+		fs::create_dir_all(store.directory(&new.id)).unwrap();
+		let result = store.save_with_policy(new, &policy(500));
+
+		assert!(result.is_err());
+		assert!(
+			store.load(&old.id).unwrap().is_some(),
+			"the old backup must survive a failed new record"
 		);
 	}
 
