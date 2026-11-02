@@ -93,6 +93,7 @@ Rules:
 - Resume skips outputs whose recorded identity and content digest still match; other occupied paths are refused without `--force`
 - Resume reads a private working copy of the verified retained original, never an arbitrary replacement at the old source path
 - Partial, failed, cancelled and superseded jobs retain originals and required recovery records
+- A queued job interrupted by a restart runs again only when the live source still matches its recorded format, size and mtime; a replacement source fails with `E_JOB_INTERRUPTED` and nothing is written from it
 - Successful resume retains its backup for normal undo retention
 
 Source naming, output publication and disposal follow `docs/dev/architecture/state.md` §5. Source restoration refuses occupied destinations. A backend exit status is not permission to delete the original: every requested output must be validated and durably committed, a verified backup and completion record must be durable, and the source must still be the object the job read. Unvalidated external backends, unavailable directory durability and backup failures retain originals.

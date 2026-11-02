@@ -304,7 +304,7 @@ on_overflow = 'ask'
 
 `retention` is read as the grammar's duration class, so it is spelled the way an intent spells one: `w`, `d`, `h`, `m` and `s`, in that order, and a unit may be skipped. Months are not a unit, because a month is not a fixed number of seconds. `quota` is read as the size class, so `gb` is decimal and `gib` binary, `docs/grammar.md` §7.
 
-Retention expires completed, unpinned undo records. Unfinished recovery records remain pinned against both expiry and quota eviction, including across restart. A successful resume releases the pin but retains its backup. Disabling undo, insufficient quota, or unexpected backup failure retains the live original rather than silently permitting permanent removal, `docs/dev/architecture/state.md` §5.
+Retention expires completed, unpinned undo records. Unfinished recovery records remain pinned against both expiry and quota eviction, including across restart. A record also stays pinned when a failed disposal cannot prove the live source is still the original, because the backup may then be the only copy. A successful resume releases the pin but retains its backup. Disabling undo, insufficient quota, or unexpected backup failure retains the live original rather than silently permitting permanent removal, `docs/dev/architecture/state.md` §5.
 
 The quota is a second, independent bound: retention bounds records by age and the quota bounds them by size. `ask` is the intended answer and behaves as `evict` until notifications exist to ask with.
 
