@@ -1117,6 +1117,7 @@ fn run(
 		Some(renamed) => renamed.input().to_path_buf(),
 		None => source.to_path_buf(),
 	};
+	let input_is_temporary = renamed.as_ref().is_some_and(execute::Rename::is_temporary);
 	let snapshot = match retype_core::safety::Snapshot::open(&read_from) {
 		Ok(snapshot) => snapshot,
 		Err(error) => {
@@ -1305,12 +1306,14 @@ fn run(
 		(false, false) => JobState::Failed,
 	};
 
+	let output_count = outputs.len();
 	let job = settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state);
 	if state == JobState::Done && !all_validated {
 		eprintln!("retype: original retained: the backend has no complete independent output validator");
 	}
 	let can_dispose = state == JobState::Done
 		&& !plans.is_empty()
+		&& output_count == plans.len()
 		&& all_validated
 		&& has_backup
 		&& !resolved.groups.iter().any(|group| group.keep_source);
@@ -1318,22 +1321,45 @@ fn run(
 		eprintln!("retype: original retained because completion could not be persisted: {error}");
 		return;
 	}
+	let mut disposed = false;
 	if can_dispose {
-		if let Err(error) = cancellation.commit(|| {
+		match cancellation.commit(|| {
 			store.verify_disposal(&id)?;
 			retype_core::safety::remove_owned(&read_from, &snapshot.original)
 		}) {
-			eprintln!("retype: source retained or preserved for recovery: {error}");
+			Ok(()) => disposed = true,
+			Err(error) => eprintln!("retype: source retained or preserved for recovery: {error}"),
 		}
 	}
 	if has_backup && state == JobState::Done {
-		if let Err(error) = store.finish(&id) {
+		/* A failed or ambiguous disposal can leave the original only in the backup.
+		 * Keep that backup pinned until the live source is proven intact. */
+		let retained = disposed
+			|| source_holds_original(&snapshot.original, &read_from, target, input_is_temporary);
+		if !retained {
+			eprintln!("retype: undo record remains pinned: the source was not verified after disposal failed");
+		} else if let Err(error) = store.finish(&id) {
 			eprintln!("retype: undo record remains pinned: {error}");
 		}
 	}
 	drop(lease);
 	publish_persisted(shared, &job);
 	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
+}
+
+/// Whether the live source, or the occupied target that held it, still matches the
+/// snapshot the conversion used.
+fn source_holds_original(
+	original: &retype_core::safety::Fingerprint,
+	read_from: &Path,
+	target: &Path,
+	input_is_temporary: bool,
+) -> bool {
+	if !original.matches(read_from).unwrap_or(false) {
+		return false;
+	}
+
+	!input_is_temporary || original.matches(target).unwrap_or(false)
 }
 
 /// A job's last word, whether it got as far as an output or not.

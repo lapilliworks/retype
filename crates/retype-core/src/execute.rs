@@ -318,6 +318,11 @@ impl Rename {
 	pub fn input(&self) -> &Path {
 		self.prepared.input()
 	}
+
+	/// Whether the input is a private copy because the source name was occupied.
+	pub fn is_temporary(&self) -> bool {
+		self.prepared.is_temporary()
+	}
 }
 
 /// Stop the child and its Unix group, then reap it. The Windows job guard kills descendants on exit.

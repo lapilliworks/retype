@@ -1,9 +1,11 @@
 //! Transaction-level regressions using real native archives, process crashes and storage failures.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Barrier};
+use std::time::{Duration, Instant};
 
 use retype_cli::daemon::{Server, resume, watcher};
 use retype_core::convert::Publication;
@@ -47,6 +49,37 @@ fn archive(path: &Path) {
 		header.set_cksum();
 		tar.append_data(&mut header, name, CONTENT).unwrap();
 	}
+	tar.finish().unwrap();
+}
+
+fn pax_archive(path: &Path) -> Vec<u8> {
+	let data: Vec<u8> = (0..20).collect();
+	let mut tar = tar::Builder::new(fs::File::create(path).unwrap());
+	tar.append_pax_extensions([("size", &b"20"[..])]).unwrap();
+	let mut header = tar::Header::new_gnu();
+	header.set_entry_type(tar::EntryType::Regular);
+	header.set_size(10);
+	header.set_mode(0o644);
+	header.set_path("entry.bin").unwrap();
+	header.set_cksum();
+	tar.append(&header, &data[..]).unwrap();
+	tar.finish().unwrap();
+	data
+}
+
+fn large_archive(path: &Path, entries: usize) {
+	let mut tar = tar::Builder::new(fs::File::create(path).unwrap());
+	let body = [b'x'; 100];
+
+	for index in 0..entries {
+		let mut header = tar::Header::new_gnu();
+		header.set_size(body.len() as u64);
+		header.set_mode(0o644);
+		header.set_cksum();
+		tar.append_data(&mut header, format!("entry-{index}.txt"), &body[..])
+			.unwrap();
+	}
+
 	tar.finish().unwrap();
 }
 
@@ -548,6 +581,104 @@ fn unfinished_recovery_records_survive_expiry() {
 	std::thread::sleep(std::time::Duration::from_millis(2));
 	assert!(fixture.store().sweep(std::time::Duration::ZERO).unwrap().is_empty());
 	assert!(fixture.store().source(&id).unwrap().is_some());
+}
+
+#[test]
+fn a_pax_size_override_is_complete_before_the_original_is_disposed() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	let target = fixture.path("bundle.zip");
+	let expected = pax_archive(&target);
+	let id = JobId::now().unwrap();
+
+	watcher::convert(
+		&fixture.server.shared(),
+		fixture.dir.path(),
+		&target,
+		&source,
+		&target,
+		&id,
+		&Cancellation::default(),
+	);
+
+	let job = fixture
+		.server
+		.shared()
+		.jobs
+		.lock()
+		.unwrap()
+		.iter()
+		.find(|job| job.id == id)
+		.cloned()
+		.unwrap();
+	assert_eq!(job.state, JobState::Done);
+
+	let mut zip = zip::ZipArchive::new(fs::File::open(&target).unwrap()).unwrap();
+	let mut entry = zip.by_index(0).unwrap();
+	let mut bytes = Vec::new();
+	entry.read_to_end(&mut bytes).unwrap();
+	assert_eq!(bytes, expected, "the PAX size override must be carried");
+
+	if retype_core::fsx::supports_durable_cleanup() {
+		assert!(!source.exists(), "a complete conversion may dispose of its source");
+	} else {
+		assert!(source.exists(), "unsupported durability retains the source");
+	}
+}
+
+#[test]
+fn a_changed_source_keeps_the_original_backup_pinned() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	let target = fixture.path("bundle.zip");
+	large_archive(&target, 5_000);
+	let id = JobId::now().unwrap();
+	let shared = fixture.server.shared();
+	let root = fixture.dir.path().to_path_buf();
+	let worker_source = source.clone();
+	let worker_target = target.clone();
+	let worker_id = id.clone();
+
+	let worker = std::thread::spawn(move || {
+		watcher::convert(
+			&shared,
+			&root,
+			&worker_target,
+			&worker_source,
+			&worker_target,
+			&worker_id,
+			&Cancellation::default(),
+		);
+	});
+
+	let meta = fixture.store().directory(&id).join("meta.toml");
+	let deadline = Instant::now() + Duration::from_secs(10);
+	while !meta.exists() {
+		assert!(Instant::now() < deadline, "the recovery record did not appear");
+		std::thread::sleep(Duration::from_millis(1));
+	}
+
+	fs::write(&source, b"changed during conversion").unwrap();
+	worker.join().unwrap();
+
+	let job = fixture
+		.server
+		.shared()
+		.jobs
+		.lock()
+		.unwrap()
+		.iter()
+		.find(|job| job.id == id)
+		.cloned()
+		.unwrap();
+	assert_eq!(job.state, JobState::Done);
+	assert!(source.exists(), "the changed live source is retained");
+
+	let record = fixture.store().load(&id).unwrap().unwrap();
+	assert!(
+		record.pinned,
+		"the only original-bearing backup must stay pinned after a failed disposal"
+	);
 }
 
 fn start_crash(root: &Path, phase: &str) {
