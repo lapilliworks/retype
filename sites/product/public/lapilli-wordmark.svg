@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="1000" height="686" viewBox="-10 0 350 240"
+     role="img" aria-labelledby="lapilli-title lapilli-desc"
+     shape-rendering="geometricPrecision">
+	<title id="lapilli-title">Lapilli Works wordmark</title>
+	<desc id="lapilli-desc">Geometric monoline wordmark. The l and i are basalt columns; a and p are the two halves of one fractured lapillus. An ember seam marks the fracture.</desc>
+
+	<g fill="#171614">
+		<path d="M0 16 L16 8 L16 170 L0 170 Z"/>
+		<path d="M108 78 L108 162 L40 120 Z" fill="none" stroke="#171614" stroke-width="16" stroke-linejoin="miter"/>
+		<path d="M124 70 L140 70 L140 214 L124 220 Z"/>
+		<path d="M132 78 L194 120 L132 162" fill="none" stroke="#171614" stroke-width="16" stroke-linejoin="miter"/>
+		<path d="M216 70 L232 70 L232 170 L216 170 Z"/>
+		<path d="M250 16 L266 8 L266 170 L250 170 Z"/>
+		<path d="M284 16 L300 8 L300 170 L284 170 Z"/>
+		<path d="M318 70 L334 70 L334 170 L318 170 Z"/>
+	</g>
+
+	<rect x="119" y="70" width="2" height="100" fill="#E4542B"/>
+</svg>

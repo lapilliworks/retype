@@ -1,0 +1,11 @@
+{
+	"name": "retype-product-site",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "node bin/serve.mjs"
+	},
+	"engines": {
+		"node": ">=20"
+	}
+}

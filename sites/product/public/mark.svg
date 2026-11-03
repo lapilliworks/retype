@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="148" height="128" viewBox="0 0 148 128" role="img" aria-labelledby="retype-mark-title">
+	<title id="retype-mark-title">Retype</title>
+	<path d="M8 24 L52 8 L52 120 L8 120 Z" fill="none" stroke="#171614" stroke-width="14" stroke-linejoin="miter"/>
+	<rect x="66" y="4" width="6" height="92" fill="#E4542B"/>
+	<rect x="64" y="108" width="10" height="10" fill="#E4542B"/>
+	<path d="M86 16 L140 64 L86 112" fill="none" stroke="#171614" stroke-width="14" stroke-linejoin="miter"/>
+</svg>

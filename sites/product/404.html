@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>404 - Retype</title>
+	<meta name="robots" content="noindex">
+	<meta name="theme-color" content="#F3EEE3">
+	<link rel="icon" href="/public/favicon.svg" type="image/svg+xml">
+	<link rel="stylesheet" href="/assets/styles.css">
+	<style>
+		.error-page {
+			min-height: 62vh;
+			display: flex;
+			align-items: center;
+			padding: clamp(4rem, 10vw, 8rem) 0;
+		}
+		.error-page h1 {
+			max-width: 14ch;
+		}
+		.error-page .lede {
+			max-width: 52ch;
+		}
+		.error-page .facts {
+			margin-top: 2rem;
+		}
+		@media (max-width: 900px) {
+			.masthead-inner { flex-wrap: wrap; }
+			.nav { position: static; display: flex; flex-direction: column; align-items: stretch; width: 100%; padding: 0 0 1rem; border: 0; box-shadow: none; }
+			.nav a { padding: 0.7rem 0; border-bottom: 1px solid var(--line); }
+			.nav-docs { border-bottom: 0; padding-left: 0; }
+		}
+	</style>
+</head>
+<body>
+	<header class="masthead">
+		<div class="wrap masthead-inner">
+			<a class="brand" href="/" aria-label="Retype, home">
+				<img class="brand-mark" src="/public/mark.svg" alt="" width="30" height="26">
+				<span class="brand-word">retype</span>
+			</a>
+			<p class="brand-studio">by <a href="/#studio">Lapilli Works</a></p>
+			<nav class="nav" aria-label="Primary">
+				<a href="/#gesture">Gesture</a>
+				<a href="/#intent">Intent</a>
+				<a href="/#local">Local</a>
+				<a href="/#coverage">Coverage</a>
+				<a href="/#install">Install</a>
+				<a class="nav-docs" href="/docs/">Manual <span aria-hidden="true">&#8599;</span></a>
+			</nav>
+		</div>
+	</header>
+
+	<main class="wrap error-page">
+		<div>
+			<p class="kicker">404 / no such name</p>
+			<h1>This name is not here.</h1>
+			<p class="lede">The page does not exist, or it has been renamed. Retype converts files by their extension; it does not convert a mistyped address into the right one.</p>
+			<div class="actions">
+				<a class="button primary" href="/">Back to the product</a>
+				<a class="button ghost" href="/docs/">Read the manual</a>
+			</div>
+			<ul class="facts">
+				<li>Retype is pre-alpha</li>
+				<li>Local only</li>
+				<li>Undo built in</li>
+			</ul>
+		</div>
+	</main>
+
+	<footer class="footer">
+		<div class="wrap footer-top">
+			<a class="footer-brand" href="/" aria-label="Retype, home">
+				<img src="/public/mark-reversed.svg" alt="" width="28" height="24">
+				<span>retype</span>
+			</a>
+			<nav class="footer-nav" aria-label="Footer">
+				<a href="/#gesture">Gesture</a>
+				<a href="/#intent">Intent</a>
+				<a href="/#local">Local</a>
+				<a href="/#coverage">Coverage</a>
+				<a href="/#install">Install</a>
+				<a href="/docs/">Manual</a>
+			</nav>
+		</div>
+		<div class="wrap footer-bottom">
+			<p>Retype is pre-alpha. <a href="/docs/">The manual</a> marks what has landed.</p>
+			<p>ISC licensed.</p>
+			<a class="footer-studio" href="/#studio" aria-label="Lapilli Works">
+				<img src="/public/lapilli-wordmark-reversed.svg" alt="Lapilli" width="1000" height="686">
+				<span>Works</span>
+			</a>
+		</div>
+	</footer>
+</body>
+</html>

@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Retype - The rename is the conversion</title>
+	<meta name="description" content="Retype is a local file converter that reads the extension. Rename holiday.heic to holiday.jpg, or holiday.webp+q80+cap1080, and the bytes follow. No upload, no account, no telemetry.">
+	<meta name="theme-color" content="#F3EEE3">
+	<meta name="color-scheme" content="light">
+	<link rel="canonical" href="https://justretype.com/">
+	<link rel="icon" href="public/favicon.svg" type="image/svg+xml">
+	<link rel="stylesheet" href="assets/styles.css">
+	<meta property="og:type" content="website">
+	<meta property="og:site_name" content="Retype">
+	<meta property="og:title" content="Retype - The rename is the conversion">
+	<meta property="og:description" content="Change the extension. The bytes follow. Quality, size, and geometry travel on the same name. Local only, with undo.">
+	<meta property="og:url" content="https://justretype.com/">
+	<meta property="og:image" content="https://justretype.com/public/og.svg">
+	<meta property="og:image:type" content="image/svg+xml">
+	<meta property="og:image:width" content="1200">
+	<meta property="og:image:height" content="630">
+	<meta property="og:image:alt" content="Retype. The rename is the conversion.">
+	<meta name="twitter:card" content="summary_large_image">
+	<meta name="twitter:image" content="https://justretype.com/public/og.svg">
+	<noscript>
+		<style>
+			[data-reveal] { opacity: 1 !important; transform: none !important; }
+			.tab-panel[hidden] { display: block !important; }
+			.tabs { display: none; }
+			@media (max-width: 900px) {
+				.masthead-inner { flex-wrap: wrap; }
+				.nav { position: static; display: flex; flex-direction: column; align-items: stretch; width: 100%; padding: 0 0 1rem; border: 0; box-shadow: none; }
+				.nav a { padding: 0.7rem 0; border-bottom: 1px solid var(--line); }
+				.nav-docs { border-bottom: 0; padding-left: 0; }
+				.nav-toggle { display: none; }
+			}
+		</style>
+	</noscript>
+	<script>
+		document.documentElement.classList.add('js')
+		window.addEventListener('load', () => {
+			setTimeout(() => {
+				if (document.querySelector('[data-reveal].is-visible')) return
+				for (const element of document.querySelectorAll('[data-reveal]')) element.classList.add('is-visible')
+			}, 2500)
+		})
+	</script>
+</head>
+<body>
+	<a class="skip-link" href="#main">Skip to content</a>
+
+	<header class="masthead" data-header>
+		<div class="wrap masthead-inner">
+			<a class="brand" href="#top" aria-label="Retype, home">
+				<img class="brand-mark" src="public/mark.svg" alt="" width="30" height="26">
+				<span class="brand-word">retype</span>
+			</a>
+			<p class="brand-studio">by <a href="#studio">Lapilli Works</a></p>
+			<button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav" data-nav-toggle>
+				<span class="nav-toggle-label" data-nav-label>Menu</span>
+				<span class="nav-toggle-bars" aria-hidden="true"></span>
+			</button>
+			<nav class="nav" id="primary-nav" aria-label="Primary">
+				<a href="#gesture">Gesture</a>
+				<a href="#intent">Intent</a>
+				<a href="#local">Local</a>
+				<a href="#coverage">Coverage</a>
+				<a href="#install">Install</a>
+				<a class="nav-docs" href="/docs/">Manual <span aria-hidden="true">&#8599;</span></a>
+			</nav>
+		</div>
+	</header>
+
+	<main id="main">
+		<section class="hero" id="top">
+			<div class="wrap hero-grid">
+				<div class="hero-copy">
+					<p class="status" data-reveal><span class="status-dot" aria-hidden="true"></span> Pre-alpha &middot; local file conversion</p>
+					<h1 data-reveal>
+						<span class="h1-line">The rename</span>
+						<span class="h1-line"><span class="accent">is</span> the</span>
+						<span class="h1-line">conversion.</span>
+					</h1>
+					<p class="lede" data-reveal>Change <code>holiday.heic</code> to <code>holiday.jpg</code> and the bytes follow. Put the quality, dimensions, and geometry in the new name: <code>holiday.webp+q80+cap1080</code>.</p>
+					<div class="actions" data-reveal>
+						<a class="button primary" href="#install">Install retype</a>
+						<a class="button ghost" href="/docs/">Read the manual</a>
+					</div>
+					<ul class="facts" data-reveal>
+						<li>Linux, macOS, Windows</li>
+						<li>No upload, no account</li>
+						<li>Undo built in</li>
+					</ul>
+				</div>
+
+				<div class="specimen" data-reveal role="group" aria-label="Interactive rename preview">
+					<div class="specimen-head">
+						<span class="mono">Specimen 01 / a rename</span>
+						<span class="specimen-state"><span class="status-dot" aria-hidden="true"></span> watched folder</span>
+					</div>
+
+					<div class="rename">
+						<div class="file-card">
+							<span class="file-type">HEIC</span>
+							<span class="file-name">holiday.heic</span>
+							<span class="file-meta">source</span>
+						</div>
+						<span class="rename-arrow" aria-hidden="true">&rarr;</span>
+						<div class="file-card target">
+							<span class="file-type" data-target-type>WEBP</span>
+							<span class="file-name" data-target-name>holiday-quality80-cap1080.webp</span>
+							<span class="file-meta">output</span>
+						</div>
+					</div>
+
+					<div class="field">
+						<label for="intent-input">New name, after the dot</label>
+						<div class="intent-input">
+							<span aria-hidden="true">holiday.</span>
+							<input id="intent-input" type="text" value="webp+q80+cap1080" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="demo-note">
+						</div>
+					</div>
+
+					<div class="recipes" role="group" aria-label="Try a name">
+						<button type="button" data-intent="jpg">jpg</button>
+						<button type="button" data-intent="webp+q80">webp+q80</button>
+						<button type="button" data-intent="avif+q60">avif+q60</button>
+						<button type="button" data-intent="png,webp">png,webp</button>
+						<button type="button" data-intent="webp+rotate90+cap1080">webp+rotate90</button>
+					</div>
+
+					<div class="demo-out" aria-live="polite">
+						<p class="demo-note" id="demo-note" data-demo-note>WebP, quality 80, capped at 1080.</p>
+						<ul class="output-list" data-output-list>
+							<li><code>holiday-quality80-cap1080.webp</code></li>
+						</ul>
+					</div>
+
+					<div class="specimen-foot">
+						<span class="mono">Same string in a shell</span>
+						<div class="mini-command">
+							<code data-command>retype c holiday.heic webp+q80+cap1080</code>
+							<button type="button" data-copy-command aria-label="Copy command">Copy</button>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<div class="strata-band" aria-hidden="true">
+				<svg viewBox="0 0 1440 170" preserveAspectRatio="none" focusable="false">
+					<path d="M0 42 L1440 8 L1440 170 L0 170 Z" fill="#EAE3D5"/>
+					<path d="M0 92 L1440 58 L1440 170 L0 170 Z" fill="#E2D9C8"/>
+					<path d="M0 126 L1440 96 L1440 170 L0 170 Z" fill="#D9CFBC"/>
+					<path d="M0 150 L1440 126 L1440 170 L0 170 Z" fill="#CFC4AE"/>
+					<path d="M0 118 L1440 86" fill="none" stroke="#E4542B" stroke-width="1" opacity=".45"/>
+				</svg>
+			</div>
+		</section>
+
+		<div class="pair-strip">
+			<div class="wrap pair-strip-inner">
+				<span class="mono pair-label">A few pairs</span>
+				<ul>
+					<li><b>heic</b><span aria-hidden="true">&rarr;</span><b>jpg</b></li>
+					<li><b>mov</b><span aria-hidden="true">&rarr;</span><b>mp4</b></li>
+					<li><b>wav</b><span aria-hidden="true">&rarr;</span><b>mp3</b></li>
+					<li><b>md</b><span aria-hidden="true">&rarr;</span><b>pdf</b></li>
+					<li><b>tar.gz</b><span aria-hidden="true">&rarr;</span><b>zip</b></li>
+					<li><b>png</b><span aria-hidden="true">&rarr;</span><b>webp</b></li>
+				</ul>
+				<a class="mono pair-link" href="#coverage">Coverage <span aria-hidden="true">&rarr;</span></a>
+			</div>
+		</div>
+
+		<section class="section" id="gesture">
+			<div class="wrap">
+				<header class="section-head" data-reveal>
+					<p class="kicker">01 / The gesture</p>
+					<h2>One rename. Three places it can happen.</h2>
+					<p class="section-lede">The filename is the interface. Retype reads the name after the dot, plans the work, and puts the result beside the source. The source stays where it is when you use the command.</p>
+				</header>
+
+				<div class="gesture-grid">
+					<article class="gesture-card" data-reveal>
+						<span class="card-index">01</span>
+						<h3>From a file manager</h3>
+						<p>Register a folder once. Rename the extension from any program that can rename a file.</p>
+						<div class="mini-rename" aria-label="Rename holiday.heic to holiday.jpg">
+							<code>holiday.heic</code>
+							<span aria-hidden="true">&rarr;</span>
+							<code>holiday.jpg</code>
+						</div>
+						<p class="card-note">Nothing already in the folder is converted.</p>
+					</article>
+
+					<article class="gesture-card" data-reveal>
+						<span class="card-index">02</span>
+						<h3>From a shell</h3>
+						<p>The second argument is the rest of the new name. No output path is required, because the name already has one.</p>
+						<pre class="snippet"><code>retype c holiday.heic webp+q80
+<span class="c-muted"># holiday-quality80.webp</span></code></pre>
+					</article>
+
+					<article class="gesture-card" data-reveal>
+						<span class="card-index">03</span>
+						<h3>From a script</h3>
+						<p>Every command has a JSON form. Exit codes separate usage, diagnosis, environment, filesystem, daemon, and state failures.</p>
+						<pre class="snippet"><code>retype c holiday.heic jpg --json
+<span class="c-muted"># one object, one result</span></code></pre>
+					</article>
+				</div>
+
+				<div class="explain-panel" data-reveal>
+					<div class="explain-copy">
+						<p class="kicker">Before anything runs</p>
+						<h3>The plan is visible.</h3>
+						<p><code>retype explain</code> reads a name without a file. <code>--dry-run</code> reads a real one. Both print the output name, the pipeline in order, the program, the command line it would run, and the fidelity tier.</p>
+						<p>Nothing is written. No converter starts. A name that cannot be understood is a diagnosis with a span, not a guess.</p>
+					</div>
+					<pre class="terminal" aria-label="Example retype explain output"><code><span class="c-muted">$</span> retype explain holiday.heic 'webp+q80+cap1080'
+<span class="c-key">intent</span>   webp+quality80+cap1080
+<span class="c-key">source</span>   holiday.heic
+<span class="c-key">says</span>     convert from heic to webp with quality at 80,
+         then cap to 1080
+<span class="c-key">output</span>   holiday-quality80-cap1080.webp
+  <span class="c-key">backend</span> magick
+  <span class="c-key">argv</span>    magick {input} -quality 80 -filter Lanczos
+          -resize 1080x1080&gt; {output}
+  <span class="c-key">tier</span>    converted</code></pre>
+				</div>
+			</div>
+		</section>
+
+		<section class="section section-tint" id="intent">
+			<div class="wrap">
+				<header class="section-head" data-reveal>
+					<p class="kicker">02 / The grammar</p>
+					<h2>Small enough to remember. Precise enough to trust.</h2>
+					<p class="section-lede">A format, then tokens. The tokens run in the order you write them. A token the target cannot carry is an error, not a silent no-op.</p>
+				</header>
+
+				<div class="intent-layout">
+					<div class="core-sample" data-reveal>
+						<div class="core-head">
+							<span class="mono">Core sample / token families</span>
+							<code>webp+q80+cap1080+rotate90</code>
+						</div>
+						<ol class="core" aria-label="Token families">
+							<li class="core-layer core-format">
+								<span class="core-name">Format</span>
+								<span class="core-tokens">jpg &middot; png &middot; webp &middot; avif &middot; heic &middot; mp4 &middot; md &middot; zip</span>
+							</li>
+							<li class="core-layer core-geometry">
+								<span class="core-name">Geometry</span>
+								<span class="core-tokens">cap1080 &middot; resize1280x720 &middot; rotate90 &middot; fliph</span>
+							</li>
+							<li class="core-layer core-encoder">
+								<span class="core-name">Encoder</span>
+								<span class="core-tokens">quality80 &middot; lossless &middot; size5mb &middot; effort4</span>
+							</li>
+							<li class="core-layer core-sound">
+								<span class="core-name">Sound</span>
+								<span class="core-tokens">at10s &middot; fps24 &middot; mute</span>
+							</li>
+							<li class="core-layer core-control">
+								<span class="core-name">Control</span>
+								<span class="core-tokens">ask &middot; now</span>
+							</li>
+						</ol>
+						<p class="core-note">Categories, not a fixed pipeline. The written order is the pipeline.</p>
+					</div>
+
+					<div class="intent-notes">
+						<article data-reveal>
+							<h3>Order is the pipeline</h3>
+							<p>Geometry runs where you put it, and the order changes the image.</p>
+							<div class="compare">
+								<code>rotate90+cap1080</code>
+								<span>turn, then cap</span>
+								<code>cap1080+rotate90</code>
+								<span>cap, then turn</span>
+							</div>
+						</article>
+
+						<article data-reveal>
+							<h3>Refusal is a feature</h3>
+							<p>Asking a lossless format for a quality dial is a diagnosis. Accepting the token and ignoring it would teach a habit that fails later, on a format where it matters.</p>
+							<pre class="snippet"><code>retype c scan.png jpg+q80      <span class="c-muted"># fine</span>
+retype c scan.jpg png+q80      <span class="c-muted"># E_INAPPLICABLE: png has no quality</span></code></pre>
+						</article>
+
+						<article data-reveal>
+							<h3>One name, several files</h3>
+							<p>A comma starts another output. Each group is one file, and one rename can produce all of them.</p>
+							<pre class="snippet"><code>retype c holiday.heic png,webp+cap1080
+<span class="c-muted"># holiday.png</span>
+<span class="c-muted"># holiday-cap1080.webp</span></code></pre>
+						</article>
+					</div>
+				</div>
+
+				<p class="fine-print" data-reveal>Retype is pre-alpha. Some tokens are declared and not yet wired. The manual marks what has landed, and the command says so rather than doing nothing.</p>
+			</div>
+		</section>
+
+		<section class="section section-dark" id="local">
+			<div class="wrap">
+				<header class="section-head" data-reveal>
+					<p class="kicker light">03 / Local by construction</p>
+					<h2>Your files stay on your machine.</h2>
+					<p class="section-lede">No upload path. No account. No telemetry. Retype is a local daemon and a client, not a service with a file input.</p>
+				</header>
+
+				<div class="local-grid">
+					<div class="local-principles">
+						<article data-reveal>
+							<span class="num">01</span>
+							<h3>No cloud in the loop</h3>
+							<p>A conversion reads the source, runs a program on this machine, and writes beside it. Nothing is sent anywhere. There is no account to create and no usage to report.</p>
+						</article>
+						<article data-reveal>
+							<span class="num">02</span>
+							<h3>One owner for state</h3>
+							<p>The daemon owns the watchers, queue, journal, undo store, and notifications. The command line and the GUI are clients of the same daemon, so a typed job and a watched rename share one queue.</p>
+						</article>
+						<article data-reveal>
+							<span class="num">03</span>
+							<h3>Bring your own converters</h3>
+							<p>Retype ships no encoder. It calls ImageMagick, FFmpeg, pandoc, and 7-Zip; you install them with your package manager. <code>retype doctor</code> reports the version, build, and missing delegates.</p>
+						</article>
+					</div>
+
+					<figure class="schematic" data-reveal>
+						<div class="schematic-head">
+							<span class="mono">One host</span>
+							<span class="mono">no outbound request</span>
+						</div>
+						<div class="schematic-row">
+							<div class="node">
+								<span class="node-label">source</span>
+								<strong>holiday.heic</strong>
+							</div>
+							<span class="node-arrow" aria-hidden="true">&rarr;</span>
+							<div class="node node-daemon">
+								<span class="node-label">daemon</span>
+								<strong>queue &middot; journal &middot; undo</strong>
+							</div>
+							<span class="node-arrow" aria-hidden="true">&rarr;</span>
+							<div class="node">
+								<span class="node-label">tool</span>
+								<strong>magick &middot; ffmpeg</strong>
+							</div>
+						</div>
+						<figcaption>
+							<span>state directory</span>
+							<span>the source is not uploaded</span>
+						</figcaption>
+					</figure>
+				</div>
+
+				<div class="dark-cards">
+					<article class="dark-card" data-reveal>
+						<p class="kicker light">Undo</p>
+						<h3>One week. Five gigabytes. One command.</h3>
+						<p>Every job keeps what it needs to be reversed, including the source bytes when the rename consumed the source name. The defaults are a week and 5 GB, host-level, not a folder setting.</p>
+						<pre class="snippet dark"><code>retype undo --last</code></pre>
+					</article>
+					<article class="dark-card" data-reveal>
+						<p class="kicker light">Ask first</p>
+						<h3>A fast gesture should not become a long surprise.</h3>
+						<p>A watched rename that would take a while parks and waits. A source above 4 GiB parks without a timer. <code>+ask</code> asks on purpose; <code>+now</code> says you already know.</p>
+						<pre class="snippet dark"><code>holiday.heic &rarr; holiday.webp+ask
+holiday.heic &rarr; holiday.webp+now</code></pre>
+					</article>
+					<article class="dark-card dark-card-wide" data-reveal>
+						<p class="kicker light">Provenance</p>
+						<h3>The file can tell you how it was made.</h3>
+						<p><code>retype why</code> answers with the intent, the tool and engine, the tier, and the store that matched: an identity index that survives the usual rename, or an extended attribute where the platform has one. No content hash, no signature, and no feature gated on a record being present.</p>
+						<pre class="snippet dark"><code>retype why holiday.webp</code></pre>
+					</article>
+				</div>
+
+				<div class="tool-row" data-reveal>
+					<div>
+						<span class="mono">Brought by the machine</span>
+						<p class="tool-list">ImageMagick 7.1+ &middot; FFmpeg 6.0+ &middot; pandoc 3.0+ &middot; 7-Zip 23.0+</p>
+					</div>
+					<p>The CLI never downloads a tool during a conversion. A missing converter is an environment failure that names what to install.</p>
+				</div>
+			</div>
+		</section>
+
+		<section class="section" id="coverage">
+			<div class="wrap">
+				<header class="section-head" data-reveal>
+					<p class="kicker">04 / Coverage with a claim</p>
+					<h2>A format count tells you nothing. A pair claim does.</h2>
+					<p class="section-lede">Retype claims coverage per source and target pair, per tool and engine, with a tier. The claim is evidence, not a feature list.</p>
+				</header>
+
+				<div class="tier-grid">
+					<article class="tier-card" data-reveal>
+						<span class="tier-mark">01</span>
+						<h3>exact</h3>
+						<p>No sample was re-encoded. The container may change; the payload may not.</p>
+						<span class="tier-eg">mp4 &rarr; mkv remux, tiff &rarr; png</span>
+					</article>
+					<article class="tier-card" data-reveal>
+						<span class="tier-mark">02</span>
+						<h3>converted</h3>
+						<p>Every sample or glyph is decoded and re-embedded. The content is recognisably the same; the encoding is new.</p>
+						<span class="tier-eg">heic &rarr; jpg, wav &rarr; mp3</span>
+					</article>
+					<article class="tier-card" data-reveal>
+						<span class="tier-mark">03</span>
+						<h3>delegated</h3>
+						<p>A tool retype does not model does the work. The promise is a valid file of the target format, nothing about its insides.</p>
+						<span class="tier-eg">psd through ImageMagick</span>
+					</article>
+				</div>
+
+				<div class="pair-table" data-reveal>
+					<div class="pair-row pair-head">
+						<span>Source</span>
+						<span>Target</span>
+						<span>What the distinction looks like</span>
+					</div>
+					<div class="pair-row">
+						<span class="mono">mp4</span>
+						<span class="mono">mkv</span>
+						<span>Remux. No sample is re-encoded.</span>
+						<span class="pair-tier exact">exact</span>
+					</div>
+					<div class="pair-row">
+						<span class="mono">heic</span>
+						<span class="mono">jpg</span>
+						<span>Decode, then encode at the JPEG dial.</span>
+						<span class="pair-tier converted">converted</span>
+					</div>
+					<div class="pair-row">
+						<span class="mono">wav</span>
+						<span class="mono">mp3</span>
+						<span>Lossy on the second pass. A different promise.</span>
+						<span class="pair-tier converted">converted</span>
+					</div>
+					<div class="pair-row">
+						<span class="mono">md</span>
+						<span class="mono">pdf</span>
+						<span>The PDF engine changes what the result can claim.</span>
+						<span class="pair-tier converted">converted</span>
+					</div>
+					<div class="pair-row">
+						<span class="mono">psd</span>
+						<span class="mono">png</span>
+						<span>A tool retype does not model.</span>
+						<span class="pair-tier delegated">delegated</span>
+					</div>
+				</div>
+				<p class="fine-print" data-reveal>Illustrative pairs, from the definitions. A shipped claim is earned against the tool build that produced it. When the build changes, the pair is reported <em>unverified</em>, and a pair that promised <em>exact</em> refuses rather than quietly lowering the promise.</p>
+
+				<ul class="family-list" data-reveal>
+					<li><span class="mono">Images</span><p>heic, jpg, png, webp, avif, tiff, gif, bmp, ico</p></li>
+					<li><span class="mono">Audio / video</span><p>mp4, mkv, mov, webm, mp3, flac, wav, opus</p></li>
+					<li><span class="mono">Documents</span><p>md, html, docx, odt, epub, rst, tex, typst, pdf output</p></li>
+					<li><span class="mono">Archives</span><p>zip, tar, tar.gz, 7z; rar read only</p></li>
+				</ul>
+			</div>
+		</section>
+
+		<section class="section section-tint" id="install">
+			<div class="wrap">
+				<header class="section-head" data-reveal>
+					<p class="kicker">05 / Install</p>
+					<h2>Pre-alpha, on purpose.</h2>
+					<p class="section-lede">The CLI and daemon install today. Some intent tokens are still being wired. The manual says which. The pre-release installer is a convenience, not the signed installed tier.</p>
+				</header>
+
+				<div class="install-grid">
+					<div class="install-main" data-reveal>
+						<div class="tabs" role="tablist" aria-label="Install platform">
+							<button type="button" role="tab" aria-selected="true" aria-controls="install-unix" id="tab-unix" tabindex="0" data-tab="unix">Linux / macOS</button>
+							<button type="button" role="tab" aria-selected="false" aria-controls="install-windows" id="tab-windows" tabindex="-1" data-tab="windows">Windows</button>
+							<button type="button" role="tab" aria-selected="false" aria-controls="install-source" id="tab-source" tabindex="-1" data-tab="source">From source</button>
+						</div>
+
+						<div class="tab-panel" id="install-unix" role="tabpanel" aria-labelledby="tab-unix">
+							<p>For Linux and macOS. Run it again to update.</p>
+							<div class="command">
+								<code>curl -fsSL https://justretype.com/install.sh | bash</code>
+								<button type="button" data-copy aria-label="Copy Unix install command">Copy</button>
+							</div>
+							<p class="small">Installs the CLI, daemon, and shared release assets under <code>~/.local</code>. Verifies the release checksum.</p>
+						</div>
+
+						<div class="tab-panel" id="install-windows" role="tabpanel" aria-labelledby="tab-windows" hidden>
+							<p>In PowerShell. Run it again to update.</p>
+							<div class="command">
+								<code>irm https://justretype.com/install.ps1 | iex</code>
+								<button type="button" data-copy aria-label="Copy Windows install command">Copy</button>
+							</div>
+							<p class="small">Installs under <code>%LOCALAPPDATA%\Programs\retype</code> and adds its <code>bin</code> directory to the user <code>PATH</code>.</p>
+						</div>
+
+						<div class="tab-panel" id="install-source" role="tabpanel" aria-labelledby="tab-source" hidden>
+							<p>With a Rust toolchain, 1.85 or newer. The source tier is the CLI only.</p>
+							<div class="command">
+								<code>cargo install --git https://github.com/LapilliWorks/retype retype-cli</code>
+								<button type="button" data-copy aria-label="Copy source install command">Copy</button>
+							</div>
+							<p class="small">The binary includes the daemon, but no user service, URI registration, or notifier bundle. A workaround, not the supported path.</p>
+						</div>
+
+						<ul class="requirements">
+							<li><span>Platforms</span> Linux glibc 2.31+, macOS 13+, Windows 10 21H2+</li>
+							<li><span>Converters</span> Install only the tools for the formats you use</li>
+							<li><span>Download</span> The installer verifies the release checksum before use</li>
+						</ul>
+					</div>
+
+					<aside class="install-note" data-reveal>
+						<p class="kicker">Read the fine print</p>
+						<h3>What the pre-release installer does not do</h3>
+						<ul class="check-list">
+							<li>It does not install a user service, register <code>retype://</code>, or ship the notifier. That is the signed installed tier.</li>
+							<li>It is not code-signed. The release publishes SHA-256 checksums and GitHub attestations instead.</li>
+							<li>It does not install a converter. ImageMagick, FFmpeg, pandoc, and 7-Zip come from your package manager.</li>
+						</ul>
+						<p class="aside-link"><a href="/docs/">The quickstart has the package-manager commands <span aria-hidden="true">&rarr;</span></a></p>
+					</aside>
+				</div>
+			</div>
+		</section>
+
+		<section class="section" id="manual">
+			<div class="wrap">
+				<header class="section-head" data-reveal>
+					<p class="kicker">06 / The manual</p>
+					<h2>The whole thing, in plain Markdown.</h2>
+					<p class="section-lede">Usage, long-form answers, and the exhaustive reference. Read it in an editor, on the forge, or here.</p>
+				</header>
+
+				<div class="manual-grid">
+					<a class="manual-card manual-lead" href="/docs/" data-reveal>
+						<span class="manual-index">00</span>
+						<h3>Start here</h3>
+						<p>The quickstart, the default tools, and the first conversion.</p>
+						<span class="manual-go">Open the manual <span aria-hidden="true">&rarr;</span></span>
+					</a>
+					<a class="manual-card" href="/docs/usage/convert.html" data-reveal>
+						<span class="manual-index">01</span>
+						<h3>Convert a file</h3>
+						<p>The rename, the command, several outputs, and what is left alone.</p>
+					</a>
+					<a class="manual-card" href="/docs/usage/watch.html" data-reveal>
+						<span class="manual-index">02</span>
+						<h3>Watch a folder</h3>
+						<p>Register once. Rename from any program. Batching, pauses, ignored paths.</p>
+					</a>
+					<a class="manual-card" href="/docs/reference/intents.html" data-reveal>
+						<span class="manual-index">03</span>
+						<h3>Intent grammar</h3>
+						<p>Every token, value class, limit, and diagnostic code.</p>
+					</a>
+					<a class="manual-card" href="/docs/advanced/converters.html" data-reveal>
+						<span class="manual-index">04</span>
+						<h3>Tools</h3>
+						<p>Which program carries which format, and what its build must have.</p>
+					</a>
+					<a class="manual-card" href="/docs/advanced/fidelity.html" data-reveal>
+						<span class="manual-index">05</span>
+						<h3>Fidelity</h3>
+						<p>What exact, converted, and delegated mean, and when a claim goes stale.</p>
+					</a>
+					<a class="manual-card" href="/docs/reference/cli.html" data-reveal>
+						<span class="manual-index">06</span>
+						<h3>Command line</h3>
+						<p>Every subcommand, flag, exit code, and JSON envelope.</p>
+					</a>
+				</div>
+			</div>
+		</section>
+
+		<section class="studio" id="studio">
+			<div class="wrap studio-inner">
+				<div class="studio-lockup" data-reveal>
+					<a href="https://lapil.li" aria-label="Lapilli Works">
+						<img src="public/lapilli-wordmark.svg" alt="Lapilli" width="1000" height="686" loading="lazy" decoding="async">
+						<span>Works</span>
+					</a>
+					<p class="mono">Little stones / software studio</p>
+				</div>
+				<div class="studio-copy" data-reveal>
+					<p class="kicker">The studio</p>
+					<h2>Little stones. Careful software.</h2>
+					<p>Lapilli is Latin for the small stones thrown out by a volcanic eruption. Lapilli Works is a software studio. We make software and SaaS with good design, high quality, a human touch, and a habit of thinking sideways.</p>
+					<p>Retype is one of our tools. <a href="https://lapil.li">More from the studio <span aria-hidden="true">&#8599;</span></a></p>
+				</div>
+			</div>
+		</section>
+	</main>
+
+	<footer class="footer">
+		<div class="wrap footer-top">
+			<a class="footer-brand" href="#top" aria-label="Retype, back to top">
+				<img src="public/mark-reversed.svg" alt="" width="28" height="24">
+				<span>retype</span>
+			</a>
+			<nav class="footer-nav" aria-label="Footer">
+				<a href="#gesture">Gesture</a>
+				<a href="#intent">Intent</a>
+				<a href="#local">Local</a>
+				<a href="#coverage">Coverage</a>
+				<a href="#install">Install</a>
+				<a href="/docs/">Manual</a>
+			</nav>
+		</div>
+		<div class="wrap footer-bottom">
+			<p>Retype is pre-alpha. <a href="/docs/">The manual</a> marks what has landed.</p>
+			<p>ISC licensed.</p>
+			<a class="footer-studio" href="#studio" aria-label="Lapilli Works">
+				<img src="public/lapilli-wordmark-reversed.svg" alt="Lapilli" width="1000" height="686" loading="lazy" decoding="async">
+				<span>Works</span>
+			</a>
+		</div>
+	</footer>
+
+	<script src="assets/app.js"></script>
+</body>
+</html>

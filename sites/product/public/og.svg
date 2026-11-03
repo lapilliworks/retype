@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="og-title">
+	<title id="og-title">Retype. The rename is the conversion.</title>
+	<rect width="1200" height="630" fill="#F3EEE3"/>
+
+	<!-- Strata -->
+	<g aria-hidden="true">
+		<path d="M0 470 L1200 402 L1200 470 L0 538 Z" fill="#EAE3D5"/>
+		<path d="M0 512 L1200 444 L1200 512 L0 596 Z" fill="#E2D9C8"/>
+		<path d="M0 554 L1200 486 L1200 554 L0 630 Z" fill="#D9CFBC"/>
+		<path d="M0 588 L1200 520 L1200 552 L0 620 Z" fill="#E4542B" opacity="0.18"/>
+	</g>
+
+	<!-- Rules -->
+	<g stroke="#CFC4AE" stroke-width="1" aria-hidden="true">
+		<line x1="72" y1="0" x2="72" y2="630"/>
+		<line x1="1128" y1="0" x2="1128" y2="630"/>
+	</g>
+
+	<!-- Brand -->
+	<g transform="translate(72 54)">
+		<g transform="scale(0.24)">
+			<path d="M8 24 L52 8 L52 120 L8 120 Z" fill="none" stroke="#171614" stroke-width="14" stroke-linejoin="miter"/>
+			<rect x="66" y="4" width="6" height="92" fill="#E4542B"/>
+			<rect x="64" y="108" width="10" height="10" fill="#E4542B"/>
+			<path d="M86 16 L140 64 L86 112" fill="none" stroke="#171614" stroke-width="14" stroke-linejoin="miter"/>
+		</g>
+		<text x="48" y="27" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" letter-spacing="2.4" fill="#6E6A63">LAPILLI WORKS</text>
+	</g>
+
+	<!-- Eyebrow -->
+	<g transform="translate(72 180)">
+		<rect y="2" width="9" height="9" fill="#E4542B"/>
+		<text x="24" y="11" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" letter-spacing="2" fill="#6E6A63">RETYPE / FILE CONVERSION</text>
+	</g>
+
+	<!-- Headline -->
+	<g font-family="'Avenir Next', 'Helvetica Neue', Arial, sans-serif" fill="#171614">
+		<text x="68" y="292" font-size="74" font-weight="700" letter-spacing="-3.5">The rename</text>
+		<text x="68" y="372" font-size="74" font-weight="700" letter-spacing="-3.5">is the conversion.</text>
+	</g>
+
+	<!-- Lede -->
+	<text x="72" y="424" font-family="'Avenir Next', 'Helvetica Neue', Arial, sans-serif" font-size="24" fill="#4A463F">
+		Change photo.heic to photo.jpg. The bytes follow.
+	</text>
+
+	<!-- Wordmark -->
+	<g transform="translate(72 540) scale(0.36)" fill="#171614" aria-hidden="true">
+		<path d="M0 16 L16 8 L16 170 L0 170 Z"/>
+		<path d="M108 78 L108 162 L40 120 Z" fill="none" stroke="#171614" stroke-width="16" stroke-linejoin="miter"/>
+		<path d="M124 70 L140 70 L140 214 L124 220 Z"/>
+		<path d="M132 78 L194 120 L132 162" fill="none" stroke="#171614" stroke-width="16" stroke-linejoin="miter"/>
+		<path d="M216 70 L232 70 L232 170 L216 170 Z"/>
+		<path d="M250 16 L266 8 L266 170 L250 170 Z"/>
+		<path d="M284 16 L300 8 L300 170 L284 170 Z"/>
+		<path d="M318 70 L334 70 L334 170 L318 170 Z"/>
+		<rect x="119" y="70" width="2" height="100" fill="#E4542B"/>
+	</g>
+	<text x="204" y="588" font-family="'Avenir Next', 'Helvetica Neue', Arial, sans-serif" font-size="27" font-weight="600" fill="#171614">Works</text>
+
+	<!-- Right specimen -->
+	<g transform="translate(812 166)">
+		<rect width="316" height="300" fill="#171614"/>
+		<text x="24" y="36" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" letter-spacing="1.8" fill="#8C867B">SPECIMEN / 001</text>
+		<line x1="24" y1="54" x2="292" y2="54" stroke="#3A3732"/>
+		<text x="24" y="96" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#F2EEE4">holiday.heic</text>
+		<text x="24" y="128" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#E4542B">↓</text>
+		<text x="24" y="170" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#F2EEE4">holiday-quality80-</text>
+		<text x="24" y="192" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#F2EEE4">cap1080.webp</text>
+		<line x1="24" y1="226" x2="292" y2="226" stroke="#3A3732"/>
+		<text x="24" y="254" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" letter-spacing="1.2" fill="#8C867B">WEBP · Q80 · CAP 1080</text>
+		<rect x="24" y="270" width="146" height="3" fill="#E4542B"/>
+	</g>
+</svg>

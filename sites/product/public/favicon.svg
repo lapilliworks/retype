@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-labelledby="retype-icon-title">
+	<title id="retype-icon-title">Retype</title>
+	<rect width="64" height="64" rx="14" fill="#171614"/>
+	<g transform="translate(14 17) scale(0.24)">
+		<path d="M8 24 L52 8 L52 120 L8 120 Z" fill="none" stroke="#F2EEE4" stroke-width="14" stroke-linejoin="miter"/>
+		<rect x="66" y="4" width="6" height="92" fill="#E4542B"/>
+		<rect x="64" y="108" width="10" height="10" fill="#E4542B"/>
+		<path d="M86 16 L140 64 L86 112" fill="none" stroke="#F2EEE4" stroke-width="14" stroke-linejoin="miter"/>
+	</g>
+</svg>
