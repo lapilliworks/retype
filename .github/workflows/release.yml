@@ -130,8 +130,11 @@ jobs:
           else
             cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/$name/bin/${{ matrix.binary }}"
           fi
-          if [ -f fidelity.toml ]; then
-            cp fidelity.toml "dist/$name/share/retype/fidelity.toml"
+          # Earned by `retype fidelity --write share/retype/fidelity.toml`, and
+          # checked in, so every archive ships the same claims the release notes
+          # describe. Absent until the first release run.
+          if [ -f share/retype/fidelity.toml ]; then
+            cp share/retype/fidelity.toml "dist/$name/share/retype/fidelity.toml"
           fi
           if [ -d fixtures/fidelity ]; then
             mkdir -p "dist/$name/share/retype/fixtures/fidelity"

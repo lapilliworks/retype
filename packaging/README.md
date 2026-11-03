@@ -19,11 +19,14 @@ share/retype/packaging/
 
 `retype why` and `retype fidelity` look in `<prefix>/share/retype`; a packaged
 build therefore reads the shipped claims rather than a source tree. The manifest
-is produced by:
+is produced in the checkout by:
 
 ```
 retype fidelity --write share/retype/fidelity.toml --render docs/advanced/fidelity.md
 ```
+
+It is checked in at `share/retype/fidelity.toml` and copied into every archive
+from there; a checkout without one ships archives without it.
 
 The release run must happen on the build machine whose tool builds are recorded
 in the manifest. A manifest earned elsewhere is reported `unverified`.
