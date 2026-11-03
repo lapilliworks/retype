@@ -3,7 +3,9 @@ members = [
 	"crates/retype-core",
 	"crates/retype-watch",
 	"crates/retype-ipc",
+	"crates/retype-config",
 	"crates/retype-macros",
+	"crates/retype-client",
 	"crates/retype-cli",
 ]
 resolver = "3"

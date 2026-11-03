@@ -54,24 +54,18 @@ pub fn list(
 	};
 
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
-	let answer = client.call_without_params("jobs.list")?;
+	let answer = client.jobs_list()?;
 
-	let jobs: Vec<Value> = answer
-		.get("jobs")
-		.and_then(Value::as_array)
-		.cloned()
-		.unwrap_or_default();
-
-	let ids: Vec<&str> = jobs
-		.iter()
-		.filter_map(|job| job.get("id").and_then(Value::as_str))
-		.collect();
+	let ids: Vec<&str> = answer.jobs.iter().map(|job| job.id.as_str()).collect();
 
 	let mut shown = 0;
 
-	for job in jobs.iter().rev() {
-		let job_state = job.get("state").and_then(Value::as_str).unwrap_or_default();
-		let job_id = job.get("id").and_then(Value::as_str).unwrap_or_default();
+	for job in answer.jobs.iter().rev() {
+		let job_state = serde_json::to_value(job.state)
+			.ok()
+			.and_then(|value| value.as_str().map(str::to_string))
+			.unwrap_or_default();
+		let job_id = job.id.as_str();
 
 		if let Some(since) = &since {
 			if job_id <= since.as_str() {
@@ -95,7 +89,7 @@ pub fn list(
 
 		match json {
 			true => {
-				let mut item = job.clone();
+				let mut item = serde_json::to_value(job)?;
 				if let Some(object) = item.as_object_mut() {
 					object.insert("kind".to_string(), Value::String("job".to_string()));
 				}
@@ -105,7 +99,7 @@ pub fn list(
 				"{:<28}{:<16}{}",
 				shortest_prefix(job_id, &ids),
 				job_state,
-				job.get("source").and_then(Value::as_str).unwrap_or_default()
+				job.source.display()
 			),
 		}
 	}
@@ -141,7 +135,14 @@ pub fn get(state_dir: &Path, prefix: &str, allow_spawn: bool) -> Result<ExitCode
 		Err(code) => return Ok(code),
 	};
 
-	output::record(client.call("jobs.get", serde_json::json!({"id": id.as_str()}))?);
+	let job = client.jobs_get(id.as_str())?;
+	let record = retype_ipc::JobRecord {
+		v: retype_core::job::JOURNAL_VERSION.to_string(),
+		kind: "job".to_string(),
+		job,
+	};
+
+	output::record(serde_json::to_value(record)?);
 
 	Ok(ExitCode::SUCCESS)
 }
@@ -220,12 +221,15 @@ pub fn logs(state_dir: &Path, prefix: &str, follow: bool, json: bool, allow_spaw
 			}
 		}
 
-		let job = client.call("jobs.get", serde_json::json!({"id": id.as_str()}))?;
-		let state = job.get("state").and_then(Value::as_str).unwrap_or_default();
+		let job = client.jobs_get(id.as_str())?;
+		let state = serde_json::to_value(job.state)
+			.ok()
+			.and_then(|value| value.as_str().map(str::to_string))
+			.unwrap_or_default();
 
 		// One more read after the job ends, because the last write and the
 		// transition are not atomic with respect to each other.
-		if terminal(state) {
+		if terminal(&state) {
 			if let Some((text, _)) = read_from(&path, printed) {
 				if json {
 					output::success(serde_json::json!({"id": id.as_str(), "source": "file", "log": text}));
@@ -267,33 +271,21 @@ fn read_from(path: &Path, offset: u64) -> Option<(String, u64)> {
 
 /// The tails the journal kept, for a job whose log file is gone.
 fn recorded_tails(client: &mut retype_ipc::Client, id: &JobId) -> Result<Vec<String>> {
-	let job = client.call("jobs.get", serde_json::json!({"id": id.as_str()}))?;
+	let job = client.jobs_get(id.as_str())?;
 	let mut tails = Vec::new();
 
-	for output in job
-		.get("outputs")
-		.and_then(Value::as_array)
-		.cloned()
-		.unwrap_or_default()
-	{
-		if let Some(tail) = output.get("stderr").and_then(Value::as_str) {
-			tails.push(tail.to_string());
+	for output in &job.outputs {
+		if let Some(tail) = &output.stderr {
+			tails.push(tail.clone());
 		}
 
-		if let Some(message) = output
-			.get("error")
-			.and_then(Value::as_object)
-			.and_then(|error| error.get("message"))
-			.and_then(Value::as_str)
-		{
-			tails.push(message.to_string());
+		if let Some(error) = &output.error {
+			tails.push(error.message.clone());
 		}
 	}
 
-	if let Some(error) = job.get("error").and_then(Value::as_object) {
-		if let Some(message) = error.get("message").and_then(Value::as_str) {
-			tails.push(message.to_string());
-		}
+	if let Some(error) = &job.error {
+		tails.push(error.message.clone());
 	}
 
 	Ok(tails)
@@ -311,14 +303,17 @@ pub fn resume(state_dir: &Path, prefix: &str, force: bool, json: bool, allow_spa
 		Err(code) => return Ok(code),
 	};
 
-	let answer = client.call("jobs.resume", serde_json::json!({"id": id.as_str(), "force": force}))?;
+	let answer = client.jobs_resume(id.as_str(), force)?;
 
 	match json {
-		true => output::success(answer),
+		true => output::success(serde_json::to_value(answer)?),
 		false => println!(
 			"{}  {}",
 			id.as_str(),
-			answer.get("state").and_then(Value::as_str).unwrap_or("resumed")
+			serde_json::to_value(answer.state)
+				.ok()
+				.and_then(|value| value.as_str().map(str::to_string))
+				.unwrap_or_else(|| "resumed".to_string())
 		),
 	}
 
@@ -337,15 +332,11 @@ pub fn cancel(state_dir: &Path, prefix: &str, json: bool, allow_spawn: bool) -> 
 		Err(code) => return Ok(code),
 	};
 
-	let answer = client.call("jobs.cancel", serde_json::json!({"id": id.as_str()}))?;
+	let answer = client.jobs_cancel(id.as_str())?;
 
 	match json {
-		true => output::success(answer),
-		false => println!(
-			"{}  {}",
-			id.as_str(),
-			answer.get("state").and_then(Value::as_str).unwrap_or("cancelled")
-		),
+		true => output::success(serde_json::to_value(answer)?),
+		false => println!("{}  {}", id.as_str(), answer.state),
 	}
 
 	Ok(ExitCode::SUCCESS)
@@ -379,7 +370,7 @@ pub fn interactive(state_dir: &Path, json: bool, allow_spawn: bool) -> Result<Ex
 	let mut stdin = std::io::stdin().lock();
 
 	for id in parked {
-		let job = client.call("jobs.get", serde_json::json!({"id": id.as_str()}))?;
+		let job = client.jobs_get(id.as_str())?;
 
 		if !json {
 			print!("{}", describe(&job));
@@ -404,18 +395,18 @@ pub fn interactive(state_dir: &Path, json: bool, allow_spawn: bool) -> Result<Ex
 				Action::Quit => return Ok(ExitCode::SUCCESS),
 				Action::Skip => break,
 				Action::Now => {
-					answer(client.call("jobs.resolve", serde_json::json!({"id": id.as_str(), "mode": "now"}))?);
+					let answer = client.jobs_resolve(id.as_str(), retype_ipc::ResolveMode::Now, false)?;
+					answer_state(&state_of(answer.state));
 					break;
 				}
 				Action::Convert => {
-					answer(client.call(
-						"jobs.resolve",
-						serde_json::json!({"id": id.as_str(), "mode": "convert"}),
-					)?);
+					let answer = client.jobs_resolve(id.as_str(), retype_ipc::ResolveMode::Convert, false)?;
+					answer_state(&state_of(answer.state));
 					break;
 				}
 				Action::Refuse => {
-					answer(client.call("jobs.cancel", serde_json::json!({"id": id.as_str()}))?);
+					let answer = client.jobs_cancel(id.as_str())?;
+					answer_state(&answer.state);
 					break;
 				}
 			}
@@ -438,18 +429,19 @@ enum Action {
 /// The action a key names, or nothing when the key does not apply to this job: a job
 /// that cannot run as asked has no `now`, and one with no corrected intent has no
 /// `convert`.
-fn choose(key: char, job: &Value) -> Option<Action> {
+fn choose(key: char, job: &retype_core::job::Job) -> Option<Action> {
 	let key = key.to_ascii_lowercase();
-	let state = job.get("state").and_then(Value::as_str).unwrap_or_default();
 	let reason = job
-		.pointer("/parked/reason")
-		.and_then(Value::as_str)
+		.parked
+		.as_ref()
+		.map(|parked| parked.reason.as_str())
 		.unwrap_or_default();
-	let corrected = job.pointer("/parked/corrected").and_then(Value::as_str);
+	let corrected = job.parked.as_ref().and_then(|parked| parked.corrected.as_deref());
 
 	// A pending job runs on its timer, and a size park may run exactly as asked once
 	// someone says so. The other needs-attention reasons cannot.
-	let can_now = state == "pending" || (state == "needs-attention" && reason == "size");
+	let can_now = job.state == retype_core::job::JobState::Pending
+		|| (job.state == retype_core::job::JobState::NeedsAttention && reason == "size");
 
 	match key {
 		'n' if can_now => Some(Action::Now),
@@ -463,47 +455,50 @@ fn choose(key: char, job: &Value) -> Option<Action> {
 
 /// The jobs that are waiting for a person or a timer, oldest first.
 fn parked(client: &mut retype_ipc::Client) -> Result<Vec<JobId>> {
-	let answer = client.call_without_params("jobs.list")?;
+	let answer = client.jobs_list()?;
 
 	let mut parked: Vec<(i64, JobId)> = answer
-		.get("jobs")
-		.and_then(Value::as_array)
-		.map(|jobs| {
-			jobs.iter()
-				.filter(|job| matches!(job["state"].as_str(), Some("pending" | "needs-attention")))
-				.filter_map(|job| {
-					let id = JobId::parse(job["id"].as_str()?).ok()?;
-					let created = job["created"].as_i64().unwrap_or_default();
-					Some((created, id))
-				})
-				.collect()
+		.jobs
+		.into_iter()
+		.filter(|job| {
+			matches!(
+				job.state,
+				retype_core::job::JobState::Pending | retype_core::job::JobState::NeedsAttention
+			)
 		})
-		.unwrap_or_default();
+		.map(|job| (job.created, job.id))
+		.collect();
 
 	parked.sort_by_key(|(created, _)| *created);
 	Ok(parked.into_iter().map(|(_, id)| id).collect())
 }
 
 /// Four lines a person can act on, `docs/deferral.md` §6.
-fn describe(job: &Value) -> String {
-	let field = |path: &str| job.pointer(path).and_then(Value::as_str).unwrap_or_default();
-
-	let mut text = format!("\n{}\n", field("/source/path"));
-	let reason = field("/parked/reason");
+fn describe(job: &retype_core::job::Job) -> String {
+	let mut text = format!("\n{}\n", job.source.path.display());
+	let reason = job
+		.parked
+		.as_ref()
+		.map(|parked| parked.reason.as_str())
+		.unwrap_or_default();
 
 	let estimate = job
-		.pointer("/parked/estimate")
+		.parked
+		.as_ref()
+		.and_then(|parked| parked.estimate)
 		.map(|estimate| {
-			let ms = estimate["ms"].as_u64().unwrap_or_default();
-			let bytes = estimate["bytes"].as_u64().unwrap_or_default();
-			format!("  (about {}, {} estimated)", duration(ms), print::size(bytes))
+			format!(
+				"  (about {}, {} estimated)",
+				duration(estimate.ms),
+				print::size(estimate.bytes)
+			)
 		})
 		.unwrap_or_default();
 
 	text.push_str(&format!("  waiting {reason}{estimate}\n"));
-	text.push_str(&format!("  asked   {}\n", job["intent"].as_str().unwrap_or_default()));
+	text.push_str(&format!("  asked   {}\n", job.intent.as_deref().unwrap_or_default()));
 
-	if let Some(corrected) = job.pointer("/parked/corrected").and_then(Value::as_str) {
+	if let Some(corrected) = job.parked.as_ref().and_then(|parked| parked.corrected.as_deref()) {
 		text.push_str(&format!("  runs    {corrected}\n"));
 	}
 
@@ -519,10 +514,15 @@ fn duration(ms: u64) -> String {
 }
 
 /// Report what the daemon answered, on stderr so it does not mix with the prompt.
-fn answer(answer: Value) {
-	if let Some(state) = answer.get("state").and_then(Value::as_str) {
-		eprintln!("  {state}");
-	}
+fn answer_state(state: &str) {
+	eprintln!("  {state}");
+}
+
+fn state_of(state: retype_core::job::JobState) -> String {
+	serde_json::to_value(state)
+		.ok()
+		.and_then(|value| value.as_str().map(str::to_string))
+		.unwrap_or_default()
 }
 
 /// Act on a parked job, `docs/deferral.md` §8: run it now, or run what a repair
@@ -546,14 +546,11 @@ pub fn resolve(
 	};
 
 	let mode = match convert {
-		true => "convert",
-		false => "now",
+		true => retype_ipc::ResolveMode::Convert,
+		false => retype_ipc::ResolveMode::Now,
 	};
 
-	let answer = match client.call(
-		"jobs.resolve",
-		serde_json::json!({"id": id.as_str(), "mode": mode, "force": force}),
-	) {
+	let answer = match client.jobs_resolve(id.as_str(), mode, force) {
 		Ok(answer) => answer,
 		Err(retype_ipc::ClientError::Rpc(error)) => {
 			return Ok(ExitCode::from(output::fail(&error.code, &error.message)));
@@ -562,11 +559,14 @@ pub fn resolve(
 	};
 
 	match json {
-		true => output::success(answer),
+		true => output::success(serde_json::to_value(answer)?),
 		false => println!(
 			"{}  {}",
 			id.as_str(),
-			answer.get("state").and_then(Value::as_str).unwrap_or("queued")
+			serde_json::to_value(answer.state)
+				.ok()
+				.and_then(|value| value.as_str().map(str::to_string))
+				.unwrap_or_else(|| "queued".to_string())
 		),
 	}
 
@@ -619,20 +619,15 @@ fn one(client: &mut retype_ipc::Client, prefix: &str) -> Result<std::result::Res
 
 /// Every job whose id starts with `prefix`.
 fn matching(client: &mut retype_ipc::Client, prefix: &str) -> Result<Vec<JobId>> {
-	let answer = client.call_without_params("jobs.list")?;
+	let answer = client.jobs_list()?;
 	let prefix = normalize(prefix);
 
 	let mut found: Vec<JobId> = answer
-		.get("jobs")
-		.and_then(Value::as_array)
-		.map(|jobs| {
-			jobs.iter()
-				.filter_map(|job| job.get("id").and_then(Value::as_str))
-				.filter_map(|id| JobId::parse(id).ok())
-				.filter(|id| id.starts_with(&prefix))
-				.collect()
-		})
-		.unwrap_or_default();
+		.jobs
+		.into_iter()
+		.map(|job| job.id)
+		.filter(|id| id.starts_with(&prefix))
+		.collect();
 
 	found.sort();
 	found.dedup();
@@ -644,19 +639,42 @@ fn matching(client: &mut retype_ipc::Client, prefix: &str) -> Result<Vec<JobId>>
 mod tests {
 	use super::*;
 
-	fn job(state: &str, corrected: Option<&str>) -> Value {
-		let mut parked = serde_json::json!({"reason": "intent"});
-		if let Some(corrected) = corrected {
-			parked["corrected"] = Value::String(corrected.to_string());
+	fn job(state: retype_core::job::JobState, corrected: Option<&str>) -> retype_core::job::Job {
+		retype_core::job::Job {
+			id: JobId::parse("01m6a4rararx3wrttkrgpp1783").unwrap(),
+			created: 0,
+			updated: 0,
+			source: retype_core::job::Source {
+				path: Path::new("a.heic").to_path_buf(),
+				format: "heic".to_string(),
+				size: 0,
+				mtime_ns: 0,
+			},
+			intent: Some("jpg".to_string()),
+			outputs: Vec::new(),
+			state,
+			backend: None,
+			engine: None,
+			machine: "machine".to_string(),
+			error: None,
+			parked: Some(retype_core::job::Parked {
+				reason: "intent".to_string(),
+				deadline: None,
+				batch: None,
+				estimate: None,
+				requested: Some("jpg".to_string()),
+				corrected: corrected.map(str::to_string),
+				dropped: Vec::new(),
+				consume: false,
+			}),
+			consume_source: false,
 		}
-
-		serde_json::json!({"state": state, "parked": parked})
 	}
 
 	#[test]
 	fn a_key_offers_only_what_the_job_can_do() {
-		let pending = job("pending", None);
-		let attention = job("needs-attention", Some("webp"));
+		let pending = job(retype_core::job::JobState::Pending, None);
+		let attention = job(retype_core::job::JobState::NeedsAttention, Some("webp"));
 
 		assert_eq!(choose('n', &pending), Some(Action::Now));
 		assert_eq!(
@@ -684,7 +702,17 @@ mod tests {
 
 	#[test]
 	fn a_size_park_can_run_as_asked() {
-		let sized = serde_json::json!({"state": "needs-attention", "parked": {"reason": "size"}});
+		let mut sized = job(retype_core::job::JobState::NeedsAttention, None);
+		sized.parked = Some(retype_core::job::Parked {
+			reason: "size".to_string(),
+			deadline: None,
+			batch: None,
+			estimate: None,
+			requested: Some("jpg".to_string()),
+			corrected: None,
+			dropped: Vec::new(),
+			consume: false,
+		});
 
 		assert_eq!(choose('n', &sized), Some(Action::Now));
 		assert_eq!(choose('c', &sized), None, "there is nothing to reduce");
@@ -692,7 +720,10 @@ mod tests {
 
 	#[test]
 	fn a_key_is_read_case_insensitively() {
-		assert_eq!(choose('Q', &job("pending", None)), Some(Action::Quit));
+		assert_eq!(
+			choose('Q', &job(retype_core::job::JobState::Pending, None)),
+			Some(Action::Quit)
+		);
 	}
 
 	#[test]

@@ -1,0 +1,28 @@
+[package]
+name = "retype-client"
+description = "Shared daemon client for retype"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+retype-core = { path = "../retype-core" }
+retype-ipc = { path = "../retype-ipc" }
+retype-config = { path = "../retype-config" }
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+	"Win32_Foundation",
+	"Win32_System_Console",
+	"Win32_System_Threading",
+] }
+
+[lints]
+workspace = true

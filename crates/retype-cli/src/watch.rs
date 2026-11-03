@@ -13,7 +13,7 @@ use std::process::ExitCode;
 
 use retype_core::error::{Code, code_for_io};
 use retype_core::watches;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::error::Result;
 use crate::output;
@@ -123,17 +123,19 @@ fn register(
 	paused: Option<bool>,
 ) -> Result<watches::Registration> {
 	if let Ok(mut client) = crate::client::connect(state_dir) {
-		let answer = client.call(
-			"watch.add",
-			json!({
-				"path": directory.display().to_string(),
-				"recursive": recursive,
-				"paused": paused,
-			}),
-		);
+		let answer = client.watch_add(&retype_ipc::WatchAdd {
+			path: directory.to_path_buf(),
+			recursive: Some(recursive),
+			paused,
+		});
 
 		return match answer {
-			Ok(value) => Ok(registration_from(&value)),
+			Ok(watch) => Ok(watches::Registration {
+				path: PathBuf::from(watch.path),
+				recursive: watch.recursive,
+				added: watch.added,
+				paused: watch.paused,
+			}),
 			Err(retype_ipc::ClientError::Rpc(error)) => {
 				Err(crate::error::Error::Client(retype_ipc::ClientError::Rpc(error)))
 			}
@@ -144,21 +146,6 @@ fn register(
 	match paused {
 		Some(paused) => Ok(watches::set_paused(state_dir, directory, recursive, paused)?),
 		None => Ok(watches::register(state_dir, directory, recursive)?),
-	}
-}
-
-/// The daemon answered with the fields the caller printed anyway; the canonical
-/// path is the one useful piece.
-fn registration_from(answer: &Value) -> watches::Registration {
-	watches::Registration {
-		path: answer
-			.get("path")
-			.and_then(Value::as_str)
-			.map(PathBuf::from)
-			.unwrap_or_default(),
-		recursive: answer.get("recursive").and_then(Value::as_bool).unwrap_or(true),
-		added: answer.get("added").and_then(Value::as_i64).unwrap_or_default(),
-		paused: answer.get("paused").and_then(Value::as_bool).unwrap_or(false),
 	}
 }
 
@@ -212,8 +199,10 @@ pub fn unwatch(state_dir: &Path, directories: &[String], json: bool) -> Result<E
 /// The same choice for removal: a reachable daemon owns the registry.
 fn remove(state_dir: &Path, directory: &Path) -> Result<bool> {
 	if let Ok(mut client) = crate::client::connect(state_dir) {
-		let answer = client.call("watch.remove", json!({"path": directory.display().to_string()}))?;
-		return Ok(answer.get("removed").and_then(Value::as_bool).unwrap_or(false));
+		let answer = client.watch_remove(&retype_ipc::WatchRemove {
+			path: directory.to_path_buf(),
+		})?;
+		return Ok(answer.removed);
 	}
 
 	Ok(watches::unregister(state_dir, directory)?)

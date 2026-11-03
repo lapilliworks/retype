@@ -10,9 +10,9 @@ pub enum Error {
 	#[error(transparent)]
 	Core(#[from] retype_core::error::Error),
 
-	/// Every diagnostic about a configuration file, printed in order.
-	#[error("{0}")]
-	Config(retype_core::error::Diagnoses),
+	/// A configuration that could not be located, read, validated or written.
+	#[error(transparent)]
+	Config(#[from] retype_config::Error),
 
 	#[error(transparent)]
 	Io(#[from] std::io::Error),
@@ -47,23 +47,45 @@ pub enum Error {
 	Client(#[from] retype_ipc::ClientError),
 }
 
+impl From<serde_json::Error> for Error {
+	fn from(error: serde_json::Error) -> Self {
+		Self::Core(retype_core::error::Error::Json(error.to_string()))
+	}
+}
+
+impl From<retype_client::Error> for Error {
+	fn from(error: retype_client::Error) -> Self {
+		match error {
+			retype_client::Error::Core(error) => Self::Core(error),
+			retype_client::Error::Io(error) => Self::Io(error),
+			retype_client::Error::Frame(error) => Self::Frame(error),
+			retype_client::Error::Client(error) => Self::Client(error),
+			retype_client::Error::AlreadyRunning(path) => Self::AlreadyRunning(path),
+			retype_client::Error::NoStateDirectory => Self::NoStateDirectory,
+			retype_client::Error::SocketPathTooLong { length, limit } => Self::SocketPathTooLong { length, limit },
+			retype_client::Error::UnsupportedTransport => Self::UnsupportedTransport,
+			retype_client::Error::BadIdentity(path) => Self::BadIdentity(path),
+			retype_client::Error::DaemonUnavailable => Self::DaemonUnavailable,
+			retype_client::Error::DaemonStartFailed(timeout, log) => Self::DaemonStartFailed(timeout, log),
+		}
+	}
+}
+
 impl Error {
-	/// The code a script sees, `docs/errors.md` §3.
+	/// The code a script sees, `docs/reference/errors.md` §3.
 	pub fn code(&self) -> retype_core::error::Code {
 		use retype_core::error::Code;
 
 		match self {
 			Self::Core(error) => error.code(),
-			Self::Config(problems) => problems
-				.iter()
-				.next()
-				.map(retype_core::error::Error::code)
-				.unwrap_or(Code::CfgParse),
+			Self::Config(error) => error.code(),
 			Self::Io(error) => retype_core::error::code_for_io(error),
 			Self::Frame(_) => Code::IpcFrame,
 			Self::Client(error) => match error {
 				retype_ipc::ClientError::Rpc(error) => error.code.clone(),
-				retype_ipc::ClientError::Connect(_) | retype_ipc::ClientError::Protocol(_) => Code::IpcUnavailable,
+				retype_ipc::ClientError::Connect(_)
+				| retype_ipc::ClientError::Timeout(_)
+				| retype_ipc::ClientError::Protocol(_) => Code::IpcUnavailable,
 				retype_ipc::ClientError::Frame(_) => Code::IpcFrame,
 			},
 			Self::AlreadyRunning(_) => Code::IoLocked,
@@ -80,62 +102,26 @@ impl Error {
 	/// problem rather than a filesystem one, and a held lock is a state conflict.
 	pub fn exit_code(&self) -> u8 {
 		match self {
-			Self::Core(error) => exit_code(&error.code()),
-			Self::Config(problems) => problems
-				.iter()
-				.next()
-				.map(|error| exit_code(&error.code()))
-				.unwrap_or(3),
+			Self::Core(error) => error.exit_code(),
+			Self::Config(error) => error.exit_code(),
 			Self::Io(error) => retype_core::error::category_for_io(error).exit_code(),
-			Self::Frame(_) => 6,
-			// A daemon's own refusal is classified by its code, not by the fact that it
-			// arrived over the wire.
 			Self::Client(retype_ipc::ClientError::Rpc(error)) => exit_code(&error.code),
-			Self::Client(_) | Self::UnsupportedTransport => 6,
-			Self::DaemonUnavailable | Self::DaemonStartFailed(..) => 6,
+			Self::Frame(_)
+			| Self::Client(_)
+			| Self::UnsupportedTransport
+			| Self::DaemonUnavailable
+			| Self::DaemonStartFailed(..) => 6,
 			Self::AlreadyRunning(_) => 7,
-			Self::SocketPathTooLong { .. } | Self::BadIdentity(_) => {
-				retype_core::error::Category::Transient.exit_code()
-			}
-			Self::NoStateDirectory => retype_core::error::Category::Internal.exit_code(),
+			Self::SocketPathTooLong { .. } | Self::BadIdentity(_) => 5,
+			Self::NoStateDirectory => 1,
 		}
 	}
 }
 
 /// "Cannot be done here" and "cannot be done" are different answers,
-/// `docs/cli.md` §6. The categories are the ones `docs/errors.md` gives each code,
-/// restated here because a job carries its code as a string across the wire and the
-/// client is what turns it into a status.
+/// `docs/reference/cli.md` §6. The category comes from the code and nowhere else.
 pub fn exit_code(code: &retype_core::error::Code) -> u8 {
-	use retype_core::error::Code;
-
-	match code {
-		// The argument parser or the caller asked for something contradictory.
-		Code::UsageArgs | Code::UsageConflict | Code::UsageOutputCount => 2,
-		// The environment refused, not the request.
-		Code::ToolMissing | Code::ToolVersion | Code::ToolFailed | Code::ToolTimeout => 4,
-		// A state conflict: the lock, an ambiguous prefix, or a job that is not in
-		// the state the request needs, `docs/cli.md` §6. A cancellation or an
-		// interruption is a state the user or the daemon put the job in, not a
-		// capability this machine lacks.
-		Code::IoLocked
-		| Code::JobAmbiguous
-		| Code::JobState
-		| Code::JobCancelled
-		| Code::JobInterrupted
-		| Code::JobResumeUnavailable => 7,
-		// Something to retry: the filesystem or the moment.
-		Code::IoFailed
-		| Code::IoPermission
-		| Code::IoSpace
-		| Code::IoNotFound
-		| Code::IoExists
-		| Code::IoCorruptJournal => 5,
-		// A daemon that cannot be reached is its own code, handled before this.
-		Code::IpcUnavailable | Code::IpcVersion | Code::IpcHandshake | Code::IpcAuth => 6,
-		Code::InternalInvariant | Code::InternalPanic | Code::InternalUnexpected => 1,
-		_ => 3,
-	}
+	code.category().exit_code()
 }
 
 /// The same mapping, for a code that arrived as the string a job records.

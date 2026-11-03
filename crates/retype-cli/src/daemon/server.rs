@@ -387,11 +387,7 @@ impl Server {
 		// gets a diagnosis rather than a job that will only fail later.
 		let prepared = match immediate::prepare(&self.shared.registry(), &asked) {
 			Ok(prepared) => prepared,
-			Err(problems) => {
-				let code = problems.codes().first().cloned().unwrap_or(Code::ToolFailed);
-
-				return Ok(Response::error(request.id, WireError::new(code, problems.to_string())));
-			}
+			Err(problems) => return Ok(Response::error(request.id, wire_problems(&problems))),
 		};
 
 		let id = retype_core::job::JobId::now()?;
@@ -813,9 +809,9 @@ impl Server {
 					"added": registration.added,
 					"paused": paused,
 					"paused_by": match (registration.paused, policy.as_ref().is_some_and(|policy| policy.paused)) {
-						(true, _) => "state",
-						(_, true) => "policy",
-						_ => "no",
+						(true, _) => Some("state"),
+						(_, true) => Some("policy"),
+						_ => None,
 					},
 					"available": available,
 					"patterns": policy.map(|policy| policy.patterns).unwrap_or_default(),
@@ -908,15 +904,43 @@ impl Server {
 	fn config_reload(&self, request: &Request) -> Result<Response> {
 		match crate::config::load() {
 			Ok(registry) => {
+				let warnings = registry.warnings().to_vec();
 				crate::config::report_warnings(&registry);
 				self.shared.reload_registry(registry);
-				Ok(Response::ok(request.id, json!({"reloaded": true}))?)
+				Ok(Response::ok(
+					request.id,
+					json!({"reloaded": true, "warnings": warnings}),
+				)?)
 			}
 			Err(error) => Ok(Response::error(
 				request.id,
 				WireError::new(error.code(), error.to_string()),
 			)),
 		}
+	}
+
+	/// What the undo store holds, for a client that needs a list rather than one
+	/// record, `docs/dev/architecture/state.md` §5.
+	fn undo_list(&self, request: &Request) -> Result<Response> {
+		use retype_core::undo::Store;
+
+		let records = Store::open(&self.shared.state_dir).list()?;
+		let summaries: Vec<retype_ipc::UndoSummary> = records
+			.into_iter()
+			.map(|record| retype_ipc::UndoSummary {
+				id: record.id,
+				intent: record.intent,
+				created: record.created,
+				source_path: record.source_path,
+				source_ext: record.source_ext,
+				source_size: record.source_size,
+				outputs: record.outputs,
+				pinned: record.pinned,
+				consume_source: record.consume_source,
+			})
+			.collect();
+
+		Ok(Response::ok(request.id, json!({"records": summaries}))?)
 	}
 
 	/// Reverse one job from the store, in the daemon rather than in a client, so a
@@ -1032,10 +1056,16 @@ impl Server {
 	fn hello(&self) -> HelloResult {
 		HelloResult {
 			ipc: IPC_VERSION.to_string(),
+			version: env!("CARGO_PKG_VERSION").to_string(),
 			pid: std::process::id(),
 			machine: self.machine.clone(),
 			uptime_ms: self.started.elapsed().as_millis() as u64,
-			features: vec!["events".to_string()],
+			features: vec![
+				"events".to_string(),
+				"jobs.list.summary".to_string(),
+				"undo.list".to_string(),
+				"config.warnings".to_string(),
+			],
 			capabilities: json!({
 				"backends": self.shared.registry().backends(),
 			}),
@@ -1068,7 +1098,18 @@ impl Server {
 				request.id,
 				json!({
 					"jobs": self.shared.jobs.lock().map(|jobs| jobs.iter().map(|job| {
-						json!({"id": job.id, "state": job.state, "source": job.source.path, "created": job.created})
+						json!({
+							"id": job.id,
+							"state": job.state,
+							"source": job.source.path,
+							"created": job.created,
+							"updated": job.updated,
+							"intent": job.intent,
+							"parked_reason": job.parked.as_ref().map(|parked| parked.reason.clone()),
+							"error": job.error,
+							"outputs_done": job.outputs.iter().filter(|output| output.state == OutputState::Done).count(),
+							"outputs_total": job.outputs.len(),
+						})
 					}).collect::<Vec<_>>()).unwrap_or_default(),
 				}),
 			)?,
@@ -1077,6 +1118,7 @@ impl Server {
 			"watch.remove" => self.watch_remove(request)?,
 			"watch.list" => Response::ok(request.id, json!({"watches": self.watches()}))?,
 			"undo" => self.undo(request)?,
+			"undo.list" => self.undo_list(request)?,
 			"config.reload" => self.config_reload(request)?,
 			"why" => self.why(request)?,
 			"jobs.get" => self.get(request)?,
@@ -1094,6 +1136,24 @@ impl Server {
 
 		Ok(response)
 	}
+}
+
+/// Turn a set of diagnostics into one wire error that keeps its first span and
+/// hint. The message still carries every problem, because a client may print it.
+fn wire_problems(problems: &retype_core::error::Diagnoses) -> WireError {
+	let first = problems.iter().next();
+	let code = first.map(retype_core::error::Error::code).unwrap_or(Code::ToolFailed);
+	let mut error = WireError::new(code, problems.to_string());
+
+	if let Some(span) = first.and_then(retype_core::error::Error::span) {
+		error = error.with_span(span);
+	}
+
+	if let Some(hint) = first.and_then(retype_core::error::Error::hint) {
+		error = error.with_hint(hint);
+	}
+
+	error
 }
 
 /// Accept connections until the daemon is asked to stop.

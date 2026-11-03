@@ -8,9 +8,8 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use retype_core::fidelity::{Claim, Manifest, State};
+use retype_core::fidelity::{self, Claim, Manifest};
 use retype_core::registry::Registry;
-use retype_core::tools;
 use serde_json::Value;
 
 use crate::client;
@@ -26,7 +25,7 @@ pub fn run(
 	allow_spawn: bool,
 ) -> Result<ExitCode> {
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
-	let mut answer = client.call("why", serde_json::json!({"path": path}))?;
+	let mut answer = serde_json::to_value(client.why(Path::new(path))?)?;
 
 	if let Some(claim) = claim(registry, state_dir, &answer) {
 		answer["claim"] = claim;
@@ -104,31 +103,16 @@ fn claim(registry: &Registry, state_dir: &Path, answer: &Value) -> Option<Value>
 	let target = answer.get("target").and_then(Value::as_str)?;
 	let backend = answer.get("backend").and_then(Value::as_str)?;
 	let manifest = find_manifest(state_dir).and_then(|path| Manifest::open(&path).ok())?;
-	let claim: &Claim = manifest.get(source, target, backend)?;
-
-	let (version, fingerprint) = match registry.tool(backend) {
-		Some(tool) => {
-			let status = tools::probe(tool);
-			(
-				status.version.as_ref().map(ToString::to_string).unwrap_or_default(),
-				status.fingerprint().unwrap_or_default(),
-			)
-		}
-		None => (env!("CARGO_PKG_VERSION").to_string(), String::new()),
-	};
-
-	let state = match claim.is_current(&version, &fingerprint) {
-		true => State::Earned,
-		false => State::Unverified,
-	};
+	let claim = fidelity::claim_for(&manifest, registry, source, target, backend);
+	let recorded: &Claim = claim.claim?;
 
 	Some(serde_json::json!({
-		"tier": tier(claim),
-		"state": state.as_str(),
-		"earned": claim.earned,
-		"version": claim.version,
-		"fingerprint": claim.fingerprint,
-		"engine": claim.engine,
+		"tier": tier(recorded),
+		"state": claim.state.as_str(),
+		"earned": recorded.earned,
+		"version": recorded.version,
+		"fingerprint": recorded.fingerprint,
+		"engine": recorded.engine,
 	}))
 }
 

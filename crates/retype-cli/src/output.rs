@@ -49,17 +49,9 @@ pub fn record(value: Value) {
 	println!("{value}");
 }
 
-/// A human-readable category for a code, derived from the exit status it maps to.
+/// A human-readable category for a code.
 pub fn category_name(code: &Code) -> &'static str {
-	match exit_code(code) {
-		2 => "usage",
-		3 => "diagnosis",
-		4 => "environment",
-		5 => "transient",
-		6 => "daemon",
-		7 => "state",
-		_ => "internal",
-	}
+	code.category().as_str()
 }
 
 /// The message without the code a diagnostic already carries, so the code is not

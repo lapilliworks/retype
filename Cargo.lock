@@ -492,6 +492,8 @@ dependencies = [
  "flate2",
  "getrandom 0.3.4",
  "libc",
+ "retype-client",
+ "retype-config",
  "retype-core",
  "retype-ipc",
  "retype-watch",
@@ -502,6 +504,28 @@ dependencies = [
  "toml",
  "windows-sys 0.59.0",
  "zip",
+]
+
+[[package]]
+name = "retype-client"
+version = "0.1.0-alpha"
+dependencies = [
+ "libc",
+ "retype-config",
+ "retype-core",
+ "retype-ipc",
+ "thiserror",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "retype-config"
+version = "0.1.0-alpha"
+dependencies = [
+ "retype-core",
+ "tempfile",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]
@@ -531,6 +555,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

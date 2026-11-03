@@ -85,8 +85,9 @@ Handshake, required before any other method:
 
 ```json
 {"id":1,"method":"hello","params":{"ipc":"retype-ipc-1","client":"retype-cli/0.1.0-alpha","features":["events"]}}
-{"id":1,"ok":true,"result":{"ipc":"retype-ipc-1","pid":41233,"machine":"7f3c1a2b","uptime_ms":91000,
- "features":["events","notify"],"capabilities":{"backends":["magick"]}}}
+{"id":1,"ok":true,"result":{"ipc":"retype-ipc-1","version":"0.1.0-alpha","pid":41233,
+ "machine":"7f3c1a2b","uptime_ms":91000,"features":["events","undo.list"],
+ "capabilities":{"backends":["magick"]}}}
 ```
 
 A different major receives `E_IPC_VERSION` and the connection closes. New fields and new methods do not change the major. A client that does not send `hello` first receives `E_IPC_HANDSHAKE`.
@@ -100,7 +101,7 @@ Request timeout defaults to 5 s. No method blocks on work that can outlive it.
 | Session | `hello`, `status`, `shutdown` |
 | Registry | `watch.add`, `watch.remove`, `watch.list` |
 | Jobs | `jobs.list`, `jobs.get`, `jobs.submit`, `jobs.cancel`, `jobs.resume`, `jobs.resolve` |
-| History | `undo`, `why` |
+| History | `undo`, `undo.list`, `why` |
 | Live | `events.subscribe` |
 | Config | `config.reload` |
 
@@ -120,6 +121,12 @@ Request timeout defaults to 5 s. No method blocks on work that can outlive it.
 `jobs.resume` continues a `partial` job, skipping outputs that still match their recorded identity, and reports `E_JOB_RESUME_UNAVAILABLE` when neither the source path nor the undo record holds the source bytes.
 
 `jobs.get`, `undo` and `jobs.resume` accept a full ULID or a unique prefix. A prefix matching two jobs is `E_JOB_AMBIGUOUS` with the candidates; a prefix shorter than four characters is `E_USAGE_ARGS`.
+
+`jobs.list` returns a summary per job, not the full record: `id`, `state`, `source`, `created`, `updated`, `intent`, `parked_reason`, `error`, `outputs_done` and `outputs_total`. `jobs.get` remains the full journal record.
+
+`undo.list` returns `{"records": [...]}` with the fields a history view needs: `id`, `intent`, `created`, `source_path`, `source_ext`, `source_size`, `outputs`, `pinned` and `consume_source`.
+
+`config.reload` answers `{"reloaded": true, "warnings": [...]}`. A warning is the same diagnostic shape an error carries, with its code, message and optional span and hint.
 
 ## 7. Events
 
@@ -144,7 +151,7 @@ events {"since": 90}  ->  {"events": [...], "seq": 91}
 {"id":7,"ok":false,"error":{"code":"E_JOB_STATE","message":"job 01j8z is done","detail":{"state":"done"}}}
 ```
 
-One error type in `retype-core`, shared by daemon, CLI and GUI. IPC codes are namespaced `E_IPC_*`; domain codes keep their specification names.
+One error type in `retype-core`, shared by daemon, CLI and GUI. IPC codes are namespaced `E_IPC_*`; domain codes keep their specification names. An error carries `code`, `message`, optional `detail`, and, where the producer knows them, `span` and `hint`. The category is derived from the code, so a client never trusts a category that disagrees with it.
 
 IPC codes: `E_IPC_VERSION`, `E_IPC_HANDSHAKE`, `E_IPC_UNAVAILABLE`, `E_IPC_SUPERVISED`, `E_IPC_AMBIGUOUS`, `E_IPC_RESYNC`, `E_IPC_FRAME`, `E_IPC_METHOD`, `E_IPC_AUTH`, `E_IPC_INTERNAL`.
 

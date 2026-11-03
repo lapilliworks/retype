@@ -6,8 +6,10 @@
 //! and what the machine has is a question asked through [`Presence`], so a plan
 //! can be compiled without probing by a caller that only wants the answer.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::Path;
+use std::sync::Mutex;
 
 use crate::error::{Code, Diagnoses, Diagnostic, Error};
 use crate::job::Tier;
@@ -48,6 +50,171 @@ impl Presence for crate::tools::Machine {
 	fn engine(&self, tool: &Tool, name: &str) -> Option<String> {
 		crate::tools::resolve_engine(tool, name).map(str::to_string)
 	}
+}
+
+/// A presence that asks the machine once per tool and engine.
+///
+/// The machine asks by running a probe, which is too expensive for a control that
+/// redraws while a person types. `CachedPresence` makes one probe per tool for the
+/// life of the cache; a caller that has installed a tool makes a new cache.
+pub struct CachedPresence<'a> {
+	inner: &'a dyn Presence,
+	commands: Mutex<BTreeMap<String, Option<String>>>,
+	engines: Mutex<BTreeMap<(String, String), Option<String>>>,
+}
+
+impl<'a> CachedPresence<'a> {
+	pub fn new(inner: &'a dyn Presence) -> Self {
+		Self {
+			inner,
+			commands: Mutex::new(BTreeMap::new()),
+			engines: Mutex::new(BTreeMap::new()),
+		}
+	}
+}
+
+impl Presence for CachedPresence<'_> {
+	fn command(&self, tool: &Tool) -> Option<String> {
+		if let Ok(mut cache) = self.commands.lock() {
+			if let Some(cached) = cache.get(&tool.name) {
+				return cached.clone();
+			}
+
+			let answer = self.inner.command(tool);
+			cache.insert(tool.name.clone(), answer.clone());
+			return answer;
+		}
+
+		self.inner.command(tool)
+	}
+
+	fn engine(&self, tool: &Tool, name: &str) -> Option<String> {
+		let key = (tool.name.clone(), name.to_string());
+
+		if let Ok(mut cache) = self.engines.lock() {
+			if let Some(cached) = cache.get(&key) {
+				return cached.clone();
+			}
+
+			let answer = self.inner.engine(tool, name);
+			cache.insert(key, answer.clone());
+			return answer;
+		}
+
+		self.inner.engine(tool, name)
+	}
+}
+
+/// What a generated editor needs to know about one operation for one pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Availability {
+	pub key: String,
+	pub name: String,
+	pub slot: u16,
+	pub available: bool,
+	/// Why the operation cannot be offered, when it cannot.
+	pub reason: Option<Code>,
+}
+
+/// Every operation the registry declares, with whether this machine can carry it
+/// for a source and target pair.
+///
+/// This is the editor's question, not the planner's: it never builds a plan and
+/// never writes a file. The reasons use the same codes the planner would return,
+/// so a disabled control and a failed conversion say the same thing.
+pub fn availability(registry: &Registry, presence: &dyn Presence, source: &str, target: &str) -> Vec<Availability> {
+	let source = registry.canonical_format(source).unwrap_or(source);
+	let target = registry.canonical_format(target).unwrap_or(target);
+
+	let source_ok = registry
+		.format(source)
+		.is_some_and(|format| format.direction.can_decode());
+	let target_ok = registry
+		.format(target)
+		.is_some_and(|format| format.direction.can_encode());
+	let target_native = registry.format(target).and_then(|format| format.native).is_some();
+
+	let mut ops: Vec<&crate::registry::Op> = registry.ops().map(|(_, op)| op).collect();
+	ops.sort_by_key(|op| (op.slot, op.name.clone()));
+
+	ops.into_iter()
+		.map(|op| {
+			let reason = operation_reason(
+				registry,
+				presence,
+				source,
+				target,
+				source_ok,
+				target_ok,
+				target_native,
+				op,
+			);
+
+			Availability {
+				key: op.key.clone(),
+				name: op.name.clone(),
+				slot: op.slot,
+				available: reason.is_none(),
+				reason,
+			}
+		})
+		.collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn operation_reason(
+	registry: &Registry,
+	presence: &dyn Presence,
+	source: &str,
+	target: &str,
+	source_ok: bool,
+	target_ok: bool,
+	target_native: bool,
+	op: &crate::registry::Op,
+) -> Option<Code> {
+	if !source_ok || !target_ok {
+		return Some(Code::Unsupported);
+	}
+
+	if target_native {
+		return Some(Code::Unsupported);
+	}
+
+	if !op.is_implemented() {
+		return Some(Code::Unsupported);
+	}
+
+	if !op.applies_to(target) {
+		return Some(Code::Inapplicable);
+	}
+
+	let mut missing = false;
+
+	for name in registry.backends() {
+		let Some(tool) = registry.tool(name) else {
+			continue;
+		};
+
+		if op.fragment(&tool.name).is_none() {
+			continue;
+		}
+
+		if !tool.families.is_empty() {
+			let from = family_of(registry, source);
+			let to = family_of(registry, target);
+
+			if !tool.families.contains(&from) || !tool.families.contains(&to) {
+				continue;
+			}
+		}
+
+		match presence.command(tool) {
+			Some(_) => return None,
+			None => missing = true,
+		}
+	}
+
+	Some(if missing { Code::ToolMissing } else { Code::Unsupported })
 }
 
 /// Where a plan will run.
@@ -508,6 +675,12 @@ lossy = true
 alpha = true
 tier = 'converted'
 
+[formats.jpg]
+family = 'image'
+lossy = true
+alpha = false
+tier = 'converted'
+
 [formats.webp.argv.magick]
 args = ['-define', 'webp:method=6']
 
@@ -536,6 +709,10 @@ formats = ['webp']
 
 [ops.pdf.argv.pandoc]
 args = ['--pdf-engine', '{engine.pdf}']
+
+[ops.crop]
+slot = 2
+formats = ['jpg']
 ",
 		)
 		.expect("the fixture loads")
@@ -568,6 +745,56 @@ args = ['--pdf-engine', '{engine.pdf}']
 				.get(format!("{}.{name}", tool.name).as_str())
 				.map(|found| found.to_string())
 		}
+	}
+
+	#[test]
+	fn availability_names_what_the_machine_can_and_cannot_carry() {
+		let registry = config();
+		let machine = Machine::with(&["magick"]);
+
+		let operations = availability(&registry, &machine, "webp", "webp");
+		let quality = operations.iter().find(|op| op.key == "quality").expect("declared");
+		let pdf = operations.iter().find(|op| op.key == "pdf").expect("declared");
+		let crop = operations.iter().find(|op| op.key == "crop").expect("declared");
+
+		assert!(quality.available);
+		assert_eq!(quality.reason, None);
+		assert!(!pdf.available);
+		assert_eq!(pdf.reason, Some(Code::ToolMissing));
+		assert!(!crop.available);
+		assert_eq!(crop.reason, Some(Code::Inapplicable));
+	}
+
+	struct Counting {
+		calls: std::cell::Cell<usize>,
+	}
+
+	impl Presence for Counting {
+		fn command(&self, _tool: &Tool) -> Option<String> {
+			self.calls.set(self.calls.get() + 1);
+			Some("found".to_string())
+		}
+
+		fn engine(&self, _tool: &Tool, _name: &str) -> Option<String> {
+			self.calls.set(self.calls.get() + 1);
+			Some("engine".to_string())
+		}
+	}
+
+	#[test]
+	fn a_cached_presence_probes_each_tool_once() {
+		let registry = config();
+		let tool = registry.tool("magick").expect("declared");
+		let counting = Counting {
+			calls: std::cell::Cell::new(0),
+		};
+		let cache = CachedPresence::new(&counting);
+
+		assert_eq!(cache.command(tool), Some("found".to_string()));
+		assert_eq!(cache.command(tool), Some("found".to_string()));
+		assert_eq!(cache.engine(tool, "pdf"), Some("engine".to_string()));
+		assert_eq!(cache.engine(tool, "pdf"), Some("engine".to_string()));
+		assert_eq!(counting.calls.get(), 2);
 	}
 
 	fn plan_for(text: &str, machine: &Machine) -> Result<Vec<Plan>, Vec<Code>> {

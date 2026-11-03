@@ -82,6 +82,53 @@ impl State {
 	}
 }
 
+/// One pair's claim, or the absence of one, against the build installed now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairClaim<'a> {
+	pub claim: Option<&'a Claim>,
+	pub state: State,
+	pub version: String,
+	pub fingerprint: String,
+}
+
+/// What the release says about a pair and whether this machine still matches it.
+///
+/// A native container is made by this build, so its version is this build's and
+/// its fingerprint is empty. An external backend is probed, because a package
+/// update is exactly how a claim goes stale.
+pub fn claim_for<'a>(
+	manifest: &'a Manifest,
+	registry: &crate::registry::Registry,
+	source: &str,
+	target: &str,
+	backend: &str,
+) -> PairClaim<'a> {
+	let (version, fingerprint) = match registry.tool(backend) {
+		Some(tool) => {
+			let status = crate::tools::probe(tool);
+			(
+				status.version.as_ref().map(ToString::to_string).unwrap_or_default(),
+				status.fingerprint().unwrap_or_default(),
+			)
+		}
+		None => (env!("CARGO_PKG_VERSION").to_string(), String::new()),
+	};
+
+	let claim = manifest.get(source, target, backend);
+	let state = match claim {
+		None => State::New,
+		Some(claim) if claim.is_current(&version, &fingerprint) => State::Earned,
+		Some(_) => State::Unverified,
+	};
+
+	PairClaim {
+		claim,
+		state,
+		version,
+		fingerprint,
+	}
+}
+
 /// `fidelity.toml`: every claim the release ships.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
@@ -305,6 +352,36 @@ mod tests {
 		manifest.record(second.clone());
 
 		assert_eq!(manifest.claim, vec![second]);
+	}
+
+	#[test]
+	fn a_native_claim_is_measured_against_this_build() {
+		let registry = crate::registry::Registry::builtin().expect("the shipped table loads");
+		let mut native = claim("tar", "zip");
+		native.backend = "zip".to_string();
+		native.version = env!("CARGO_PKG_VERSION").to_string();
+		native.fingerprint = String::new();
+
+		let mut manifest = Manifest::default();
+		manifest.record(native);
+
+		let current = claim_for(&manifest, &registry, "tar", "zip", "zip");
+		assert_eq!(current.state, State::Earned);
+
+		let mut stale = manifest;
+		stale.claim[0].fingerprint = "not-this-build".to_string();
+		let stale = claim_for(&stale, &registry, "tar", "zip", "zip");
+		assert_eq!(stale.state, State::Unverified);
+	}
+
+	#[test]
+	fn a_pair_with_no_claim_is_new() {
+		let registry = crate::registry::Registry::builtin().expect("the shipped table loads");
+		let manifest = Manifest::default();
+
+		let answer = claim_for(&manifest, &registry, "tar", "zip", "zip");
+		assert_eq!(answer.state, State::New);
+		assert!(answer.claim.is_none());
 	}
 
 	#[test]

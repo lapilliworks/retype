@@ -127,28 +127,49 @@ impl From<Code> for String {
 
 /// How a failure should be treated, `docs/reference/errors.md` §4. A script branches on
 /// this rather than on a message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Category {
+	/// The invocation itself is malformed. Never retried.
+	Usage,
 	/// The request cannot be satisfied as written. Never retried.
+	#[default]
 	Diagnosis,
 	/// This machine cannot satisfy it. Needs a human.
 	Environment,
 	/// Try again.
 	Transient,
+	/// The daemon cannot be reached or its transport failed.
+	Daemon,
+	/// The job or the store is in a state that refuses this.
+	State,
 	/// A bug, always with a report.
 	Internal,
 }
 
 impl Category {
-	/// The exit code for the category, `docs/cli.md` §6. A caller may narrow
-	/// this further, for instance to separate a filesystem failure from an
-	/// unreachable daemon, but it may not widen it.
+	/// The exit code for the category, `docs/reference/cli.md` §6.
 	pub fn exit_code(self) -> u8 {
 		match self {
+			Self::Usage => 2,
 			Self::Diagnosis => 3,
 			Self::Environment => 4,
 			Self::Transient => 5,
+			Self::Daemon => 6,
+			Self::State => 7,
 			Self::Internal => 1,
+		}
+	}
+
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Usage => "usage",
+			Self::Diagnosis => "diagnosis",
+			Self::Environment => "environment",
+			Self::Transient => "transient",
+			Self::Daemon => "daemon",
+			Self::State => "state",
+			Self::Internal => "internal",
 		}
 	}
 
@@ -157,8 +178,44 @@ impl Category {
 	}
 }
 
+impl Code {
+	/// The category a code belongs to, `docs/reference/errors.md` §4.
+	///
+	/// A passthrough code from a later build cannot be classified here, so it is
+	/// treated as a diagnosis: the safe answer is "do not retry on your own".
+	pub fn category(&self) -> Category {
+		match self {
+			Self::UsageArgs | Self::UsageConflict | Self::UsageOutputCount => Category::Usage,
+			Self::ToolMissing | Self::ToolVersion | Self::ToolFailed | Self::ToolTimeout => Category::Environment,
+			Self::IoLocked
+			| Self::JobAmbiguous
+			| Self::JobState
+			| Self::JobCancelled
+			| Self::JobInterrupted
+			| Self::JobResumeUnavailable => Category::State,
+			Self::IoFailed
+			| Self::IoPermission
+			| Self::IoSpace
+			| Self::IoNotFound
+			| Self::IoExists
+			| Self::IoCorruptJournal => Category::Transient,
+			Self::IpcVersion
+			| Self::IpcHandshake
+			| Self::IpcFrame
+			| Self::IpcMethod
+			| Self::IpcUnavailable
+			| Self::IpcResync
+			| Self::IpcAuth
+			| Self::IpcInternal => Category::Daemon,
+			Self::InternalInvariant | Self::InternalPanic | Self::InternalUnexpected => Category::Internal,
+			Self::Unknown(_) => Category::Diagnosis,
+			_ => Category::Diagnosis,
+		}
+	}
+}
+
 /// A byte range inside the string that produced a diagnostic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
 	pub start: usize,
 	pub end: usize,
@@ -170,9 +227,9 @@ impl Span {
 	}
 }
 
-/// A grammar diagnostic, `docs/grammar.md` §6. Carried inside [`Error`] so that
+/// A grammar diagnostic, `docs/reference/errors.md` §6. Carried inside [`Error`] so that
 /// there is one error type rather than one per layer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
 	pub code: Code,
 	pub message: String,
@@ -314,8 +371,8 @@ pub fn code_for_io(error: &std::io::Error) -> Code {
 	}
 }
 
-pub fn category_for_io(_error: &std::io::Error) -> Category {
-	Category::Transient
+pub fn category_for_io(error: &std::io::Error) -> Category {
+	code_for_io(error).category()
 }
 
 impl Error {
@@ -335,12 +392,7 @@ impl Error {
 	}
 
 	pub fn category(&self) -> Category {
-		match self {
-			Self::Io(_) | Self::Exists(_) => Category::Transient,
-			Self::NoParent(_) | Self::NoFileName(_) | Self::JobId(_) => Category::Diagnosis,
-			Self::Random(_) | Self::Json(_) => Category::Internal,
-			Self::Diagnostic(_) => Category::Diagnosis,
-		}
+		self.code().category()
 	}
 
 	pub fn exit_code(&self) -> u8 {
@@ -411,11 +463,24 @@ mod tests {
 	}
 
 	#[test]
-	fn the_categories_are_the_documented_four() {
+	fn the_categories_are_the_documented_seven() {
+		assert_eq!(Category::Usage.exit_code(), 2);
 		assert_eq!(Category::Diagnosis.exit_code(), 3);
 		assert_eq!(Category::Environment.exit_code(), 4);
 		assert_eq!(Category::Transient.exit_code(), 5);
+		assert_eq!(Category::Daemon.exit_code(), 6);
+		assert_eq!(Category::State.exit_code(), 7);
 		assert_eq!(Category::Internal.exit_code(), 1);
+	}
+
+	#[test]
+	fn a_code_category_is_the_exit_status_a_caller_expects() {
+		assert_eq!(Code::UsageArgs.category(), Category::Usage);
+		assert_eq!(Code::ToolMissing.category(), Category::Environment);
+		assert_eq!(Code::JobState.category(), Category::State);
+		assert_eq!(Code::IoPermission.category(), Category::Transient);
+		assert_eq!(Code::IpcUnavailable.category(), Category::Daemon);
+		assert_eq!(Code::InternalPanic.category(), Category::Internal);
 	}
 
 	#[test]

@@ -35,13 +35,14 @@ Environment variables, all optional:
 | `RETYPE_STATE_DIR` | State directory, overriding platform defaults |
 | `RETYPE_CONFIG` | User configuration path, instead of the platform default. A daemon started by a client inherits the path the client used, so both read the same file |
 | `RETYPE_NO_SPAWN` | Clients never start the daemon; the command-line spelling is `--no-spawn` |
+| `RETYPE_DAEMON` | The CLI binary a client starts as `daemon --detached`, instead of its own executable. The GUI points this at its bundled CLI |
 | `RETYPE_LOG` | Verbosity, the same number `--verbose` counts, as a digit or a word: `error`, `warn`, `info`, `debug`, `trace` |
 | `RETYPE_FIXTURES` | Property fixtures for `retype fidelity`, instead of `fixtures/fidelity`; `--fixtures` wins |
 | `RETYPE_FIDELITY_MANIFEST` | Manifest `retype why` and `retype fidelity` read when no path is given; `retype fidelity`'s flags win |
 
 `--config <path>` names the user file for one invocation and wins over `RETYPE_CONFIG`. A file named that way has to exist: falling back to the built-in table would answer a different question than the one asked, so a missing one is `E_CFG_MISSING` rather than silence.
 
-Without either, the user file is `$XDG_CONFIG_HOME/retype/retype.toml` on Unix and `%APPDATA%\retype\retype.toml` on Windows; `XDG_CONFIG_HOME` defaults to `~/.config`. macOS is Unix here: the user file lives in `~/.config` and not in `~/Library/Application Support`, so configuration, state and data share one tree on the one platform where the two conventions disagree. There is no alternate path and no symlink between them.
+Without either, the user file is `$XDG_CONFIG_HOME/retype/retype.toml` on Unix and `%LOCALAPPDATA%\retype\retype.toml` on Windows; `XDG_CONFIG_HOME` defaults to `~/.config`. macOS is Unix here: the user file lives in `~/.config` and not in `~/Library/Application Support`, so configuration, state and data share one tree on the one platform where the two conventions disagree. There is no alternate path and no symlink between them.
 
 Merge rules per key type:
 

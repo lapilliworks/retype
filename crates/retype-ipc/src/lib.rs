@@ -8,12 +8,14 @@
 //! Newline-delimited JSON, UTF-8, one object per line, one megabyte per frame.
 
 pub mod client;
+pub mod types;
 
 pub use client::{Client, ClientError};
+pub use types::*;
 
 use std::io::{BufRead, Write};
 
-use retype_core::error::Code;
+use retype_core::error::{Code, Span};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -89,7 +91,11 @@ pub struct WireError {
 	pub code: Code,
 	pub message: String,
 	#[serde(skip_serializing_if = "Option::is_none")]
-	pub detail: Option<Value>,
+	pub detail: Option<Box<Value>>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub span: Option<Span>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub hint: Option<String>,
 }
 
 impl WireError {
@@ -98,14 +104,33 @@ impl WireError {
 			code,
 			message: message.into(),
 			detail: None,
+			span: None,
+			hint: None,
 		}
 	}
 
 	pub fn with_detail(self, detail: impl Serialize) -> Result<Self, FrameError> {
 		Ok(Self {
-			detail: Some(serde_json::to_value(detail).map_err(|error| FrameError::Encode(error.to_string()))?),
+			detail: Some(Box::new(
+				serde_json::to_value(detail).map_err(|error| FrameError::Encode(error.to_string()))?,
+			)),
 			..self
 		})
+	}
+
+	pub fn with_span(mut self, span: Span) -> Self {
+		self.span = Some(span);
+		self
+	}
+
+	pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+		self.hint = Some(hint.into());
+		self
+	}
+
+	/// The category is derived from the code, so it cannot disagree with it.
+	pub fn category(&self) -> retype_core::error::Category {
+		self.code.category()
 	}
 }
 
@@ -121,6 +146,8 @@ pub struct Hello {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HelloResult {
 	pub ipc: String,
+	#[serde(default)]
+	pub version: String,
 	pub pid: u32,
 	pub machine: String,
 	pub uptime_ms: u64,
@@ -343,6 +370,7 @@ mod tests {
 	fn the_handshake_names_the_daemon() {
 		let result = HelloResult {
 			ipc: IPC_VERSION.to_string(),
+			version: "0.1.0-alpha".to_string(),
 			pid: 41233,
 			machine: "7f3c1a2b".to_string(),
 			uptime_ms: 91_000,

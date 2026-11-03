@@ -1,4 +1,4 @@
-//! `retype convert`, `docs/cli.md` §2.
+//! `retype convert`, `docs/reference/cli.md` §2.
 //!
 //! The conversion itself belongs to the daemon: a submitted job shares the
 //! journal, the runner pool and the cancellation path with the jobs a watcher
@@ -9,17 +9,16 @@
 //! §5. One `jobs.get` per tenth of a second is nothing next to an encode, and it
 //! keeps the daemon free to answer everyone else, including a cancel.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use retype_core::job::{JobState, Tier};
 use retype_core::print;
 use retype_core::registry::Registry;
-use serde_json::Value;
+use retype_ipc::{JobSubmit, SubmitMode};
 
-use crate::client;
-use crate::error::{Error, Result, exit_code_of};
+use crate::error::{Result, exit_code_of};
 use crate::output;
 
 pub struct Request<'a> {
@@ -34,9 +33,6 @@ pub struct Request<'a> {
 	pub json: bool,
 	pub allow_spawn: bool,
 }
-
-/// How often a submission is asked about while it runs.
-const POLL: Duration = Duration::from_millis(100);
 
 pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	if request.dry_run {
@@ -55,26 +51,21 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 		);
 	}
 
-	let mut client = client::connect_or_spawn(request.state_dir, request.allow_spawn)?;
-	let mut params = serde_json::json!({
-		"input": request.input,
-		"intent": request.intent,
-		"force": request.force,
-		"mode": "immediate",
-	});
+	let context = crate::client::context(request.state_dir, request.allow_spawn)?;
+	let mut client = crate::client::connect_or_spawn(request.state_dir, request.allow_spawn)?;
 
-	if let Some(output) = request.output {
-		params["output"] = Value::String(output.to_string());
-	}
-
-	let submitted = match client.call("jobs.submit", params) {
+	let submitted = match client.jobs_submit(&JobSubmit {
+		input: PathBuf::from(request.input),
+		intent: request.intent.to_string(),
+		output: request.output.map(PathBuf::from),
+		force: request.force,
+		mode: SubmitMode::Immediate,
+	}) {
 		Ok(answer) => answer,
-		// Everything that can fail before a byte moves fails at submission, with
-		// the code the same failure would have had locally, `docs/cli.md` §5.
 		Err(retype_ipc::ClientError::Rpc(error)) => {
 			return Ok(ExitCode::from(output::fail(&error.code, &error.message)));
 		}
-		Err(other) => return Err(Error::Client(other)),
+		Err(other) => return Err(other.into()),
 	};
 
 	// The submission connection ends here: a client that held it for the whole
@@ -85,52 +76,60 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 
 	crate::verbose::note(format!(
 		"submitted {} for {input}",
-		submitted.get("id").and_then(Value::as_str).unwrap_or_default(),
+		submitted.id.as_str(),
 		input = request.input
 	));
 
-	let id = submitted
-		.get("id")
-		.and_then(Value::as_str)
-		.unwrap_or_default()
-		.to_string();
-	let job = wait(request.state_dir, request.allow_spawn, &id, request.quiet)?;
+	let started = Instant::now();
+	let mut announced = Duration::ZERO;
+	let id = submitted.id.as_str().to_string();
+
+	let job = match retype_client::jobs::wait(&context, &id, |_job| {
+		// A long encode should say it is still working rather than look hung. Two
+		// seconds is slow enough to stay out of a one-line pipeline, and frequent
+		// enough to be visible.
+		let elapsed = started.elapsed();
+		if !request.quiet && elapsed.saturating_sub(announced) >= Duration::from_secs(2) {
+			eprintln!("retype: job {id} still running ({}s)", elapsed.as_secs());
+			announced = elapsed;
+		}
+	}) {
+		Ok(job) => job,
+		Err(retype_client::Error::Client(retype_ipc::ClientError::Rpc(error))) => {
+			return Ok(ExitCode::from(output::fail(&error.code, &error.message)));
+		}
+		Err(other) => return Err(other.into()),
+	};
 
 	if request.json {
 		// The job keeps its own `v`; the envelope names the CLI shape.
-		output::success(serde_json::json!({"job": job.clone()}));
+		output::success(serde_json::json!({"job": job}));
 	}
 
-	let outputs = job
-		.get("outputs")
-		.and_then(Value::as_array)
-		.cloned()
-		.unwrap_or_default();
 	let mut failure: Option<u8> = None;
 
-	for output in &outputs {
-		let path = output.get("path").and_then(Value::as_str).unwrap_or_default();
-		let state = output.get("state").and_then(Value::as_str).unwrap_or_default();
-
-		match state {
-			"done" => {
+	for output in &job.outputs {
+		match output.state {
+			retype_core::job::OutputState::Done => {
 				if !request.quiet && !request.json {
 					println!(
-						"{path}  {}  {}",
-						output.get("tier").and_then(Value::as_str).unwrap_or_default(),
-						print::size(output.get("bytes").and_then(Value::as_u64).unwrap_or_default())
+						"{}  {}  {}",
+						output.path.display(),
+						tier(output.tier),
+						print::size(output.bytes.unwrap_or_default())
 					);
 				}
 			}
 			_ => {
-				let error = output.get("error").and_then(Value::as_object);
-				let code = error
-					.and_then(|error| error.get("code"))
-					.and_then(Value::as_str)
+				let code = output
+					.error
+					.as_ref()
+					.map(|error| error.code.as_str())
 					.unwrap_or("E_TOOL_FAILED");
-				let message = error
-					.and_then(|error| error.get("message"))
-					.and_then(Value::as_str)
+				let message = output
+					.error
+					.as_ref()
+					.map(|error| error.message.as_str())
 					.unwrap_or("failed");
 
 				if !request.json {
@@ -142,24 +141,15 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 		}
 	}
 
-	let state = job.get("state").and_then(Value::as_str).unwrap_or_default();
-
-	// `error` is present but null on a job that had none, so it has to be read as
-	// an object rather than as a key.
-	if let Some(error) = job.get("error").and_then(Value::as_object) {
-		let code = error.get("code").and_then(Value::as_str).unwrap_or("E_TOOL_FAILED");
-
+	if let Some(error) = &job.error {
 		if !request.json {
-			eprintln!(
-				"retype: {code}: {}",
-				error.get("message").and_then(Value::as_str).unwrap_or("failed")
-			);
+			eprintln!("retype: {}: {}", error.code, error.message);
 		}
 
-		failure.get_or_insert(exit_code_of(code));
+		failure.get_or_insert(exit_code_of(&error.code));
 	}
 
-	if state == "cancelled" {
+	if job.state == JobState::Cancelled {
 		failure.get_or_insert(4);
 	}
 
@@ -169,33 +159,10 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	}
 }
 
-/// Ask until the job reaches a state that will not change, on a fresh connection
-/// each time so the daemon is never held.
-fn wait(state_dir: &Path, allow_spawn: bool, id: &str, quiet: bool) -> Result<Value> {
-	let started = std::time::Instant::now();
-	let mut announced = Duration::ZERO;
-
-	loop {
-		let job = {
-			let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
-			client.call("jobs.get", serde_json::json!({"id": id}))?
-		};
-
-		let state = job.get("state").and_then(Value::as_str).unwrap_or_default();
-
-		if crate::jobs::terminal(state) {
-			return Ok(job);
-		}
-
-		// A long encode should say it is still working rather than look hung. Two
-		// seconds is slow enough to stay out of a one-line pipeline, and frequent
-		// enough to be visible.
-		let elapsed = started.elapsed();
-		if !quiet && elapsed.saturating_sub(announced) >= Duration::from_secs(2) {
-			eprintln!("retype: job {id} still running ({}s)", elapsed.as_secs());
-			announced = elapsed;
-		}
-
-		sleep(POLL);
+fn tier(tier: Tier) -> String {
+	match tier {
+		Tier::Exact => "exact".to_string(),
+		Tier::Converted => "converted".to_string(),
+		Tier::Delegated => "delegated".to_string(),
 	}
 }

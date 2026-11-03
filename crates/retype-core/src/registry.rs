@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Code, Diagnoses, Diagnostic, Error};
 use crate::job::Tier;
@@ -158,8 +158,8 @@ pub struct Format {
 	pub argv: BTreeMap<String, Fragment>,
 }
 
-/// The value class of an operation parameter, `docs/grammar.md` §7.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+/// The value class of an operation parameter, `docs/reference/intents.md` §7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Class {
 	Int,
@@ -173,26 +173,26 @@ pub enum Class {
 	Text,
 }
 
-/// What a `range` counts, `docs/grammar.md` §7.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+/// What a `range` counts, `docs/reference/intents.md` §7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scalar {
 	Int,
 	Time,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Param {
 	pub class: Class,
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub min: Option<u64>,
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub max: Option<u64>,
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub values: Vec<String>,
 	/// Only meaningful for a `range`: what its ends count.
-	#[serde(default)]
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub scalar: Option<Scalar>,
 }
 

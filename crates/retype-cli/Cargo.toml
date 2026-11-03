@@ -20,6 +20,8 @@ path = "src/main.rs"
 clap.workspace = true
 getrandom.workspace = true
 retype-core = { path = "../retype-core" }
+retype-config = { path = "../retype-config" }
+retype-client = { path = "../retype-client" }
 retype-ipc = { path = "../retype-ipc" }
 retype-watch = { path = "../retype-watch" }
 serde_json.workspace = true
