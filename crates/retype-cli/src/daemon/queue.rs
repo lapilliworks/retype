@@ -500,7 +500,6 @@ tier = 'converted'
 			jobs: std::sync::Mutex::new(replay.jobs),
 			recent: Recent::default(),
 			dropped: AtomicU64::new(0),
-			skipped: AtomicU64::new(0),
 			placeholders: AtomicU64::new(0),
 			primed: AtomicU64::new(0),
 			observed: AtomicU64::new(0),

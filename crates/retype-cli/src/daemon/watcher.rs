@@ -47,9 +47,6 @@ pub struct Shared {
 	pub recent: Recent,
 	/// Automatic jobs refused because the queue was full, `docs/watch.md` §8.
 	pub dropped: AtomicU64,
-	/// Sources passed over because they were too large to convert unasked,
-	/// `docs/watch.md` §6.
-	pub skipped: AtomicU64,
 	/// Files passed over because their contents are not on this machine: a provider's
 	/// placeholder, `docs/watch.md` §5.
 	pub placeholders: AtomicU64,
@@ -591,22 +588,6 @@ fn decide(
 	if retype_core::synced::dataless(&fact.target) {
 		shared.placeholders.fetch_add(1, Ordering::Relaxed);
 		crate::verbose::detail(format!("{} is a placeholder, not a copy", fact.target.display()));
-		return;
-	}
-
-	// A rename is a fast gesture and a forty gigabyte video is not, so an
-	// oversized source is passed over rather than converted, `docs/watch.md`
-	// §6.
-	let size = std::fs::metadata(&fact.target).map(|meta| meta.len()).unwrap_or(0);
-
-	if !shared.registry().watch().admits(size) {
-		shared.skipped.fetch_add(1, Ordering::Relaxed);
-		eprintln!(
-			"retype: {} is {} and the automatic limit is {}; `retype convert` converts it",
-			fact.target.display(),
-			retype_core::print::size(size),
-			retype_core::print::size(shared.registry().watch().max_source_size),
-		);
 		return;
 	}
 

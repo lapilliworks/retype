@@ -1,6 +1,6 @@
 //! When a job is parked instead of run, `docs/deferral.md`.
 //!
-//! This module holds the policy and the vocabulary: the two states, the five
+//! This module holds the policy and the vocabulary: the two states, the six
 //! reasons, and the thresholds. What decides a job and what runs it lives in the
 //! daemon, because it needs the estimator and the undo store.
 
@@ -12,7 +12,8 @@ use std::time::Duration;
 pub enum Parked {
 	/// It can run as asked; the timer or a client ends the wait.
 	Pending,
-	/// It cannot run as asked; only a person can choose what to do instead.
+	/// Only a person can end the wait: either it cannot run as asked, or it may run
+	/// only with explicit consent.
 	Attention,
 }
 
@@ -32,6 +33,8 @@ pub enum Reason {
 	Ask,
 	/// The estimate is above the threshold that applies.
 	Cost,
+	/// The source is above the automatic size limit.
+	Size,
 	/// The intent in the new name does not parse.
 	Intent,
 	/// An operation does not apply to the target format.
@@ -45,9 +48,22 @@ impl Reason {
 		match self {
 			Self::Ask => "ask",
 			Self::Cost => "cost",
+			Self::Size => "size",
 			Self::Intent => "intent",
 			Self::Inapplicable => "inapplicable",
 			Self::Backend => "backend",
+		}
+	}
+
+	pub fn parse(text: &str) -> Option<Self> {
+		match text {
+			"ask" => Some(Self::Ask),
+			"cost" => Some(Self::Cost),
+			"size" => Some(Self::Size),
+			"intent" => Some(Self::Intent),
+			"inapplicable" => Some(Self::Inapplicable),
+			"backend" => Some(Self::Backend),
+			_ => None,
 		}
 	}
 
@@ -56,8 +72,16 @@ impl Reason {
 	pub fn parked(self) -> Parked {
 		match self {
 			Self::Ask | Self::Cost => Parked::Pending,
-			Self::Intent | Self::Inapplicable | Self::Backend => Parked::Attention,
+			Self::Size | Self::Intent | Self::Inapplicable | Self::Backend => Parked::Attention,
 		}
+	}
+
+	/// Whether the job may run exactly as asked, once a person says so.
+	///
+	/// A source over the size limit is a valid request that needs consent, unlike a
+	/// request that cannot be carried out at all.
+	pub fn can_run_as_asked(self) -> bool {
+		matches!(self, Self::Size)
 	}
 }
 
@@ -179,12 +203,24 @@ mod tests {
 	fn a_reason_knows_which_state_it_parks_in() {
 		assert_eq!(Reason::Ask.parked(), Parked::Pending);
 		assert_eq!(Reason::Cost.parked(), Parked::Pending);
+		assert_eq!(Reason::Size.parked(), Parked::Attention);
 		assert_eq!(Reason::Intent.parked(), Parked::Attention);
 		assert_eq!(Reason::Inapplicable.parked(), Parked::Attention);
 		assert_eq!(Reason::Backend.parked(), Parked::Attention);
 
 		assert_eq!(Parked::Pending.as_str(), "pending");
 		assert_eq!(Parked::Attention.as_str(), "needs-attention");
+		assert!(Reason::Size.can_run_as_asked());
+		assert!(!Reason::Intent.can_run_as_asked());
+	}
+
+	#[test]
+	fn a_reason_parses_and_prints_the_same_way() {
+		for text in ["ask", "cost", "size", "intent", "inapplicable", "backend"] {
+			assert_eq!(Reason::parse(text).map(Reason::as_str), Some(text));
+		}
+
+		assert!(Reason::parse("later").is_none());
 	}
 
 	#[test]

@@ -153,6 +153,30 @@ pub fn decide(
 	let bytes = fs::metadata(target).map(|metadata| metadata.len()).unwrap_or_default();
 	let estimate = cost(shared, &format, &plans, bytes);
 
+	// A rename is a fast gesture and a forty gigabyte video is not, so an oversized
+	// source is not started unasked. It is not refused either: the request is valid,
+	// and `+now` is the person saying they meant it, `docs/watch.md` §6.
+	if !resolved.meta.now && !shared.registry().watch().admits(bytes) {
+		return park(
+			shared,
+			&stem,
+			root,
+			&format,
+			target,
+			id,
+			batch,
+			Reason::Size,
+			Parking {
+				requested,
+				estimate,
+				resolved: Some(&resolved),
+				plans: &plans,
+				consume: true,
+				..Parking::default()
+			},
+		);
+	}
+
 	// An ask is the user's own brake, and nothing else overrides it.
 	if resolved.meta.ask {
 		return park(
@@ -457,6 +481,12 @@ fn repair(
 	}
 
 	let bytes = fs::metadata(target).map(|metadata| metadata.len()).unwrap_or_default();
+
+	// A repair is not consent for an oversized source: it parks instead, and the
+	// person answers both questions at once, `docs/watch.md` §6.
+	if !shared.registry().watch().admits(bytes) {
+		return None;
+	}
 
 	if !keeps_a_record(shared, bytes) {
 		return None;

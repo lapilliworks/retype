@@ -407,7 +407,7 @@ impl JobError {
 /// Absent from every record for a job that was never deferred or repaired.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Parked {
-	/// One of `ask`, `cost`, `intent`, `inapplicable`, `backend`.
+	/// One of `ask`, `cost`, `size`, `intent`, `inapplicable`, `backend`.
 	pub reason: String,
 	/// Unix milliseconds at which a `pending` job runs anyway.
 	#[serde(default, skip_serializing_if = "Option::is_none")]

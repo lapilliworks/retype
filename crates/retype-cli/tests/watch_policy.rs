@@ -1,9 +1,10 @@
 //! What the daemon considers at all, `docs/watch.md` §4 and §6: the built-in list,
 //! hidden names, the user's globs and the size ceiling.
 //!
-//! Every test here is about a rename that does *not* become a job, so the absence of a
-//! record is the evidence. Each fixture also proves it can convert at all, by renaming
-//! one file the policy allows, so a test cannot pass because nothing ever works.
+//! Most tests here are about a rename that does *not* become a job, so the absence of
+//! a record is the evidence. Each fixture also proves it can convert at all, by
+//! renaming one file the policy allows, so a test cannot pass because nothing ever
+//! works. The size ceiling is the exception: it parks the job and waits for a person.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -266,32 +267,73 @@ fn a_user_glob_adds_to_the_list() {
 }
 
 #[test]
-fn a_source_over_the_ceiling_is_passed_over_and_counted() {
+fn a_source_over_the_ceiling_waits_for_consent() {
 	let fixture = Fixture::new("max_source_size = '1kb'", &[]);
 
 	let big = fixture.rename("big.png", "big.webp", &vec![b'p'; 4096]);
 	fixture.rename("small.png", "small.webp", PIXELS);
 
+	fixture.wait_for(&fixture.photos.join("big.png"));
 	fixture.wait_for(&fixture.photos.join("small.png"));
 
-	assert!(
-		!fixture.records().iter().any(|record| record["source"]["path"]
-			.as_str()
-			.is_some_and(|path| path.contains("big"))),
-		"{:?}",
-		fixture.records()
-	);
+	let parked = fixture
+		.records()
+		.into_iter()
+		.rev()
+		.find(|record| record["source"]["path"].as_str().is_some_and(|path| path.contains("big")))
+		.expect("the oversized source has a record");
 
-	// The oversized file is where the rename put it and still holds its bytes; the
-	// small one became its output.
-	assert!(big.exists(), "the oversized file is left alone");
-	assert_eq!(fs::read(&big).unwrap().len(), 4096, "and its bytes are untouched");
+	assert_eq!(parked["state"], "needs-attention", "{parked}");
+	assert_eq!(parked["parked"]["reason"], "size", "{parked}");
+	assert!(parked["parked"]["deadline"].is_null(), "{parked}");
+
+	// The target name is restored while the job waits, so the path never claims a
+	// format its bytes do not hold.
+	assert!(fixture.photos.join("big.png").exists(), "the source name is restored");
+	assert!(!big.exists(), "nothing was written");
+	assert_eq!(fs::read(fixture.photos.join("big.png")).unwrap().len(), 4096);
 	assert!(
 		fixture.photos.join("small.webp").exists(),
-		"the small one was converted"
+		"the small one was converted without asking"
 	);
+
+	// The confirmation is `--now`; there is no timer for this one.
+	let ran = retype()
+		.arg("--state-dir")
+		.arg(&fixture.state)
+		.env("RETYPE_CONFIG", fixture.dir.path().join("retype.toml"))
+		.args(["jobs", "resolve", parked["id"].as_str().unwrap(), "--now"])
+		.output()
+		.unwrap();
+	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+
+	let deadline = Instant::now() + Duration::from_secs(20);
+	loop {
+		let done = fixture.records().into_iter().any(|record| {
+			record["id"] == parked["id"] && record["state"] == "done"
+		});
+
+		if done {
+			break;
+		}
+
+		assert!(Instant::now() < deadline, "the confirmed job did not run: {:?}", fixture.records());
+		std::thread::sleep(Duration::from_millis(50));
+	}
+
+	assert!(fixture.photos.join("big.webp").exists(), "the confirmed job wrote its output");
+}
+
+#[test]
+fn now_in_the_name_confirms_a_source_over_the_ceiling() {
+	let fixture = Fixture::new("max_source_size = '1kb'", &[]);
+
+	fixture.rename("fast.png", "fast.webp+now", &vec![b'p'; 4096]);
+	fixture.wait_for(&fixture.photos.join("fast.png"));
+
 	assert!(
-		fixture.photos.join("small.png").exists(),
-		"an unvalidated copy backend retains its source"
+		fixture.photos.join("fast.webp").exists(),
+		"+now is the consent: {:?}",
+		fixture.records()
 	);
 }

@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use retype_core::deferral::Reason;
 use retype_core::error::Code;
 use retype_core::job::{Job, JobError, JobState, Output, OutputState, Source, Tier};
 use retype_core::journal::Journal;
@@ -86,7 +87,6 @@ impl Server {
 			jobs: Mutex::new(jobs),
 			recent: Default::default(),
 			dropped: AtomicU64::new(0),
-			skipped: AtomicU64::new(0),
 			placeholders: AtomicU64::new(0),
 			primed: AtomicU64::new(0),
 			observed: AtomicU64::new(0),
@@ -552,10 +552,13 @@ impl Server {
 			}
 		};
 
+		let reason = parked.as_ref().and_then(|parked| Reason::parse(&parked.reason));
+
 		let intent = match mode {
 			// The request as written cannot run, which is why it is parked: asking again
-			// is a state error rather than a second failure.
-			"now" if job.state == JobState::NeedsAttention => {
+			// is a state error rather than a second failure. A size park is the exception:
+			// it can run as asked, and `--now` is the consent it waits for.
+			"now" if job.state == JobState::NeedsAttention && !reason.is_some_and(Reason::can_run_as_asked) => {
 				return Ok(Response::error(
 					request.id,
 					WireError::new(
@@ -1049,7 +1052,6 @@ impl Server {
 					}).count()).unwrap_or_default(),
 					"journal": self.journal_path().display().to_string(),
 					"dropped": self.shared.dropped.load(Ordering::Relaxed),
-					"skipped": self.shared.skipped.load(Ordering::Relaxed),
 					"placeholders": self.shared.placeholders.load(Ordering::Relaxed),
 					"primed": self.shared.primed.load(Ordering::Relaxed),
 					"observed": self.shared.observed.load(Ordering::Relaxed),

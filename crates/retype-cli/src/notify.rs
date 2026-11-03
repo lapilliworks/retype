@@ -197,7 +197,15 @@ fn waiting(job: &Job) -> String {
 
 	match reason.is_empty() {
 		true => source,
-		false => format!("{source}: {reason}"),
+		false => format!("{source}: {}", wait_reason(reason)),
+	}
+}
+
+/// The reason as a person reads it. `size` alone does not say what is waiting.
+fn wait_reason(reason: &str) -> &str {
+	match reason {
+		"size" => "over the automatic size limit",
+		other => other,
 	}
 }
 
@@ -688,6 +696,16 @@ mod tests {
 			"1 parked (1.heic: intent); `retype jobs --interactive` decides what happens"
 		);
 		assert!(message.undo.is_empty());
+	}
+
+	#[test]
+	fn a_size_park_is_named_in_plain_words() {
+		let message = Message::of(&[park(job(1, JobState::NeedsAttention), "size")], true).expect("a message");
+
+		assert_eq!(
+			message.body,
+			"1 parked (1.heic: over the automatic size limit); `retype jobs --interactive` decides what happens"
+		);
 	}
 
 	#[test]

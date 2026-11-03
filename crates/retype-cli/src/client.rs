@@ -175,7 +175,6 @@ pub fn describe_status(status: &Value) -> Vec<(String, String)> {
 		("jobs".to_string(), field("jobs")),
 		("parked".to_string(), field("parked")),
 		("dropped".to_string(), field("dropped")),
-		("skipped".to_string(), field("skipped")),
 		("placeholders".to_string(), field("placeholders")),
 		("primed".to_string(), field("primed")),
 		("observed".to_string(), field("observed")),

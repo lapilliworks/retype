@@ -441,10 +441,15 @@ enum Action {
 fn choose(key: char, job: &Value) -> Option<Action> {
 	let key = key.to_ascii_lowercase();
 	let state = job.get("state").and_then(Value::as_str).unwrap_or_default();
+	let reason = job.pointer("/parked/reason").and_then(Value::as_str).unwrap_or_default();
 	let corrected = job.pointer("/parked/corrected").and_then(Value::as_str);
 
+	// A pending job runs on its timer, and a size park may run exactly as asked once
+	// someone says so. The other needs-attention reasons cannot.
+	let can_now = state == "pending" || (state == "needs-attention" && reason == "size");
+
 	match key {
-		'n' if state == "pending" => Some(Action::Now),
+		'n' if can_now => Some(Action::Now),
 		'c' if corrected.is_some() => Some(Action::Convert),
 		'r' => Some(Action::Refuse),
 		's' => Some(Action::Skip),
@@ -672,6 +677,14 @@ mod tests {
 
 		assert_eq!(shortest_prefix(ids[0], &ids), "01m6a");
 		assert_eq!(shortest_prefix(ids[0], &ids[..1]), "01m6");
+	}
+
+	#[test]
+	fn a_size_park_can_run_as_asked() {
+		let sized = serde_json::json!({"state": "needs-attention", "parked": {"reason": "size"}});
+
+		assert_eq!(choose('n', &sized), Some(Action::Now));
+		assert_eq!(choose('c', &sized), None, "there is nothing to reduce");
 	}
 
 	#[test]
