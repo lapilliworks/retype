@@ -53,7 +53,7 @@ retype why --json <path>
 | `xattr` | The intent came from the file's extended attribute |
 | `unknown` | Nothing matched. Not an error: a file may have been made elsewhere |
 
-The fields are `path`, `intent`, `tool`, `engine`, `tier`, `created`, `outputs`, `store` and `confidence`. `confidence` is `exact` when the identity matches, `path-only` when only the path matched, and `none` for an unknown answer.
+The fields are `path`, `intent`, `backend`, `engine`, `tier`, `created`, `outputs`, `store` and `confidence`. `confidence` is `exact` when the identity matches, `path-only` when only the path matched, and `none` for an unknown answer.
 
 Identity matches first and the name only afterwards, because a converted file is usually renamed straight after and the recorded name is then wrong. An identity match also requires the recorded size to agree, since file ids are recycled. An attribute answers with the intent alone, because that is what it holds and what a file cannot say for itself. It is consulted only when the record has nothing to say about the path.
 

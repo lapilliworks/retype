@@ -37,7 +37,7 @@ Three tiers, and two states that are not tiers and never appear in configuration
 | `unverified` | no | A claim exists, but the installed tool reports a version or build fingerprint other than the one it was earned with |
 | `unclaimed` | no | No claim exists for the pair, because the user declared the conversion themselves |
 
-`unverified` and `unclaimed` are reported by `retype plan`, `retype why` and the job record. They are never written to a configuration file and never accepted from one.
+`unverified` and `unclaimed` are reported by `retype explain`, `retype why` and the job record. They are never written to a configuration file and never accepted from one.
 
 ## 4. Where claims come from
 
