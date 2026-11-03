@@ -86,7 +86,7 @@ Presets are described in [Configuration schema](../reference/config.md).
 
 ## What is not available yet
 
-This is pre-alpha, and the name space is larger than the set of conversions that run. Asking for an operation that is declared but has no implementation fails with `E_UNSUPPORTED` rather than doing nothing:
+This is alpha, and the name space is larger than the set of conversions that run. Asking for an operation that is declared but has no implementation fails with `E_UNSUPPORTED` rather than doing nothing:
 
 - `crop`, `gray`, `nometa`, `noprofile`, `lossless`, `size`, `effort`, `compress` and `colors` are declared and not built
 - Video and audio: `cap`, `at`, `mute` work; `trim`, `speed`, `fps`, `normalize`, `mono`, `bitrate`, `codec` are reserved

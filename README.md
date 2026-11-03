@@ -2,7 +2,7 @@
 
 Rename the extension, the file converts.
 
-Status: pre-alpha. The manual marks which behaviour has landed.
+Status: alpha. The manual marks which behaviour has landed.
 
 ## What it will be
 
@@ -30,7 +30,7 @@ convenience on top of the source tier, not a third tier.
   binary includes the daemon, but no service, URI registration or notifier
   bundle is installed. A workaround, not the supported path
 
-Linux, macOS and Windows can install the pre-alpha release without a Rust toolchain.
+Linux, macOS and Windows can install the alpha release without a Rust toolchain.
 
 Linux and macOS:
 

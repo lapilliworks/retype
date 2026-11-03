@@ -61,13 +61,13 @@ the latest release tag through the GitHub API, download the matching archive and
 
 ```sh
 curl -fsSL https://justretype.com/install.sh | bash
-curl -fsSL https://justretype.com/install.sh | bash -s -- --version v0.1.0
+curl -fsSL https://justretype.com/install.sh | bash -s -- --version v0.1.0-alpha
 curl -fsSL https://justretype.com/install.sh | bash -s -- --prefix "$HOME/.local"
 ```
 
 ```powershell
 irm https://justretype.com/install.ps1 | iex
-$env:RETYPE_VERSION = 'v0.1.0'; irm https://justretype.com/install.ps1 | iex
+$env:RETYPE_VERSION = 'v0.1.0-alpha'; irm https://justretype.com/install.ps1 | iex
 $env:RETYPE_PREFIX = 'C:\Tools\retype'; irm https://justretype.com/install.ps1 | iex
 ```
 
@@ -96,7 +96,7 @@ The pre-release scripts are outside that guarantee. Their archives carry a
 SHA-256 checksum and a GitHub build attestation. The installers reject a
 corrupted download; the attestation can be checked out of band with
 `gh attestation verify <archive> --repo LapilliWorks/retype`. Neither is a code
-signature. They are a pre-alpha convenience, not the installed tier. Signing
+signature. They are an alpha convenience, not the installed tier. Signing
 steps are inserted into the same workflow before that tier is published.
 
 ## Rename or move

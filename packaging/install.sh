@@ -20,7 +20,7 @@ Install or update retype from a GitHub release.
 
 Usage:
   curl -fsSL https://justretype.com/install.sh | bash
-  curl -fsSL https://justretype.com/install.sh | bash -s -- --version v0.1.0
+  curl -fsSL https://justretype.com/install.sh | bash -s -- --version v0.1.0-alpha
   curl -fsSL https://justretype.com/install.sh | bash -s -- --prefix /usr/local
 
 Options:

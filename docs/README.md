@@ -2,7 +2,7 @@
 
 Retype converts a file when its extension changes. Rename `photo.heic` to `photo.jpg` and the bytes follow the name.
 
-Status is pre-alpha: some documented behaviour is still being built.
+Status is alpha: some documented behaviour is still being built.
 
 ## What you need
 

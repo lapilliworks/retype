@@ -84,7 +84,7 @@ Newline-delimited JSON, UTF-8, one object per line, maximum frame 1 MiB. A frame
 Handshake, required before any other method:
 
 ```json
-{"id":1,"method":"hello","params":{"ipc":"retype-ipc-1","client":"retype-cli/0.1.0","features":["events"]}}
+{"id":1,"method":"hello","params":{"ipc":"retype-ipc-1","client":"retype-cli/0.1.0-alpha","features":["events"]}}
 {"id":1,"ok":true,"result":{"ipc":"retype-ipc-1","pid":41233,"machine":"7f3c1a2b","uptime_ms":91000,
  "features":["events","notify"],"capabilities":{"backends":["magick"]}}}
 ```
