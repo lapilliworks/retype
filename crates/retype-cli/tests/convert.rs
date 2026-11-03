@@ -228,7 +228,10 @@ fn a_submitted_job_is_visible_and_reachable_by_id() {
 	let asked = String::from_utf8_lossy(&one.stdout);
 
 	assert_eq!(one.status.code(), Some(0), "{}", String::from_utf8_lossy(&one.stderr));
-	assert!(asked.contains("\"v\":\"retype-journal-1\""), "the record keeps its own schema: {asked}");
+	assert!(
+		asked.contains("\"v\":\"retype-journal-1\""),
+		"the record keeps its own schema: {asked}"
+	);
 	assert!(asked.contains("\"state\":\"done\""), "{asked}");
 	assert!(asked.contains("photo.webp"), "{asked}");
 }

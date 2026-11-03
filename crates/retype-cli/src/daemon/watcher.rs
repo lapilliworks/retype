@@ -406,8 +406,7 @@ fn spawn_worker(
 				let mut described: Vec<String> = Vec::new();
 
 				for event in &batch.events {
-					let paths: Vec<String> =
-						event.paths.iter().map(|path| path.display().to_string()).collect();
+					let paths: Vec<String> = event.paths.iter().map(|path| path.display().to_string()).collect();
 
 					if paths.is_empty() {
 						continue;
@@ -470,12 +469,16 @@ fn spawn_worker(
 				shared.observed.fetch_add(scanned_paths, Ordering::Relaxed);
 
 				for fact in facts {
-					crate::verbose::detail(format!(
-						"rename {} -> {}",
-						fact.source.display(),
-						fact.target.display()
-					));
-					dispatch(&shared, &pool, &watched_root, fact, window, &mut held, parked_batch.as_deref());
+					crate::verbose::detail(format!("rename {} -> {}", fact.source.display(), fact.target.display()));
+					dispatch(
+						&shared,
+						&pool,
+						&watched_root,
+						fact,
+						window,
+						&mut held,
+						parked_batch.as_deref(),
+					);
 				}
 
 				continue;
@@ -495,11 +498,7 @@ fn spawn_worker(
 			shared.restore_own_renames(own);
 
 			for fact in &facts {
-				crate::verbose::detail(format!(
-					"rename {} -> {}",
-					fact.source.display(),
-					fact.target.display()
-				));
+				crate::verbose::detail(format!("rename {} -> {}", fact.source.display(), fact.target.display()));
 			}
 
 			// After `feed`, so a caller that sees the count has had its file recorded:
@@ -507,7 +506,15 @@ fn spawn_worker(
 			shared.observed.fetch_add(observed, Ordering::Relaxed);
 
 			for fact in facts {
-				dispatch(&shared, &pool, &watched_root, fact, window, &mut held, parked_batch.as_deref());
+				dispatch(
+					&shared,
+					&pool,
+					&watched_root,
+					fact,
+					window,
+					&mut held,
+					parked_batch.as_deref(),
+				);
 			}
 		}
 
@@ -1038,7 +1045,20 @@ fn run(
 		Ok(lease) => lease,
 		Err(error) => {
 			eprintln!("retype: cannot acquire job ownership: {error}");
-			publish(shared, &settled(shared, &id, now, source, &format, &resolved, &plans, outputs, JobState::Failed));
+			publish(
+				shared,
+				&settled(
+					shared,
+					&id,
+					now,
+					source,
+					&format,
+					&resolved,
+					&plans,
+					outputs,
+					JobState::Failed,
+				),
+			);
 			return;
 		}
 	};
@@ -1313,8 +1333,7 @@ fn run(
 	if has_backup && state == JobState::Done {
 		/* A failed or ambiguous disposal can leave the original only in the backup.
 		 * Keep that backup pinned until the live source is proven intact. */
-		let retained = disposed
-			|| source_holds_original(&snapshot.original, &read_from, target, input_is_temporary);
+		let retained = disposed || source_holds_original(&snapshot.original, &read_from, target, input_is_temporary);
 		if !retained {
 			eprintln!("retype: undo record remains pinned: the source was not verified after disposal failed");
 		} else if let Err(error) = store.finish(&id) {

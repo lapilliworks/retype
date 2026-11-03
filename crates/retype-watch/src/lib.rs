@@ -279,7 +279,15 @@ fn scan(
 		}
 	}
 
-	walk(correlator, root, recursive, &mut admit, &mut stop, &mut primed, &mut facts);
+	walk(
+		correlator,
+		root,
+		recursive,
+		&mut admit,
+		&mut stop,
+		&mut primed,
+		&mut facts,
+	);
 	(coalesce(dedupe(facts)), primed)
 }
 
@@ -469,7 +477,11 @@ mod tests {
 		let kept = batch.without_prefix(state);
 
 		assert_eq!(kept.events.len(), 2, "the state event is dropped, the photo ones stay");
-		assert!(kept.events.iter().all(|event| event.paths.iter().any(|path| path == Path::new("/watch/photo.png"))));
+		assert!(
+			kept.events
+				.iter()
+				.all(|event| event.paths.iter().any(|path| path == Path::new("/watch/photo.png")))
+		);
 	}
 
 	#[test]
@@ -631,7 +643,10 @@ mod tests {
 		let mut correlator = fresh();
 		correlator.observe(Sighting::of(&source).unwrap());
 		fs::rename(&source, &webp).unwrap();
-		let facts = feed(&mut correlator, &batch(vec![rename(RenameMode::Both, &[&source, &webp])]));
+		let facts = feed(
+			&mut correlator,
+			&batch(vec![rename(RenameMode::Both, &[&source, &webp])]),
+		);
 		assert_eq!(sources(&facts), vec![(source.clone(), webp.clone())]);
 
 		// The job restores the source name and records that move. The user renames the
@@ -697,7 +712,11 @@ mod tests {
 			&mut own,
 		);
 		assert!(facts.is_empty(), "an absent path is not a sighting");
-		assert_eq!(own.len(), 1, "the identity outlives a batch that names only the old path");
+		assert_eq!(
+			own.len(),
+			1,
+			"the identity outlives a batch that names only the old path"
+		);
 
 		let facts = feed_with(
 			&mut correlator,

@@ -441,7 +441,10 @@ enum Action {
 fn choose(key: char, job: &Value) -> Option<Action> {
 	let key = key.to_ascii_lowercase();
 	let state = job.get("state").and_then(Value::as_str).unwrap_or_default();
-	let reason = job.pointer("/parked/reason").and_then(Value::as_str).unwrap_or_default();
+	let reason = job
+		.pointer("/parked/reason")
+		.and_then(Value::as_str)
+		.unwrap_or_default();
 	let corrected = job.pointer("/parked/corrected").and_then(Value::as_str);
 
 	// A pending job runs on its timer, and a size park may run exactly as asked once

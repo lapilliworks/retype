@@ -280,7 +280,11 @@ fn a_source_over_the_ceiling_waits_for_consent() {
 		.records()
 		.into_iter()
 		.rev()
-		.find(|record| record["source"]["path"].as_str().is_some_and(|path| path.contains("big")))
+		.find(|record| {
+			record["source"]["path"]
+				.as_str()
+				.is_some_and(|path| path.contains("big"))
+		})
 		.expect("the oversized source has a record");
 
 	assert_eq!(parked["state"], "needs-attention", "{parked}");
@@ -309,19 +313,27 @@ fn a_source_over_the_ceiling_waits_for_consent() {
 
 	let deadline = Instant::now() + Duration::from_secs(20);
 	loop {
-		let done = fixture.records().into_iter().any(|record| {
-			record["id"] == parked["id"] && record["state"] == "done"
-		});
+		let done = fixture
+			.records()
+			.into_iter()
+			.any(|record| record["id"] == parked["id"] && record["state"] == "done");
 
 		if done {
 			break;
 		}
 
-		assert!(Instant::now() < deadline, "the confirmed job did not run: {:?}", fixture.records());
+		assert!(
+			Instant::now() < deadline,
+			"the confirmed job did not run: {:?}",
+			fixture.records()
+		);
 		std::thread::sleep(Duration::from_millis(50));
 	}
 
-	assert!(fixture.photos.join("big.webp").exists(), "the confirmed job wrote its output");
+	assert!(
+		fixture.photos.join("big.webp").exists(),
+		"the confirmed job wrote its output"
+	);
 }
 
 #[test]

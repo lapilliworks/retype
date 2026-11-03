@@ -67,8 +67,7 @@ fn the_version_flag_answers_in_json_when_asked() {
 	let ran = retype().args(["--json", "--version"]).output().unwrap();
 	assert!(ran.status.success());
 
-	let parsed: serde_json::Value =
-		serde_json::from_slice(&ran.stdout).expect("one JSON object, not plain text");
+	let parsed: serde_json::Value = serde_json::from_slice(&ran.stdout).expect("one JSON object, not plain text");
 	assert_eq!(parsed["v"], "retype-cli-json-1");
 	assert_eq!(parsed["ok"], true);
 	assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));

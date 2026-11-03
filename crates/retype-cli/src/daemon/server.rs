@@ -724,7 +724,11 @@ impl Server {
 				let candidates: Vec<&str> = matches.iter().map(|job| job.id.as_str()).collect();
 				Err(WireError::new(
 					Code::JobAmbiguous,
-					format!("'{written}' matches {} jobs: {}", candidates.len(), candidates.join(", ")),
+					format!(
+						"'{written}' matches {} jobs: {}",
+						candidates.len(),
+						candidates.join(", ")
+					),
 				))
 			}
 		}

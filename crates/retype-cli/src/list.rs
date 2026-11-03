@@ -218,14 +218,20 @@ fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: boo
 	}
 }
 
+/// The declared tier and the backend that would produce a pair, followed by the
+/// refusal code, engine, version and fingerprint that qualify it.
+type PairClaim = (
+	String,
+	Option<String>,
+	Option<String>,
+	Option<String>,
+	Option<String>,
+	Option<String>,
+);
+
 /// The tier a pair declares and the backend that would produce it, which is the
 /// same plan a bare intent compiles to.
-fn claim<'a>(
-	registry: &'a Registry,
-	probes: &BTreeMap<&str, ToolStatus<'a>>,
-	from: &str,
-	to: &str,
-) -> (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) {
+fn claim<'a>(registry: &'a Registry, probes: &BTreeMap<&str, ToolStatus<'a>>, from: &str, to: &str) -> PairClaim {
 	let unclaimed = "unclaimed".to_string();
 
 	let Ok(parsed) = intent::parse(to) else {
@@ -279,11 +285,7 @@ fn claim<'a>(
 /// The first code a refusal carries. The human line brackets it so it cannot be
 /// read as a backend name; the JSON object carries it in its own field.
 fn refusal(problems: &retype_core::error::Diagnoses) -> String {
-	problems
-		.codes()
-		.first()
-		.map(ToString::to_string)
-		.unwrap_or_default()
+	problems.codes().first().map(ToString::to_string).unwrap_or_default()
 }
 
 fn tier_name(tier: Tier) -> &'static str {

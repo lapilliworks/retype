@@ -110,7 +110,10 @@ fn resolve(records: &[Record], written: &str) -> std::result::Result<Record, Exi
 	if !JobId::valid_prefix(written) {
 		return Err(ExitCode::from(output::fail(
 			&Code::UsageArgs,
-			format!("'{written}' is not a job handle; use at least {} characters", JobId::PREFIX_MIN),
+			format!(
+				"'{written}' is not a job handle; use at least {} characters",
+				JobId::PREFIX_MIN
+			),
 		)));
 	}
 

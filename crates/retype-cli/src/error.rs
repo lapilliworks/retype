@@ -113,10 +113,7 @@ pub fn exit_code(code: &retype_core::error::Code) -> u8 {
 		// The argument parser or the caller asked for something contradictory.
 		Code::UsageArgs | Code::UsageConflict | Code::UsageOutputCount => 2,
 		// The environment refused, not the request.
-		Code::ToolMissing
-		| Code::ToolVersion
-		| Code::ToolFailed
-		| Code::ToolTimeout => 4,
+		Code::ToolMissing | Code::ToolVersion | Code::ToolFailed | Code::ToolTimeout => 4,
 		// A state conflict: the lock, an ambiguous prefix, or a job that is not in
 		// the state the request needs, `docs/cli.md` §6. A cancellation or an
 		// interruption is a state the user or the daemon put the job in, not a

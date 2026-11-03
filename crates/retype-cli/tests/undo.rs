@@ -169,11 +169,7 @@ fn undo_without_a_target_is_a_usage_error() {
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");
 
-	let output = retype()
-		.args(["undo", "--state-dir"])
-		.arg(&state)
-		.output()
-		.unwrap();
+	let output = retype().args(["undo", "--state-dir"]).arg(&state).output().unwrap();
 
 	assert_eq!(output.status.code(), Some(2));
 	assert!(String::from_utf8_lossy(&output.stderr).contains("E_USAGE_ARGS"));

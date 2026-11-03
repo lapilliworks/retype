@@ -222,23 +222,23 @@ fn a_pair_that_no_single_tool_carries_is_not_offered() {
 
 #[test]
 fn an_impossible_pair_keeps_the_code_out_of_the_backend_field() {
-    let dir = tempfile::tempdir().unwrap();
-    let quiet = dir.path().join("quiet.toml");
-    let text = fs::read_to_string(config(dir.path())).unwrap();
-    fs::write(
-        &quiet,
-        text.replace("command = 'cp'", "command = 'cp-not-installed'")
-            .replace("command = 'cmd'", "command = 'cmd-not-installed'"),
-    )
-    .unwrap();
+	let dir = tempfile::tempdir().unwrap();
+	let quiet = dir.path().join("quiet.toml");
+	let text = fs::read_to_string(config(dir.path())).unwrap();
+	fs::write(
+		&quiet,
+		text.replace("command = 'cp'", "command = 'cp-not-installed'")
+			.replace("command = 'cmd'", "command = 'cmd-not-installed'"),
+	)
+	.unwrap();
 
-    let stdout = run(&quiet, &["list", "--tiers", "--json"]);
-    let pair = stdout
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .find(|pair| pair["from"] == "png" && pair["to"] == "webp")
-        .expect("a png to webp pair");
+	let stdout = run(&quiet, &["list", "--tiers", "--json"]);
+	let pair = stdout
+		.lines()
+		.filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+		.find(|pair| pair["from"] == "png" && pair["to"] == "webp")
+		.expect("a png to webp pair");
 
-    assert!(pair["backend"].is_null(), "{pair}");
-    assert_eq!(pair["error"], "E_TOOL_MISSING", "{pair}");
+	assert!(pair["backend"].is_null(), "{pair}");
+	assert_eq!(pair["error"], "E_TOOL_MISSING", "{pair}");
 }
