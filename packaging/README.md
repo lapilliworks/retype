@@ -36,8 +36,8 @@ The release workflow builds every supported target from `docs/reference/platform
 |---|---|---|
 | Linux x86_64 | `x86_64-unknown-linux-gnu` | Debian 11 container, glibc 2.31 |
 | Linux aarch64 | `aarch64-unknown-linux-gnu` | Debian 11 container on an arm64 runner, glibc 2.31 |
-| macOS x86_64 | `x86_64-apple-darwin` | `macos-13` |
-| macOS aarch64 | `aarch64-apple-darwin` | `macos-14` |
+| macOS x86_64 | `x86_64-apple-darwin` | `macos-15-intel` |
+| macOS aarch64 | `aarch64-apple-darwin` | `macos-15` |
 | Windows x86_64 | `x86_64-pc-windows-msvc` | `windows-latest` |
 | Windows aarch64 | `aarch64-pc-windows-msvc` | `windows-latest`, cross compiled |
 
