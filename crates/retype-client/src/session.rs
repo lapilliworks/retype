@@ -76,7 +76,7 @@ impl Context {
 		Ok(Self {
 			state_dir: state_dir.into(),
 			config: retype_config::user_path(None),
-			daemon: Daemon::current_exe()?,
+			daemon: Daemon::discover(None)?,
 			allow_spawn: true,
 			client: concat!("retype-client/", env!("CARGO_PKG_VERSION")).to_string(),
 		})
