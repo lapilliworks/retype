@@ -268,7 +268,7 @@ No splicing happens inside an argument; a placeholder occupying a whole argument
 
 Placeholders belong to one position and not the other. `{input}`, `{ops}` and `{output}` are layout holes; `{value}` and `{engine.<name>}` are fragment holes. A fragment naming a layout hole, or a layout naming a fragment hole, is a validation error rather than a literal brace in the argv.
 
-Every operation reaches a process this way. There is no in-process backend, and no plan carries a typed implementation instead of an argv.
+Every operation reaches a tool this way. There is no in-process backend.
 
 Backend selection:
 

@@ -55,7 +55,7 @@ Reserved. Ranges and defaults are fixed with the audio and video verticals. Veri
 | `h264` | `quality` | maps to CRF 0 to 51 | FFmpeg codecs documentation, NVENC `cq` |
 | `opus` | `bitrate` | 6 to 512 kbit/s | FFmpeg codecs documentation |
 
-Unverified, to be settled by `ffmpeg -h encoder=<encoder>` at implementation time: libx264 and libx265 CRF bounds, MJPEG `-q:v` bounds, libvorbis `-q:a` bounds, AAC VBR behaviour.
+Not yet verified against `ffmpeg -h encoder=<encoder>`: libx264 and libx265 CRF bounds, MJPEG `-q:v` bounds, libvorbis `-q:a` bounds, AAC VBR behaviour.
 
 ## 4. Sources
 

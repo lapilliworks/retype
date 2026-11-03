@@ -47,7 +47,7 @@ The same run checks a set of properties on a pair: alpha, animation, depth, embe
 
 Size and duration are separate: they come from `retype bench`, not from the fidelity claim, because they depend on the machine and the claim does not.
 
-`delegated` is the answer for a pair no manifest describes: a converter retype did not write, or a format offered because a tool accepts it. There is no fixture to run and nothing to claim, so the tier says what is true, which is that a valid file of the target format was produced.
+`delegated` is the answer for a pair retype has no evidence about: a converter retype did not write, or a format offered because a tool accepts it. There is nothing to verify and nothing to claim, so the tier says what is true, which is that a valid file of the target format was produced.
 
 ## 5. Where a claim is shown
 

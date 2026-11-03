@@ -90,7 +90,7 @@ Orientation is always applied from EXIF and then removed, once, before any geome
 | `quality` | Fidelity dial in the target format's own scale. Range and meaning per format in `docs/reference/dials.md` |
 | `effort` | Speed dial in the target encoder's own scale. Higher is slower |
 | `lossless` | Request lossless encoding. Conflicting with `quality` and `size` |
-| `size` | Re-encode to fit under a byte budget. Implementation searches `quality`, then `effort`; unreachable budgets are `E_VALUE_RANGE` after the search |
+| `size` | Re-encode to fit under a byte budget. The search tries `quality`, then `effort`; an unreachable budget is `E_VALUE_RANGE` after the search |
 | `compress` | Lossless compression level, 0 to 9, for formats whose container has one (PNG deflate) |
 | `colors` | Palette size for paletted formats. 256 means the format maximum |
 
