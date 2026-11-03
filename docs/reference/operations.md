@@ -10,38 +10,40 @@ A group with one member is not declared: repeating one operation is `E_DUPLICATE
 
 Reserved keys, all phases. Keys are permanent; a key is never reused for a different meaning.
 
-| Key | Name | Slot | Exclusive | Parameter | Phase |
+| Key | Name | Slot | Exclusive | Parameter | Status |
 |---|---|---|---|---|---|
-| `quality` | `quality` | 50 | `encode-target` | `int`, range per format | 3 |
-| `lossless` | `lossless` | 50 | `encode-target` | none | 3 |
-| `size` | `size` | 50 | `encode-target` | `size` | 3 |
-| `effort` | `effort` | 50 | none | `int`, range per format | 3 |
-| `compress` | `compress` | 50 | none | `int`, 0 to 9 | 3 |
-| `colors` | `colors` | 50 | none | `int`, 2 to 256 | 3 |
-| `cap` | `cap` | 28 | `scale` | `int`, 16 to 16384 | 3 |
-| `resize` | `resize` | 25 | `scale` | `dim`, 1 to 16384 per side | 3 |
-| `width` | `width` | 26 | `scale` | `int`, 16 to 16384 | 3 |
-| `height` | `height` | 27 | `scale` | `int`, 16 to 16384 | 3 |
-| `crop` | `crop` | 24 | none | `ratio`, 1 to 1000 per side | 3 |
-| `rotate` | `rotate` | 21 | none | `enum`: 90, 180, 270 | 3 |
-| `fliph` | `fliph` | 22 | none | none | 3 |
-| `flipv` | `flipv` | 23 | none | none | 3 |
-| `gray` | `gray` | 30 | none | none | 3 |
-| `nometa` | `nometa` | 60 | none | none | 3 |
-| `noprofile` | `noprofile` | 60 | none | none | 3 |
-| `trim` | `trim` | 10 | `time-slice` | `range` of `time` | 4 |
-| `at` | `at` | 10 | `time-slice` | `time` | 4 |
-| `speed` | `speed` | 10 | `tempo` | `int` 1 to 400, percent | 4 |
-| `fps` | `fps` | 10 | `tempo` | `int` 1 to 240 | 4 |
-| `mute` | `mute` | 40 | `audio-track` | none | 4 |
-| `normalize` | `normalize` | 40 | none | none | 4 |
-| `mono` | `mono` | 40 | none | none | 4 |
-| `bitrate` | `bitrate` | 40 | `audio-rate` | `int`, range per codec | 4 |
-| `codec` | `codec` | 40 | none | `enum`, per container | 4 |
-| `page` | `page` | 10 | `time-slice` | `range` of `int` | 4 |
-| `dpi` | `dpi` | 10 | none | `int`, 36 to 1200 | 4 |
-| `ask` | `ask` | 90 | `confirm` | none | 1 |
-| `now` | `now` | 90 | `confirm` | none | 1 |
+| `quality` | `quality` | 50 | `encode-target` | `int`, range per format | Built |
+| `lossless` | `lossless` | 50 | `encode-target` | none | Declared |
+| `size` | `size` | 50 | `encode-target` | `size` | Declared |
+| `effort` | `effort` | 50 | none | `int`, range per format | Declared |
+| `compress` | `compress` | 50 | none | `int`, 0 to 9 | Declared |
+| `colors` | `colors` | 50 | none | `int`, 2 to 256 | Declared |
+| `cap` | `cap` | 28 | `scale` | `int`, 16 to 16384 | Built |
+| `resize` | `resize` | 25 | `scale` | `dim`, 1 to 16384 per side | Built |
+| `width` | `width` | 26 | `scale` | `int`, 16 to 16384 | Built |
+| `height` | `height` | 27 | `scale` | `int`, 16 to 16384 | Built |
+| `crop` | `crop` | 24 | none | `ratio`, 1 to 1000 per side | Declared |
+| `rotate` | `rotate` | 21 | none | `enum`: 90, 180, 270 | Built |
+| `fliph` | `fliph` | 22 | none | none | Built |
+| `flipv` | `flipv` | 23 | none | none | Built |
+| `gray` | `gray` | 30 | none | none | Declared |
+| `nometa` | `nometa` | 60 | none | none | Declared |
+| `noprofile` | `noprofile` | 60 | none | none | Declared |
+| `trim` | `trim` | 10 | `time-slice` | `range` of `time` | Reserved |
+| `at` | `at` | 10 | `time-slice` | `time` | Built |
+| `speed` | `speed` | 10 | `tempo` | `int` 1 to 400, percent | Reserved |
+| `fps` | `fps` | 10 | `tempo` | `int` 1 to 240 | Built |
+| `mute` | `mute` | 40 | `audio-track` | none | Built |
+| `normalize` | `normalize` | 40 | none | none | Reserved |
+| `mono` | `mono` | 40 | none | none | Reserved |
+| `bitrate` | `bitrate` | 40 | `audio-rate` | `int`, range per codec | Reserved |
+| `codec` | `codec` | 40 | none | `enum`, per container | Reserved |
+| `page` | `page` | 10 | `time-slice` | `range` of `int` | Reserved |
+| `dpi` | `dpi` | 10 | none | `int`, 36 to 1200 | Reserved |
+| `ask` | `ask` | 90 | `confirm` | none | Built |
+| `now` | `now` | 90 | `confirm` | none | Built |
+
+Status is `Built` when this build has a tool fragment for the operation, `Declared` when the grammar accepts it but no tool fragment exists yet, and `Reserved` when the name and its parameter are fixed but the operation is not implemented. `Declared` and `Reserved` operations fail with `E_UNSUPPORTED` rather than doing nothing.
 
 Slots are integers used for presentation: they order a generated editor's controls and the rows of `retype list`, and they never reorder an intent string. Two operations that interact do not share a slot, so a generated interface does not present them as interchangeable. The geometry numbers run `rotate` 21, `fliph` 22, `flipv` 23, `crop` 24, `resize` 25, `width` 26, `height` 27, `cap` 28, which is a workable order to show them in and nothing more.
 
@@ -124,15 +126,15 @@ Orientation is always applied from EXIF and then removed, once, before any geome
 
 `ico` requires both dimensions at most 256. A plan that would produce a larger icon is rejected with `E_INAPPLICABLE` and a hint to add `cap256`, rather than left to the encoder to fail.
 
-Per-format constraints of this kind come from `docs/advanced/converters.md`, because they are properties of the encoder rather than of the operation.
+Per-format constraints of this kind come from [Tools](../advanced/converters.md) §6, because they are properties of the encoder rather than of the operation.
 
 ## 6. Not specified yet
 
-`at`, `fps`, `mute` and `cap` have landed for video and audio, `docs/advanced/converters.md` §3.1. Documents landed with their formats and no operations: `md`, `html`, `docx`, `odt`, `epub` and `pdf` convert through pandoc, `docs/advanced/converters.md` §5.
+`at`, `fps`, `mute` and `cap` work for video and audio. Documents have their formats and no operations: `md`, `html`, `docx`, `odt`, `epub` and `pdf` convert through pandoc.
 
-Archives take no operations at all: `zip`, `tar` and `tar.gz` store the bytes they are given, and an operation that changed them would make the format an encoder. A plan that asks for one is `E_UNSUPPORTED` naming the archive. A directory is not an archive source: keeps the gesture to container-to-container repacking.
+Archives take no operations at all: `zip`, `tar` and `tar.gz` store the bytes they are given, and an operation that changed them would make the format an encoder. A plan that asks for one is `E_UNSUPPORTED` naming the archive. A directory is not an archive source, so the gesture stays container to container.
 
-`crop`, `gray`, `nometa`, `noprofile`, `lossless`, `size`, `effort`, `compress` and `colors` are declared and do not yet have a backend fragment, so using one is `E_UNSUPPORTED` rather than a silent no-op. Their reasons are in.
+`crop`, `gray`, `nometa`, `noprofile`, `lossless`, `size`, `effort`, `compress` and `colors` are declared and do not yet have a tool fragment, so using one is `E_UNSUPPORTED` rather than a silent no-op.
 
 `trim`, `speed`, `normalize`, `mono`, `bitrate`, `codec`, `page` and `dpi` stay reserved with their slots and parameters, and a job that uses one is `E_UNSUPPORTED` rather than `E_NAME_UNKNOWN`. Two of them have a reason rather than a pending vertical:
 

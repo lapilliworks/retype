@@ -82,7 +82,7 @@ The size limit exists because a rename is a fast gesture and a 40 GiB video is n
 | Concern | Rule |
 |---|---|
 | Debounce | The daemon collects for four hundred milliseconds and waits for two hundred of quiet, capped at three seconds. A directory's `debounce_ms` holds its renames until that many milliseconds have passed since the last one, so an application that saves by renaming twice is converted once, under the name it finally chose |
-| Scope | In-place renames only, per |
+| Scope | In-place renames only. A move that changes the directory is not a conversion |
 | Batching | Renames arriving within one window are collected into one job batch and one notification |
 | Ordering | Queue order follows the earliest event in the batch, not arrival order of the last |
 | Self-inflicted events | Recognised by temp prefix and by identity, and never treated as user intent |
@@ -112,7 +112,7 @@ A pause is state; `paused = true` in a directory file is policy. Policy wins, be
 
 ## 9. Network filesystems
 
-Out of scope, per the Deferred table. The daemon detects an obvious network mount at registration, warns once, and does not refuse the registration, because a warning that turns out to be wrong is better than a refusal that blocks a legitimate setup.
+Not supported yet. The daemon detects an obvious network mount at registration, warns once, and does not refuse the registration, because a warning that turns out to be wrong is better than a refusal that blocks a legitimate setup.
 
 Event delivery on network mounts is unreliable in both directions, and identity is often synthetic. A user who registers a network path is choosing to rely on the `From` and `To` pair.
 
@@ -138,4 +138,4 @@ Capability is a property of the platform, in three tiers:
 
 The tier is decided once at startup, because the session is either there or it is not. A daemon with no notifier still converts: the tier is about being told, never about the work.
 
-Undo is the action, and it runs from the daemon rather than through a URI handler, because `notify-send --wait` answers on its own standard output and there is nothing else to listen to. The CLI handles `retype://job/<id>` undo, cancel and resolve. The Windows toast needs no bundle: the script registers `com.lapilliworks.retype` under `HKCU\Software\Classes\AppUserModelId` and falls back to PowerShell's own identifier when the shell refuses that one. Buttons on Windows, and the macOS User Notifications centre, need the signed notifier bundle; that bundle is the first signed artifact of a later release, not a library call.
+Undo is the action, and it runs from the daemon rather than through a URI handler, because `notify-send --wait` answers on its own standard output and there is nothing else to listen to. The CLI handles `retype://job/<id>` undo, cancel and resolve. The Windows toast needs no bundle: the script registers `com.lapilliworks.retype` under `HKCU\Software\Classes\AppUserModelId` and falls back to PowerShell's own identifier when the shell refuses that one. Buttons on Windows, and the macOS User Notifications centre, need the signed notifier bundle, which is not built yet.

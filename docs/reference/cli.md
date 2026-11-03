@@ -240,9 +240,9 @@ retype fidelity [--pair <from>:<to>] [--family <name>] [--write <path>] [--manif
 
 The command runs the conversion each pair declares, records the tier, the backend, the resolved engine, the tool version, the build fingerprint and what the pair kept, and reports the state of every claim: `new` when no manifest had one, `earned` when the installed build is the one it was earned with, `unverified` when it is not, `docs/advanced/fidelity.md` §6.
 
-Alongside the sample conversion, every fixture of the source format is converted through the same plan and probed on both sides, so the PROPERTIES column says which properties survived: `alpha,depth,icc` when all three did, `alpha; !depth` when one did not. The fixtures are the checked-in ones in `fixtures/fidelity`, or `--fixtures` names another set, `docs/advanced/fidelity.md` §4.
+Alongside the sample conversion, a set of small property files is converted through the same plan and probed on both sides, so the PROPERTIES column says which properties survived: `alpha,depth,icc` when all three did, `alpha; !depth` when one did not. `--fixtures` names the directory those files are read from, `docs/advanced/fidelity.md` §4.
 
-`--write` reads that manifest, records what this run earned and writes it back; the file is a release artifact, not state, so the path is the caller's. `--manifest` compares against one without rewriting it. `--render` replaces the table between the `claims` markers in a document, which is how `docs/advanced/fidelity.md` §8 is filled.
+`--write` reads a manifest, records what this run earned and writes it back. `--manifest` compares against one without rewriting it. `--render` replaces the table between the `claims` markers in a document, which is how `docs/advanced/fidelity.md` §8 is filled.
 
 A claim that declares `exact` and is `unverified` exits 4 rather than silently downgrading a promise of no loss. So does an `exact` claim whose source has no fixture, and one whose fixtures lost a property: `exact` means nothing was lost, and a run that cannot show it has not earned the word. Nothing earned at all exits 4 for the same reason.
 

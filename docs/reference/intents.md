@@ -303,7 +303,7 @@ An implementation conforms when all of the following hold as property tests over
 - T5 The registry satisfies R1, and a duplicate name fails to load
 - T6 Diagnostics cover the offending substring, never the whole intent
 
-The corpus is generated from the registry's own declarations with a fixed seed, so a format or operation added to the shipped table is covered without a new test, and a failing case reproduces from the code alone. The properties run in `crates/retype-core/tests/conformance.rs`.
+The corpus is generated from the registry's own declarations with a fixed seed, so a format or operation added to the shipped table is covered without a new test, and a failing case reproduces from the code alone.
 
 ## 15. Examples
 

@@ -6,13 +6,13 @@ Declarative configuration for tools, formats, operations, presets and policy.
 
 Schema version: `retype-config-1`. Every configuration file begins with `version = 'retype-config-1'`; a file declaring a different major fails to load with an explanation.
 
-One schema, two sources, one validator.
+One schema, three sources:
 
-- `builtin.toml` ships inside the binary and defines every tool, format, operation and preset the product claims
-- `retype.toml` in the user config directory overrides and extends it by name
+- The shipped defaults define every tool, format, operation and preset the product claims
+- `retype.toml` in the user config directory overrides and extends them by name
 - `.retype.toml` in a watched directory carries policy only
 
-Both files are parsed by the same loader and validated by the same rules. Nothing is declared twice, and no operation, format, tool or preset is hardcoded in Rust at all.
+The files are validated by the same rules. Nothing is declared twice.
 
 Configuration is declarative throughout. There is no shell evaluation, no conditionals, no string interpolation beyond a closed placeholder set.
 
@@ -99,7 +99,7 @@ layout = ['{input}', '{ops}', '{output}']
 
 The layout is the whole reason a tool is configuration: `7zz` takes its output before its input and `ffmpeg` needs `-i` in front of its input, and neither fact belongs in code.
 
-A bare `command` resolves in the managed toolchain first, then in `PATH`; an absolute path is used as written and pins the user's choice. The managed directory is `<state>/tools/bin` and is populated only by the GUI from a signed distribution list, `docs/advanced/converters.md` §2; the CLI never writes to it. There is no per-tool source switch: pinning is expressed by an absolute path, and the fixed order keeps.
+A bare `command` resolves in the managed toolchain first, then in `PATH`; an absolute path is used as written and pins the user's choice. The managed directory is `<state>/tools/bin` and is populated only by the GUI from a signed distribution list, `docs/advanced/converters.md` §2; the CLI never writes to it. There is no per-tool source switch: pinning is expressed by an absolute path, and the fixed order is the rule.
 
 `aliases` are other executable names for the same tool, tried in declared order after `command` when that candidate is absent or unusable. They change neither the tool's name nor its `[tools.<name>]` key, so every `argv` fragment and `backends.prefer` entry still names the declared tool. An absolute `command` is a pin and suppresses the aliases. A candidate below its version floor, or missing a required component, is skipped rather than shadowing a usable alias, and `retype doctor` reports which candidate answered.
 
@@ -107,7 +107,7 @@ A bare `command` resolves in the managed toolchain first, then in `PATH`; an abs
 
 A tool can be installed, new enough, and still lack the delegate that makes a format work: ImageMagick without libheif opens a HEIC file and fails at the codec. `components` names the substrings that have to appear in the probe output, so the answer to "why can't I convert this" is *this build has no libheif* rather than *magick failed*.
 
-The declaration is per tool because that is what the probe can observe. Of the capability tuple in `docs/advanced/converters.md` §1, the format and the direction belong to the operation; the build variant, version floor and components belong to the tool and its manifest.
+The declaration is per tool because that is what the probe can observe. The format and the direction belong to the operation; the build variant, version floor and components belong to the tool.
 
 ### 3.1 Engines
 
@@ -160,7 +160,7 @@ args = ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart']
 |---|---|
 | `family` | `image`, `audio`, `video`, `document`, `archive`, `folder` |
 | `direction` | `decode`, `encode` or `both`, default `both`. A format that is read and never written, such as `dng`, or written and never read, such as `pdf` |
-| `native` | `zip`, `tar`, `tar.gz` or `7z`. The format is repacked rather than converted. Only the `archive` family may name one, and a native target needs a native source, because a container is converted from another container. `7z` is repacked through the declared tool, `docs/advanced/converters.md` §7 |
+| `native` | `zip`, `tar`, `tar.gz` or `7z`. The format is repacked rather than converted. Only the `archive` family may name one, and a native target needs a native source, because a container is converted from another container. `7z` is repacked through the declared tool, `docs/advanced/converters.md` §6.4 |
 | `lossy` | Whether the format is lossy |
 | `alpha` | Whether the format carries alpha |
 | `tier` | Default fidelity tier for pairs targeting this format |
@@ -277,7 +277,7 @@ Backend selection:
 prefer = ['magick', 'ffmpeg', 'pandoc', '7zz']
 ```
 
-`prefer` names tools and nothing else. A file that omits the table gets every declared tool in name order, which is deterministic but rarely what a user wants, so the shipped file states an order. Archive formats are not one backend: `zip` and `tar` are native, and `7zz` carries `.7z` only, `docs/advanced/converters.md` §7.
+`prefer` names tools and nothing else. A file that omits the table gets every declared tool in name order, which is deterministic but rarely what a user wants, so the shipped file states an order. Archive formats are not one backend: `zip` and `tar` are native, and `7zz` carries `.7z` only, `docs/advanced/converters.md` §6.4.
 
 The first backend in `prefer` that implements every operation in the plan and is available wins. Determinism is required: a plan never depends on discovery order, so a missing earlier backend moves the plan down the list rather than shuffling it.
 
@@ -375,13 +375,9 @@ paused = false
 | `paused` | Whether the directory is watched at all. `retype watch` refuses it with `E_WATCH_PAUSED_BY_POLICY` naming the file, rather than accepting a registration that the next read would undo |
 | `debounce_ms` | How long a rename here waits for the file to stop changing before anything decides, `docs/reference/watch.md` §7. Below the daemon's own window it changes nothing |
 
-Every key is read. A `[conversions]` table was specified here once and has been dropped rather than built, for two reasons.
+Everything a directory file can do narrows the request. It cannot add a preset or an operation to a rename nobody typed, because the rename is the request: `a.heic.png` asks for a png, and `headshot` there would expand the request rather than bound it. `limits` clamps a value that was asked for, and the derived name says the clamped number.
 
-A per-pair `preset` would add operations to a rename nobody typed, and the rename is the request: `a.heic.png` asks for a png, and a directory deciding it also means `headshot` is an expansion of the request rather than a bound on it. Everything in this section narrows. `limits` clamps a value that was asked for and the derived name says the clamped number; a preset would invent a value that was not.
-
-A per-pair `enabled = false` is a different and much smaller idea: refusing a *target format* here, which `deny` cannot express because it refuses operations. If that is wanted it should be specified as a format refusal beside `deny`, in one line, rather than as half of a rule engine. The gap is recorded in.
-
-A file is read when it changes rather than on a second watcher: the answer is cached per directory and re-read when its modification time moves, which is the same answer `docs/reference/watch.md` §2 asks for with less machinery.
+A file is re-read when its modification time changes, so editing it takes effect without re-registering the directory.
 
 An undeclared key here is ignored rather than refused, unlike the host file: every key that could widen something is refused by name, and a key nothing reads cannot change a decision. The host file has no such excuse, so it refuses one.
 
@@ -451,7 +447,7 @@ args = ['-size', '2400x1600', '-seed', '0', 'plasma:fractal', '{output}']
 | `[bench.seed]` | The format a family's sample is generated in, one entry per family that is measured |
 | `[bench.sample.<family>.<tool>]` | An argv that writes the sample to `{output}` |
 
-The argv is a tool's own way of drawing something, so it is declared rather than written in Rust. `{output}` is the only hole: the sample generator has no input. The first declared tool that is installed generates the sample, in `[backends]` order, so the preference the product states is the one the benchmark measures.
+The argv is a tool's own way of drawing something, so it is declared rather than written into the program. `{output}` is the only hole: the sample generator has no input. The first declared tool that is installed generates the sample, in `[backends]` order, so the preference the product states is the one the benchmark measures.
 
 A seed is a statement about which format a family is sampled in, not a promise that a tool is installed, so a seed whose generators have all been removed still loads: `retype bench` reports that family as unmeasurable. A family may also be measured without being listed here, by naming pairs with `--pair`.
 
@@ -476,4 +472,4 @@ actions = true
 
 One notification per rename batch, after its last job settles, so a directory of photographs is one interruption rather than twelve. It says what happened, not what was attempted, and it names every file and what came of it: `3 converted (a.heic → a.jpg, b.heic → b.jpg, c.heic → c.jpg)`, `1 converted (d.heic → d.jpg), 1 failed (e.heic: magick exited 1: no decode delegate)`, `1 converted (f.heic → f.jpg; dropped quality80)`, `1 cancelled (g.heic), 1 superseded (h.heic)`, or `1 parked (i.heic: cost); the deferral timer will run it`. A failure carries the tool's own diagnosis, a partial conversion names the output it missed, and a job that needs attention says where to decide: `1 parked (j.heic: intent); retype jobs --interactive decides what happens`. Any group with more than three jobs says `and N more` rather than growing without bound.
 
-The button is Undo, and it reverses every job of the batch that has a record. Tweak belongs to the editor and to the `retype://` handler, both of which are a later release's later half.
+The button is Undo, and it reverses every job of the batch that has a record. Tweak belongs to the editor and to the `retype://` handler, both of which are not built yet.

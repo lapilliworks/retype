@@ -16,31 +16,21 @@ One error type, one set of codes, one mapping to every surface.
 
 ## 2. Anatomy
 
-```rust
-pub struct Error {
-	pub code: Code,
-	pub category: Category,
-	pub message: String,
-	pub detail: Option<serde_json::Value>,
-	pub hint: Option<String>,
-	pub span: Option<Span>,
-	pub report: Option<String>,
-}
-```
+Every error carries:
 
-- `code` is stable and never reused
-- `message` is one sentence, naming the thing and what to do next
-- `detail` carries machine-readable context for `--json`
-- `span` exists only for grammar diagnostics
-- `report` exists only for `internal`, and is what `retype doctor --report` bundles
+- `code`, stable and never reused
+- `category`, which decides the exit status and the recovery action
+- `message`, one sentence naming the thing and what to do next
+- `hint`, when a remedy exists
+- `detail`, machine-readable context for `--json`
+- `span`, for grammar diagnostics, covering the offending part of the intent
+- `report`, for an internal failure, which is what `retype doctor --report` bundles
 
 ## 3. Codes
 
 Grammar diagnostics keep their unprefixed names, fixed by `retype-grammar-1`: `E_ANCHOR`, `E_CHARSET`, `E_INTENT_EMPTY`, `E_TOO_LONG`, `E_TOO_MANY`, `E_GROUP_EMPTY`, `E_TOKEN_EMPTY`, `E_FORMAT_UNKNOWN`, `E_FORMAT_FOLDER`, `E_NAME_UNKNOWN`, `E_VALUE_MISSING`, `E_VALUE_UNEXPECTED`, `E_VALUE_SYNTAX`, `E_VALUE_RANGE`, `E_DUPLICATE`, `E_EXCLUSIVE`, `E_META_CONFLICT`, `E_NOOP`, `E_INAPPLICABLE`, `E_UNSUPPORTED`. `E_META_CONFLICT` is the one grammar code that can be a warning rather than a diagnosis, `docs/reference/intents.md` §6.
 
-A code is an enum in `retype-core::error::Code`, serialised as the string above. The variant name is the only place a code is written: `IoPermission` is `E_IO_PERMISSION` because the derive in `retype-macros` says so. Renaming a variant therefore changes a code, which is a wire-breaking change, and the test at the end of this section exists to make that loud.
-
-The enum has an `Unknown` variant, so a client that receives a code from a later version reports it rather than substituting a nearer one, and matching on a known code is exhaustive.
+A client that receives a code from a later version reports it rather than substituting a nearer one.
 
 Everything else is namespaced, and the table lists every code in full so that a search finds it.
 
@@ -55,7 +45,7 @@ Everything else is namespaced, and the table lists every code in full so that a 
 | Transport | `E_IPC_VERSION`, `E_IPC_HANDSHAKE`, `E_IPC_FRAME`, `E_IPC_METHOD`, `E_IPC_UNAVAILABLE`, `E_IPC_AMBIGUOUS`, `E_IPC_RESYNC`, `E_IPC_SUPERVISED`, `E_IPC_AUTH`, `E_IPC_INTERNAL` |
 | Bugs | `E_INTERNAL_INVARIANT`, `E_INTERNAL_PANIC`, `E_INTERNAL_UNEXPECTED` |
 
-`docs/dev/architecture/ipc.md` §8 defines the transport codes; they are listed here as well so that one table answers "what can this build emit". `E_CFG_SHADOWED` is the one configuration code that is a warning rather than a failure: a user preset replacing a shipped one is allowed and reported. A test compares this document against the enum in both directions, so a code that exists without documentation, or is documented without existing, fails the build.
+[Daemon and client protocol](../dev/architecture/ipc.md) §8 defines the transport codes; they are listed here as well so that one table answers "what can this build emit". `E_CFG_SHADOWED` is the one configuration code that is a warning rather than a failure: a user preset replacing a shipped one is allowed and reported.
 
 ## 4. Categories
 

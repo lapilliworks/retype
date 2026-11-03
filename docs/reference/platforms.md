@@ -44,14 +44,14 @@ Nothing in the product requires an attribute or a stream. Identity is the mechan
 | Item | Rule |
 |---|---|
 | Length | Long path awareness is enabled in the Windows manifest, and paths are passed with the `\\?\` prefix where the API requires it |
-| Encoding | Paths are `OsStr` end to end; no lossy conversion outside diagnostics |
+| Encoding | Paths are handled in the platform's native form; no lossy conversion outside diagnostics |
 | Case sensitivity | Detected by probing at startup, not assumed per platform. Extension comparison is case-insensitive regardless |
 | Unicode normalisation | Not performed. macOS reports NFD, and the product compares bytes rather than normalising |
 | Reserved names | Windows device names are rejected as output names rather than producing an unusable file |
 
 ## 5. Delivery tiers
 
-Two tiers are defined, and the difference matters enough to be explicit in the documentation. Pre-release installer routes sit outside them.
+Two delivery tiers are defined, and they differ in what they install. Pre-release installer routes sit outside them.
 
 | Tier | How | Contains | Supported |
 |---|---|---|---|
@@ -121,7 +121,7 @@ The distribution manifest has its own Ed25519 key, kept offline and separate fro
 
 ## 7. Notifications and scheme registration
 
-Capability per platform, matching:
+Capability per platform:
 
 | Platform | Actions | Owner |
 |---|---|---|
@@ -139,5 +139,5 @@ When the GUI is installed it registers `retype://` and the notifier bundle defer
 | macOS 12 and older | Well below current support, and fragments the notification code |
 | Windows 8.1 and older | No modern toast API |
 | Android, iOS | No rename surface to hang the product on |
-| Network filesystems | Needs its own stage, per the Deferred table |
+| Network filesystems | Not supported yet; see [Watch scope](watch.md) §9 |
 | Fonts, 3D, CAD formats | Not formats this product converts |
