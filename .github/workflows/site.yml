@@ -27,7 +27,7 @@ jobs:
       - name: Build the bundle
         env:
           SITE_RUNTIME: docker
-        run: site/bin/bundle.sh
+        run: sites/bin/bundle.sh
 
       # Direct upload, not a Pages build: the tree is built here because it needs
       # the repository, and Cloudflare only receives the finished files.
@@ -37,4 +37,4 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           wranglerVersion: '4'
-          command: pages deploy site/dist --project-name=retype --branch=${{ github.ref_name }}
+          command: pages deploy sites/dist --project-name=retype --branch=${{ github.ref_name }}

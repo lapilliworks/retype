@@ -3,7 +3,8 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"dev": "node bin/serve.mjs"
+		"dev": "node bin/serve.mjs",
+		"build": "node bin/build.mjs"
 	},
 	"engines": {
 		"node": ">=20"

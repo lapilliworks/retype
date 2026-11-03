@@ -1,0 +1,12 @@
+{
+	"name": "retype-docs-site",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "node ../bin/dev.mjs",
+		"build": "vitepress build"
+	},
+	"devDependencies": {
+		"vitepress": "1.6.4"
+	}
+}

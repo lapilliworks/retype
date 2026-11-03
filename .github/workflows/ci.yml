@@ -74,13 +74,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: node site/lib/checks.mjs
+      - run: node sites/lib/checks.mjs
       # The bundle is what deploys, so a docs build that breaks fails here rather
       # than at the first push to the default branch.
       - name: Build the bundle
         env:
           SITE_RUNTIME: docker
-        run: site/bin/bundle.sh
+        run: sites/bin/bundle.sh
 
   probe:
     name: event probe (${{ matrix.os }})
