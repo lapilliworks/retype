@@ -11,7 +11,8 @@ retype <command> [arguments] [flags]
 | Command | Purpose |
 |---|---|
 | `convert <input> <intent>` | One-shot conversion. Alias `c` |
-| `watch [<dir>...] [--non-recursive] [--pause\|--resume]` | Register directories, or list registrations with no arguments |
+| `watch [<dir>...] [--non-recursive] [--pause\|--resume]` | Register directories; with none, the current directory |
+| `watching` | List registrations |
 | `unwatch <dir>...` | Deregister directories |
 | `daemon [--detached] [start\|stop [--now] [--force]\|status]` | Foreground by default. `stop` drains, `--now` cancels, `--force` overrides a supervisor's refusal |
 | `jobs list\|get\|cancel\|resume\|resolve\|logs` | Queue inspection and control |
@@ -125,7 +126,8 @@ A backend that the plan needs and the machine lacks is reported in the plan and 
 
 ```
 retype list [--tiers]
-retype watch [<dir>...]
+retype watch [<dir>...] [--non-recursive] [--pause|--resume]
+retype watching
 retype unwatch <dir>...
 ```
 
@@ -135,9 +137,9 @@ retype unwatch <dir>...
 
 `--json` writes one object per line with a `kind` of `format`, `operation`, `preset`, `backend` or `pair`. A pair that cannot be carried has a null `backend` and a separate `error` field naming the code; the human line brackets the same code where a backend would go, because a blank column would read as "not declared" rather than "not possible here".
 
-`watch --json` writes one object per registration with a `kind` of `watch`; a registration result and an `unwatch` result carry the envelope and a `kind`. The `added` field is Unix milliseconds.
+`watching --json` writes one object per registration with a `kind` of `watch`; a registration result and an `unwatch` result carry the envelope and a `kind`. The `added` field is Unix milliseconds.
 
-`watch` with no arguments lists registrations as `<path>  <recursive>  <policy summary>`. With arguments it registers each directory; registration is idempotent, and the daemon re-reads the file so a running one picks the directory up within a second. `--non-recursive` registers only that directory rather than its subtree. `--pause` stops converting renames in a registration until `--resume`; a directory file with `paused = true` outranks a resume and is refused with `E_WATCH_PAUSED_BY_POLICY`. `watch` starts nothing itself, so it can be scripted.
+`watching` prints registrations as `<path>  <recursive>  <policy summary>`. `watch` registers each directory it is given, and with none the current directory, so `watch` and `watch .` register the same thing. Registration is idempotent, and the daemon re-reads the file so a running one picks the directory up within a second. `--non-recursive` registers only that directory rather than its subtree. `--pause` stops converting renames in a registration until `--resume`, and applies to the current directory when none is named; a directory file with `paused = true` outranks a resume and is refused with `E_WATCH_PAUSED_BY_POLICY`. Neither command starts anything itself, so both can be scripted.
 
 The summary column is the directory's own `.retype.toml` policy, where it has one, because "what will happen here" is the question a listing is asked.
 
@@ -219,6 +221,7 @@ retype c photo.heic webp+quality80+cap1080
 retype c clip.mov mp4+cap1080+mute
 retype c photo.heic jpg,png
 retype watch ~/Pictures ~/Documents
+retype watching
 retype jobs list --state needs-attention
 retype jobs get 01j8z
 retype undo --last

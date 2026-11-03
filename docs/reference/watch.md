@@ -8,7 +8,7 @@ What the daemon watches, what it ignores, and what it does at startup.
 |---|---|
 | Unit | A directory, registered by absolute path |
 | Canonicalisation | Symlinks resolved; the canonical path is the identity of the registration |
-| Recursion | Recursive by default, with no depth limit. `retype watch --non-recursive` registers one directory only |
+| Recursion | Recursive by default, with no depth limit. `retype watch --non-recursive` registers one directory only; no directory means the current one |
 | Nesting | Allowed. A registration inside another is recorded, and its own `.retype.toml` applies to its subtree |
 | Persistence | `watches.toml` in the state directory, re-read on daemon start |
 | Missing path | A registration whose path is gone stays registered, is marked unavailable in `daemon status`, and is retried every 30 s |
@@ -106,7 +106,7 @@ The size limit exists because a rename is a fast gesture and a 40 GiB video is n
 A directory can produce more rename events than any queue should absorb, for example a build system writing through a watched tree. Rules:
 
 - Above 256 queued jobs, new automatic jobs are dropped with a warning and a counter, and the notification says conversion is paused rather than pretending it succeeded. The cap is fixed; a machine with a different number of cores does not get a different answer
-- `pause` and `resume` exist as `retype watch --pause <dir>` and `--resume <dir>`, and as a switch in the directory file (`paused = true`) so a project can ship the setting
+- `pause` and `resume` exist as `retype watch --pause [<dir>]` and `--resume [<dir>]`, and as a switch in the directory file (`paused = true`) so a project can ship the setting
 
 A pause is state; `paused = true` in a directory file is policy. Policy wins, because a committed project setting must not be silently undone by a client that resumed once and departed. Resuming a policy-paused directory is refused with `E_WATCH_PAUSED_BY_POLICY`, naming the file to edit, which is the only case where the two can disagree.
 

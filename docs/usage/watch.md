@@ -5,9 +5,10 @@ A registered folder converts a file whenever its extension changes, from any pro
 ## Registering
 
 ```
-retype watch ~/Pictures                 # register, recursively
+retype watch                            # register the current folder, recursively
+retype watch ~/Pictures                 # register another, recursively
 retype watch ~/Pictures --non-recursive # this folder only
-retype watch                            # list what is registered
+retype watching                         # list what is registered
 retype unwatch ~/Pictures               # stop watching it
 ```
 
@@ -74,7 +75,9 @@ Automatic conversion is off above four gigabytes per source, because a rename is
 ## Pausing
 
 ```
+retype watch --pause
 retype watch ~/Pictures --pause
+retype watch --resume
 retype watch ~/Pictures --resume
 ```
 

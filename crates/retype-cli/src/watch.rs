@@ -1,4 +1,4 @@
-//! `retype watch` and `retype unwatch`, `docs/cli.md` §4.
+//! `retype watch`, `retype watching` and `retype unwatch`, `docs/cli.md` §4.
 //!
 //! Registration only: the file a directory is recorded in is the daemon's, and
 //! the daemon's watcher is what acts on it. Nothing here starts a process, so a
@@ -28,16 +28,16 @@ pub fn run(
 	pause: bool,
 	resume: bool,
 ) -> Result<ExitCode> {
-	if directories.is_empty() {
-		if pause || resume {
-			return Ok(ExitCode::from(output::fail(
-				&Code::UsageArgs,
-				"watch --pause and --resume need at least one directory",
-			)));
+	// No directory means the current one, so `watch` is the command for "watch
+	// here" and `watch .` says the same thing.
+	let current;
+	let directories = match directories {
+		[] => {
+			current = String::from(".");
+			std::slice::from_ref(&current)
 		}
-
-		return list(state_dir, json);
-	}
+		_ => directories,
+	};
 
 	let mut refused = 0u8;
 
@@ -219,7 +219,7 @@ fn remove(state_dir: &Path, directory: &Path) -> Result<bool> {
 	Ok(watches::unregister(state_dir, directory)?)
 }
 
-fn list(state_dir: &Path, json: bool) -> Result<ExitCode> {
+pub fn watching(state_dir: &Path, json: bool) -> Result<ExitCode> {
 	let registrations = watches::load(state_dir)?;
 
 	for registration in &registrations {

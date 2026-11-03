@@ -1,4 +1,4 @@
-//! `retype watch` and `retype unwatch`, `docs/cli.md` §4.
+//! `retype watch`, `retype watching` and `retype unwatch`, `docs/cli.md` §4.
 
 use std::fs;
 use std::path::Path;
@@ -10,6 +10,16 @@ fn retype() -> Command {
 
 fn run(state: &Path, args: &[&str]) -> std::process::Output {
 	retype().args(args).arg("--state-dir").arg(state).output().unwrap()
+}
+
+fn run_in(state: &Path, directory: &Path, args: &[&str]) -> std::process::Output {
+	retype()
+		.current_dir(directory)
+		.args(args)
+		.arg("--state-dir")
+		.arg(state)
+		.output()
+		.unwrap()
 }
 
 #[test]
@@ -28,13 +38,59 @@ fn registering_a_directory_records_it() {
 		String::from_utf8_lossy(&output.stderr)
 	);
 
-	let listing = run(&state, &["watch"]);
+	let listing = run(&state, &["watching"]);
 	let stdout = String::from_utf8_lossy(&listing.stdout);
 	assert!(stdout.contains("photos"), "{stdout}");
 	assert!(stdout.contains("recursive"), "{stdout}");
 
 	let file = fs::read_to_string(state.join("watches.toml")).unwrap();
 	assert!(file.contains("retype-watches-1"), "{file}");
+}
+
+#[test]
+fn watch_without_a_directory_registers_the_current_one() {
+	let dir = tempfile::tempdir().unwrap();
+	let photos = dir.path().join("photos");
+	fs::create_dir(&photos).unwrap();
+	let state = dir.path().join("state");
+
+	let output = run_in(&state, &photos, &["watch"]);
+
+	assert_eq!(
+		output.status.code(),
+		Some(0),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+
+	let listing = run(&state, &["watching"]);
+	let stdout = String::from_utf8_lossy(&listing.stdout);
+	assert!(stdout.contains("photos"), "{stdout}");
+}
+
+#[test]
+fn the_current_directory_spelled_out_is_the_same_registration() {
+	let dir = tempfile::tempdir().unwrap();
+	let photos = dir.path().join("photos");
+	fs::create_dir(&photos).unwrap();
+	let state = dir.path().join("state");
+
+	run_in(&state, &photos, &["watch"]);
+	run_in(&state, &photos, &["watch", "."]);
+
+	let file = fs::read_to_string(state.join("watches.toml")).unwrap();
+	assert_eq!(file.matches("[[watch]]").count(), 1, "{file}");
+}
+
+#[test]
+fn watching_with_nothing_registered_succeeds_in_silence() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+
+	let output = run(&state, &["watching"]);
+
+	assert_eq!(output.status.code(), Some(0));
+	assert!(output.stdout.is_empty());
 }
 
 #[test]
@@ -62,7 +118,7 @@ fn a_non_recursive_registration_says_so() {
 
 	run(&state, &["watch", photos.to_str().unwrap(), "--non-recursive"]);
 
-	let listing = run(&state, &["watch"]);
+	let listing = run(&state, &["watching"]);
 	assert!(String::from_utf8_lossy(&listing.stdout).contains("non-recursive"));
 }
 
@@ -81,7 +137,7 @@ fn unwatch_removes_and_is_idempotent() {
 	assert_eq!(again.status.code(), Some(0), "removing something absent succeeds");
 	assert!(String::from_utf8_lossy(&again.stderr).contains("was not registered"));
 
-	let listing = run(&state, &["watch"]);
+	let listing = run(&state, &["watching"]);
 	assert!(listing.stdout.is_empty(), "nothing is registered");
 }
 
@@ -117,7 +173,7 @@ fn a_policy_file_is_summarised_in_the_listing() {
 	let state = dir.path().join("state");
 
 	run(&state, &["watch", photos.to_str().unwrap()]);
-	let listing = run(&state, &["watch"]);
+	let listing = run(&state, &["watching"]);
 
 	assert!(String::from_utf8_lossy(&listing.stdout).contains("*.jpg *.heic"));
 }
@@ -211,7 +267,7 @@ fn pause_and_resume_are_state_that_the_listing_shows() {
 		"{}",
 		String::from_utf8_lossy(&paused.stderr)
 	);
-	assert!(String::from_utf8_lossy(&run(&state, &["watch"]).stdout).contains("paused"));
+	assert!(String::from_utf8_lossy(&run(&state, &["watching"]).stdout).contains("paused"));
 
 	let resumed = run(&state, &["watch", photos.to_str().unwrap(), "--resume"]);
 	assert_eq!(
@@ -220,7 +276,7 @@ fn pause_and_resume_are_state_that_the_listing_shows() {
 		"{}",
 		String::from_utf8_lossy(&resumed.stderr)
 	);
-	let listing = String::from_utf8_lossy(&run(&state, &["watch"]).stdout).to_string();
+	let listing = String::from_utf8_lossy(&run(&state, &["watching"]).stdout).to_string();
 	assert!(!listing.contains("paused"), "{listing}");
 }
 
@@ -252,7 +308,7 @@ fn a_vanished_registration_can_still_be_removed() {
 	run(&state, &["watch", photos.to_str().unwrap()]);
 	fs::remove_dir(&photos).unwrap();
 
-	assert!(String::from_utf8_lossy(&run(&state, &["watch"]).stdout).contains("missing"));
+	assert!(String::from_utf8_lossy(&run(&state, &["watching"]).stdout).contains("missing"));
 
 	let removed = run(&state, &["unwatch", photos.to_str().unwrap()]);
 	assert_eq!(
@@ -261,5 +317,5 @@ fn a_vanished_registration_can_still_be_removed() {
 		"{}",
 		String::from_utf8_lossy(&removed.stderr)
 	);
-	assert!(run(&state, &["watch"]).stdout.is_empty());
+	assert!(run(&state, &["watching"]).stdout.is_empty());
 }

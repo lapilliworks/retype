@@ -73,9 +73,9 @@ enum Command {
 		interactive: bool,
 	},
 
-	/// Register directories, or list what is registered
+	/// Watch directories, defaulting to the current one
 	Watch {
-		/// Directories to watch. With none, the registrations are listed
+		/// Directories to watch. With none, the current directory
 		directories: Vec<String>,
 
 		/// Watch this directory only, not its subdirectories
@@ -90,6 +90,9 @@ enum Command {
 		#[arg(long, conflicts_with = "pause")]
 		resume: bool,
 	},
+
+	/// List the watched directories
+	Watching,
 
 	/// Deregister directories
 	Unwatch {
@@ -421,6 +424,13 @@ fn main() -> ExitCode {
 		return finish(code);
 	}
 
+	if let Command::Watching = &cli.command {
+		let code = retype_cli::state::resolve(cli.state_dir.clone())
+			.and_then(|state_dir| retype_cli::watch::watching(&state_dir, cli.json));
+
+		return finish(code);
+	}
+
 	if let Command::Watch {
 		directories,
 		non_recursive,
@@ -700,6 +710,7 @@ fn main() -> ExitCode {
 		| Command::Undo { .. }
 		| Command::Jobs { .. }
 		| Command::Watch { .. }
+		| Command::Watching
 		| Command::Unwatch { .. }
 		| Command::Convert { .. }
 		| Command::Explain { .. }
