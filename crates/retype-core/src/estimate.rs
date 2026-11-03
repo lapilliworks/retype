@@ -1,4 +1,4 @@
-//! The estimator and its calibration and `docs/dev/architecture/state.md` §7.
+//! The estimator and its calibration, `docs/dev/architecture/state.md` §7.
 //!
 //! A conversion costs time and produces bytes, and both are predictable enough to
 //! be worth predicting: the deferral threshold asks whether a job is expensive,

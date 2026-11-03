@@ -6,7 +6,7 @@
 //! directory and renamed into place only when complete, so a path is either
 //! absent or correct, never half written.
 //!
-//!: when a conversion fails, the renamed path still holds the source
+//! When a conversion fails, the renamed path still holds the source
 //! format's bytes. The source extension is restored, so that no path carries a
 //! format it does not contain.
 
@@ -401,7 +401,7 @@ mod tests {
 
 	#[test]
 	fn failed_conversion_then_restore_round_trip() {
- // The regression for: the renamed path holds the source bytes, the
+		// The regression: the renamed path holds the source bytes, the
 		// conversion fails, and the name goes back to the source extension.
 		let dir = tempdir();
 		let renamed = dir.path().join("photo.jpg");

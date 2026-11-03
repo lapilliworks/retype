@@ -71,8 +71,7 @@ pub struct Shared {
 	/// Each directory's `.retype.toml`, read once per change rather than once per file,
 	/// `docs/config.md` §12.
 	pub policies: retype_core::policy::Cache,
-	/// The jobs of each rename batch, so one notification answers for all of them,
-	///.
+	/// The jobs of each rename batch, so one notification answers for all of them.
 	pub batches: crate::daemon::batches::Batches,
 	/// How this machine is told what happened, or nothing when the user turned it off.
 	pub(crate) notifier: Mutex<Option<crate::notify::Channel>>,
@@ -852,8 +851,7 @@ fn retire(shared: &Shared, work: &crate::daemon::queue::Work, state: JobState) {
 
 /// Where a job's bytes are, and what has to happen to them afterwards.
 enum Input {
-	/// A rename put them at `renamed`: relabel before reading, then consume or keep,
-	///.
+	/// A rename put them at `renamed`: relabel before reading, then consume or keep.
 	Renamed { renamed: PathBuf },
 	/// A parked job whose bytes are already under the source name,
 	/// `docs/deferral.md` §9. Consumed on commit, like any rename-derived job.
@@ -887,7 +885,7 @@ pub fn convert(
 		renamed: bytes.to_path_buf(),
 	};
 
-	// A rename's collisions are its own concern gap table: only a job a
+	// A rename's collisions are its own concern: only a job a
 	// person re-runs can be told to overwrite.
 	run(shared, source, target, prepared, input, false, id, cancellation);
 }
@@ -1046,7 +1044,7 @@ fn run(
 	};
 
 	// One job, one source: the bytes are relabelled and then read for every output,
-	//. Opening the source per output moved the bytes for the first one and
+	// Opening the source per output moved the bytes for the first one and
 	// left the rest with nothing to read.
 	// Whether this job came from a person rather than from a rename, decided before the
 	// input is consumed below.

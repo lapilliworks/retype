@@ -65,7 +65,7 @@ pub fn derive(stem: &str, source_format: &str, groups: &[Group]) -> Vec<Derived>
 				number => format!("{base}-{number}.{}", group.format),
 			};
 
- //: unique within the job, and never the kept source.
+			// Unique within the job, and never the kept source.
 			if !taken.contains(&candidate) && candidate != kept {
 				break candidate;
 			}

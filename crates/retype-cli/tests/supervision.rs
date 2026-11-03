@@ -1,5 +1,5 @@
 //! A supervised daemon refuses to be stopped, and `--now` cancels what is running,
-//!.
+
 
 use std::fs;
 use std::path::{Path, PathBuf};

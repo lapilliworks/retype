@@ -128,7 +128,7 @@ pub struct Subject {
 ///
 /// `Ask` is what the product intends: keep the expired records, ask the user
 /// whether to make room, and act on the answer. Asking needs notifications, which
-/// land in, so this build reads `Ask` as `Evict` and says so once at
+/// land in a later release, so this build reads `Ask` as `Evict` and says so once at
 /// startup rather than pretending the question was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overflow {
@@ -488,8 +488,7 @@ impl Store {
 		Ok(dropped)
 	}
 
-	/// Whether a record for the bytes at `path` fits, and what had to go for it,
-	///.
+	/// Whether a record for the bytes at `path` fits, and what had to go for it.
 	///
 	/// Expired records go first, then the oldest ones needed to make room, and
 	/// never a record younger than the new one out of order: the store drops what a

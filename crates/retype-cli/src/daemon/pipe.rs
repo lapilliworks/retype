@@ -1,7 +1,7 @@
 //! The named-pipe transport, `docs/dev/architecture/ipc.md` §4.
 //!
 //! One instance at a time, created before each client and closed after it, which
-//! is what allows while every method is a request and an answer.
+//! is what allows one connection at a time while every method is a request and an answer.
 
 use std::ffi::OsStr;
 use std::fs::File;

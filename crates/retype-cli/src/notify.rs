@@ -20,7 +20,7 @@
 //! AppUserModelID the shell can resolve, which the script registers under
 //! `HKCU\Software\Classes\AppUserModelId` before the first toast. Protocol activation
 //! through a Start-menu shortcut, and the macOS User Notifications centre with its
-//! categories, still need the signed notifier bundle, the first artifact of.
+//! categories, still need the signed notifier bundle, which is not built yet.
 
 use std::path::Path;
 use std::process::{Command, Stdio};

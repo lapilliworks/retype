@@ -150,7 +150,7 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 			);
 		}
 
- // An exact pair rests on evidence about properties: no fixture
+		// An exact pair rests on evidence about properties: no fixture
 		// is no evidence, and a lost property is a contradiction of the word.
 		if claim.tier == Tier::Exact {
 			if claim.axes.is_empty() {

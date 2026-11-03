@@ -59,7 +59,7 @@ impl Server {
 			eprintln!("retype: dropped {} undo record(s) past retention", swept.len());
 		}
 
- //: asking needs notifications, which land in. Until
+		// Asking needs notifications, which are not built yet. Until
 		// then the answer is the one a user would give when a conversion is waiting.
 		if registry.undo().on_overflow == retype_core::undo::Overflow::Ask {
 			eprintln!("retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist");

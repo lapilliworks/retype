@@ -5,7 +5,7 @@
 //! decides what the events mean, and it is pure so the decision can be tested
 //! without a platform.
 //!
-//! Scope is: in-place renames only. Source and target share a directory,
+//! Scope: in-place renames only. Source and target share a directory,
 //! the stem is unchanged, and the extension differs. Anything else is a move or
 //! a plain rename and carries no intent.
 //!
@@ -360,7 +360,7 @@ pub fn coalesce(facts: Vec<RenameFact>) -> Vec<RenameFact> {
 
 /// Whether two names are a rename in place.
 ///
-/// A move is not a rename so the directory must match. The names must
+/// A move is not a rename, so the directory must match. The names must
 /// also share what a stem can plausibly be: pairing by directory alone would let
 /// two renames in one batch cross over, and pairing needs no format knowledge if
 /// the comparison stops at the first dot. `archive.tar.gz` and `archive.zip`

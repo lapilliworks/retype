@@ -19,7 +19,6 @@ Transformations ride on the same gesture: `photo.heic` becomes `photo.webp+q80`.
 
 [`docs/`](docs/README.md) is the user manual: the intent grammar, operations, configuration, command line, and what each conversion preserves. [`docs/dev/`](docs/dev/README.md) holds the internal contracts, filesystem measurements, and the commands for building and testing.
 
-
 ## Installation tiers
 
 Two tiers exist, and the difference is deliberate. Pre-release installers are a

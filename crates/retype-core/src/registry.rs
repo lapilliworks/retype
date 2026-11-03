@@ -40,7 +40,7 @@ impl Fragment {
 /// the argv that produces one is a property of the tool rather than of this
 /// program: `magick -size ... plasma:fractal` is ImageMagick's way of making an
 /// image, `ffmpeg -f lavfi` is FFmpeg's. Declaring it here keeps every tool name
-/// and every flag out of Rust and lets a user who knows their tools better
+/// and every flag out of Rust, and lets a user who knows their tools better
 /// say so.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Bench {
