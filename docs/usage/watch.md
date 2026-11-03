@@ -68,9 +68,13 @@ A network mount is not refused, because a warning that is wrong is better than a
 
 ## Large files
 
-Automatic conversion is off above four gigabytes per source, because a rename is a fast gesture and a forty gigabyte video is not. An oversized file keeps its name, and the count of what was skipped appears in `daemon status`.
+A source above 4 GiB is not converted automatically. The rename is still understood, so the job parks and waits for an answer rather than being dropped: the file keeps its name, and `jobs list` shows it as `needs-attention` with reason `size`. There is no timer for this one.
 
-`retype convert` is not affected by the limit. Asking for a large conversion is how it is meant to happen; a rename doing it unasked is not.
+`retype jobs resolve <id> --now` is the confirmation. A `+now` in the new name is the same answer before the job parks.
+
+`max_source_size` in the user configuration's `[watch]` table moves the ceiling; it is in [Configuration schema](../reference/config.md). A folder's own configuration cannot change it.
+
+The limit exists because a rename is a fast gesture and a forty gigabyte video is not. `retype convert` is not affected by it: asking for a large conversion directly is how it is meant to happen; a rename doing it unasked waits for an answer.
 
 ## Pausing
 
@@ -99,7 +103,7 @@ One batch produces one notification, when its last job settles.
 retype daemon status
 ```
 
-That reports whether the daemon is running, what it is doing, and the counters behind the answers above: converted, skipped, parked, failed, and placeholders. A parked job is one waiting for an answer, and [Jobs, undo and history](jobs.md) is where it is answered or refused.
+That reports whether the daemon is running, what it is doing, and the counters behind the answers above: converted, parked, failed, and placeholders. A parked job is one waiting for an answer, and [Jobs, undo and history](jobs.md) is where it is answered or refused.
 
 Notifications say what a batch produced rather than what it attempted: three converted, or one converted and one failed with the reason, or one parked. The button on the notification is Undo, and it reverses every job of that batch that has a record, which is the same record [Jobs, undo and history](jobs.md) describes.
 

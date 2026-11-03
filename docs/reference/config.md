@@ -197,7 +197,7 @@ max_source_size = '4GiB'
 | `ignore` | array of globs | `[]` | Additional paths to ignore. Adds to the built-in list, never replaces it |
 | `watch_hidden` | bool | `false` | Consider dot-files and dot-directories |
 | `allow_synced` | bool | `false` | Convert inside placeholder-capable cloud providers instead of refusing with the provider named |
-| `max_source_size` | size | `4GiB` | Largest source for automatic conversion. `retype convert` ignores it |
+| `max_source_size` | size | `4GiB` | Largest source an automatic conversion starts without confirmation. Above it, a watched rename parks with reason `size`; `retype convert` ignores it |
 
 All four are read. `allow_synced` decides a registration: without it, `retype watch` refuses a directory inside a provider that can hold placeholders, naming the provider, `docs/reference/watch.md` §5.
 
@@ -325,7 +325,7 @@ repair = 'ask'
 
 | Key | Default | Meaning |
 |---|---|---|
-| `mode` | `ask` | `ask` defers by `docs/advanced/deferral.md` §3; `now` skips the two cost triggers and still parks a job that cannot run as asked |
+| `mode` | `ask` | `ask` defers by `docs/advanced/deferral.md` §3; `now` skips the two cost triggers and still parks a job that cannot run as asked or is over the size limit |
 | `above` | `10s` | Estimated duration above which a watched rename is parked |
 | `above_without_undo` | `2s` | The same when no undo record can be kept; the source is retained |
 | `pause` | `1h` | How long a parked job waits before it runs anyway |

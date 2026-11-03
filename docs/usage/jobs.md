@@ -80,7 +80,7 @@ Records expire at twice the undo retention. `why` past that point says the file 
 
 ## Jobs that wait for an answer
 
-A rename that would cost more than a threshold, or that would destroy a source it cannot restore, stops instead of running. Such a job is `needs-attention` in `jobs list`, and the file keeps the name it was given.
+A rename that would cost more than a threshold waits for its timer, unless the intent says `+now`. A rename that cannot run as asked is `needs-attention`, and so is one whose source is above the automatic size limit: the first because only a person can correct it, the second because a large conversion is started only when it is confirmed. In both cases the file keeps the name it was given. A size park has reason `size` and no timer.
 
 ```
 retype jobs --interactive
@@ -95,7 +95,7 @@ retype jobs resolve 01J8Z --now        # run it as asked
 retype jobs resolve 01J8Z --convert    # run the corrected form
 ```
 
-`--now` accepts `--force` for an output that appeared while the job waited. `--convert` does not: a reduced request is not the place to decide about a file somebody else wrote. A job that cannot run as asked refuses `--now` and says why.
+`--now` accepts `--force` for an output that appeared while the job waited. `--convert` does not: a reduced request is not the place to decide about a file somebody else wrote. A job that cannot run as asked refuses `--now` and says why, except one parked for `size`: there `--now` is the confirmation.
 
 The thresholds, the corrected form and the timer that eventually makes the decision are in [Deferral](../advanced/deferral.md).
 

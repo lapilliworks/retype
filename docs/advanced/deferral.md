@@ -11,7 +11,7 @@ cost, and the reason it is waiting.
 | State | Meaning | Ends by |
 |---|---|---|
 | `pending` | The job can run as asked, once the timer expires or the user says so | The deadline, `jobs resolve --now`, `jobs cancel`, or the source being renamed or removed |
-| `needs-attention` | The job cannot run as asked, and only the user can decide what to do instead | `jobs resolve --convert`, `jobs cancel`, or the source being renamed or removed |
+| `needs-attention` | The job cannot run as asked, or may run only with explicit consent; only the user can decide | `jobs resolve --now` where the job can run as asked, `jobs resolve --convert` where it cannot, `jobs cancel`, or the source being renamed or removed |
 
 Both are journal states, `docs/dev/architecture/state.md` §3. `needs-attention` has no deadline: there
 is nothing to expire into.
@@ -24,13 +24,18 @@ One reason per parked job, recorded with it and shown by `jobs get` and `jobs li
 |---|---|---|
 | `ask` | `pending` | The name carried `+ask`, so the user asked to be asked |
 | `cost` | `pending` | The estimate is above the threshold that applies to this job, §4 |
+| `size` | `needs-attention` | The source is above `watch.max_source_size` 2 |
 | `intent` | `needs-attention` | The intent in the new name does not parse |
 | `inapplicable` | `needs-attention` | An operation does not apply to the target format, `E_INAPPLICABLE` |
 | `backend` | `needs-attention` | No usable backend carries the pair, `E_UNSUPPORTED` or `E_TOOL_MISSING` |
 
-A `needs-attention` job keeps the diagnosis it was given: code, message, and the span
-of the offending part where there is one. It also keeps two strings, and the report
-of the job shows both:
+A `needs-attention` job that cannot run as asked keeps the diagnosis it was given:
+code, message, and the span of the offending part where there is one. A `size` job
+has no diagnosis, because nothing is wrong with the request; what it waits for is
+consent.
+
+A job that cannot run as asked also keeps two strings, and the report of the job
+shows both:
 
 - `requested`, the intent exactly as the new name carried it
 - `corrected`, the same intent with the offending tokens removed, when the target
@@ -48,25 +53,27 @@ The first that applies decides. A later trigger never overrides an earlier one, 
 string that cannot be carried is never quietly run because it happened to be cheap.
 
 1. The job cannot run as asked:
-   - `[deferral] repair = 'convert'`, the job would keep an undo record, the estimate
-     is at or below `above`, and the target format survives dropping the tokens that
-     could not be carried → run it, record the dropped tokens, and notify with what
-     happened, §6
+   - `[deferral] repair = 'convert'`, the source is within `watch.max_source_size`, the
+     job would keep an undo record, the estimate is at or below `above`, and the
+     target format survives dropping the tokens that could not be carried → run it,
+     record the dropped tokens, and notify with what happened, §6
    - otherwise → `needs-attention`
-2. The intent carries `ask` → `pending`, reason `ask`
-3. The job is derived from a watched rename, no undo record can be kept for it, the
+2. The source is above `watch.max_source_size` and the intent does not carry `+now` →
+   `needs-attention`, reason `size`
+3. The intent carries `ask` → `pending`, reason `ask`
+4. The job is derived from a watched rename, no undo record can be kept for it, the
    estimate exceeds `above_without_undo`, and neither `+now` nor `mode = 'now'`
    suppresses deferral → `pending`, reason `cost`
-4. The job is derived from a watched rename, the estimate exceeds `above`, and none of
+5. The job is derived from a watched rename, the estimate exceeds `above`, and none of
    `+now`, `mode = 'now'` or the directory's `confirm = false` suppresses deferral →
    `pending`, reason `cost`
-5. Otherwise the job runs
+6. Otherwise the job runs
 
 Two rules follow from the list rather than from a special case:
 
-- An explicit `retype convert` is never parked by cost. The command is the consent,
-  and deferring it would answer a question with a question. It still parks on the
-  `needs-attention` reasons, under the repair policy like everything else, and it
+- An explicit `retype convert` is never parked by cost or size. The command is the
+  consent, and deferring it would answer a question with a question. It still parks on
+  the `needs-attention` reasons, under the repair policy like everything else, and it
   still parks when the intent says `ask`
 - "No undo record can be kept" is decided by `docs/dev/architecture/state.md` §5.5 before the job is
   parked: `[undo] enabled = false`, `on_overflow = skip` with a full quota, or a
@@ -79,7 +86,7 @@ Two rules follow from the list rather than from a special case:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `mode` | `ask` | `ask` defers by §3; `now` skips the two cost triggers, and still parks for `needs-attention` and for `+ask`, §5 |
+| `mode` | `ask` | `ask` defers by §3; `now` skips the two cost triggers, and still parks for `needs-attention`, for `size` and for `+ask`, §5 |
 | `above` | `10s` | Estimated duration above which a watched rename is deferred |
 | `above_without_undo` | `2s` | The same, for a job whose source cannot be kept |
 | `pause` | `1h` | How long a `pending` job waits before it runs anyway |
@@ -89,10 +96,13 @@ Durations are the grammar's time class, so they are spelled the way an intent sp
 one, `docs/reference/intents.md` §7. Thresholds are compared against the whole job: the sum of
 the per-output estimates, since one job's outputs run one after another.
 
+The size ceiling is not a deferral threshold: it is `[watch] max_source_size`, it is
+compared against the source alone, and `mode = 'now'` does not skip it.
+
 `repair = 'convert'` is the convenience the user opts into, and the job it repairs keeps
 what it dropped in its own record, `docs/advanced/deferral.md` §6. It is deliberately the
 non-default, it never applies without an undo record, and it is bounded by `above`
-rather than by a threshold of its own: a dropped token is a small cut on a job that
+and by the size ceiling rather than by a threshold of its own: a dropped token is a small cut on a job that
 takes a second, and a guess that spends minutes on work nobody asked for is not.
 Whatever it drops is recorded with the job and reported with the result, together with
 the intent string the user meant.
@@ -113,13 +123,13 @@ directory from somewhere else.
 
 | Statement | Written where | Effect |
 |---|---|---|
-| `+ask` | the new name, now | Parks the job with reason `ask`, whatever anything else says |
-| `+now` | the new name, now | Skips both cost triggers for this job |
-| `mode = 'now'` | the user config | Skips both cost triggers on this machine |
-| `confirm = false` | the directory file | Skips the `above` trigger. The no-undo trigger of §3 still applies |
+| `+ask` | the new name, now | Parks the job with reason `ask`, unless the source is over the size limit, which parks with reason `size` first |
+| `+now` | the new name, now | Skips both cost triggers and the size question for this job |
+| `mode = 'now'` | the user config | Skips both cost triggers on this machine. The size question remains |
+| `confirm = false` | the directory file | Skips the `above` trigger. The no-undo trigger of §3 and the size question still apply |
 | `mode = 'ask'` | the user config | The default: defer by §3 |
 
-Two rules produce the table:
+Three rules produce the table:
 
 - **An ask beats a suppression.** Asking is the safe direction: the cost of a prompt
   nobody wanted is one keystroke, and the cost of a conversion nobody saw is a file
@@ -131,6 +141,9 @@ Two rules produce the table:
   ordinary cost trigger, which is a statement about a build directory; it does not
   suppress the threshold that exists because there is no way back. Only the machine's
   own setting and a `+now` typed by the person can do that
+- **The size question is its own brake.** It is not suppressed by `confirm = false`
+  and not by `mode = 'now'`, and `+ask` does not replace it with a timer. `+now` typed
+  by the person is the only token that skips it
 
 Both tokens print in the canonical form so the journal records what was asked,
 `docs/reference/intents.md` §10, and neither changes what the job does: they decide whether the
@@ -175,7 +188,7 @@ retype jobs cancel <id|prefix>
 
 | Command | Effect |
 |---|---|
-| `--now` | Run it as asked, ignoring the deferral. `--force` overwrites an output that appeared during the pause, exactly as it does for `convert`. A `needs-attention` job is a state error here: it cannot run as asked |
+| `--now` | Run it as asked, ignoring the deferral. `--force` overwrites an output that appeared during the pause, exactly as it does for `convert`. A `needs-attention` job whose reason is not `size` is a state error here: it cannot run as asked. A `size` job runs, because this is the confirmation it waits for |
 | `--convert` | Run it with the tokens that could not be carried dropped, from the `corrected` string. Only for `needs-attention`, and only when a corrected string exists; a `pending` job is a usage error, and so is a job whose target format did not survive |
 | `--interactive` | Walk the parked jobs oldest first and read one key each: now, convert where it applies, refuse, skip, quit. Without a terminal it refuses rather than reading a script's stdin |
 | `jobs cancel` | Refuse it. Nothing was written, so nothing is undone |

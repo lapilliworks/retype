@@ -72,10 +72,10 @@ What is built: the provider rules above, decided from the path and the mount tab
 
 | Limit | Default | Behaviour over the limit |
 |---|---|---|
-| Source size for automatic conversion | 4 GiB, `watch.max_source_size` | Skipped, logged, counted. `retype convert` is unaffected |
+| Source size for automatic conversion | 4 GiB, `watch.max_source_size` | Parked with reason `size`, no timer. `+now` or `jobs resolve --now` confirms; `retype convert` is unaffected |
 | Batch size per debounce window | 64 files, fixed | Queue admission is delayed until the next window |
 
-The size limit exists because a rename is a fast gesture and a 40 GiB video is not. Automatic conversion of something that large needs to be asked for, which is what `retype convert` is for. It is enforced before a job exists, by reading the renamed file's size: an oversized source keeps its name, the daemon says so on its own output, and the counter is `skipped` in the `status` answer.
+The size limit exists because a rename is a fast gesture and a 40 GiB video is not. Automatic conversion of something that large needs to be asked for. It is enforced once the rename is understood and its plans are known, by reading the renamed file's size: an oversized source is parked as `needs-attention` with reason `size`, its source name restored, and nothing written. There is no timer. `+now` in the name, or `retype jobs resolve <id> --now`, is the confirmation, and a directory file cannot raise the ceiling or suppress the question. `retype convert` is unaffected, because the command is the consent.
 
 ## 7. Event handling
 
