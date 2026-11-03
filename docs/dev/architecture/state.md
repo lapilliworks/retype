@@ -42,7 +42,7 @@ The toolchain directory is owned by the GUI: it installs, updates and verifies t
 A job id is a ULID: 26 lowercase characters, Crockford base32, 48-bit millisecond timestamp followed by 80 random bits. Properties required:
 
 - Lexicographic order equals creation order
-- Unique without coordination, so the job feed in needs no id registry
+- Unique without coordination, so the job feed needs no id registry
 - Lowercase in its canonical form, so an id is typed as it is printed and sorts as it prints
 - Case-insensitive on input, because base32 excludes `I`, `L`, `O` and `U`; a handle may be typed in either case and is stored lowercase
 
@@ -266,7 +266,7 @@ A measurement is keyed by the pair it was taken on, not by one format: HEIC deco
 
 The two numbers are the source bytes the machine converts per second, and the output bytes per source byte. Time follows from the first and size from the second, and both are per pair because a ratio is a property of the pair: the same photograph is 291 KB as WebP and 807 KB as AVIF.
 
-`sample_bytes` records what the rate was measured on, since a rate taken on a 240 KB file and one taken on a 2 MB file are not the same evidence. `tool_version` is the version string of the backend that ran, because a rate is evidence about a build, `docs/advanced/converters.md` §5.1.
+`sample_bytes` records what the rate was measured on, since a rate taken on a 240 KB file and one taken on a 2 MB file are not the same evidence. `tool_version` is the version string of the backend that ran, because a rate is evidence about a build, `docs/advanced/fidelity.md` §1.
 
 `retype bench` writes this file. It generates one sample per family in the format `[bench.seed]` names, using an argv `[bench.sample]` declares, and then measures every target that compiles from that source. `--pair` and `--family` narrow it. Measuring the same pair twice replaces the earlier answer rather than leaving two for one question.
 

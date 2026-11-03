@@ -1,6 +1,8 @@
 # Development documentation
 
-These documents specify how `retype` is built and verified. Behaviour a user can observe belongs in the [user documentation](../README.md). ## Contracts
+These documents specify how `retype` is built and verified. Behaviour a user can observe belongs in the [user documentation](../README.md).
+
+## Contracts
 
 | Document | Contents |
 |---|---|
