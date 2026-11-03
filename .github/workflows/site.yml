@@ -1,0 +1,40 @@
+name: site
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time: a second push supersedes the first rather than racing
+# it, and Pages keeps the last upload either way.
+concurrency:
+  group: site
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://justretype.com/
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the bundle
+        env:
+          SITE_RUNTIME: docker
+        run: site/bin/bundle.sh
+
+      # Direct upload, not a Pages build: the tree is built here because it needs
+      # the repository, and Cloudflare only receives the finished files.
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: '4'
+          command: pages deploy site/dist --project-name=retype --branch=${{ github.ref_name }}
