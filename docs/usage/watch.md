@@ -58,13 +58,13 @@ paused = true
 
 ## Folders retype will not watch
 
-Cloud storage that can leave a file as a placeholder is refused at registration, naming the provider: the file looks local, its contents are elsewhere, and reading it triggers a download. The refusal says so, and `allow_synced = true` in the user configuration overrides it for someone who knows their provider keeps full local copies.
+Cloud and network storage are on the roadmap; neither is supported yet. Cloud storage that can leave a file as a placeholder is refused at registration until then, naming the provider: the file looks local, its contents are elsewhere, and reading it triggers a download. The refusal says that support is planned, and `allow_synced = true` in the user configuration overrides it for someone who knows their provider keeps full local copies.
 
 Ordinary sync clients are unaffected. A folder synced by Dropbox with files available offline, by Syncthing, by rsync, or a git worktree, is an ordinary local folder, and the rule is about placeholders rather than about the word "sync".
 
 A dataless file encountered inside an ordinary registration is skipped, logged, and counted, and never converted implicitly.
 
-A network mount is not refused, because a warning that is wrong is better than a refusal that blocks a legitimate setup. It is warned about once at registration: renames on network filesystems are reported unreliably, so a conversion there may be missed. [Platforms](../reference/platforms.md) records which filesystems are supported and to what degree.
+A network mount is not refused, because a warning that is wrong is better than a refusal that blocks a legitimate setup. It is warned about once at registration: renames on network filesystems are reported unreliably, so a conversion there may be missed. Full support is a separate stage on the roadmap, as it is for cloud providers. [Platforms](../reference/platforms.md) records which filesystems are supported and to what degree.
 
 ## Large files
 

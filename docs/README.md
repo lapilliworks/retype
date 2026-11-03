@@ -8,7 +8,34 @@ Status is pre-alpha: some documented behaviour is still being built.
 
 - A terminal
 - `retype` itself. The pre-release installers fetch a release binary and update it in place: `curl -fsSL https://justretype.com/install.sh | bash` on Linux and macOS, or `irm https://justretype.com/install.ps1 | iex` in PowerShell on Windows. Without that, build from source with a Rust toolchain: `cargo install --git https://github.com/LapilliWorks/retype retype-cli`
-- A converter for each format you use. Retype converts nothing by itself; it drives programs that are already on the machine, ImageMagick for images, FFmpeg for audio and video, Pandoc for documents. `retype doctor` reports which it finds, and [Tools](advanced/converters.md) says what each of them has to be
+- A converter for each format you use. Retype converts nothing by itself; [The default tools](#the-default-tools) lists the ones it expects, and `retype doctor` reports which it finds
+
+## The default tools
+
+Retype ships the command line, the daemon and, in the installed tier, the notifier. It ships no converter: a format is read and written by a program that is already on the machine, with its own release and its own version floor.
+
+Four tools carry the shipped formats. None of them is bundled, and none is part of macOS or Windows; a Linux desktop may already carry one, sometimes below the floor.
+
+| Tool | Command | Floor | Carries |
+|---|---|---|---|
+| ImageMagick | `magick` | 7.1 | Images |
+| FFmpeg | `ffmpeg` | 6.0 | Audio and video |
+| pandoc | `pandoc` | 3.0 | Documents |
+| 7-Zip | `7zz`, `7z` or `7za` | 23.0 | `.7z`; `zip` and `tar` are native |
+
+Install them with the platform's package manager:
+
+| Platform | Install |
+|---|---|
+| Debian, Ubuntu | `sudo apt install imagemagick ffmpeg pandoc 7zip` |
+| Fedora | `sudo dnf install ImageMagick ffmpeg-free pandoc 7zip` |
+| Arch | `sudo pacman -S imagemagick ffmpeg pandoc 7zip` |
+| macOS | `brew install imagemagick ffmpeg pandoc sevenzip` |
+| Windows | `winget install ImageMagick.ImageMagick Gyan.FFmpeg JohnMacFarlane.Pandoc 7zip.7zip` |
+
+A package manager can hand back a build that is installed and still not enough. Fedora's `ffmpeg-free` has no `libx264`, so it can write `webm` and not `mp4`. A distribution still on ImageMagick 6 installs `convert` instead of `magick`, and is below the floor. ImageMagick needs its libheif and WebP delegates for `heic`, `avif` and `webp`. `retype doctor` reports the version and build it found, names what is missing, and [Tools](advanced/converters.md) says what each one has to be.
+
+Two more programs are optional, because they change one result rather than every conversion. A document to `pdf` needs a PDF engine, resolved in this order: `typst`, then `xelatex`, `lualatex` or `pdflatex`, then `weasyprint`, then `wkhtmltopdf`. A `.rar` archive needs `unrar` to be read. Neither is part of the default set.
 
 ## Convert one file
 
