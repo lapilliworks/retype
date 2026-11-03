@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.lapilliworks.retype</string>
+	<string>com.lapilliworks.retype.cli</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>@PREFIX@/bin/retype</string>

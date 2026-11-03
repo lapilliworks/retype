@@ -80,7 +80,7 @@ notifier.
 | Platform | Files | What installs them |
 |---|---|---|
 | Linux | `share/retype/packaging/linux/retype.service`, `share/retype/packaging/linux/retype-uri.desktop` | The package's systemd/user and xdg-mime hooks |
-| macOS | `share/retype/packaging/macos/Info.plist`, `share/retype/packaging/macos/com.lapilliworks.retype.plist` | The app bundle and launchd |
+| macOS | `share/retype/packaging/macos/Info.plist`, `share/retype/packaging/macos/com.lapilliworks.retype.cli.plist` | The app bundle and launchd |
 | Windows | `share/retype/packaging/windows/retype.manifest`, `share/retype/packaging/windows/retype.rc` | The executable's manifest resource and the Start-menu shortcut |
 
 The launchd plist and the systemd unit name the install prefix as `@PREFIX@`; the package substitutes it before installing.

@@ -113,7 +113,7 @@ A system tool is supported but not pinned. Its version and build fingerprint are
 | Toolchain, macOS | Developer ID, hardened runtime, and a notarised archive containing the signed Mach-O files | With the first managed artifact |
 | Toolchain, Linux | Detached minisign or Sigstore signature, beside the checksum | With the first managed artifact |
 
-Publisher identity is fixed: Lapilli Works LLC, `com.lapilliworks.retype`. The bundle and display name are both `retype`. Reputation is bound to that identity, so it is never changed casually.
+Publisher identity is fixed: Lapilli Works LLC. The GUI is `com.lapilliworks.retype`, the CLI is `com.lapilliworks.retype.cli`, and a standalone notifier is `com.lapilliworks.retype.notifier`. The display name is `retype`. Reputation is bound to the publisher identity, so it is never changed casually.
 
 The pre-release installers are not published binaries in the signing sense. Their releases publish SHA-256 checksums and GitHub build attestations. The installers reject a corrupted download, and the attestation can be checked out of band, but neither authenticates the publisher the way a platform signature does. The installed tier remains gated on the signatures in the table above.
 
@@ -129,7 +129,7 @@ Capability per platform:
 | Windows | Toast without buttons now; protocol activation and the signed notifier later | Daemon, with an AppUserModelID registered under the user's hive |
 | macOS | User Notifications with categories; `osascript` plain fallback now | Notifier bundle |
 
-When the GUI is installed it registers `retype://` and the notifier bundle defers. When the daemon is not running, the scheme handler performs undo in-process where possible, and otherwise reports that the daemon is unavailable.
+The daemon owns `retype://` and OS notifications. The GUI does not register either; it is a frontend to the daemon. When the daemon is not running, the scheme handler performs undo in-process where possible, and otherwise reports that the daemon is unavailable.
 
 ## 8. Out of scope
 

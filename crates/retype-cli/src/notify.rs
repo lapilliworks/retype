@@ -396,7 +396,7 @@ fn notify_send(message: &Message, with_action: bool) -> Option<String> {
 
 /// The AppUserModelID the toast is shown under, in the publisher's reverse-DNS form.
 #[cfg(any(target_os = "windows", test))]
-const APP_ID: &str = "com.lapilliworks.retype";
+const APP_ID: &str = "com.lapilliworks.retype.cli";
 
 /// Show a toast through PowerShell, which is the only notifier an unpackaged Windows
 /// process has without the signed bundle.
