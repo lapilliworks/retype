@@ -37,7 +37,7 @@ The dev command serves the deployed shape on one origin and one port: the produc
 
 `SITE_DOCS_URL` is the internal manual upstream the product server proxies to. It defaults to `http://127.0.0.1:5174/`; `SITE_MANUAL_PORT` moves that internal port without publishing another one.
 
-`SITE_BASE` is the manual's base path. Leave it unset for a manual served from the root on its own; set it to `/docs/` when it sits under the product site. `SITE_CLEAN_URLS=false` emits `.html` links, which a plain static host can serve; the bundle sets it. `SITE_PRODUCT_URL` is the link the manual's navigation uses for the product page; a build defaults it to `https://justretype.com/`, and the combined dev command defaults it to the local product origin.
+`SITE_BASE` is the manual's base path. Leave it unset for a manual served from the root on its own; set it to `/docs/` when it sits under the product site. `SITE_CLEAN_URLS=false` emits `.html` links, which a plain static host can serve; the bundle sets it. `SITE_PRODUCT_URL` is the link the manual's navigation uses for the product page; a build defaults it to `https://retype.name/`, and the combined dev command defaults it to the local product origin.
 
 `bundle.sh` builds the product page at the root and the manual under `/docs/`, then writes one tree to `sites/dist`. The manual is built with `SITE_CLEAN_URLS=false`, so the tree works on a static host without rewrite rules.
 
@@ -51,7 +51,7 @@ The port is published on the host's loopback, so `http://127.0.0.1:5173/` works 
 
 - To open the site from another machine, `sites/bin/site.sh --host 0.0.0.0 dev`, then browse to this machine's address
 - `localhost` is not the same address as `127.0.0.1`. If the browser resolves `localhost` to `::1` first and nothing answers, the connection stalls; use the literal `127.0.0.1`
-- Through a proxy or a hosts entry, the request carries a domain as its `Host` header, and Vite refuses any host it does not know: `Blocked request. This host ("...") is not allowed`. The allowlist is `.retype.test` and `.justretype.com`, where a leading dot matches every subdomain, and `SITE_ALLOWED_HOSTS` replaces it with a comma separated list
+- Through a proxy or a hosts entry, the request carries a domain as its `Host` header, and Vite refuses any host it does not know: `Blocked request. This host ("...") is not allowed`. The allowlist is `.retype.test` and `.retype.name`, where a leading dot matches every subdomain, and `SITE_ALLOWED_HOSTS` replaces it with a comma separated list
 
 A reverse proxy on a port other than the one Vite listens on also needs `vite.server.hmr.clientPort`, or the live reload socket connects to the wrong port.
 

@@ -14,12 +14,12 @@ const docs = fileURLToPath(new URL('../../../docs', import.meta.url))
 /* Served at the root on its own, or under /docs/ beside the product site. */
 const configuredBase = process.env.SITE_BASE ?? '/'
 const base = configuredBase.endsWith('/') ? configuredBase : `${configuredBase}/`
-const productUrl = process.env.SITE_PRODUCT_URL ?? 'https://justretype.com/'
+const productUrl = process.env.SITE_PRODUCT_URL ?? 'https://retype.name/'
 const cleanUrls = process.env.SITE_CLEAN_URLS !== 'false'
 
 /* The dev server is reached through a domain, and Vite refuses Host headers it does
  * not know, which is what stops DNS rebinding. A leading dot matches every subdomain. */
-const allowedHosts = (process.env.SITE_ALLOWED_HOSTS ?? '.retype.test,.justretype.com')
+const allowedHosts = (process.env.SITE_ALLOWED_HOSTS ?? '.retype.test,.retype.name')
 	.split(',')
 	.map((host) => host.trim())
 	.filter((host) => host !== '')

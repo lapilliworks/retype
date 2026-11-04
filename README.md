@@ -35,13 +35,13 @@ Linux, macOS and Windows can install the alpha release without a Rust toolchain.
 Linux and macOS:
 
 ```sh
-curl -fsSL https://justretype.com/install.sh | bash
+curl -fsSL https://retype.name/install.sh | bash
 ```
 
 Windows, in PowerShell:
 
 ```powershell
-irm https://justretype.com/install.ps1 | iex
+irm https://retype.name/install.ps1 | iex
 ```
 
 The scripts verify the release checksum, install the CLI, daemon and shared

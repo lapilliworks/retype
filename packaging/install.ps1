@@ -1,7 +1,7 @@
 # Install or update retype from a GitHub release.
 #
 # Run it through PowerShell:
-#   irm https://justretype.com/install.ps1 | iex
+#   irm https://retype.name/install.ps1 | iex
 #
 # Environment:
 #   RETYPE_VERSION       Release tag, or "latest". Default: latest

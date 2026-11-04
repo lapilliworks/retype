@@ -60,15 +60,15 @@ the latest release tag through the GitHub API, download the matching archive and
 `PATH`. Running either again updates in place.
 
 ```sh
-curl -fsSL https://justretype.com/install.sh | bash
-curl -fsSL https://justretype.com/install.sh | bash -s -- --version v0.1.0-alpha
-curl -fsSL https://justretype.com/install.sh | bash -s -- --prefix "$HOME/.local"
+curl -fsSL https://retype.name/install.sh | bash
+curl -fsSL https://retype.name/install.sh | bash -s -- --version v0.1.0-alpha
+curl -fsSL https://retype.name/install.sh | bash -s -- --prefix "$HOME/.local"
 ```
 
 ```powershell
-irm https://justretype.com/install.ps1 | iex
-$env:RETYPE_VERSION = 'v0.1.0-alpha'; irm https://justretype.com/install.ps1 | iex
-$env:RETYPE_PREFIX = 'C:\Tools\retype'; irm https://justretype.com/install.ps1 | iex
+irm https://retype.name/install.ps1 | iex
+$env:RETYPE_VERSION = 'v0.1.0-alpha'; irm https://retype.name/install.ps1 | iex
+$env:RETYPE_PREFIX = 'C:\Tools\retype'; irm https://retype.name/install.ps1 | iex
 ```
 
 The scripts are copied into the product site at build time and are also release

@@ -65,13 +65,13 @@ Linux, macOS and Windows have pre-release installers.
 Linux and macOS:
 
 ```sh
-curl -fsSL https://justretype.com/install.sh | bash
+curl -fsSL https://retype.name/install.sh | bash
 ```
 
 Windows, in PowerShell:
 
 ```powershell
-irm https://justretype.com/install.ps1 | iex
+irm https://retype.name/install.ps1 | iex
 ```
 
 They download the release archive for the host architecture, check its SHA-256 against the release checksums, and install the CLI, daemon and shared release assets under `~/.local` on Unix or `%LOCALAPPDATA%\Programs\retype` on Windows. The Windows installer adds its `bin` directory to the user `PATH`. Running either again updates the installation. They are not the installed tier: they do not register a URI scheme, install a user service or ship the notifier, and the archives are not code-signed. They exist so an alpha build can be installed without a Rust toolchain.

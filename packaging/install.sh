@@ -19,9 +19,9 @@ usage() {
 Install or update retype from a GitHub release.
 
 Usage:
-  curl -fsSL https://justretype.com/install.sh | bash
-  curl -fsSL https://justretype.com/install.sh | bash -s -- --version v0.1.0-alpha
-  curl -fsSL https://justretype.com/install.sh | bash -s -- --prefix /usr/local
+  curl -fsSL https://retype.name/install.sh | bash
+  curl -fsSL https://retype.name/install.sh | bash -s -- --version v0.1.0-alpha
+  curl -fsSL https://retype.name/install.sh | bash -s -- --prefix /usr/local
 
 Options:
   --version TAG   Install a specific release tag instead of the latest
@@ -134,7 +134,7 @@ if [ -z "$target" ]; then
 	Linux) os=unknown-linux-gnu ;;
 	Darwin) os=apple-darwin ;;
 	MINGW* | MSYS* | CYGWIN*)
-		die "Windows uses the PowerShell installer: https://justretype.com/install.ps1"
+		die "Windows uses the PowerShell installer: https://retype.name/install.ps1"
 		;;
 	*) die "unsupported operating system: $(uname -s)" ;;
 	esac
