@@ -160,27 +160,6 @@ pre {
 	line-height: 1;
 }
 
-.brand-studio {
-	margin: 0;
-	padding-left: 1.1rem;
-	border-left: 1px solid var(--line-strong);
-	font-family: var(--mono);
-	font-size: 0.62rem;
-	letter-spacing: 0.08em;
-	text-transform: uppercase;
-	color: var(--muted);
-}
-
-.brand-studio a {
-	color: var(--ink-2);
-	text-decoration: none;
-	border-bottom: 1px solid transparent;
-}
-
-.brand-studio a:hover {
-	border-bottom-color: var(--ember);
-}
-
 .nav {
 	margin-left: auto;
 	display: flex;
@@ -336,8 +315,7 @@ h1 .accent {
 
 .lede code,
 .section-lede code,
-.fine-print code,
-.studio-copy code {
+.fine-print code {
 	font-size: 0.82em;
 	background: var(--paper-2);
 	border: 1px solid var(--line);
@@ -1796,73 +1774,6 @@ h2 {
 	color: var(--ember);
 }
 
-/* ---------- studio ---------- */
-
-.studio {
-	background: var(--paper-2);
-	border-top: 1px solid var(--line);
-	padding: clamp(3.5rem, 7vw, 6rem) 0;
-}
-
-.studio-inner {
-	display: grid;
-	grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-	gap: clamp(2.5rem, 5vw, 5rem);
-	align-items: center;
-}
-
-.studio-lockup a {
-	--wordmark-height: clamp(54px, 8vw, 84px);
-	display: inline-flex;
-	align-items: baseline;
-	gap: 0.5rem;
-	text-decoration: none;
-	color: var(--ink);
-}
-
-.studio-lockup img {
-	width: auto;
-	height: var(--wordmark-height);
-}
-
-.studio-lockup a span {
-	transform: translateY(calc(var(--wordmark-height) * -0.292));
-}
-
-.studio-lockup a span {
-	font-size: clamp(2.1rem, 4.5vw, 3.7rem);
-	font-weight: 650;
-	letter-spacing: -0.055em;
-	line-height: 1;
-}
-
-.studio-lockup p {
-	margin: 1.1rem 0 0;
-	color: var(--muted);
-	font-size: 0.6rem;
-}
-
-.studio-copy h2 {
-	margin-bottom: 1rem;
-}
-
-.studio-copy p {
-	max-width: 60ch;
-	margin: 0 0 0.9rem;
-	font-size: 0.95rem;
-	line-height: 1.68;
-	color: var(--ink-2);
-}
-
-.studio-copy a {
-	text-decoration: none;
-	border-bottom: 1px solid var(--ember);
-}
-
-.studio-copy a:hover {
-	color: var(--ember-deep);
-}
-
 /* ---------- footer ---------- */
 
 .footer {
@@ -1936,7 +1847,7 @@ h2 {
 }
 
 .footer-studio {
-	--wordmark-height: 18px;
+	--wordmark-height: 19px;
 	display: inline-flex;
 	align-items: baseline;
 	gap: 0.4rem;
@@ -1991,8 +1902,7 @@ h2 {
 @media (max-width: 1024px) {
 	.hero-grid,
 	.local-grid,
-	.install-grid,
-	.studio-inner {
+	.install-grid {
 		grid-template-columns: 1fr;
 	}
 
@@ -2031,17 +1941,9 @@ h2 {
 	.manual-lead {
 		grid-column: span 2;
 	}
-
-	.studio-lockup {
-		padding-bottom: 1rem;
-	}
 }
 
 @media (max-width: 900px) {
-	.brand-studio {
-		display: none;
-	}
-
 	.nav-toggle {
 		display: inline-flex;
 	}
@@ -2191,14 +2093,6 @@ h2 {
 	.requirements li {
 		grid-template-columns: 1fr;
 		gap: 0.25rem;
-	}
-
-	.studio-lockup a {
-		gap: 0.35rem;
-	}
-
-	.studio-lockup a span {
-		font-size: 2rem;
 	}
 }
 
