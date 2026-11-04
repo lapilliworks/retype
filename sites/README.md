@@ -5,9 +5,9 @@ Two apps, one deployable tree. `product/` is the static page at the root; `manua
 ```
 sites/
 	README.md
-	bin/site.sh               Entry point, runs one app in a container
+	bin/site.sh               Entry point, runs one app in a container or on the host
 	bin/dev.mjs               Runs the product and the manual together
-	bin/entrypoint.sh         Runs inside the container: install, then generate
+	bin/entrypoint.sh         Installs dependencies, then generates; both runtimes use it
 	bin/bundle.sh             Builds both apps into sites/dist
 	lib/nav.mjs               Navigation and titles, read from the filesystem
 	lib/checks.mjs            Guards for docs/, generator-independent
@@ -29,6 +29,7 @@ sites/bin/site.sh --host 0.0.0.0 dev    # the same, also reachable from the netw
 sites/bin/site.sh build product         # writes sites/product/dist
 SITE_BASE=/docs/ sites/bin/site.sh build manual # writes sites/manual/dist
 sites/bin/bundle.sh                     # writes sites/dist
+SITE_RUNTIME=host sites/bin/bundle.sh   # the same, without a container
 sites/bin/site.sh shell                 # shell inside the container
 sites/bin/site.sh clean manual          # drop volumes and dist
 ```
@@ -41,7 +42,9 @@ The dev command serves the deployed shape on one origin and one port: the produc
 
 `bundle.sh` builds the product page at the root and the manual under `/docs/`, then writes one tree to `sites/dist`. The manual is built with `SITE_CLEAN_URLS=false`, so the tree works on a static host without rewrite rules.
 
-The generator never runs on the host. `site.sh` picks `podman` or `docker`, or `SITE_RUNTIME` if both are installed, and runs the stock `node:22-bookworm-slim` image. There is no image of our own and no `Dockerfile`: the container gets its toolchain from the stock image and everything else from the mounted working tree, where `sites/bin/entrypoint.sh` is the entrypoint. Dependencies install into a named volume on first run; the dev cache and the build output live in volumes and in `/tmp`, so the only things the build exports into the working tree are the app `dist` directories. `bundle.sh` then assembles them into `sites/dist` and hands the result back owned by the calling user.
+`site.sh` picks `podman` or `docker`, or `SITE_RUNTIME` if both are installed, and runs the stock `node:22-bookworm-slim` image. There is no image of our own and no `Dockerfile`: the container gets its toolchain from the stock image and everything else from the mounted working tree, where `sites/bin/entrypoint.sh` is the entrypoint. Dependencies install into a named volume on first run; the dev cache and the build output live in volumes and in `/tmp`, so the only things the build exports into the working tree are the app `dist` directories. `bundle.sh` then assembles them into `sites/dist` and hands the result back owned by the calling user.
+
+`SITE_RUNTIME=host` runs the same `entrypoint.sh` directly instead. The hosted builder takes this path, because it has Node but no container runtime: dependencies install into `sites/<app>/node_modules` and the build writes straight to `sites/<app>/dist`, which `bundle.sh` assembles the same way. Both runtimes read the site's settings from one environment file, so they produce the same tree. What a host run loses is the volume that keeps the working tree free of `node_modules`, and what it gains is not needing podman or docker.
 
 To add another app, copy the `manual/` layout into `sites/<name>/` with a `package.json` exposing `dev` and `build`; `site.sh dev <name>` works unchanged. An app's `dev` script owns its listening ports, and `SITE_PORT` sets the host port it is published on.
 
@@ -83,11 +86,11 @@ No link is labelled with a file name. A reader who is offered `grammar.md` learn
 
 ## Deploying
 
-`.github/workflows/site.yml` builds the bundle on `master` and uploads `sites/dist` to Cloudflare Pages as a direct upload: Cloudflare receives the finished files and never runs the build. The Pages project is `retype`, and `master` is its production branch. The workflow reads `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from repository secrets.
+Cloudflare Pages builds and serves the site from `master`. The project is `retype`, the production branch is `master`, the build command is `SITE_RUNTIME=host sites/bin/bundle.sh`, and the output directory is `sites/dist`. The build image supplies Node, so Cloudflare runs the same `entrypoint.sh` a container runs and installs `sites/manual/node_modules` in place; the image default is Node 22, and `NODE_VERSION` pins it if that default moves. No repository secret is involved: Pages pulls the repository itself, and every other branch gets a preview deployment on the same build command.
 
 The bundle is served from the root of the domain, so the product app keeps the default `SITE_BASE` and the manual is built with `/docs/`. A deployment under a path prefix would need `SITE_BASE` set for the product app as well.
 
-`ci.yml` builds the same bundle on every push, so a docs build that breaks fails before it reaches the default branch.
+`ci.yml` builds the same bundle with the same command on every push, so a docs build that breaks fails before it reaches the default branch.
 
 ## Why not Starlight
 
@@ -107,4 +110,4 @@ VitePress needs three pieces of glue for the same source, all inside `sites/lib/
 - The safety review archive under `docs/dev/reviews/` is repository evidence, not a page, and is excluded from the site
 - The product page's social card is SVG. Some social platforms want a raster image; a PNG is a deployment follow-up
 - `SITE_BASE` is `/` by default and `/docs/` in the bundle. A deployment under another path needs it set
-- The Pages project and its secrets do not exist in the repository; [Deploying](#deploying) lists what has to be created
+- The Pages project and its build settings live in the Cloudflare dashboard, not in the repository; [Deploying](#deploying) records what they are

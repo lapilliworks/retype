@@ -55,7 +55,7 @@ app_dir=$site/$app
 runtime=${SITE_RUNTIME:-$(command -v podman || command -v docker || true)}
 runtime=${runtime##*/}
 [ -n "$runtime" ] || {
-	echo 'needs podman or docker: install one, or set SITE_RUNTIME' >&2
+	echo 'needs podman or docker: install one, or set SITE_RUNTIME to host' >&2
 	exit 1
 }
 
@@ -65,6 +65,13 @@ image=node:22-bookworm-slim
 deps=retype-site-$app-deps
 cache=retype-site-npm
 out=retype-site-$app-out
+# A container keeps the build in a volume and copies it out; a host build writes the
+# app's own dist directory, which is what a hosted builder produces.
+if [ "$runtime" = host ]; then
+	out_dir=$app_dir/dist
+else
+	out_dir=/out
+fi
 # An app's dev script owns its port; this is the container side of the mapping.
 app_port=${SITE_APP_PORT:-5173}
 # 0.0.0.0 serves the site to the network, 127.0.0.1 serves it to this host only.
@@ -79,31 +86,44 @@ docker) export_args="--user $(id -u):$(id -g)" ;;
 esac
 
 ensure_image() {
+	[ "$runtime" = host ] && return 0
 	$runtime image inspect "$image" >/dev/null 2>&1 && return 0
 	$runtime pull "$image"
 }
 
+# The site reads its shape from the environment. One file feeds both runtimes: a
+# container takes it with --env-file, a host build sources it.
+site_env() {
+	set -- "SITE_OUT_DIR=$out_dir" "SITE_BASE=${SITE_BASE:-/}" "SITE_APP_PORT=$app_port"
+	[ -n "${SITE_ALLOWED_HOSTS:-}" ] && set -- "$@" "SITE_ALLOWED_HOSTS=$SITE_ALLOWED_HOSTS"
+	[ -n "${SITE_DOCS_URL:-}" ] && set -- "$@" "SITE_DOCS_URL=$SITE_DOCS_URL"
+	[ -n "${SITE_MANUAL_PORT:-}" ] && set -- "$@" "SITE_MANUAL_PORT=$SITE_MANUAL_PORT"
+	if [ -n "${SITE_PRODUCT_URL:-}" ]; then
+		set -- "$@" "SITE_PRODUCT_URL=$SITE_PRODUCT_URL"
+	elif [ "$action" = dev ]; then
+		set -- "$@" "SITE_PRODUCT_URL=http://127.0.0.1:${SITE_PORT:-$app_port}/"
+	fi
+	[ -n "${SITE_CLEAN_URLS:-}" ] && set -- "$@" "SITE_CLEAN_URLS=$SITE_CLEAN_URLS"
+	printf '%s\n' "$@"
+}
+
+env_file=$(mktemp)
+trap 'rm -f "$env_file"' EXIT
+site_env > "$env_file"
+
 run() {
+	# A hosted builder has Node and no container runtime, so the same entrypoint
+	# runs on the host there; only the toolchain's home differs.
+	if [ "$runtime" = host ]; then
+		set -a
+		. "$env_file"
+		set +a
+		CI=${CI:-true}
+		export CI
+		exec "$site/bin/entrypoint.sh" "$app" "$@"
+	fi
 	interactive=''
 	if [ -t 0 ] && [ -t 1 ]; then interactive='-it'; fi
-	env_args="--env SITE_OUT_DIR=/out --env SITE_BASE=${SITE_BASE:-/} --env SITE_APP_PORT=$app_port"
-	if [ -n "${SITE_ALLOWED_HOSTS:-}" ]; then
-		env_args="$env_args --env SITE_ALLOWED_HOSTS=$SITE_ALLOWED_HOSTS"
-	fi
-	if [ -n "${SITE_DOCS_URL:-}" ]; then
-		env_args="$env_args --env SITE_DOCS_URL=$SITE_DOCS_URL"
-	fi
-	if [ -n "${SITE_MANUAL_PORT:-}" ]; then
-		env_args="$env_args --env SITE_MANUAL_PORT=$SITE_MANUAL_PORT"
-	fi
-	if [ -n "${SITE_PRODUCT_URL:-}" ]; then
-		env_args="$env_args --env SITE_PRODUCT_URL=$SITE_PRODUCT_URL"
-	elif [ "$action" = dev ]; then
-		env_args="$env_args --env SITE_PRODUCT_URL=http://127.0.0.1:${SITE_PORT:-$app_port}/"
-	fi
-	if [ -n "${SITE_CLEAN_URLS:-}" ]; then
-		env_args="$env_args --env SITE_CLEAN_URLS=$SITE_CLEAN_URLS"
-	fi
 	# shellcheck disable=SC2086
 	$runtime run --rm $interactive \
 		--mount "type=bind,source=$root,target=/src" \
@@ -115,13 +135,14 @@ run() {
 		--env NPM_CONFIG_CACHE=/npm-cache \
 		--env NPM_CONFIG_UPDATE_NOTIFIER=false \
 		--env CI=true \
-		$env_args \
+		--env-file "$env_file" \
 		--entrypoint /src/sites/bin/entrypoint.sh \
 		"$image" "$app" "$@"
 }
 
 # Copies the build out of its volume so the exported files belong to the host user.
 export_build() {
+	[ "$runtime" = host ] && return 0
 	mkdir -p "$app_dir/dist"
 	# shellcheck disable=SC2086
 	$runtime run --rm $export_args \
@@ -132,9 +153,11 @@ export_build() {
 
 clean() {
 	# The image is stock, hence shared: only the volumes and the build are ours.
-	for volume in "$deps" "$cache" "$out"; do
-		$runtime volume rm --force "$volume" 2>/dev/null || true
-	done
+	if [ "$runtime" != host ]; then
+		for volume in "$deps" "$cache" "$out"; do
+			$runtime volume rm --force "$volume" 2>/dev/null || true
+		done
+	fi
 	rm -rf "$app_dir/dist"
 }
 

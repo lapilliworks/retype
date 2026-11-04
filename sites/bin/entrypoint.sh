@@ -1,13 +1,14 @@
 #!/bin/sh
-# Runs inside the container. Installs the generator's dependencies into the mounted
-# volume when package.json changes, then hands over to it.
+# Installs the app's dependencies, then hands over to it. Runs inside the container,
+# and directly on the host when there is no container runtime to use.
 set -eu
 
 app=${1:?usage: entrypoint.sh <app> <dev|build|shell>}
 action=${2:?usage: entrypoint.sh <app> <dev|build|shell>}
 shift 2
 
-work=/src/sites/$app
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+work=$root/sites/$app
 if [ ! -d "$work" ]; then
 	echo "no such site: $app" >&2
 	exit 2
@@ -17,6 +18,7 @@ cd "$work"
 stamp=node_modules/.installed
 if [ ! -f "$stamp" ] || [ package.json -nt "$stamp" ]; then
 	echo "installing $app dependencies" >&2
+	mkdir -p node_modules
 	npm install --no-audit --no-fund --loglevel=error
 	touch "$stamp"
 fi

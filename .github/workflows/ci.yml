@@ -75,11 +75,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: node sites/lib/checks.mjs
-      # The bundle is what deploys, so a docs build that breaks fails here rather
-      # than at the first push to the default branch.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # Cloudflare Pages builds the bundle with this same command, so a docs build
+      # that breaks fails here rather than in the Pages log.
       - name: Build the bundle
         env:
-          SITE_RUNTIME: docker
+          SITE_RUNTIME: host
         run: sites/bin/bundle.sh
 
   probe:
