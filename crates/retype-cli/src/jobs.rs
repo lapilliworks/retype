@@ -438,10 +438,10 @@ fn choose(key: char, job: &retype_core::job::Job) -> Option<Action> {
 		.unwrap_or_default();
 	let corrected = job.parked.as_ref().and_then(|parked| parked.corrected.as_deref());
 
-	// A pending job runs on its timer, and a size park may run exactly as asked once
-	// someone says so. The other needs-attention reasons cannot.
 	let can_now = job.state == retype_core::job::JobState::Pending
-		|| (job.state == retype_core::job::JobState::NeedsAttention && reason == "size");
+		|| (job.state == retype_core::job::JobState::NeedsAttention
+			&& retype_core::deferral::Reason::parse(reason)
+				.is_some_and(retype_core::deferral::Reason::can_run_as_asked));
 
 	match key {
 		'n' if can_now => Some(Action::Now),
@@ -716,6 +716,13 @@ mod tests {
 
 		assert_eq!(choose('n', &sized), Some(Action::Now));
 		assert_eq!(choose('c', &sized), None, "there is nothing to reduce");
+	}
+
+	#[test]
+	fn an_explicit_confirmation_can_run_as_asked() {
+		let mut asked = job(retype_core::job::JobState::NeedsAttention, None);
+		asked.parked.as_mut().unwrap().reason = "ask".to_string();
+		assert_eq!(choose('n', &asked), Some(Action::Now));
 	}
 
 	#[test]

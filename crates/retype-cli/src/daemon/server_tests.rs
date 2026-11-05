@@ -44,6 +44,36 @@ fn a_cli_submission_is_journalled_before_it_waits_in_the_queue() {
 }
 
 #[test]
+fn an_explicit_cli_ask_is_journalled_without_entering_the_queue() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let input = dir.path().join("input.tar");
+	fs::write(&input, b"input bytes").unwrap();
+	let server = server(&state);
+
+	for intent in ["zip+ask", "zip+"] {
+		let request = Request::new(1, "jobs.submit")
+			.with_params(json!({"input": input, "intent": intent}))
+			.unwrap();
+		let response = server.submit(&request).unwrap();
+		assert!(response.ok, "{response:?}");
+		assert_eq!(response.result.unwrap()["state"], "needs-attention");
+	}
+
+	assert!(server.pool.ids().is_empty());
+	let (_, replay) = Journal::open(&state.join("jobs.jsonl")).unwrap();
+	assert_eq!(replay.jobs.len(), 2);
+	for job in replay.jobs {
+		assert_eq!(job.state, JobState::NeedsAttention);
+		let parked = job.parked.unwrap();
+		assert_eq!(parked.reason, "ask");
+		assert_eq!(parked.deadline, None);
+	}
+	assert!(!dir.path().join("input.zip").exists());
+	server.pool.stop();
+}
+
+#[test]
 fn a_full_queue_does_not_leave_a_replayable_cli_job() {
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");

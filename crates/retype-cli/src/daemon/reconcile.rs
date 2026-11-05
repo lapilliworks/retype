@@ -34,9 +34,21 @@ pub fn run(shared: &Shared, pool: &Pool) {
 		match job.state {
 			JobState::Queued => requeue(shared, pool, &job),
 			JobState::Running => interrupted(shared, &job),
+			JobState::Pending if job.parked.as_ref().is_some_and(|parked| parked.reason == "ask") => {
+				require_confirmation(shared, &job);
+			}
 			_ => {}
 		}
 	}
+}
+
+fn require_confirmation(shared: &Shared, job: &Job) {
+	let mut waiting = job.clone();
+	waiting.set_state(JobState::NeedsAttention);
+	if let Some(parked) = &mut waiting.parked {
+		parked.deadline = None;
+	}
+	watcher::publish(shared, &waiting);
 }
 
 fn requeue(shared: &Shared, pool: &Pool, job: &Job) {

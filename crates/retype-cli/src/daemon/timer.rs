@@ -55,6 +55,7 @@ fn due(shared: &Shared, pool: &Pool) -> Vec<Job> {
 
 	jobs.iter()
 		.filter(|job| job.state == JobState::Pending)
+		.filter(|job| !job.parked.as_ref().is_some_and(|parked| parked.reason == "ask"))
 		.filter(|job| !running.contains(&job.id))
 		.filter(|job| {
 			job.parked

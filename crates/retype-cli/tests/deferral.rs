@@ -215,8 +215,8 @@ fn an_expensive_rename_is_parked_under_its_own_name_and_runs_when_the_timer_fire
 }
 
 #[test]
-fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
-	let fixture = Fixture::new("1h");
+fn ask_waits_without_a_timeout_and_explicit_confirmation_runs_it() {
+	let fixture = Fixture::new("1s");
 	let small = fixture.photos.join("b.png");
 	let before = support::observed(&fixture.state);
 	fs::write(&small, b"pixels").unwrap();
@@ -224,7 +224,13 @@ fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
 	fs::rename(&small, fixture.photos.join("b.webp+ask")).unwrap();
 
 	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");
-	assert_eq!(parked["state"], "pending", "{parked}");
+	assert_eq!(parked["state"], "needs-attention", "{parked}");
+	assert!(parked["parked"]["deadline"].is_null());
+	std::thread::sleep(Duration::from_millis(2_200));
+	assert!(
+		!fixture.photos.join("b.webp").exists(),
+		"an unanswered ask must not time out"
+	);
 
 	let ran = fixture
 		.command()
@@ -342,6 +348,60 @@ fn repair_converts_without_the_token_it_could_not_carry_and_says_what_it_dropped
 		fixture.photos.join("e.png").exists(),
 		"an unvalidated copy backend retains its source"
 	);
+}
+
+#[test]
+fn an_ask_does_not_run_if_its_source_name_cannot_be_restored() {
+	let fixture = Fixture::new("1s");
+	let source = fixture.photos.join("occupied.png");
+	let target = fixture.photos.join("occupied.webp+ask");
+	let before = support::observed(&fixture.state);
+	fs::write(&source, b"original pixels").unwrap();
+	support::observe(&fixture.state, before);
+	let before = support::observed(&fixture.state);
+	fs::rename(&source, &target).unwrap();
+	fs::write(&source, b"unrelated occupant").unwrap();
+	support::observe(&fixture.state, before);
+	std::thread::sleep(Duration::from_millis(1_500));
+
+	assert_eq!(fs::read(&target).unwrap(), b"original pixels");
+	assert_eq!(fs::read(&source).unwrap(), b"unrelated occupant");
+	assert!(
+		!fixture.photos.join("occupied.webp").exists(),
+		"conversion bypassed confirmation"
+	);
+}
+
+#[test]
+fn an_explicit_ask_prevents_automatic_repair() {
+	let fixture = Fixture::with("1s", "convert");
+	let source = fixture.photos.join("asked.png");
+	let before = support::observed(&fixture.state);
+	fs::write(&source, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
+	fs::rename(&source, fixture.photos.join("asked.webp+zzz+ask")).unwrap();
+
+	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "intent");
+	assert_eq!(parked["state"], "needs-attention", "{parked}");
+	assert_eq!(parked["parked"]["corrected"], "webp+ask");
+	std::thread::sleep(Duration::from_millis(2_200));
+	assert!(
+		!fixture.photos.join("asked.webp").exists(),
+		"repair ran without confirmation"
+	);
+
+	let confirmed = fixture
+		.command()
+		.args(["jobs", "resolve", &Fixture::id(&parked), "--convert"])
+		.output()
+		.unwrap();
+	assert!(
+		confirmed.status.success(),
+		"{}",
+		String::from_utf8_lossy(&confirmed.stderr)
+	);
+	fixture.wait_for(|record| record["state"] == "done" && Fixture::id(record) == Fixture::id(&parked));
+	assert!(fixture.photos.join("asked.webp").exists());
 }
 
 #[test]

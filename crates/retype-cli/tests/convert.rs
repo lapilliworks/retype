@@ -118,6 +118,43 @@ fn converts_and_writes_beside_the_input() {
 }
 
 #[test]
+fn a_noninteractive_explicit_ask_stays_pending_until_a_person_confirms() {
+	let fixture = Fixture::new();
+	let input = fixture.input();
+	let config = fs::read_to_string(&fixture.config).unwrap();
+	fs::write(&fixture.config, format!("{config}\n[deferral]\npause = '1s'\n")).unwrap();
+
+	let output = fixture.convert(&["convert", input.to_str().unwrap(), "webp+ask", "--json"]);
+	assert_eq!(
+		output.status.code(),
+		Some(7),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+	assert_eq!(answer["ok"], false);
+	assert_eq!(answer["error"]["detail"]["state"], "needs-attention");
+	let id = answer["error"]["detail"]["id"].as_str().unwrap();
+	std::thread::sleep(std::time::Duration::from_millis(2_200));
+	assert!(!fixture.dir.path().join("photo.webp").exists());
+	assert_eq!(fs::read(&input).unwrap(), b"pixels");
+
+	let confirmed = fixture.convert(&["jobs", "resolve", id, "--now"]);
+	assert!(
+		confirmed.status.success(),
+		"{}",
+		String::from_utf8_lossy(&confirmed.stderr)
+	);
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+	let output = fixture.dir.path().join("photo.webp");
+	while !output.exists() {
+		assert!(std::time::Instant::now() < deadline, "the confirmed job did not run");
+		std::thread::sleep(std::time::Duration::from_millis(50));
+	}
+	assert_eq!(fs::read(output).unwrap(), b"pixels");
+}
+
+#[test]
 fn the_journal_records_the_job() {
 	let fixture = Fixture::new();
 	let input = fixture.input();

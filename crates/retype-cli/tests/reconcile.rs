@@ -176,6 +176,58 @@ fn a_restart_requeues_the_queued_and_declares_the_running() {
 }
 
 #[test]
+fn an_old_timed_ask_is_restored_as_a_confirmation_without_a_deadline() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	fs::create_dir_all(&state).unwrap();
+	let config = copy_config(dir.path());
+	let id = JobId::now().unwrap();
+	let source = dir.path().join("asked.png");
+	let output = dir.path().join("asked.webp");
+	fs::write(&source, b"pixels").unwrap();
+	let mut job = record(&id, &source, &output, JobState::Pending);
+	job.intent = Some("webp+ask".to_string());
+	job.parked = Some(retype_core::job::Parked {
+		reason: "ask".to_string(),
+		deadline: Some(now_ms() - 1_000),
+		batch: None,
+		estimate: None,
+		requested: Some("webp+ask".to_string()),
+		corrected: None,
+		dropped: Vec::new(),
+		consume: true,
+	});
+	let journal = state.join("jobs.jsonl");
+	fs::write(&journal, format!("{}\n", job.to_line().unwrap())).unwrap();
+
+	let _daemon = Daemon(
+		retype()
+			.args(["daemon", "--detached"])
+			.arg("--state-dir")
+			.arg(&state)
+			.env("RETYPE_CONFIG", &config)
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.spawn()
+			.unwrap(),
+	);
+
+	let deadline = Instant::now() + Duration::from_secs(20);
+	loop {
+		let record = last_record(&journal, &id);
+		if record["state"] == "needs-attention" {
+			assert!(record["parked"]["deadline"].is_null());
+			break;
+		}
+		assert!(Instant::now() < deadline, "the ask was not restored: {record}");
+		std::thread::sleep(Duration::from_millis(50));
+	}
+	std::thread::sleep(Duration::from_millis(1_200));
+	assert!(!output.exists(), "a previously timed ask must not execute");
+	assert_eq!(fs::read(source).unwrap(), b"pixels");
+}
+
+#[test]
 fn a_queued_job_does_not_run_against_a_replacement_source() {
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");

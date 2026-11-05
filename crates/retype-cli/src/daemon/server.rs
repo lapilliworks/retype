@@ -390,6 +390,10 @@ impl Server {
 
 		let id = retype_core::job::JobId::now()?;
 		let job = immediate::queued(&self.shared, &prepared, &id);
+		if prepared.resolved.meta.ask {
+			return self.await_confirmation(request.id, job, &asked.intent);
+		}
+
 		let work = crate::daemon::queue::Work {
 			id: id.clone(),
 			kind: crate::daemon::queue::Kind::Immediate(asked),
@@ -404,16 +408,29 @@ impl Server {
 				request.id,
 				WireError::new(Code::JobState, "the queue is full or closed, so nothing was submitted"),
 			)),
-			Err(error) => Ok(Response::error(
-				request.id,
-				WireError::new(
-					error.code(),
-					format!(
-						"job {id} did not start because admission could not be recorded: {error}; \
-						 its outcome after restart is uncertain, so check the job before retrying"
-					),
-				),
-			)),
+			Err(error) => Ok(Response::error(request.id, admission_error(&id, error))),
+		}
+	}
+
+	fn await_confirmation(&self, request_id: u64, mut job: Job, requested: &str) -> Result<Response> {
+		job.set_state(JobState::NeedsAttention);
+		job.parked = Some(retype_core::job::Parked {
+			reason: Reason::Ask.as_str().to_string(),
+			deadline: None,
+			batch: None,
+			estimate: None,
+			requested: Some(requested.to_string()),
+			corrected: None,
+			dropped: Vec::new(),
+			consume: false,
+		});
+
+		match crate::daemon::watcher::publish_checked(&self.shared, &job) {
+			Ok(()) => Ok(Response::ok(
+				request_id,
+				json!({"id": job.id, "state": "needs-attention"}),
+			)?),
+			Err(error) => Ok(Response::error(request_id, admission_error(&job.id, error))),
 		}
 	}
 
@@ -560,9 +577,8 @@ impl Server {
 		let reason = parked.as_ref().and_then(|parked| Reason::parse(&parked.reason));
 
 		let intent = match mode {
-			// The request as written cannot run, which is why it is parked: asking again
-			// is a state error rather than a second failure. A size park is the exception:
-			// it can run as asked, and `--now` is the consent it waits for.
+			// An explicit ask or size park can run as asked once a person confirms it.
+			// Other needs-attention reasons require correction rather than consent.
 			"now" if job.state == JobState::NeedsAttention && !reason.is_some_and(Reason::can_run_as_asked) => {
 				return Ok(Response::error(
 					request.id,
@@ -1145,6 +1161,16 @@ impl Server {
 
 		Ok(response)
 	}
+}
+
+fn admission_error(id: &retype_core::job::JobId, error: retype_core::error::Error) -> WireError {
+	WireError::new(
+		error.code(),
+		format!(
+			"job {id} did not start because admission could not be recorded: {error}; \
+			 its outcome after restart is uncertain, so check the job before retrying"
+		),
+	)
 }
 
 /// Turn a set of diagnostics into one wire error that keeps its first span and

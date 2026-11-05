@@ -82,7 +82,7 @@ Records expire at twice the undo retention. `why` past that point says the file 
 
 ## Jobs that wait for an answer
 
-A rename that would cost more than a threshold waits for its timer, unless the intent says `+now`. A rename that cannot run as asked is `needs-attention`, and so is one whose source is above the automatic size limit: the first because only a person can correct it, the second because a large conversion is started only when it is confirmed. In both cases the file keeps the name it was given. A size park has reason `size` and no timer.
+A rename that would cost more than a threshold waits for its timer, unless the intent says `+now`. A rename that cannot run as asked is `needs-attention`, and so is one whose source is above the automatic size limit or whose intent explicitly says `+ask` or ends in `+`. An `ask` or `size` job has no timer and runs only after a person confirms it. While it waits, the source name is restored.
 
 ```
 retype jobs --interactive

@@ -67,21 +67,17 @@ impl Reason {
 		}
 	}
 
-	/// Which state a job with this reason is in: the first two are only a delay, the
-	/// rest need a decision.
+	/// Which state a job with this reason is in.
 	pub fn parked(self) -> Parked {
 		match self {
-			Self::Ask | Self::Cost => Parked::Pending,
-			Self::Size | Self::Intent | Self::Inapplicable | Self::Backend => Parked::Attention,
+			Self::Cost => Parked::Pending,
+			Self::Ask | Self::Size | Self::Intent | Self::Inapplicable | Self::Backend => Parked::Attention,
 		}
 	}
 
 	/// Whether the job may run exactly as asked, once a person says so.
-	///
-	/// A source over the size limit is a valid request that needs consent, unlike a
-	/// request that cannot be carried out at all.
 	pub fn can_run_as_asked(self) -> bool {
-		matches!(self, Self::Size)
+		matches!(self, Self::Ask | Self::Size)
 	}
 }
 
@@ -201,7 +197,7 @@ mod tests {
 
 	#[test]
 	fn a_reason_knows_which_state_it_parks_in() {
-		assert_eq!(Reason::Ask.parked(), Parked::Pending);
+		assert_eq!(Reason::Ask.parked(), Parked::Attention);
 		assert_eq!(Reason::Cost.parked(), Parked::Pending);
 		assert_eq!(Reason::Size.parked(), Parked::Attention);
 		assert_eq!(Reason::Intent.parked(), Parked::Attention);
@@ -210,6 +206,7 @@ mod tests {
 
 		assert_eq!(Parked::Pending.as_str(), "pending");
 		assert_eq!(Parked::Attention.as_str(), "needs-attention");
+		assert!(Reason::Ask.can_run_as_asked());
 		assert!(Reason::Size.can_run_as_asked());
 		assert!(!Reason::Intent.can_run_as_asked());
 	}

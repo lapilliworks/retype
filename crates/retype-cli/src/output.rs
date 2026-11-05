@@ -87,20 +87,27 @@ fn envelope_error(error: Value, diagnostics: Option<Value>) -> Value {
 
 /// Report one failure and answer with the exit status it maps to.
 pub fn fail(code: &Code, message: impl AsRef<str>) -> u8 {
-	let message = clean_message(code, message.as_ref());
+	fail_with_optional_detail(code, message.as_ref(), None)
+}
+
+/// Report a failure with machine-readable context.
+pub fn fail_with_detail(code: &Code, message: impl AsRef<str>, detail: Value) -> u8 {
+	fail_with_optional_detail(code, message.as_ref(), Some(detail))
+}
+
+fn fail_with_optional_detail(code: &Code, message: &str, detail: Option<Value>) -> u8 {
+	let message = clean_message(code, message);
 
 	if json() {
-		println!(
-			"{}",
-			envelope_error(
-				json!({
-					"code": code,
-					"category": category_name(code),
-					"message": message,
-				}),
-				None
-			)
-		);
+		let mut error = json!({
+			"code": code,
+			"category": category_name(code),
+			"message": message,
+		});
+		if let Some(detail) = detail {
+			error["detail"] = detail;
+		}
+		println!("{}", envelope_error(error, None));
 	} else {
 		eprintln!("retype: {code}: {message}");
 	}

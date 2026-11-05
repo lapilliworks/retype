@@ -245,19 +245,21 @@ fn uncarried(
 	let reason = reason_of(&problems);
 	let corrected = corrected(&shared.registry(), parsed, format, policy);
 
-	if let Some(verdict) = repair(
-		shared,
-		pool,
-		stem,
-		format,
-		target,
-		id,
-		batch,
-		reason,
-		requested.as_deref(),
-		corrected.as_ref(),
-	) {
-		return verdict;
+	if !requests_confirmation(parsed, &shared.registry()) {
+		if let Some(verdict) = repair(
+			shared,
+			pool,
+			stem,
+			format,
+			target,
+			id,
+			batch,
+			reason,
+			requested.as_deref(),
+			corrected.as_ref(),
+		) {
+			return verdict;
+		}
 	}
 
 	park(
@@ -278,6 +280,16 @@ fn uncarried(
 			..Parking::default()
 		},
 	)
+}
+
+fn requests_confirmation(parsed: &intent::Intent, registry: &Registry) -> bool {
+	parsed.meta.ask
+		|| parsed.groups.iter().flat_map(|group| &group.tokens).any(|token| {
+			registry
+				.resolve(&token.name)
+				.and_then(|found| found.op())
+				.is_some_and(|op| op.key == "ask")
+		})
 }
 
 /// Whether the estimate crosses the threshold that applies, `docs/deferral.md` §3.
@@ -615,11 +627,24 @@ fn park(
 	reason: Reason,
 	parking: Parking<'_>,
 ) -> Verdict {
-	// A name that cannot be restored would be a mislabelled file for as long as the
-	// job waits, so the wait is not offered: the conversion runs and handles the
-	// fallback itself.
-	let Ok(source_path) = retype_core::convert::restore_source_name(target, stem, format) else {
-		return Verdict::Run;
+	let source_path = match retype_core::convert::restore_source_name(target, stem, format) {
+		Ok(source) => source,
+		Err(error) => {
+			let asks = reason == Reason::Ask
+				|| parking
+					.requested
+					.as_deref()
+					.and_then(|text| intent::parse(text).ok())
+					.is_some_and(|intent| requests_confirmation(&intent, &shared.registry()));
+			if asks {
+				eprintln!(
+					"retype: cannot restore {} for confirmation: {error}; conversion did not start",
+					target.display()
+				);
+				return Verdict::Ignore;
+			}
+			return Verdict::Run;
+		}
 	};
 
 	// The restore is a rename of our own, and the watcher must not read it as the user
