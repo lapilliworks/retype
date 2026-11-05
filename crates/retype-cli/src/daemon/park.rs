@@ -546,32 +546,32 @@ fn repair(
 		consume_source: true,
 	};
 
-	watcher::publish(shared, &job);
+	let work = crate::daemon::timer::work(&job, Some(&correction.text), false).expect("a corrected job has an intent");
+	match pool.submit_after(work, || watcher::publish_checked(shared, &job)) {
+		Ok(true) => Some(Verdict::Repaired),
+		Ok(false) => Some(park_repair_after_queue_full(shared, job)),
+		Err(error) => {
+			eprintln!(
+				"retype: repair {id} did not start because admission could not be recorded: {error}; \
+				 its outcome after restart is uncertain, so check the job before retrying"
+			);
+			Some(Verdict::Ignore)
+		}
+	}
+}
 
-	match crate::daemon::timer::start_job(pool, &job, Some(&correction.text), false) {
-		true => Some(Verdict::Repaired),
-		// The queue is full, so the record says nothing ran: park it instead, and the
-		// timer will try again later.
-		false => Some(park(
-			shared,
-			stem,
-			Path::new(""),
-			format,
-			&source,
-			id,
-			batch,
-			reason,
-			Parking {
-				requested: requested.map(str::to_string),
-				corrected: Some(Correction {
-					text: correction.text.clone(),
-					dropped: correction.dropped.clone(),
-				}),
-				estimate: Some(cost),
-				consume: true,
-				..Parking::default()
-			},
-		)),
+fn park_repair_after_queue_full(shared: &Shared, mut job: Job) -> Verdict {
+	job.set_state(JobState::NeedsAttention);
+	job.error = Some(JobError::new(
+		Code::JobState.to_string(),
+		"the queue was full; confirm the corrected request after capacity is available",
+	));
+	match watcher::publish_checked(shared, &job) {
+		Ok(()) => Verdict::Parked,
+		Err(error) => {
+			eprintln!("retype: cannot record the waiting repair {}: {error}", job.id);
+			Verdict::Ignore
+		}
 	}
 }
 

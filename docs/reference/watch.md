@@ -110,7 +110,7 @@ A directory can produce more rename events than any queue should absorb, for exa
 
 A pause is state; `paused = true` in a directory file is policy. Policy wins, because a committed project setting must not be silently undone by a client that resumed once and departed. Resuming a policy-paused directory is refused with `E_WATCH_PAUSED_BY_POLICY`, naming the file to edit, which is the only case where the two can disagree.
 
-An ordinary watched conversion is recorded before it enters the worker queue; parked and repaired requests still use separate paths. After a daemon restart, a job that was still queued requires manual review and resubmission: its journal entry does not yet include a content fingerprint that would make automatic replay safe.
+An ordinary watched conversion or automatic repair is recorded before it enters the worker queue; resuming a parked request still uses a separate path. After a daemon restart, a job that was still queued requires manual review and resubmission: its journal entry does not yet include a content fingerprint that would make automatic replay safe.
 
 ## 9. Network filesystems
 

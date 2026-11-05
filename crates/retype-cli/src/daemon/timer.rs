@@ -74,9 +74,11 @@ fn due(shared: &Shared, pool: &Pool) -> Vec<Job> {
 /// alone if it came from a client, which is the one thing the parked record has to
 /// remember.
 pub fn start_job(pool: &Pool, job: &Job, intent: Option<&str>, force: bool) -> bool {
-	let Some(intent) = intent.map(str::to_string).or_else(|| job.intent.clone()) else {
-		return false;
-	};
+	work(job, intent, force).is_some_and(|work| pool.submit(work))
+}
+
+pub fn work(job: &Job, intent: Option<&str>, force: bool) -> Option<Work> {
+	let intent = intent.map(str::to_string).or_else(|| job.intent.clone())?;
 
 	let consume = job.parked.as_ref().is_none_or(|parked| parked.consume);
 
@@ -98,7 +100,7 @@ pub fn start_job(pool: &Pool, job: &Job, intent: Option<&str>, force: bool) -> b
 		}),
 	};
 
-	pool.submit(Work {
+	Some(Work {
 		id: job.id.clone(),
 		kind,
 	})

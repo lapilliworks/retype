@@ -87,6 +87,20 @@ fn poison_journal(shared: &Arc<Shared>) {
 	);
 }
 
+fn fill_queue(pool: &Pool, photos: &Path) {
+	for _ in 0..crate::daemon::queue::CAPACITY {
+		assert!(pool.submit(crate::daemon::queue::Work {
+			id: JobId::now().unwrap(),
+			kind: crate::daemon::queue::Kind::Immediate(crate::daemon::immediate::Request {
+				input: photos.join("dummy.tar"),
+				intent: "zip".to_string(),
+				output: None,
+				force: false,
+			}),
+		}));
+	}
+}
+
 fn archive_bytes() -> Vec<u8> {
 	let mut archive = tar::Builder::new(Vec::new());
 	let mut header = tar::Header::new_gnu();
@@ -95,6 +109,38 @@ fn archive_bytes() -> Vec<u8> {
 	header.set_cksum();
 	archive.append_data(&mut header, "file.txt", &b"payload"[..]).unwrap();
 	archive.into_inner().unwrap()
+}
+
+fn enable_archive_repair(shared: &Shared) {
+	let builtin = include_str!("../../../retype-core/builtin.toml");
+	let config = "version = 'retype-config-1'\n[deferral]\nrepair = 'convert'\n";
+	shared.reload_registry(Registry::load_layers(builtin, config, "test").unwrap());
+	let mut calibration = retype_core::estimate::Calibration::default();
+	calibration.throughput.push(retype_core::estimate::Measurement {
+		source: "tar".to_string(),
+		target: "zip".to_string(),
+		backend: "zip".to_string(),
+		family: "archive".to_string(),
+		bytes_per_second: 1_000_000.0,
+		size_ratio: 1.0,
+		sample_bytes: 10,
+		tool_version: String::new(),
+		measured: now_ms(),
+	});
+	calibration.save(&shared.state_dir).unwrap();
+}
+
+fn decide_repair(shared: &Shared, pool: &Pool, photos: &Path) {
+	decide(
+		shared,
+		pool,
+		photos,
+		retype_core::correlate::RenameFact {
+			source: photos.join("bundle.tar"),
+			target: photos.join("bundle.zip+zzz"),
+		},
+		None,
+	);
 }
 
 fn decide_archive(shared: &Shared, pool: &Pool, photos: &Path) {
@@ -183,17 +229,7 @@ fn an_accepted_watched_rename_survives_restart_for_manual_review() {
 fn a_full_queue_restores_a_watched_source_without_a_replayable_job() {
 	let (dir, shared, pool, photos) = admission_fixture();
 	std::fs::write(photos.join("bundle.zip"), b"original bytes").unwrap();
-	for _ in 0..crate::daemon::queue::CAPACITY {
-		assert!(pool.submit(crate::daemon::queue::Work {
-			id: JobId::now().unwrap(),
-			kind: crate::daemon::queue::Kind::Immediate(crate::daemon::immediate::Request {
-				input: photos.join("dummy.tar"),
-				intent: "zip".to_string(),
-				output: None,
-				force: false,
-			}),
-		}));
-	}
+	fill_queue(&pool, &photos);
 
 	decide_archive(&shared, &pool, &photos);
 
@@ -216,6 +252,41 @@ fn a_journal_failure_restores_a_watched_source_without_starting_work() {
 	assert!(shared.jobs.lock().unwrap().is_empty());
 	assert_eq!(std::fs::read(photos.join("bundle.tar")).unwrap(), b"original bytes");
 	assert!(!photos.join("bundle.zip").exists());
+	pool.stop();
+}
+
+#[test]
+fn a_full_queue_parks_a_repair_without_a_replayable_queued_record() {
+	let (dir, shared, pool, photos) = admission_fixture();
+	enable_archive_repair(&shared);
+	std::fs::write(photos.join("bundle.zip+zzz"), b"original bytes").unwrap();
+	fill_queue(&pool, &photos);
+
+	decide_repair(&shared, &pool, &photos);
+
+	assert_eq!(std::fs::read(photos.join("bundle.tar")).unwrap(), b"original bytes");
+	let (_, replay) = Journal::open(&dir.path().join("state/jobs.jsonl")).unwrap();
+	assert_eq!(replay.jobs.len(), 1);
+	assert_eq!(replay.jobs[0].state, JobState::NeedsAttention);
+	assert_eq!(
+		replay.jobs[0].parked.as_ref().unwrap().corrected.as_deref(),
+		Some("zip")
+	);
+	pool.stop();
+}
+
+#[test]
+fn a_journal_failure_does_not_enqueue_a_repair() {
+	let (_dir, shared, pool, photos) = admission_fixture();
+	enable_archive_repair(&shared);
+	std::fs::write(photos.join("bundle.zip+zzz"), b"original bytes").unwrap();
+	poison_journal(&shared);
+
+	decide_repair(&shared, &pool, &photos);
+
+	assert_eq!(std::fs::read(photos.join("bundle.tar")).unwrap(), b"original bytes");
+	assert!(pool.ids().is_empty());
+	assert!(shared.jobs.lock().unwrap().is_empty());
 	pool.stop();
 }
 
