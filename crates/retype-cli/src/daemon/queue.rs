@@ -118,25 +118,41 @@ pub struct Queue {
 }
 
 impl Queue {
-	/// Offer work to the queue. `false` means it was full and the job was dropped,
-	/// which `docs/watch.md` §8 asks for rather than absorbing churn.
+	/// Offer work without an admission callback. The caller must persist it first.
 	pub fn submit(&self, work: Work) -> bool {
-		let Ok(mut inner) = self.inner.lock() else {
-			return false;
-		};
+		match self.submit_after(work, || Ok(())) {
+			Ok(accepted) => accepted,
+			Err(error) => {
+				eprintln!("retype: cannot submit work: {error}");
+				false
+			}
+		}
+	}
+
+	/// Reserve queue capacity and persist admission before a runner can take the work.
+	pub fn submit_after(
+		&self,
+		work: Work,
+		admit: impl FnOnce() -> retype_core::error::Result<()>,
+	) -> retype_core::error::Result<bool> {
+		let mut inner = self
+			.inner
+			.lock()
+			.map_err(|_| retype_core::error::Error::Io(std::io::Error::other("queue lock poisoned")))?;
 
 		if inner.closed || inner.len() >= CAPACITY {
 			self.dropped.fetch_add(1, Ordering::Relaxed);
-			return false;
+			return Ok(false);
 		}
 
+		admit()?;
 		match &work.kind {
 			Kind::Immediate(_) => inner.immediate.push_back(work),
 			_ => inner.waiting.push_back(work),
 		}
 
 		self.ready.notify_one();
-		true
+		Ok(true)
 	}
 
 	/// Wait up to `idle` for a job.
@@ -281,6 +297,14 @@ impl Pool {
 
 	pub fn submit(&self, work: Work) -> bool {
 		self.queue.submit(work)
+	}
+
+	pub fn submit_after(
+		&self,
+		work: Work,
+		admit: impl FnOnce() -> retype_core::error::Result<()>,
+	) -> retype_core::error::Result<bool> {
+		self.queue.submit_after(work, admit)
 	}
 
 	pub fn dropped(&self) -> u64 {
@@ -628,6 +652,95 @@ tier = 'converted'
 		assert_eq!(first, id(2), "the submission skips the waiting renames");
 		assert_eq!(second, id(1), "the automatic jobs keep their own order");
 		assert_eq!(third, id(3));
+	}
+
+	#[test]
+	fn a_runner_cannot_take_work_before_admission_finishes() {
+		let queue = Arc::new(Queue::default());
+		let photos = PathBuf::from("/photos");
+		let work = Work {
+			id: id(1),
+			kind: Kind::Rename {
+				root: photos.clone(),
+				bytes: photos.join("a.webp"),
+				source: photos.join("a.png"),
+				target: photos.join("a.webp"),
+			},
+		};
+		let (admitting, in_admission) = std::sync::mpsc::channel();
+		let (release, proceed) = std::sync::mpsc::channel();
+		let (taken, observed) = std::sync::mpsc::channel();
+
+		std::thread::scope(|scope| {
+			let producer = Arc::clone(&queue);
+			let submitted = scope.spawn(move || {
+				producer.submit_after(work, || {
+					admitting.send(()).unwrap();
+					proceed.recv_timeout(Duration::from_secs(10)).unwrap();
+					Ok(())
+				})
+			});
+			in_admission.recv_timeout(Duration::from_secs(10)).unwrap();
+			let consumer = Arc::clone(&queue);
+			let runner = scope.spawn(move || {
+				let next = consumer.take(Duration::from_secs(10));
+				taken.send(matches!(next, Take::Work(_))).unwrap();
+			});
+			assert!(observed.recv_timeout(Duration::from_millis(100)).is_err());
+			release.send(()).unwrap();
+			assert!(submitted.join().unwrap().unwrap());
+			assert!(observed.recv_timeout(Duration::from_secs(10)).unwrap());
+			runner.join().unwrap();
+		});
+	}
+
+	#[test]
+	fn work_is_not_enqueued_when_admission_fails() {
+		let queue = Queue::default();
+		let photos = PathBuf::from("/photos");
+		let work = Work {
+			id: id(1),
+			kind: Kind::Rename {
+				root: photos.clone(),
+				bytes: photos.join("a.webp"),
+				source: photos.join("a.png"),
+				target: photos.join("a.webp"),
+			},
+		};
+
+		let result = queue.submit_after(work, || Err(std::io::Error::other("journal failed").into()));
+
+		assert!(result.is_err());
+		assert!(matches!(queue.take(Duration::ZERO), Take::Idle));
+	}
+
+	#[test]
+	fn a_full_queue_does_not_run_the_admission_callback() {
+		let queue = Queue::default();
+		let photos = PathBuf::from("/photos");
+		let work = |index| Work {
+			id: id(index),
+			kind: Kind::Rename {
+				root: photos.clone(),
+				bytes: photos.join(format!("{index}.webp")),
+				source: photos.join(format!("{index}.png")),
+				target: photos.join(format!("{index}.webp")),
+			},
+		};
+		for index in 0..CAPACITY {
+			assert!(queue.submit(work(index)));
+		}
+
+		let called = std::cell::Cell::new(false);
+		let accepted = queue
+			.submit_after(work(CAPACITY), || {
+				called.set(true);
+				Ok(())
+			})
+			.unwrap();
+
+		assert!(!accepted);
+		assert!(!called.get(), "a rejected job must not be journalled as queued");
 	}
 
 	#[test]

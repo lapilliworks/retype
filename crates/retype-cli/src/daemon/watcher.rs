@@ -774,11 +774,10 @@ fn less_than(held: &std::collections::BTreeMap<PathBuf, Held>, window: Window) -
 /// source name again, because that is the name its bytes belong under,
 /// `docs/dev/architecture/state.md` §5.4.
 fn producers(shared: &Shared, pool: &Pool, path: &Path) -> Vec<Job> {
+	let in_flight = pool.ids();
 	let Ok(jobs) = shared.jobs.lock() else {
 		return Vec::new();
 	};
-
-	let in_flight = pool.ids();
 
 	jobs.iter()
 		.filter(|job| {
@@ -1444,8 +1443,13 @@ pub fn persist(shared: &Shared, job: &Job) -> retype_core::error::Result<()> {
 }
 
 /// Journal and register a snapshot before IPC readers or events can observe it.
+pub fn publish_checked(shared: &Shared, job: &Job) -> retype_core::error::Result<()> {
+	record_job(shared, job, || persist(shared, job))
+}
+
+/// Report publication failures for transitions whose caller cannot recover them.
 pub fn publish(shared: &Shared, job: &Job) {
-	if let Err(error) = record_job(shared, job, || persist(shared, job)) {
+	if let Err(error) = publish_checked(shared, job) {
 		eprintln!("retype: cannot publish {}: {error}", job.id);
 	}
 }

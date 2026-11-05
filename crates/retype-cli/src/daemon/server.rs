@@ -19,6 +19,10 @@ use crate::daemon::machine;
 use crate::daemon::watcher::Shared;
 use crate::error::Result;
 
+#[cfg(test)]
+#[path = "server_tests.rs"]
+mod tests;
+
 pub struct Server {
 	endpoint: Option<String>,
 	shared: Arc<Shared>,
@@ -385,21 +389,32 @@ impl Server {
 		};
 
 		let id = retype_core::job::JobId::now()?;
-		crate::daemon::watcher::publish(&self.shared, &immediate::queued(&self.shared, &prepared, &id));
-
+		let job = immediate::queued(&self.shared, &prepared, &id);
 		let work = crate::daemon::queue::Work {
 			id: id.clone(),
 			kind: crate::daemon::queue::Kind::Immediate(asked),
 		};
 
-		if !self.pool.submit(work) {
-			return Ok(Response::error(
+		match self
+			.pool
+			.submit_after(work, || crate::daemon::watcher::publish_checked(&self.shared, &job))
+		{
+			Ok(true) => Ok(Response::ok(request.id, json!({"id": id, "state": "queued"}))?),
+			Ok(false) => Ok(Response::error(
 				request.id,
-				WireError::new(Code::JobState, "the queue is full, so nothing was submitted"),
-			));
+				WireError::new(Code::JobState, "the queue is full or closed, so nothing was submitted"),
+			)),
+			Err(error) => Ok(Response::error(
+				request.id,
+				WireError::new(
+					error.code(),
+					format!(
+						"job {id} did not start because admission could not be recorded: {error}; \
+						 its outcome after restart is uncertain, so check the job before retrying"
+					),
+				),
+			)),
 		}
-
-		Ok(Response::ok(request.id, json!({"id": id, "state": "queued"}))?)
 	}
 
 	fn cancel(&self, request: &Request) -> Result<Response> {
