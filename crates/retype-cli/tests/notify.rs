@@ -191,19 +191,23 @@ fn the_undo_button_puts_the_source_back() {
 	let recorded = fixture.wait_for_notification();
 	assert!(recorded.contains("undo=Undo"), "{recorded}");
 
-	// The action was answered, so the daemon undid the batch: the source is back and the
-	// output is gone.
+	// The source can already be visible before undo, so wait for the output and record to go.
 	let deadline = Instant::now() + Duration::from_secs(20);
-	while !fixture.photos.join("b.png").exists() {
+	loop {
+		let source = fixture.photos.join("b.png");
+		let output = fixture.photos.join("b.webp");
+		let records = retype_core::undo::Store::open(&fixture.state).list();
+		if source.is_file() && !output.exists() && matches!(records, Ok(ref records) if records.is_empty()) {
+			assert_eq!(fs::read(source).unwrap(), b"pixels");
+			break;
+		}
 		assert!(
 			Instant::now() < deadline,
-			"the undo did not happen: {:?}",
+			"the undo did not finish: {:?}",
 			fs::read_to_string(fixture.state.join("jobs.jsonl"))
 		);
 		std::thread::sleep(Duration::from_millis(50));
 	}
-
-	assert!(!fixture.photos.join("b.webp").exists(), "the output is removed");
 }
 
 #[test]
