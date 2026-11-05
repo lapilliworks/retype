@@ -1337,21 +1337,7 @@ fn run(
 	let lease = match store.lease(&id) {
 		Ok(lease) => lease,
 		Err(error) => {
-			eprintln!("retype: cannot acquire job ownership: {error}");
-			publish(
-				shared,
-				&settled(
-					shared,
-					&id,
-					now,
-					source,
-					&format,
-					&resolved,
-					&plans,
-					outputs,
-					JobState::Failed,
-				),
-			);
+			fail_before_conversion(shared, &started, "cannot acquire job ownership", &error);
 			return;
 		}
 	};
@@ -1413,21 +1399,7 @@ fn run(
 	let snapshot = match retype_core::safety::Snapshot::open(&read_from) {
 		Ok(snapshot) => snapshot,
 		Err(error) => {
-			eprintln!("retype: cannot snapshot {}: {error}", read_from.display());
-			publish(
-				shared,
-				&settled(
-					shared,
-					&id,
-					now,
-					source,
-					&format,
-					&resolved,
-					&plans,
-					outputs,
-					JobState::Failed,
-				),
-			);
+			fail_before_conversion(shared, &started, "cannot create input snapshot", &error);
 			return;
 		}
 	};
@@ -1482,8 +1454,8 @@ fn run(
 		}
 		Ok(None) => false,
 		Err(error) => {
-			eprintln!("retype: source retained because undo could not be saved: {error}");
-			false
+			fail_before_conversion(shared, &started, "cannot save undo record", error);
+			return;
 		}
 	};
 	let mut all_validated = true;
@@ -1753,6 +1725,24 @@ pub fn publish_checked(shared: &Shared, job: &Job) -> retype_core::error::Result
 pub fn publish(shared: &Shared, job: &Job) {
 	if let Err(error) = publish_checked(shared, job) {
 		eprintln!("retype: cannot publish {}: {error}", job.id);
+	}
+}
+
+/// Stop before any output and expose a non-durable failure if the journal is unavailable.
+pub(super) fn fail_before_conversion(shared: &Shared, started: &Job, context: &str, error: &retype_core::error::Error) {
+	let mut failed = started.clone();
+	failed.outputs.clear();
+	let message = format!("{context}; conversion did not start: {error}");
+	failed.fail(JobError::new(error.code().to_string(), &message));
+	if let Err(journal_error) = publish_checked(shared, &failed) {
+		let message = format!("{message}; status could not be recorded and is not durable: {journal_error}");
+		eprintln!("retype: job {}: {message}", failed.id);
+		failed.fail(JobError::new(error.code().to_string(), message));
+		if let Err(error) = record_job(shared, &failed, || Ok(())) {
+			eprintln!("retype: cannot report unrecorded failure for {}: {error}", failed.id);
+		}
+	} else {
+		eprintln!("retype: job {}: {message}", failed.id);
 	}
 }
 

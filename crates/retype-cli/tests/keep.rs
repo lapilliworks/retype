@@ -313,6 +313,34 @@ fn direct_keep_preserves_the_original_and_undo_leaves_later_edits_alone() {
 }
 
 #[test]
+fn keep_does_not_hide_an_undo_storage_failure_from_the_cli() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let source = dir.path().join("Bundle.TAR");
+	let original = archive();
+	fs::write(&source, &original).unwrap();
+	let config = configuration(dir.path(), UndoPolicy::Enabled);
+	let _daemon = start_daemon(&state, &config);
+	fs::write(state.join("undo"), b"not a directory").unwrap();
+	let converted = Command::new(env!("CARGO_BIN_EXE_retype"))
+		.arg("convert")
+		.arg(&source)
+		.arg("zip+keep")
+		.args(["--json", "--no-spawn"])
+		.arg("--state-dir")
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config)
+		.output()
+		.unwrap();
+	assert!(!converted.status.success());
+	let answer: serde_json::Value = serde_json::from_slice(&converted.stdout).unwrap();
+	assert_eq!(answer["job"]["state"], "failed");
+	assert!(answer["job"]["error"]["message"].as_str().unwrap().contains("undo"));
+	assert_eq!(fs::read(source).unwrap(), original);
+	assert!(!dir.path().join("Bundle.zip").exists());
+}
+
+#[test]
 fn explanation_preserves_an_alias_and_shows_the_kept_original() {
 	let dir = tempfile::tempdir().unwrap();
 	let output = Command::new(env!("CARGO_BIN_EXE_retype"))

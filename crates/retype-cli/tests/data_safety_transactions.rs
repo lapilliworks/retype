@@ -190,6 +190,52 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn a_watched_conversion_stops_and_reports_an_undo_storage_error() {
+	let fixture = Fixture::new();
+	fs::write(fixture.path("state/undo"), b"not a directory").unwrap();
+	let job = fixture.convert("zip", &JobId::now().unwrap());
+	assert_eq!(job.state, JobState::Failed);
+	assert!(job.error.as_ref().unwrap().message.contains("undo"));
+	assert!(job.outputs.is_empty());
+	assert!(fixture.path("bundle.tar").is_file());
+	assert!(!fixture.path("bundle.zip").exists());
+	let mut tar = tar::Archive::new(fs::File::open(fixture.path("bundle.tar")).unwrap());
+	assert_eq!(tar.entries().unwrap().count(), 2);
+}
+
+#[test]
+fn a_direct_conversion_stops_and_reports_an_undo_storage_error() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	archive(&source);
+	let original = fs::read(&source).unwrap();
+	fs::write(fixture.path("state/undo"), b"not a directory").unwrap();
+	let id = JobId::now().unwrap();
+	let request = retype_cli::daemon::immediate::Request {
+		input: source.clone(),
+		intent: "zip".to_string(),
+		output: None,
+		force: false,
+	};
+	retype_cli::daemon::immediate::run(&fixture.server.shared(), &request, &id, &Cancellation::default());
+	let job = fixture
+		.server
+		.shared()
+		.jobs
+		.lock()
+		.unwrap()
+		.iter()
+		.find(|job| job.id == id)
+		.unwrap()
+		.clone();
+	assert_eq!(job.state, JobState::Failed);
+	assert!(job.error.as_ref().unwrap().message.contains("undo"));
+	assert!(job.outputs.is_empty());
+	assert_eq!(fs::read(source).unwrap(), original);
+	assert!(!fixture.path("bundle.zip").exists());
+}
+
+#[test]
 fn a_verified_native_conversion_disposes_only_after_all_entries_are_committed() {
 	let fixture = Fixture::new();
 	let id = JobId::now().unwrap();
@@ -280,14 +326,18 @@ fn a_native_keep_source_group_prevents_disposal() {
 }
 
 #[test]
-fn failed_backup_creation_cannot_authorize_even_a_valid_native_conversion_to_delete() {
+fn failed_backup_creation_stops_a_native_conversion_without_replacing_existing_data() {
 	let fixture = Fixture::new();
 	let id = JobId::now().unwrap();
-	fs::create_dir_all(fixture.store().directory(&id).join("source.tar")).unwrap();
+	let occupied = fixture.store().directory(&id).join("source.tar");
+	fs::create_dir_all(&occupied).unwrap();
+	fs::write(occupied.join("existing"), b"unrelated").unwrap();
 	let job = fixture.convert("zip", &id);
-	assert_eq!(job.state, JobState::Done);
-	check_zip(&fixture.path("bundle.zip"));
+	assert_eq!(job.state, JobState::Failed);
+	assert!(job.error.as_ref().unwrap().message.contains("undo"));
+	assert!(!fixture.path("bundle.zip").exists());
 	assert!(fixture.path("bundle.tar").exists());
+	assert_eq!(fs::read(occupied.join("existing")).unwrap(), b"unrelated");
 	assert!(fixture.store().source(&id).unwrap().is_none());
 }
 

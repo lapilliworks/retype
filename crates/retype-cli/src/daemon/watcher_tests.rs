@@ -87,6 +87,30 @@ fn poison_journal(shared: &Arc<Shared>) {
 	);
 }
 
+#[test]
+fn a_preconversion_failure_remains_visible_if_its_journal_write_fails() {
+	let dir = tempfile::tempdir().unwrap();
+	let server = crate::daemon::Server::open(dir.path()).unwrap();
+	server.pool().stop();
+	let shared = server.shared();
+	let mut started = pending();
+	started.set_state(JobState::Running);
+	publish_checked(&shared, &started).unwrap();
+	poison_journal(&shared);
+
+	let error = retype_core::error::Error::Io(std::io::Error::other("injected storage failure"));
+	fail_before_conversion(&shared, &started, "cannot save undo record", &error);
+	let jobs = shared.jobs.lock().unwrap();
+	let failed = jobs.iter().find(|job| job.id == started.id).unwrap();
+	assert_eq!(failed.state, JobState::Failed);
+	let message = &failed.error.as_ref().unwrap().message;
+	assert!(message.contains("cannot save undo record"));
+	assert!(message.contains("injected storage failure"));
+	assert!(message.contains("not durable"));
+	let journal = std::fs::read_to_string(dir.path().join("jobs.jsonl")).unwrap();
+	assert!(!journal.contains("injected storage failure"));
+}
+
 fn fill_queue(pool: &Pool, photos: &Path) {
 	for _ in 0..crate::daemon::queue::CAPACITY {
 		assert!(pool.submit(crate::daemon::queue::Work {

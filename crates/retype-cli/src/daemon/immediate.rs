@@ -257,18 +257,14 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 	let lease = match store.lease(id) {
 		Ok(lease) => lease,
 		Err(error) => {
-			let mut failed = queued(shared, &prepared, id);
-			failed.fail(JobError::new(error.code().to_string(), error.to_string()));
-			publish(shared, &failed);
+			super::watcher::fail_before_conversion(shared, &started, "cannot acquire job ownership", &error);
 			return;
 		}
 	};
 	let snapshot = match retype_core::safety::Snapshot::open(&prepared.input) {
 		Ok(snapshot) => snapshot,
 		Err(error) => {
-			let mut failed = queued(shared, &prepared, id);
-			failed.fail(JobError::new(error.code().to_string(), error.to_string()));
-			publish(shared, &failed);
+			super::watcher::fail_before_conversion(shared, &started, "cannot create input snapshot", &error);
 			return;
 		}
 	};
@@ -301,7 +297,8 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 	);
 
 	if let Err(error) = &undo_record {
-		eprintln!("retype: cannot keep {} for undo: {error}", prepared.input.display());
+		super::watcher::fail_before_conversion(shared, &started, "cannot save undo record", error);
+		return;
 	}
 
 	if let Ok(Some(record)) = &undo_record {
