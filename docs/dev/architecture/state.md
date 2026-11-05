@@ -223,7 +223,7 @@ Accounting is retained source bytes, `docs/reference/config.md` §9. Quota decis
 
 1. Acquire the lock. Failure means another daemon owns the state directory, and the process exits with that message
 2. Load `bench.toml`, then the journal, then the undo record index
-3. For every journal job in `queued`: nothing ran, so nothing was written. If the live source is still a regular file whose declared format, size and mtime match the record, put it back in the queue with the request the journal recorded, including the output path, which is the only place an explicit `-o` survives. Otherwise mark it `failed` with `E_JOB_INTERRUPTED`
+3. For every journal job in `queued`: mark it `failed` with `E_JOB_INTERRUPTED` and ask the user to review the input and resubmit the recorded intent. The queued record does not yet include a content fingerprint, so size and modification time cannot establish that the input is unchanged; do not automatically replay it
 4. For every journal job in `running`: verify publication intents from its recovery manifest against final files. Reconstruct the intended outputs and mark verified publications done. Mark the job interrupted, with state `partial` when any publication survived and `failed` otherwise. Both outcomes can resume using verified retained bytes, §5.2
 5. For every journal job in `pending`: it is parked, so it keeps its deadline and its timer is re-armed rather than run, `docs/advanced/deferral.md` §7
 6. Retain recovery records without journal entries for direct undo; do not infer completion from publication intents alone

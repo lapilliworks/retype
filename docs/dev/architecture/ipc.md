@@ -114,9 +114,11 @@ Request timeout defaults to 5 s. No method blocks on work that can outlive it.
 | Mode | Use | Admission |
 |---|---|---|
 | `immediate` | `retype convert` | Uses the bounded queue with priority over waiting renames |
-| `queued` | A rename | Submitted by the watcher, not by `jobs.submit` |
+| `queued` | A rename | The watcher restores the source name and records the request before queueing it |
 
-`jobs.submit` reads `input`, `intent`, an optional `output` and `force`. For an immediate request, queue capacity is checked before the queued snapshot is appended and synced; a worker cannot take it before that succeeds. A full or closed queue rejects the request without writing a queued job. If recording fails, the response says that the job did not start and identifies it: a journal write may have survived despite the error, so its outcome after restart is uncertain and must be checked before retrying. Platform durability limitations still apply. A submission that needs its result polls `jobs.get`, which answers with the whole record: the outputs, their bytes, their tier and their errors.
+`jobs.submit` reads `input`, `intent`, an optional `output` and `force`. For an immediate request, queue capacity is checked before the queued snapshot is appended and synced; a worker cannot take it before that succeeds. Ordinary watched renames restore the original name and use the same queue admission ordering; parked and repaired requests still use separate paths. A full or closed queue rejects these ordinary requests without writing a queued job. If recording fails, the job does not start and its id is reported: a journal write may have survived despite the error, so its outcome after restart is uncertain and must be checked before retrying. Platform durability limitations still apply. A submission that needs its result polls `jobs.get`, which answers with the whole record: the outputs, their bytes, their tier and their errors.
+
+Queued jobs do not yet record an input content fingerprint. After a daemon restart they are marked interrupted for manual review and resubmission rather than automatically replayed against a potentially replaced file.
 
 `jobs.resume` continues a `partial` job, skipping outputs that still match their recorded identity, and reports `E_JOB_RESUME_UNAVAILABLE` when neither the source path nor the undo record holds the source bytes.
 

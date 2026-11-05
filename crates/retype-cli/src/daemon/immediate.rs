@@ -397,13 +397,18 @@ fn tail(report: &execute::Report) -> Option<String> {
 }
 
 fn source(prepared: &Prepared) -> Source {
+	let metadata = std::fs::metadata(&prepared.input).ok();
+	let mtime_ns = metadata
+		.as_ref()
+		.and_then(|metadata| metadata.modified().ok())
+		.and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+		.and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
+		.unwrap_or_default();
 	Source {
 		path: prepared.input.clone(),
 		format: prepared.format.clone(),
-		size: std::fs::metadata(&prepared.input)
-			.map(|meta| meta.len())
-			.unwrap_or_default(),
-		mtime_ns: 0,
+		size: metadata.map(|metadata| metadata.len()).unwrap_or_default(),
+		mtime_ns,
 	}
 }
 

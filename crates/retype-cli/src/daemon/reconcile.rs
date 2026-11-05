@@ -1,30 +1,21 @@
 //! Startup reconciliation, `docs/dev/architecture/state.md` §6.
 //!
-//! A daemon that dies leaves the journal holding jobs that were in flight. Two
-//! things can be true of them, and they are different:
-//!
-//! - `queued`: nothing ran, so nothing was written. The job is put back in the queue
-//!   with the request the journal recorded
-//! - `running`: a conversion was interrupted. Some of its outputs may already be
-//!   committed, so re-running it blindly would either overwrite them or fail on them.
-//!   It is marked `E_INTERRUPTED`, which is exactly the state `retype jobs resume`
-//!   exists for: the outputs that carry their recorded identity are skipped and the
-//!   rest are run again
+//! A daemon that dies leaves the journal holding jobs that were in flight.
+//! Queued jobs do not yet have a content fingerprint, so they require manual review
+//! rather than automatic replay against a possibly replaced source. Running jobs may
+//! have committed outputs; reconciliation verifies those against the recovery ledger
+//! and marks the job interrupted for explicit recovery.
 //!
 //! A parked job is not reconciled here: it keeps its deadline and its timer is
 //! re-armed, `docs/deferral.md` §7.
 
-use std::path::Path;
-
 use retype_core::error::Code;
 use retype_core::job::{Job, JobError, JobState};
 
-use crate::daemon::immediate;
-use crate::daemon::queue::{Kind, Pool, Work};
 use crate::daemon::watcher::{self, Shared};
 
 /// Put the journal's unfinished jobs back where they belong.
-pub fn run(shared: &Shared, pool: &Pool) {
+pub fn run(shared: &Shared) {
 	let jobs: Vec<Job> = match shared.jobs.lock() {
 		Ok(jobs) => jobs.clone(),
 		Err(_) => return,
@@ -32,8 +23,7 @@ pub fn run(shared: &Shared, pool: &Pool) {
 
 	for job in jobs {
 		match job.state {
-			JobState::Queued => requeue(shared, pool, &job),
-			JobState::Running => interrupted(shared, &job),
+			JobState::Queued | JobState::Running => interrupted(shared, &job),
 			JobState::Pending if job.parked.as_ref().is_some_and(|parked| parked.reason == "ask") => {
 				require_confirmation(shared, &job);
 			}
@@ -49,103 +39,6 @@ fn require_confirmation(shared: &Shared, job: &Job) {
 		parked.deadline = None;
 	}
 	watcher::publish(shared, &waiting);
-}
-
-fn requeue(shared: &Shared, pool: &Pool, job: &Job) {
-	// A job with no intent was not a conversion, so there is nothing to run again.
-	let Some(intent) = job.intent.clone() else {
-		interrupted(shared, job);
-		return;
-	};
-
-	// A queued job did not record an output yet, so the live path is still the only
-	// evidence of what it was. Refuse to run it against a replacement.
-	if !source_still_matches(shared, job) {
-		interrupted(shared, job);
-		return;
-	}
-
-	let request = immediate::Request {
-		input: job.source.path.clone(),
-		intent,
-		// The recorded path, not a fresh derivation: `-o` was part of the request and
-		// is not in the journal, so the output is the only place it survives. A
-		// rename-derived job has no `-o`.
-		output: match (job.consume_source, job.outputs.as_slice()) {
-			(false, [single]) => Some(single.path.to_string_lossy().into_owned()),
-			_ => None,
-		},
-		force: false,
-	};
-
-	// The plan is made again rather than trusted. A source that went away or a tool
-	// that was uninstalled between the two runs is then the failure it would have
-	// been, instead of a job that dies unexplained.
-	if immediate::prepare(&shared.registry(), &request).is_err() {
-		interrupted(shared, job);
-		return;
-	}
-
-	// A job that consumes its source came from a rename or a repair, not from
-	// `retype convert`. Requeueing it as an immediate job would leave the source
-	// behind after the conversion committed.
-	let kind = match job.consume_source {
-		true => Kind::Deferred {
-			root: job.source.path.parent().unwrap_or(Path::new("")).to_path_buf(),
-			source: request.input.clone(),
-			intent: request.intent.clone(),
-			force: false,
-		},
-		false => Kind::Immediate(request),
-	};
-
-	let work = Work {
-		id: job.id.clone(),
-		kind,
-	};
-
-	if !pool.submit(work) {
-		interrupted(shared, job);
-	}
-}
-
-/// Whether the live source is still the file the queued job recorded.
-fn source_still_matches(shared: &Shared, job: &Job) -> bool {
-	let Ok(metadata) = std::fs::symlink_metadata(&job.source.path) else {
-		return false;
-	};
-
-	if !metadata.file_type().is_file() {
-		return false;
-	}
-
-	if metadata.len() != job.source.size {
-		return false;
-	}
-
-	if job.source.mtime_ns != 0 {
-		let Ok(modified) = metadata.modified() else {
-			return false;
-		};
-		let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH) else {
-			return false;
-		};
-		let Ok(mtime_ns) = i64::try_from(since.as_nanos()) else {
-			return false;
-		};
-		if mtime_ns != job.source.mtime_ns {
-			return false;
-		}
-	}
-
-	let Some(name) = job.source.path.file_name().and_then(|name| name.to_str()) else {
-		return false;
-	};
-
-	shared
-		.registry()
-		.split(name)
-		.is_some_and(|(_, format)| format == job.source.format)
 }
 
 fn interrupted(shared: &Shared, job: &Job) {
@@ -174,10 +67,17 @@ fn interrupted(shared: &Shared, job: &Job) {
 		Ok(None) => {}
 		Err(error) => eprintln!("retype: cannot read recovery ledger for {}: {error}", job.id),
 	}
+	let message = match job.state {
+		JobState::Queued => format!(
+			"the daemon stopped while this job was queued; review {} and resubmit the recorded intent, \
+			 because the queued input cannot yet be verified for automatic replay",
+			job.source.path.display()
+		),
+		_ => "the daemon stopped before this job finished; verified recovery bytes are required to resume".to_string(),
+	};
 	failed.fail(JobError {
 		code: Code::JobInterrupted.to_string(),
-		message: "the daemon stopped before this job finished; verified recovery bytes are required to resume"
-			.to_string(),
+		message,
 	});
 	if failed
 		.outputs

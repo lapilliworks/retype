@@ -40,6 +40,7 @@ fn a_cli_submission_is_journalled_before_it_waits_in_the_queue() {
 	assert_eq!(replay.jobs[0].id, id);
 	assert_eq!(replay.jobs[0].state, JobState::Queued);
 	assert_eq!(replay.jobs[0].source.path, input);
+	assert_ne!(replay.jobs[0].source.mtime_ns, 0);
 	server.pool.stop();
 }
 

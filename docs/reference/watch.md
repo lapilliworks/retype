@@ -105,10 +105,12 @@ The size limit exists because a rename is a fast gesture and a 40 GiB video is n
 
 A directory can produce more rename events than any queue should absorb, for example a build system writing through a watched tree. Rules:
 
-- Above 256 queued jobs, new automatic jobs are dropped with a warning and a counter, and the notification says conversion is paused rather than pretending it succeeded. The cap is fixed; a machine with a different number of cores does not get a different answer
+- Above 256 queued jobs, a new automatic job is rejected and the source is restored when possible. The daemon log reports the rejection and increments a counter; notification delivery is not guaranteed. The cap is fixed; a machine with a different number of cores does not get a different answer
 - `pause` and `resume` exist as `retype watch --pause [<dir>]` and `--resume [<dir>]`, and as a switch in the directory file (`paused = true`) so a project can ship the setting
 
 A pause is state; `paused = true` in a directory file is policy. Policy wins, because a committed project setting must not be silently undone by a client that resumed once and departed. Resuming a policy-paused directory is refused with `E_WATCH_PAUSED_BY_POLICY`, naming the file to edit, which is the only case where the two can disagree.
+
+An ordinary watched conversion is recorded before it enters the worker queue; parked and repaired requests still use separate paths. After a daemon restart, a job that was still queued requires manual review and resubmission: its journal entry does not yet include a content fingerprint that would make automatic replay safe.
 
 ## 9. Network filesystems
 

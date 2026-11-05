@@ -685,24 +685,148 @@ fn decide(
 		}
 	}
 
+	admit_rename(shared, pool, watched_root, &source, &fact.target, &id, parked_batch);
+}
+
+fn admit_rename(
+	shared: &Shared,
+	pool: &Pool,
+	root: &Path,
+	source: &Path,
+	target: &Path,
+	id: &JobId,
+	batch: Option<&str>,
+) {
+	if let Err(error) = restore_queued_source(shared, source, target) {
+		forget_batch(shared, batch, id);
+		eprintln!("retype: cannot restore {} before admission: {error}", target.display());
+		return;
+	}
+
+	let Some(prepared) = prepare(shared, root, source, target) else {
+		forget_batch(shared, batch, id);
+		return;
+	};
+	let job = match queued_rename(shared, source, target, id, &prepared) {
+		Ok(job) => job,
+		Err(error) => {
+			forget_batch(shared, batch, id);
+			eprintln!("retype: cannot prepare {} for admission: {error}", source.display());
+			return;
+		}
+	};
 	let work = crate::daemon::queue::Work {
-		id,
-		kind: crate::daemon::queue::Kind::Rename {
-			root: watched_root.to_path_buf(),
-			bytes: fact.target.clone(),
-			source,
-			target: fact.target,
+		id: id.clone(),
+		kind: crate::daemon::queue::Kind::Deferred {
+			root: root.to_path_buf(),
+			source: source.to_path_buf(),
+			intent: job.intent.clone().expect("a queued rename has an intent"),
+			force: false,
 		},
 	};
 
-	if !pool.submit(work) {
-		shared.dropped.fetch_add(1, Ordering::Relaxed);
-		eprintln!(
-			"retype: conversion is paused for {}: {} jobs are waiting",
-			watched_root.display(),
-			crate::daemon::queue::CAPACITY
-		);
+	match pool.submit_after(work, || publish_checked(shared, &job)) {
+		Ok(true) => {}
+		Ok(false) => {
+			forget_batch(shared, batch, id);
+			shared.dropped.fetch_add(1, Ordering::Relaxed);
+			eprintln!(
+				"retype: cannot queue {}: the queue is full or closed; the source was restored to {}",
+				target.display(),
+				source.display()
+			);
+		}
+		Err(error) => {
+			forget_batch(shared, batch, id);
+			eprintln!(
+				"retype: job {id} did not start because admission could not be recorded: {error}; \
+				 its outcome after restart is uncertain, so check the job before retrying"
+			);
+		}
 	}
+}
+
+fn forget_batch(shared: &Shared, batch: Option<&str>, id: &JobId) {
+	if let Some(batch) = batch {
+		shared.batches.forget(batch, id);
+	}
+}
+
+/// Restore the exact source name before accepting a queued rename.
+fn restore_queued_source(shared: &Shared, source: &Path, target: &Path) -> retype_core::error::Result<()> {
+	let metadata = std::fs::symlink_metadata(target)?;
+	if !metadata.file_type().is_file() {
+		return Err(std::io::Error::other("the renamed input is not a regular file").into());
+	}
+	let expected = retype_core::job::FileIdentity::of(target)
+		.ok_or_else(|| std::io::Error::other("cannot identify the renamed input"))?;
+	retype_core::fsx::rename_noreplace(target, source)?;
+	shared.recent.note(source, target);
+	shared.note_own_rename(source);
+	let is_regular = std::fs::symlink_metadata(source).is_ok_and(|metadata| metadata.file_type().is_file());
+	let matches = retype_core::job::FileIdentity::of(source).is_some_and(|identity| expected.matches(&identity));
+	if !is_regular || !matches {
+		match retype_core::fsx::rename_noreplace(source, target) {
+			Ok(()) => {
+				shared.recent.note(target, source);
+				shared.note_own_rename(target);
+			}
+			Err(error) => eprintln!(
+				"retype: cannot restore {} after an input changed: {error}",
+				target.display()
+			),
+		}
+		return Err(std::io::Error::other("the renamed input changed during restoration").into());
+	}
+	retype_core::fsx::sync_file(source)?;
+	retype_core::fsx::sync_directory(source.parent().unwrap_or(Path::new(".")))?;
+	Ok(())
+}
+
+fn queued_rename(
+	shared: &Shared,
+	source: &Path,
+	target: &Path,
+	id: &JobId,
+	prepared: &Prepared,
+) -> retype_core::error::Result<Job> {
+	let metadata = std::fs::metadata(source)?;
+	let mtime_ns = metadata
+		.modified()
+		.ok()
+		.and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+		.and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
+		.unwrap_or_default();
+	let derived = retype_core::output::derive(&prepared.stem, &prepared.format, &prepared.resolved.groups);
+	let outputs = prepared
+		.plans
+		.iter()
+		.map(|plan| {
+			let output = derived
+				.iter()
+				.find(|output| output.group == plan.group)
+				.expect("plan has an output");
+			Output::pending(
+				target.parent().unwrap_or(Path::new("")).join(&output.path),
+				&plan.format,
+				plan.tier,
+			)
+		})
+		.collect();
+	let mut job = settled(
+		shared,
+		id,
+		now_ms(),
+		source,
+		&prepared.format,
+		&prepared.resolved,
+		&prepared.plans,
+		outputs,
+		JobState::Queued,
+	);
+	job.source.size = metadata.len();
+	job.source.mtime_ns = mtime_ns;
+	Ok(job)
 }
 
 /// Facts held for a directory that asked for more settled time.

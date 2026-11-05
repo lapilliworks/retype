@@ -100,7 +100,7 @@ impl Server {
 		// Before anything watches a directory or answers a client: a job that was in
 		// flight when the last daemon died is finished or declared, not left hanging,
 		// `docs/dev/architecture/state.md` §6.
-		crate::daemon::reconcile::run(&shared, &pool);
+		crate::daemon::reconcile::run(&shared);
 
 		Ok(Self {
 			endpoint: None,

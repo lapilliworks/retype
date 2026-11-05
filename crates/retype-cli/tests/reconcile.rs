@@ -1,8 +1,7 @@
 //! Startup reconciliation, `docs/dev/architecture/state.md` §6.
 //!
-//! A `queued` job never ran, so it goes back in the queue; a `running` job may have
-//! committed some of its outputs, so it is declared interrupted and `jobs resume` is
-//! the path that finishes it.
+//! Queued inputs without content fingerprints require manual review; running jobs
+//! may have committed outputs and are declared interrupted for explicit recovery.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -66,6 +65,13 @@ impl Drop for Daemon {
 /// A journal record for a job that never finished, written by hand because that is
 /// the state a killed daemon leaves behind.
 fn record(id: &JobId, source: &Path, output: &Path, state: JobState) -> Job {
+	let metadata = fs::metadata(source).unwrap();
+	let mtime_ns = metadata
+		.modified()
+		.unwrap()
+		.duration_since(std::time::UNIX_EPOCH)
+		.unwrap()
+		.as_nanos() as i64;
 	Job {
 		id: id.clone(),
 		created: now_ms(),
@@ -73,8 +79,8 @@ fn record(id: &JobId, source: &Path, output: &Path, state: JobState) -> Job {
 		source: Source {
 			path: source.to_path_buf(),
 			format: "png".to_string(),
-			size: 6,
-			mtime_ns: 0,
+			size: metadata.len(),
+			mtime_ns,
 		},
 		intent: Some("webp".to_string()),
 		outputs: vec![Output::pending(output.to_path_buf(), "webp", Tier::Converted)],
@@ -100,7 +106,7 @@ fn last_record(journal: &Path, id: &JobId) -> serde_json::Value {
 }
 
 #[test]
-fn a_restart_requeues_the_queued_and_declares_the_running() {
+fn a_restart_reports_queued_and_running_jobs_as_interrupted() {
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");
 	fs::create_dir_all(&state).unwrap();
@@ -146,33 +152,22 @@ fn a_restart_requeues_the_queued_and_declares_the_running() {
 	);
 
 	let deadline = Instant::now() + Duration::from_secs(20);
-	while !dir.path().join("queued.webp").exists() {
-		assert!(Instant::now() < deadline, "the queued job did not run");
-		std::thread::sleep(Duration::from_millis(50));
-	}
-
-	// And it is recorded as finished rather than merely written.
-	loop {
-		if last_record(&journal, &queued)["state"] == "done" {
-			break;
+	for (id, name) in [(&queued, "queued"), (&running, "running")] {
+		loop {
+			let record = last_record(&journal, id);
+			if record["state"] == "failed" {
+				assert_eq!(record["error"]["code"], "E_JOB_INTERRUPTED", "{record}");
+				break;
+			}
+			assert!(
+				Instant::now() < deadline,
+				"the job was not marked interrupted: {record}"
+			);
+			std::thread::sleep(Duration::from_millis(50));
 		}
-		assert!(Instant::now() < deadline, "the queued job has no terminal record");
-		std::thread::sleep(Duration::from_millis(50));
+		assert!(!dir.path().join(format!("{name}.webp")).exists());
+		assert_eq!(fs::read(dir.path().join(format!("{name}.png"))).unwrap(), b"pixels");
 	}
-
-	let declared = last_record(&journal, &running);
-	assert_eq!(declared["state"], "failed", "{declared}");
-	assert_eq!(declared["error"]["code"], "E_JOB_INTERRUPTED", "{declared}");
-	assert!(
-		!dir.path().join("running.webp").exists(),
-		"an interrupted job is not silently re-run"
-	);
-
-	// A synthetic copy is not independent format validation, even after requeueing.
-	assert!(
-		dir.path().join("queued.png").exists(),
-		"unvalidated output retains the original"
-	);
 }
 
 #[test]
@@ -243,8 +238,15 @@ fn a_queued_job_does_not_run_against_a_replacement_source() {
 	let journal = state.join("jobs.jsonl");
 	fs::write(&journal, format!("{}\n", job.to_line().unwrap())).unwrap();
 
-	// The daemon was down; the path now holds a different file.
-	fs::write(&source, b"a replacement source").unwrap();
+	// The replacement has the same size and timestamp as the queued input.
+	let modified = fs::metadata(&source).unwrap().modified().unwrap();
+	fs::write(&source, b"change").unwrap();
+	fs::OpenOptions::new()
+		.write(true)
+		.open(&source)
+		.unwrap()
+		.set_times(fs::FileTimes::new().set_modified(modified))
+		.unwrap();
 
 	let _daemon = Daemon(
 		retype()
@@ -273,11 +275,11 @@ fn a_queued_job_does_not_run_against_a_replacement_source() {
 	}
 
 	assert!(!output.exists(), "nothing was written from the replacement");
-	assert_eq!(fs::read(&source).unwrap(), b"a replacement source");
+	assert_eq!(fs::read(&source).unwrap(), b"change");
 }
 
 #[test]
-fn a_requeued_submission_leaves_its_source_in_place() {
+fn an_unverified_queued_submission_remains_available_for_review() {
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");
 	fs::create_dir_all(&state).unwrap();
@@ -308,14 +310,20 @@ fn a_requeued_submission_leaves_its_source_in_place() {
 
 	let deadline = Instant::now() + Duration::from_secs(20);
 	loop {
-		if last_record(&journal, &id)["state"] == "done" {
+		let record = last_record(&journal, &id);
+		if record["state"] == "failed" {
+			assert_eq!(record["error"]["code"], "E_JOB_INTERRUPTED");
+			assert!(record["error"]["message"].as_str().unwrap().contains("resubmit"));
 			break;
 		}
 
-		assert!(Instant::now() < deadline, "the queued submission did not finish");
+		assert!(
+			Instant::now() < deadline,
+			"the queued submission was not reported: {record}"
+		);
 		std::thread::sleep(Duration::from_millis(50));
 	}
 
-	assert_eq!(fs::read(&output).unwrap(), b"pixels");
-	assert!(source.exists(), "a submitted conversion never consumes its source");
+	assert!(!output.exists());
+	assert_eq!(fs::read(source).unwrap(), b"pixels");
 }
