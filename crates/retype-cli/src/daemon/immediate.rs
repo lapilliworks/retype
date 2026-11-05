@@ -244,6 +244,13 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 		}
 	};
 
+	let mut started = queued(shared, &prepared, id);
+	started.set_state(JobState::Running);
+	if let Err(error) = crate::daemon::watcher::publish_checked(shared, &started) {
+		crate::daemon::watcher::report_unrecorded_failure(shared, &started, &error);
+		return;
+	}
+
 	/* A submitted conversion retains its live source and an independent recovery input. */
 	let store = retype_core::undo::Store::open(&shared.state_dir);
 	let lease = match store.lease(id) {
@@ -301,10 +308,6 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 			return;
 		}
 	}
-	let mut started = queued(shared, &prepared, id);
-	started.set_state(JobState::Running);
-	publish(shared, &started);
-
 	let mut outputs = Vec::new();
 
 	for (plan, path) in prepared.plans.iter().zip(&prepared.paths) {

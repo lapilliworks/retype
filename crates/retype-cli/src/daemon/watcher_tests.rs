@@ -75,6 +75,28 @@ fn admission_fixture() -> (tempfile::TempDir, Arc<Shared>, Arc<Pool>, PathBuf) {
 	(dir, shared, pool, photos)
 }
 
+fn poison_journal(shared: &Arc<Shared>) {
+	let poisoned = Arc::clone(shared);
+	assert!(
+		std::thread::spawn(move || {
+			let _journal = poisoned.journal.lock().unwrap();
+			panic!("inject a journal failure");
+		})
+		.join()
+		.is_err()
+	);
+}
+
+fn archive_bytes() -> Vec<u8> {
+	let mut archive = tar::Builder::new(Vec::new());
+	let mut header = tar::Header::new_gnu();
+	header.set_size(7);
+	header.set_mode(0o644);
+	header.set_cksum();
+	archive.append_data(&mut header, "file.txt", &b"payload"[..]).unwrap();
+	archive.into_inner().unwrap()
+}
+
 fn decide_archive(shared: &Shared, pool: &Pool, photos: &Path) {
 	decide(
 		shared,
@@ -186,15 +208,7 @@ fn a_full_queue_restores_a_watched_source_without_a_replayable_job() {
 fn a_journal_failure_restores_a_watched_source_without_starting_work() {
 	let (_dir, shared, pool, photos) = admission_fixture();
 	std::fs::write(photos.join("bundle.zip"), b"original bytes").unwrap();
-	let poisoned = Arc::clone(&shared);
-	assert!(
-		std::thread::spawn(move || {
-			let _journal = poisoned.journal.lock().unwrap();
-			panic!("inject a journal failure");
-		})
-		.join()
-		.is_err()
-	);
+	poison_journal(&shared);
 
 	decide_archive(&shared, &pool, &photos);
 
@@ -202,5 +216,69 @@ fn a_journal_failure_restores_a_watched_source_without_starting_work() {
 	assert!(shared.jobs.lock().unwrap().is_empty());
 	assert_eq!(std::fs::read(photos.join("bundle.tar")).unwrap(), b"original bytes");
 	assert!(!photos.join("bundle.zip").exists());
+	pool.stop();
+}
+
+#[test]
+fn a_watched_job_does_not_run_when_its_running_checkpoint_fails() {
+	let (_dir, shared, pool, photos) = admission_fixture();
+	let source = photos.join("bundle.tar");
+	let target = photos.join("bundle.zip");
+	let original = archive_bytes();
+	std::fs::write(&target, &original).unwrap();
+	poison_journal(&shared);
+	let id = JobId::now().unwrap();
+
+	convert(
+		&shared,
+		&photos,
+		&target,
+		&source,
+		&target,
+		&id,
+		&Cancellation::default(),
+	);
+
+	assert_eq!(std::fs::read(&target).unwrap(), original);
+	assert!(!source.exists(), "conversion must stop before moving the input");
+	assert!(!shared.state_dir.join("undo").exists());
+	let jobs = shared.jobs.lock().unwrap();
+	let failed = jobs.iter().find(|job| job.id == id).unwrap();
+	assert_eq!(failed.state, JobState::Failed);
+	assert!(failed.error.as_ref().unwrap().message.contains("not durable"));
+	pool.stop();
+}
+
+#[test]
+fn a_cli_job_does_not_run_when_its_running_checkpoint_fails() {
+	let (_dir, shared, pool, photos) = admission_fixture();
+	let source = photos.join("bundle.tar");
+	let original = archive_bytes();
+	std::fs::write(&source, &original).unwrap();
+	poison_journal(&shared);
+	let id = JobId::now().unwrap();
+	let request = crate::daemon::immediate::Request {
+		input: source.clone(),
+		intent: "zip".to_string(),
+		output: None,
+		force: false,
+	};
+
+	crate::daemon::immediate::run(&shared, &request, &id, &Cancellation::default());
+
+	assert_eq!(std::fs::read(&source).unwrap(), original);
+	assert!(!photos.join("bundle.zip").exists());
+	assert!(!shared.state_dir.join("undo").exists());
+	let jobs = shared.jobs.lock().unwrap();
+	let failed = jobs.iter().find(|job| job.id == id).unwrap();
+	assert_eq!(failed.state, JobState::Failed);
+	assert!(
+		failed
+			.error
+			.as_ref()
+			.unwrap()
+			.message
+			.contains("conversion did not start")
+	);
 	pool.stop();
 }

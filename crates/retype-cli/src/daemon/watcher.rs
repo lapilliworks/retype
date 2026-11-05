@@ -1157,7 +1157,11 @@ fn run(
 	let now = now_ms();
 	let mut outputs = Vec::new();
 
-	running(shared, &id, source, &format, target, &resolved);
+	let started = running(shared, &id, source, &format, target, &resolved);
+	if let Err(error) = publish_checked(shared, &started) {
+		report_unrecorded_failure(shared, &started, &error);
+		return;
+	}
 
 	// The rename names the request; the file is called what the tokens say, the
 	// same way `convert` derives its paths.
@@ -1578,6 +1582,19 @@ pub fn publish(shared: &Shared, job: &Job) {
 	}
 }
 
+/// Expose a failure that could not be journalled, without claiming it is durable.
+pub fn report_unrecorded_failure(shared: &Shared, job: &Job, error: &retype_core::error::Error) {
+	let mut failed = job.clone();
+	let message = format!(
+		"running state could not be recorded: {error}; conversion did not start and this status is not durable"
+	);
+	eprintln!("retype: job {}: {message}", failed.id);
+	failed.fail(JobError::new(error.code().to_string(), message));
+	if let Err(error) = record_job(shared, &failed, || Ok(())) {
+		eprintln!("retype: cannot report unrecorded failure for {}: {error}", failed.id);
+	}
+}
+
 /// Expose a durable snapshot after the caller has finished its destructive decisions.
 pub fn publish_persisted(shared: &Shared, job: &Job) {
 	if let Err(error) = record_job(shared, job, || Ok(())) {
@@ -1662,7 +1679,7 @@ fn running(
 	source_format: &str,
 	target: &Path,
 	resolved: &resolve::Resolved,
-) {
+) -> Job {
 	let metadata = std::fs::metadata(source).ok();
 	let mtime_ns = metadata
 		.as_ref()
@@ -1671,7 +1688,7 @@ fn running(
 		.map(|elapsed| elapsed.as_nanos() as i64)
 		.unwrap_or_default();
 
-	let job = Job {
+	Job {
 		id: id.clone(),
 		created: now_ms(),
 		updated: now_ms(),
@@ -1701,12 +1718,7 @@ fn running(
 		// replaces the parked one.
 		parked: carried(shared, id),
 		consume_source: true,
-	};
-
-	// One publish path for every transition: a deferred job already has a record,
-	// and pushing a second one would leave `jobs.get` answering from the old
-	// `running` snapshot after the job had finished.
-	publish(shared, &job);
+	}
 }
 
 fn record(
