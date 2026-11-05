@@ -2,13 +2,13 @@
 
 Retype converts a file when its extension changes. Rename `photo.heic` to `photo.jpg` and the bytes follow the name.
 
-Status is alpha: some documented behaviour is still being built.
+Status is pre-alpha: some documented behaviour is still being built. Work on copies of important files and keep an independent backup.
 
 ## What you need
 
 - A terminal
 - `retype` itself. The pre-release installers fetch a release binary and update it in place: `curl -fsSL https://retype.name/install.sh | bash` on Linux and macOS, or `irm https://retype.name/install.ps1 | iex` in PowerShell on Windows. Without that, build from source with a Rust toolchain: `cargo install --git https://github.com/LapilliWorks/retype retype-cli`
-- A converter for each format you use. Retype converts nothing by itself; [The default tools](#the-default-tools) lists the ones it expects, and `retype doctor` reports which it finds
+- A converter for each format that needs one. ZIP and TAR repacking is native; [The default tools](#the-default-tools) lists external tools, and `retype doctor` reports which it finds
 
 ## The default tools
 
@@ -73,13 +73,17 @@ Neither writes anything. The plan it prints is the one that would run, with the 
 
 ## Do it by renaming
 
-Register a folder once, then rename inside it as usual, from any file manager:
+Start the daemon, register a folder and check that the daemon is reachable:
 
 ```
+retype daemon start
 retype watch ~/Pictures
+retype --no-spawn daemon status
 ```
 
-Nothing already in the folder is touched. From then on, renaming `photo.heic` to `photo.jpg` in that folder converts it, and renaming it to `photo.webp+q80` converts it with a quality setting. Registrations survive a restart, and a rename that would take a long time stops and waits rather than running unattended, which is what [Deferral](advanced/deferral.md) is about.
+`retype watch` currently registers and returns; it does not start the daemon. If the daemon is stopped, a rename can change the extension without converting the bytes. Status reports registrations and whether paths exist, but does not yet prove that each watcher is active. Allow the registration and initial scan to complete, check the daemon log for watch errors, and try a disposable copy before relying on it.
+
+Nothing already in the folder is converted. While watching is active, renaming `photo.heic` to `photo.jpg` requests a conversion, and `photo.webp+q80` adds a quality setting. Registrations survive a restart; [Deferral](advanced/deferral.md) describes jobs that wait.
 
 ## Take it back
 
@@ -87,7 +91,7 @@ Nothing already in the folder is touched. From then on, renaming `photo.heic` to
 retype undo --last
 ```
 
-Every conversion keeps what it needs in order to be reversed for a week by default, including the source bytes when the rename is what consumed the source name. [Jobs, undo and history](usage/jobs.md) covers the queue, the settings behind that week, and what happens when a record has aged out.
+Undo records have a one-week retention by default when a record is successfully created. Undo can be disabled or unavailable, and Windows currently refuses destructive output cleanup. Check the job and undo record rather than assuming every conversion is reversible; keep an independent backup. [Jobs, undo and history](usage/jobs.md) covers the queue and retention settings.
 
 ## The manual
 

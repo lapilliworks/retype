@@ -1,18 +1,22 @@
 # Watching a folder
 
-A registered folder converts a file whenever its extension changes, from any program that renames it. This page is the working guide; [Watch scope](../reference/watch.md) is the exhaustive specification of what is watched, ignored and done at startup.
+An active daemon can observe renames in a registered folder and request conversions. This page is the working guide; [Watch scope](../reference/watch.md) describes what is watched, ignored and done at startup.
 
 ## Registering
 
 ```
+retype daemon start                     # start the daemon
 retype watch                            # register the current folder, recursively
 retype watch ~/Pictures                 # register another, recursively
 retype watch ~/Pictures --non-recursive # this folder only
+retype --no-spawn daemon status         # check that the daemon is reachable
 retype watching                         # list what is registered
 retype unwatch ~/Pictures               # stop watching it
 ```
 
-Registration is idempotent and immediate: a running daemon re-reads the file within a second, so registering twice is not an error and does not convert twice. Registrations are remembered across restarts. Every flag these commands take is in [Command line](../reference/cli.md).
+`retype watch` registers and returns; it does not start the daemon. If the daemon is stopped, a rename can change an extension without converting the bytes. Status lists registered paths but does not yet verify that each watcher is active. Allow time for registration and the initial scan, inspect the daemon log for watch errors, and test with a disposable copy.
+
+Registration is idempotent: a running daemon re-reads the file within a second, so registering twice is not an error and does not convert twice. Registrations are remembered across restarts. Every flag these commands take is in [Command line](../reference/cli.md).
 
 A folder registered inside another is allowed, and its own policy applies to its subtree. Symlinks are resolved, and the resolved path is the identity: registering the same folder by another name is the same registration.
 
@@ -87,7 +91,7 @@ retype watch ~/Pictures --resume
 
 A paused folder keeps its registration and converts nothing. `paused = true` in the folder's own configuration is stronger: it survives a resume, and resuming it is refused, naming the file to edit. A committed project setting should not be undone by a client that resumed once and left.
 
-Pausing is also what happens by itself when a folder produces more renames than a queue should absorb, for example a build system writing through a watched tree. Above 256 queued jobs, new automatic jobs are dropped with a warning and a count, and the notification says conversion is paused rather than pretending it worked.
+When a folder produces more renames than the queue can absorb, new automatic jobs are rejected above 256 queued jobs. The source name is restored when possible, and the daemon log and dropped counter report the rejection; notification delivery is not guaranteed.
 
 ## Batching
 

@@ -2,7 +2,7 @@
 
 Rename the extension, the file converts.
 
-Status: alpha. The manual marks which behaviour has landed.
+Status: pre-alpha. The manual marks which behaviour has landed.
 
 ## What it will be
 
