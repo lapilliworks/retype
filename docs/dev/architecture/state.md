@@ -105,7 +105,7 @@ Initial publication holds the job-list mutex across journal append, synchronizat
 - A line whose `v` is not the supported identifier is skipped and reported once, so a downgrade remains usable
 - Adding fields is compatible within an identifier. Removing or renaming a field requires a new identifier, and the previous one stays readable for one major release
 
-Compaction rewrites live records into a temporary file and renames it into place. It runs on startup when the journal exceeds 10,000 lines or when more than half the records are superseded by later ones for the same id. The horizon is twice the undo retention with a floor of thirty days. Queued, running, pending, needs-attention, partial and failed jobs remain in the journal beyond that horizon until they are resolved.
+Compaction rewrites live records into a temporary file and renames it into place. It runs on startup when the journal exceeds 10,000 lines or when more than half the records are superseded by later ones for the same id. The horizon is twice the undo retention with a floor of thirty days. Queued, running, pending, needs-attention, partial and failed jobs remain beyond that horizon until resolved. Cancelled jobs with a warning or completed outputs are also retained, so reconciliation cannot lose an unfinished retention transition.
 
 ## 5. Undo records
 
@@ -167,7 +167,7 @@ Resume accepts partial jobs and failed jobs marked `E_JOB_INTERRUPTED`. Its inpu
 
 Resume skips only outputs whose recorded identity, size and digest still match. Any other occupied path is refused without `--force`, including paths whose platform identity is unavailable. `--force` reruns outputs but cannot override protection of the job's input. A successful resume retains its backup for normal undo retention and leaves any live source in place.
 
-Unfinished records are pinned against both quota eviction and expiry. A successful completion releases the pin, records `retention_started` in Unix milliseconds and retains the backup. A successful resume starts a new retention period; a failed or interrupted recovery leaves its record pinned. Records without a known retention start are not assumed expired.
+Unfinished records are pinned against both quota eviction and expiry. A successful completion releases the pin, records `retention_started` in Unix milliseconds and retains the backup. A successful resume starts a new retention period; a failed or interrupted recovery leaves its record pinned. Cancelling a partial job, or running work with completed outputs, records the cancellation before starting retention. The live original, retained original and every completed output must still verify; otherwise the record stays pinned and the job reports a warning. A cancelled job with no completed outputs keeps its record pinned. Records without a known retention start are not assumed expired.
 
 ## 5.3 Supersession
 
@@ -227,7 +227,7 @@ Accounting is retained source bytes, `docs/reference/config.md` §9. Quota decis
 3. For every journal job in `queued`: mark it `failed` with `E_JOB_INTERRUPTED` and ask the user to review the input and resubmit the recorded intent. The queued record does not yet include a content fingerprint, so size and modification time cannot establish that the input is unchanged; do not automatically replay it
 4. For every journal job in `running`: verify publication intents from its recovery manifest against final files. Reconstruct the intended outputs and mark verified publications done. Mark the job interrupted, with state `partial` when any publication survived and `failed` otherwise. Both outcomes can resume using verified retained bytes, §5.2
 5. For every journal job in `pending`: it is parked, so it keeps its deadline and its timer is re-armed rather than run, `docs/advanced/deferral.md` §7
-6. Retain recovery records without journal entries for direct undo; do not infer completion from publication intents alone
+6. For a cancelled job with completed outputs and a pinned record, verify the live original, retained original and completed outputs before starting retention. Retain recovery records without journal entries for direct undo; do not infer completion from publication intents alone
 7. For every journal job whose record directory is missing, leave the state as recorded and mark undoing it as unavailable
 8. Drop undo records past retention, then compact if the thresholds are met
 

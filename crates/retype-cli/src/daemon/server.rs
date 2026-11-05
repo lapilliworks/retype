@@ -450,6 +450,10 @@ impl Server {
 			));
 		};
 
+		if let Some(partial) = self.find(id.as_str()).filter(|job| job.state == JobState::Partial) {
+			return self.cancel_partial(request.id, partial);
+		}
+
 		// A parked job never reached the queue, so it is cancelled in the record rather
 		// than by stopping anything, `docs/deferral.md` §8.
 		if let Some(parked) = self
@@ -488,7 +492,42 @@ impl Server {
 		Ok(response)
 	}
 
-	/// Continue a `partial` job, `docs/dev/architecture/ipc.md` §6: outputs that still carry the
+	fn cancel_partial(&self, request_id: u64, mut job: Job) -> Result<Response> {
+		let store = retype_core::undo::Store::open(&self.shared.state_dir);
+		let lease = match store.lease(&job.id) {
+			Ok(lease) => lease,
+			Err(error) => {
+				return Ok(Response::error(
+					request_id,
+					WireError::new(error.code(), format!("job {} was not cancelled: {error}", job.id)),
+				));
+			}
+		};
+
+		job.set_state(JobState::Cancelled);
+		if let Err(error) = crate::daemon::watcher::persist(&self.shared, &job) {
+			return Ok(Response::error(
+				request_id,
+				WireError::new(
+					error.code(),
+					format!(
+						"cancellation of {} could not be durably recorded: {error}; check the job before retrying",
+						job.id
+					),
+				),
+			));
+		}
+
+		let warning = super::cancel::finish_after_persist(&self.shared, &store, &mut job);
+		drop(lease);
+		crate::daemon::watcher::publish_persisted(&self.shared, &job);
+		Ok(Response::ok(
+			request_id,
+			json!({"id": job.id, "cancelled": true, "state": "cancelled", "warning": warning}),
+		)?)
+	}
+
+	/// Continue a `partial` job, `docs/dev/architecture/state.md` §6: outputs that still carry the
 	/// recorded identity are skipped, the rest run again.
 	fn resume(&self, request: &Request) -> Result<Response> {
 		let Some(written) = request.params.get("id").and_then(|id| id.as_str()) else {

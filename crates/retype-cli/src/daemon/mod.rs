@@ -5,6 +5,7 @@
 //! what followed the last sequence it saw rather than holding a stream open.
 
 pub mod batches;
+mod cancel;
 pub mod events;
 pub mod immediate;
 mod lock;

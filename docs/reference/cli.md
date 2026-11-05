@@ -169,7 +169,7 @@ retype undo <id|prefix|--last>
 retype why <path>
 ```
 
-`jobs list`, `jobs get`, `jobs cancel`, `jobs resume`, `jobs logs`, `undo` and `why` exist today. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled. `--state` accepts `pending`, `queued`, `running`, `done`, `partial`, `failed`, `cancelled`, `superseded` or `needs-attention`; any other value is a usage error. `--since` takes a full id, because a prefix is not an ordering boundary.
+`jobs list`, `jobs get`, `jobs cancel`, `jobs resume`, `jobs logs`, `undo` and `why` exist today. A job is recorded before it enters the ordinary worker queue. `jobs cancel` requests that waiting or running work stop and can cancel a settled partial job; completed outputs are kept. If undo retention cannot safely start, the command reports a warning, including in its JSON response. Parked and queued cancellation still have incomplete journal and timer coordination. `--state` accepts `pending`, `queued`, `running`, `done`, `partial`, `failed`, `cancelled`, `superseded` or `needs-attention`; any other value is a usage error. `--since` takes a full id, because a prefix is not an ordering boundary.
 
 `jobs get` answers with the whole record: its own `v`, the outputs, their bytes, their tier and their errors. It is the form a bug report or a script wants, so it prints JSON rather than a rendering of it. The record is not enveloped, because its `v` is `retype-journal-1` and an envelope would overwrite it.
 

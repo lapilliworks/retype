@@ -27,7 +27,56 @@ pub fn run(shared: &Shared) {
 			JobState::Pending if job.parked.as_ref().is_some_and(|parked| parked.reason == "ask") => {
 				require_confirmation(shared, &job);
 			}
+			JobState::Cancelled
+				if job
+					.outputs
+					.iter()
+					.any(|output| output.state == retype_core::job::OutputState::Done) =>
+			{
+				finish_cancelled(shared, &job);
+			}
 			_ => {}
+		}
+	}
+}
+
+fn finish_cancelled(shared: &Shared, job: &Job) {
+	let store = retype_core::undo::Store::open(&shared.state_dir);
+	let record = match store.load(&job.id) {
+		Ok(Some(record)) if record.pinned => record,
+		Ok(_) => return,
+		Err(error) => {
+			eprintln!("retype: cannot inspect cancelled job {}: {error}", job.id);
+			return;
+		}
+	};
+	let lease = match store.lease(&record.id) {
+		Ok(lease) => lease,
+		Err(error) => {
+			eprintln!("retype: cannot finish retention for cancelled job {}: {error}", job.id);
+			return;
+		}
+	};
+	match super::cancel::finish_retention(&store, job) {
+		Ok(()) => clear_retention_warning(shared, job),
+		Err(error) => eprintln!(
+			"retype: undo record for cancelled job {} remains protected: {error}",
+			job.id
+		),
+	}
+	drop(lease);
+}
+
+fn clear_retention_warning(shared: &Shared, job: &Job) {
+	let is_warning = job
+		.error
+		.as_ref()
+		.is_some_and(|error| error.message.starts_with("undo retention was not started:"));
+	if is_warning {
+		let mut corrected = job.clone();
+		corrected.error = None;
+		if let Err(error) = watcher::publish_checked(shared, &corrected) {
+			eprintln!("retype: could not clear retention warning for job {}: {error}", job.id);
 		}
 	}
 }

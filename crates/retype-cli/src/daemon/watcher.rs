@@ -1544,8 +1544,7 @@ fn run(
 		}
 	}
 
-	// A cancelled job is its own outcome: nothing was converted and nothing is
-	// wrong with the file, `docs/dev/architecture/state.md` §4.
+	// Cancellation stops remaining work but keeps any outputs already completed.
 	let cancelled = cancellation.is_cancelled()
 		|| outputs.iter().any(|output| {
 			output
@@ -1566,7 +1565,7 @@ fn run(
 	};
 
 	let output_count = outputs.len();
-	let job = settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state);
+	let mut job = settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state);
 	if state == JobState::Done && !all_validated {
 		eprintln!("retype: original retained: the backend has no complete independent output validator");
 	}
@@ -1599,6 +1598,8 @@ fn run(
 		} else if let Err(error) = store.finish(&id) {
 			eprintln!("retype: undo record remains pinned: {error}");
 		}
+	} else if state == JobState::Cancelled && job.outputs.iter().any(|output| output.state == OutputState::Done) {
+		super::cancel::finish_after_persist(shared, &store, &mut job);
 	}
 	drop(lease);
 	publish_persisted(shared, &job);

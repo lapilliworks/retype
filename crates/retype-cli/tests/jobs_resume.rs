@@ -72,6 +72,101 @@ impl Drop for Daemon {
 }
 
 #[test]
+fn cancelling_a_settled_partial_job_keeps_its_successful_output_and_undo() {
+	let dir = tempfile::tempdir().unwrap();
+	let photos = dir.path().join("photos");
+	fs::create_dir(&photos).unwrap();
+	let state = dir.path().join("state");
+	let config = copy_config(dir.path());
+	retype()
+		.args(["watch", photos.to_str().unwrap()])
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+	let _daemon = Daemon(
+		retype()
+			.args(["daemon", "--detached"])
+			.arg("--state-dir")
+			.arg(&state)
+			.env("RETYPE_CONFIG", &config)
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.spawn()
+			.unwrap(),
+	);
+	let deadline = Instant::now() + Duration::from_secs(20);
+	while !state.join("endpoint").exists() {
+		assert!(Instant::now() < deadline, "the daemon did not start");
+		std::thread::sleep(Duration::from_millis(50));
+	}
+
+	let blocked = photos.join("photo-flipv.png");
+	fs::create_dir(&blocked).unwrap();
+	let source = photos.join("photo.png");
+	let before = support::observed(&state);
+	fs::write(&source, b"pixels").unwrap();
+	support::observe(&state, before);
+	fs::rename(&source, photos.join("photo.webp+fliph,png+flipv")).unwrap();
+	let journal_path = state.join("jobs.jsonl");
+	let deadline = Instant::now() + Duration::from_secs(20);
+	let journal = loop {
+		let journal = fs::read_to_string(&journal_path).unwrap_or_default();
+		if journal.contains("\"state\":\"partial\"") {
+			break journal;
+		}
+		assert!(Instant::now() < deadline, "no partial job: {journal}");
+		std::thread::sleep(Duration::from_millis(100));
+	};
+	let id = journal
+		.rsplit("\"id\":\"")
+		.next()
+		.and_then(|rest| rest.split('"').next())
+		.unwrap();
+	let produced = photos.join("photo-fliph.webp");
+
+	let cancelled = retype()
+		.args(["jobs", "cancel", id, "--json"])
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+	assert!(
+		cancelled.status.success(),
+		"{}",
+		String::from_utf8_lossy(&cancelled.stderr)
+	);
+	let answer: serde_json::Value = serde_json::from_slice(&cancelled.stdout).unwrap();
+	assert_eq!(answer["state"], "cancelled");
+	assert!(answer.get("warning").is_none(), "{answer}");
+	assert_eq!(fs::read(&source).unwrap(), b"pixels");
+	assert_eq!(fs::read(&produced).unwrap(), b"pixels");
+	assert!(blocked.is_dir());
+	let record = retype_core::undo::Store::open(&state)
+		.load(&retype_core::job::JobId::parse(id).unwrap())
+		.unwrap()
+		.unwrap();
+	assert!(!record.pinned);
+	assert!(record.retention_started.is_some());
+
+	let undone = retype()
+		.args(["undo", id])
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+	if retype_core::fsx::supports_durable_cleanup() {
+		assert!(undone.status.success(), "{}", String::from_utf8_lossy(&undone.stderr));
+		assert!(!produced.exists());
+	} else {
+		assert!(!undone.status.success());
+		assert!(produced.exists());
+	}
+	assert_eq!(fs::read(source).unwrap(), b"pixels");
+	assert!(blocked.is_dir(), "undo does not remove a path the job did not produce");
+}
+
+#[test]
 fn a_partial_job_resumes_and_skips_what_it_already_produced() {
 	let dir = tempfile::tempdir().unwrap();
 	let photos = dir.path().join("photos");

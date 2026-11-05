@@ -176,6 +176,8 @@ pub struct JobCancelled {
 	pub cancelled: bool,
 	/// `cancelled` or `cancelling`; a running tool is stopped asynchronously.
 	pub state: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -379,6 +381,24 @@ mod tests {
 		assert_eq!(records.records.len(), 1);
 		assert_eq!(records.records[0].outputs[0].ext, "webp");
 		assert!(records.records[0].consume_source);
+	}
+
+	#[test]
+	fn cancellation_warnings_are_preserved_and_optional() {
+		let mut answer: JobCancelled = serde_json::from_value(json!({
+			"id": "01m6a4rararx3wrttkrgpp1783",
+			"cancelled": true,
+			"state": "cancelled",
+			"warning": "undo remains protected"
+		}))
+		.unwrap();
+		assert_eq!(answer.warning.as_deref(), Some("undo remains protected"));
+		assert_eq!(
+			serde_json::to_value(&answer).unwrap()["warning"],
+			"undo remains protected"
+		);
+		answer.warning = None;
+		assert!(serde_json::to_value(answer).unwrap().get("warning").is_none());
 	}
 
 	#[test]

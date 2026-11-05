@@ -22,6 +22,244 @@ fn submission(input: &Path) -> Request {
 		.unwrap()
 }
 
+fn partial_job(server: &Server, directory: &Path) -> Job {
+	let id = JobId::now().unwrap();
+	let source = directory.join("source.tar");
+	let output = directory.join("done.zip");
+	let staged = directory.join("staged.zip");
+	let missing = directory.join("missing.zip");
+	fs::write(&source, b"original bytes").unwrap();
+	fs::write(&staged, b"output").unwrap();
+	let store = retype_core::undo::Store::open(&server.shared.state_dir);
+	store
+		.save(retype_core::undo::Subject {
+			id: id.clone(),
+			intent: "zip,zip".to_string(),
+			machine: "test".to_string(),
+			bytes: source.clone(),
+			source_path: source.clone(),
+			source_ext: "tar".to_string(),
+			outputs: vec![
+				retype_core::undo::Output {
+					path: output.clone(),
+					ext: "zip".to_string(),
+				},
+				retype_core::undo::Output {
+					path: missing.clone(),
+					ext: "zip".to_string(),
+				},
+			],
+			consume_source: true,
+		})
+		.unwrap();
+	let mut done = Output::pending(output.clone(), "zip", Tier::Converted);
+	done.state = OutputState::Done;
+	done.bytes = Some(6);
+	done.identity = retype_core::job::FileIdentity::of(&staged);
+	store.prepare_output(&id, done.clone(), &staged).unwrap();
+	fs::rename(&staged, &output).unwrap();
+	let mut failed = Output::pending(missing, "zip", Tier::Converted);
+	failed.state = OutputState::Failed;
+	let now = retype_core::job::now_ms();
+	let job = Job {
+		id,
+		created: now,
+		updated: now,
+		source: Source {
+			path: source,
+			format: "tar".to_string(),
+			size: 14,
+			mtime_ns: 0,
+		},
+		intent: Some("zip,zip".to_string()),
+		outputs: vec![done, failed],
+		state: JobState::Partial,
+		backend: None,
+		engine: None,
+		machine: "test".to_string(),
+		error: None,
+		parked: None,
+		consume_source: true,
+	};
+	crate::daemon::watcher::publish_checked(&server.shared, &job).unwrap();
+	job
+}
+
+fn cancel_request(id: &JobId) -> Request {
+	Request::new(1, "jobs.cancel").with_params(json!({"id": id})).unwrap()
+}
+
+#[test]
+fn cancelling_a_partial_job_preserves_outputs_and_starts_retention() {
+	let dir = tempfile::tempdir().unwrap();
+	let server = server(&dir.path().join("state"));
+	let job = partial_job(&server, dir.path());
+	let started = retype_core::job::now_ms();
+
+	let response = server.cancel(&cancel_request(&job.id)).unwrap();
+	assert!(response.ok, "{response:?}");
+	assert_eq!(response.result.unwrap()["warning"], serde_json::Value::Null);
+	let cancelled = server.find(job.id.as_str()).unwrap();
+	assert_eq!(cancelled.state, JobState::Cancelled);
+	assert_eq!(cancelled.outputs, job.outputs);
+	assert_eq!(fs::read(&job.source.path).unwrap(), b"original bytes");
+	assert_eq!(fs::read(&job.outputs[0].path).unwrap(), b"output");
+	let record = retype_core::undo::Store::open(&server.shared.state_dir)
+		.load(&job.id)
+		.unwrap()
+		.unwrap();
+	assert!(!record.pinned);
+	assert!(record.retention_started.is_some_and(|time| time >= started));
+	server.pool.stop();
+}
+
+#[test]
+fn cancelling_a_partial_job_reports_changed_outputs_and_keeps_undo_pinned() {
+	let dir = tempfile::tempdir().unwrap();
+	let server = server(&dir.path().join("state"));
+	let job = partial_job(&server, dir.path());
+	fs::write(&job.outputs[0].path, b"tamper").unwrap();
+
+	let response = server.cancel(&cancel_request(&job.id)).unwrap();
+	assert!(response.ok, "{response:?}");
+	let warning = response.result.unwrap()["warning"].as_str().unwrap().to_string();
+	assert!(warning.contains("changed after publication"), "{warning}");
+	let cancelled = server.find(job.id.as_str()).unwrap();
+	assert_eq!(cancelled.state, JobState::Cancelled);
+	assert!(cancelled.error.unwrap().message.contains(&warning));
+	assert_eq!(fs::read(&job.outputs[0].path).unwrap(), b"tamper");
+	let record = retype_core::undo::Store::open(&server.shared.state_dir)
+		.load(&job.id)
+		.unwrap()
+		.unwrap();
+	assert!(record.pinned);
+	assert!(record.retention_started.is_none());
+	server.pool.stop();
+}
+
+#[test]
+fn cancelling_a_partial_job_protects_the_backup_if_the_original_was_replaced() {
+	let dir = tempfile::tempdir().unwrap();
+	let server = server(&dir.path().join("state"));
+	let job = partial_job(&server, dir.path());
+	fs::rename(&job.source.path, dir.path().join("moved-original.tar")).unwrap();
+	fs::write(&job.source.path, b"unrelated").unwrap();
+
+	let response = server.cancel(&cancel_request(&job.id)).unwrap();
+	assert!(response.ok, "{response:?}");
+	let warning = response.result.unwrap()["warning"].as_str().unwrap().to_string();
+	assert!(warning.contains("no longer holds the original"), "{warning}");
+	assert_eq!(fs::read(&job.source.path).unwrap(), b"unrelated");
+	assert_eq!(fs::read(&job.outputs[0].path).unwrap(), b"output");
+	assert!(
+		retype_core::undo::Store::open(&server.shared.state_dir)
+			.load(&job.id)
+			.unwrap()
+			.unwrap()
+			.pinned
+	);
+	server.pool.stop();
+}
+
+#[test]
+fn cancelling_without_an_undo_record_reports_the_limit_and_keeps_files() {
+	let dir = tempfile::tempdir().unwrap();
+	let server = server(&dir.path().join("state"));
+	let job = partial_job(&server, dir.path());
+	let store = retype_core::undo::Store::open(&server.shared.state_dir);
+	store.remove(&job.id).unwrap();
+
+	let response = server.cancel(&cancel_request(&job.id)).unwrap();
+	assert!(response.ok, "{response:?}");
+	let warning = response.result.unwrap()["warning"].as_str().unwrap().to_string();
+	assert!(warning.contains("no undo record"), "{warning}");
+	assert_eq!(server.find(job.id.as_str()).unwrap().state, JobState::Cancelled);
+	assert_eq!(fs::read(&job.source.path).unwrap(), b"original bytes");
+	assert_eq!(fs::read(&job.outputs[0].path).unwrap(), b"output");
+	server.pool.stop();
+}
+
+#[test]
+fn cancellation_retention_is_finished_after_a_restart() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let server = server(&state);
+	let mut job = partial_job(&server, dir.path());
+	job.set_state(JobState::Cancelled);
+	job.updated = retype_core::job::now_ms() - 60 * 24 * 60 * 60 * 1_000;
+	for _ in 0..12 {
+		crate::daemon::watcher::publish_checked(&server.shared, &job).unwrap();
+	}
+	let store = retype_core::undo::Store::open(&state);
+	assert!(store.load(&job.id).unwrap().unwrap().pinned);
+	server.pool.stop();
+	drop(server);
+
+	let restarted = Server::open(&state).unwrap();
+	let record = store.load(&job.id).unwrap().unwrap();
+	assert!(!record.pinned);
+	assert!(record.retention_started.is_some());
+	assert_eq!(restarted.find(job.id.as_str()).unwrap().state, JobState::Cancelled);
+	restarted.pool.stop();
+}
+
+#[test]
+fn a_recovered_output_clears_the_cancellation_warning_on_reconciliation() {
+	let dir = tempfile::tempdir().unwrap();
+	let server = server(&dir.path().join("state"));
+	let job = partial_job(&server, dir.path());
+	fs::write(&job.outputs[0].path, b"tamper").unwrap();
+	assert!(server.cancel(&cancel_request(&job.id)).unwrap().ok);
+	assert!(server.find(job.id.as_str()).unwrap().error.is_some());
+	fs::write(&job.outputs[0].path, b"output").unwrap();
+
+	crate::daemon::reconcile::run(&server.shared);
+
+	let record = retype_core::undo::Store::open(&server.shared.state_dir)
+		.load(&job.id)
+		.unwrap()
+		.unwrap();
+	assert!(!record.pinned);
+	assert!(server.find(job.id.as_str()).unwrap().error.is_none());
+	server.pool.stop();
+}
+
+#[test]
+fn a_partial_cancellation_is_not_claimed_if_the_journal_fails() {
+	let dir = tempfile::tempdir().unwrap();
+	let server = server(&dir.path().join("state"));
+	let job = partial_job(&server, dir.path());
+	let shared = Arc::clone(&server.shared);
+	assert!(
+		std::thread::spawn(move || {
+			let _journal = shared.journal.lock().unwrap();
+			panic!("inject a journal failure");
+		})
+		.join()
+		.is_err()
+	);
+
+	let response = server.cancel(&cancel_request(&job.id)).unwrap();
+	assert!(!response.ok);
+	assert!(
+		response
+			.error
+			.unwrap()
+			.message
+			.contains("could not be durably recorded")
+	);
+	assert_eq!(server.find(job.id.as_str()).unwrap().state, JobState::Partial);
+	assert_eq!(fs::read(&job.outputs[0].path).unwrap(), b"output");
+	assert!(
+		retype_core::undo::Store::open(&server.shared.state_dir)
+			.load(&job.id)
+			.unwrap()
+			.unwrap()
+			.pinned
+	);
+	server.pool.stop();
+}
+
 #[test]
 fn a_disconnected_client_is_not_a_daemon_failure() {
 	let disconnected = crate::error::Error::Frame(retype_ipc::FrameError::Io("broken pipe".to_string()));

@@ -335,8 +335,13 @@ pub fn cancel(state_dir: &Path, prefix: &str, json: bool, allow_spawn: bool) -> 
 	let answer = client.jobs_cancel(id.as_str())?;
 
 	match json {
-		true => output::success(serde_json::to_value(answer)?),
-		false => println!("{}  {}", id.as_str(), answer.state),
+		true => output::success(serde_json::to_value(&answer)?),
+		false => {
+			println!("{}  {}", id.as_str(), answer.state);
+			if let Some(warning) = &answer.warning {
+				eprintln!("retype: {warning}");
+			}
+		}
 	}
 
 	Ok(ExitCode::SUCCESS)
@@ -407,6 +412,9 @@ pub fn interactive(state_dir: &Path, json: bool, allow_spawn: bool) -> Result<Ex
 				Action::Refuse => {
 					let answer = client.jobs_cancel(id.as_str())?;
 					answer_state(&answer.state);
+					if let Some(warning) = &answer.warning {
+						eprintln!("retype: {warning}");
+					}
 					break;
 				}
 			}

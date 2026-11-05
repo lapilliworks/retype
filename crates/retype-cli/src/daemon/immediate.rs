@@ -385,6 +385,8 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 		if let Err(error) = store.finish(id) {
 			eprintln!("retype: undo record remains pinned: {error}");
 		}
+	} else if job.state == JobState::Cancelled && job.outputs.iter().any(|output| output.state == OutputState::Done) {
+		super::cancel::finish_after_persist(shared, &store, &mut job);
 	}
 	drop(lease);
 	crate::daemon::watcher::publish_persisted(shared, &job);

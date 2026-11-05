@@ -117,7 +117,7 @@ impl Journal {
 		let kept: Vec<Job> = replay
 			.jobs
 			.into_iter()
-			.filter(|job| job.updated >= cutoff || is_unresolved(job.state))
+			.filter(|job| job.updated >= cutoff || is_unresolved(job))
 			.collect();
 		let dropped = total - kept.len();
 
@@ -198,11 +198,16 @@ fn serialize_jobs(jobs: &[Job]) -> Result<String> {
 	Ok(text)
 }
 
-fn is_unresolved(state: crate::job::JobState) -> bool {
+fn is_unresolved(job: &Job) -> bool {
 	!matches!(
-		state,
+		job.state,
 		crate::job::JobState::Done | crate::job::JobState::Cancelled | crate::job::JobState::Superseded
-	)
+	) || (job.state == crate::job::JobState::Cancelled
+		&& (job.error.is_some()
+			|| job
+				.outputs
+				.iter()
+				.any(|output| output.state == crate::job::OutputState::Done)))
 }
 
 /// Remove the incomplete line at the end of the journal.
@@ -395,8 +400,25 @@ mod tests {
 			expected.push(unresolved.id.clone());
 			journal.append(&unresolved).unwrap();
 		}
+		let mut warned = job();
+		warned.state = JobState::Cancelled;
+		warned.updated = now_ms() - 60 * 24 * 60 * 60 * 1_000;
+		warned.error = Some(crate::job::JobError::new(
+			"E_JOB_RESUME_UNAVAILABLE",
+			"undo needs attention",
+		));
+		expected.push(warned.id.clone());
+		journal.append(&warned).unwrap();
+		let mut cancelled_with_output = job();
+		cancelled_with_output.state = JobState::Cancelled;
+		cancelled_with_output.updated = warned.updated;
+		let mut output = crate::job::Output::pending(PathBuf::from("result.zip"), "zip", crate::job::Tier::Converted);
+		output.state = crate::job::OutputState::Done;
+		cancelled_with_output.outputs.push(output);
+		expected.push(cancelled_with_output.id.clone());
+		journal.append(&cancelled_with_output).unwrap();
 		let current = job();
-		for _ in 0..10 {
+		for _ in 0..12 {
 			journal.append(&current).unwrap();
 		}
 

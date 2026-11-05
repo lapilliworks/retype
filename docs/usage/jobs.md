@@ -36,6 +36,8 @@ retype jobs cancel 01J8Z
 retype jobs resume 01J8Z
 ```
 
+`cancel` requests that waiting or running work stop and can also cancel a settled partial job. It leaves the original and completed outputs in place; it is not undo. When a cancelled job has completed outputs, the undo retention period starts after the live original, retained original and those outputs are verified. If verification fails or no undo record exists, cancellation reports a warning and any record stays protected. A cancellation with no completed outputs keeps its recovery record pinned for now. Parked and queued cancellation still use separate paths whose journal and timer coordination is incomplete.
+
 `resume` is for a job that stopped part way, usually because a disk filled or a converter died. Outputs that are already finished and unchanged are kept, and the rest are run again from the source. An output that has since been replaced by something else is refused rather than overwritten; `--force` replaces it anyway.
 
 ## Undo
