@@ -174,10 +174,11 @@ fn save(state_dir: &Path, registrations: &[Registration]) -> Result<()> {
 	})?;
 
 	let path = path(state_dir);
-	std::fs::write(&path, text)?;
-	set_private_file(&path)?;
-
-	Ok(())
+	crate::convert::write_atomically(&path, |temporary| {
+		std::fs::write(temporary, text)?;
+		set_private_file(temporary)?;
+		Ok(())
+	})
 }
 
 #[cfg(unix)]
@@ -240,6 +241,30 @@ mod tests {
 		assert_eq!(loaded, vec![registration]);
 		assert_eq!(loaded[0].path, std::fs::canonicalize(watched.path()).unwrap());
 		assert!(loaded[0].recursive);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn registration_does_not_follow_an_existing_registry_symlink_for_writing() {
+		use std::os::unix::fs::symlink;
+
+		let state = directory();
+		let watched = directory();
+		let unrelated = state.path().join("unrelated.toml");
+		let original = format!("version = '{WATCHES_VERSION}'\n");
+		std::fs::write(&unrelated, &original).unwrap();
+		symlink(&unrelated, path(state.path())).unwrap();
+
+		register(state.path(), watched.path(), true).unwrap();
+
+		assert_eq!(std::fs::read_to_string(unrelated).unwrap(), original);
+		assert_eq!(load(state.path()).unwrap().len(), 1);
+		assert!(
+			!std::fs::symlink_metadata(path(state.path()))
+				.unwrap()
+				.file_type()
+				.is_symlink()
+		);
 	}
 
 	#[test]
