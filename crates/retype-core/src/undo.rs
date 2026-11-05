@@ -53,6 +53,9 @@ pub struct Record {
 	pub id: JobId,
 	pub intent: String,
 	pub created: i64,
+	/// When minimum retention began; absent while unfinished or for older records.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub retention_started: Option<i64>,
 	pub machine: String,
 	pub source_path: PathBuf,
 	pub source_ext: String,
@@ -86,6 +89,7 @@ impl Record {
 			id,
 			intent,
 			created: crate::job::now_ms(),
+			retention_started: None,
 			machine,
 			source_path,
 			source_ext: source_ext.to_string(),
@@ -478,7 +482,7 @@ impl Store {
 		let mut dropped = Vec::new();
 
 		for record in self.list()? {
-			if !record.pinned && age(&record, now) > retention {
+			if !record.pinned && age(&record, now).is_some_and(|age| age > retention) {
 				let _lease = self.lease(&record.id)?;
 				self.remove_locked(&record.id)?;
 				dropped.push(record.id);
@@ -525,7 +529,7 @@ impl Store {
 
 		// Expiry is retention rather than overflow, so it applies whoever is asking.
 		for record in self.list()? {
-			if !record.pinned && age(&record, now) > policy.retention {
+			if !record.pinned && age(&record, now).is_some_and(|age| age > policy.retention) {
 				dropped.push(record.id);
 			} else {
 				held += record.source_size;
@@ -617,6 +621,9 @@ impl Store {
 		let mut record = self
 			.load(id)?
 			.ok_or_else(|| Error::Io(std::io::Error::other("undo record disappeared")))?;
+		if !pinned && (record.pinned || record.retention_started.is_none()) {
+			record.retention_started = Some(crate::job::now_ms());
+		}
 		record.pinned = pinned;
 		write_manifest(&self.directory(id), &record)
 	}
@@ -795,10 +802,12 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<()> {
 	Ok(())
 }
 
-/// A record's age, for retention decisions the caller owns.
-pub fn age(record: &Record, now: SystemTime) -> Duration {
-	let created = UNIX_EPOCH + Duration::from_millis(record.created.max(0) as u64);
-	now.duration_since(created).unwrap_or_default()
+/// Time since retention started, or `None` when the start is unknown.
+pub fn age(record: &Record, now: SystemTime) -> Option<Duration> {
+	record.retention_started.map(|started| {
+		let started = UNIX_EPOCH + Duration::from_millis(started.max(0) as u64);
+		now.duration_since(started).unwrap_or_default()
+	})
 }
 
 #[cfg(test)]
@@ -838,6 +847,7 @@ mod tests {
 	/// Backdate a record the way only time can, by rewriting its manifest.
 	fn backdate(store: &Store, record: &mut Record, days: i64) {
 		record.created = crate::job::now_ms() - days * 24 * 60 * 60 * 1_000;
+		record.retention_started = Some(record.created);
 		record.pinned = false;
 		fs::write(
 			store.directory(&record.id).join("meta.toml"),
@@ -1009,6 +1019,59 @@ mod tests {
 			store.load(&recent.id).unwrap().is_some(),
 			"a record inside retention stays"
 		);
+	}
+
+	#[test]
+	fn retention_starts_when_a_long_running_job_finishes() {
+		let state = state();
+		let store = Store::open(state.path());
+		let mut record = store.save(subject(1, state.path())).unwrap();
+		record.created -= 8 * 24 * 60 * 60 * 1_000;
+		write_manifest(&store.directory(&record.id), &record).unwrap();
+
+		store.finish(&record.id).unwrap();
+		let finished = store.load(&record.id).unwrap().unwrap();
+		assert!(!finished.pinned);
+		assert!(
+			finished
+				.retention_started
+				.is_some_and(|started| started > finished.created)
+		);
+		assert!(store.sweep(Duration::from_secs(7 * 24 * 60 * 60)).unwrap().is_empty());
+		assert!(store.load(&record.id).unwrap().is_some());
+	}
+
+	#[test]
+	fn finishing_a_recovered_job_restarts_retention() {
+		let state = state();
+		let store = Store::open(state.path());
+		let mut record = store.save(subject(1, state.path())).unwrap();
+		backdate(&store, &mut record, 8);
+		let previous_start = record.retention_started.unwrap();
+
+		store.pin(&record.id).unwrap();
+		store.finish(&record.id).unwrap();
+
+		let finished = store.load(&record.id).unwrap().unwrap();
+		assert!(
+			finished
+				.retention_started
+				.is_some_and(|started| started > previous_start)
+		);
+		assert!(store.sweep(Duration::from_secs(7 * 24 * 60 * 60)).unwrap().is_empty());
+	}
+
+	#[test]
+	fn an_unknown_retention_start_is_not_assumed_expired() {
+		let state = state();
+		let store = Store::open(state.path());
+		let mut record = store.save(subject(1, state.path())).unwrap();
+		record.created -= 8 * 24 * 60 * 60 * 1_000;
+		record.pinned = false;
+		write_manifest(&store.directory(&record.id), &record).unwrap();
+
+		assert!(store.sweep(Duration::from_secs(7 * 24 * 60 * 60)).unwrap().is_empty());
+		assert!(store.load(&record.id).unwrap().is_some());
 	}
 
 	#[test]

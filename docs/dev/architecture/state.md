@@ -166,7 +166,7 @@ Resume accepts partial jobs and failed jobs marked `E_JOB_INTERRUPTED`. Its inpu
 
 Resume skips only outputs whose recorded identity, size and digest still match. Any other occupied path is refused without `--force`, including paths whose platform identity is unavailable. `--force` reruns outputs but cannot override protection of the job's input. A successful resume retains its backup for normal undo retention and leaves any live source in place.
 
-Unfinished records are pinned against both quota eviction and expiry. A successful completion releases the pin, not the backup. A failed or interrupted recovery leaves its record pinned.
+Unfinished records are pinned against both quota eviction and expiry. A successful completion releases the pin, records `retention_started` in Unix milliseconds and retains the backup. A successful resume starts a new retention period; a failed or interrupted recovery leaves its record pinned. Records without a known retention start are not removed by the age sweep, although the current quota overflow policy can still evict unpinned records.
 
 ## 5.3 Supersession
 
