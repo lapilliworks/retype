@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use retype_core::error::Code;
 use retype_core::identifier::normalize;
-use retype_core::job::JobId;
+use retype_core::job::{Job, JobId, JobState};
 use retype_core::print;
 use serde_json::Value;
 
@@ -304,6 +304,10 @@ pub fn resume(state_dir: &Path, prefix: &str, force: bool, json: bool, allow_spa
 	};
 
 	let answer = client.jobs_resume(id.as_str(), force)?;
+	if answer.state != JobState::Done {
+		let job = client.jobs_get(id.as_str())?;
+		return Ok(ExitCode::from(incomplete_resume(answer.state, &job)));
+	}
 
 	match json {
 		true => output::success(serde_json::to_value(answer)?),
@@ -318,6 +322,16 @@ pub fn resume(state_dir: &Path, prefix: &str, force: bool, json: bool, allow_spa
 	}
 
 	Ok(ExitCode::SUCCESS)
+}
+
+fn incomplete_resume(state: JobState, job: &Job) -> u8 {
+	let (code, explanation) =
+		output::job_failure(job).unwrap_or_else(|| (Code::JobState, "the resume did not finish the job".to_string()));
+	let message = format!(
+		"resume of job {} did not finish: {explanation}; inspect it with `retype jobs get {}`",
+		job.id, job.id
+	);
+	output::fail_with_detail(&code, message, serde_json::json!({"resume_state": state, "job": job}))
 }
 
 pub fn cancel(state_dir: &Path, prefix: &str, json: bool, allow_spawn: bool) -> Result<ExitCode> {

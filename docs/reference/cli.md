@@ -62,7 +62,7 @@ Shell quoting is rarely needed: the intent character set excludes every shell me
 
 `--dry-run` is `explain` with a real file: same output, including the estimate from the file's actual size and the resolved backend.
 
-Under `--json`, the result is `{v, ok, job}`: the envelope identifies the CLI shape, and the job is the journal record with its own `v`, `docs/dev/architecture/state.md` §3.
+Under `--json`, a completed conversion returns `{v, ok, job}`. An incomplete conversion returns `ok: false` with the job under `error.detail.job` and exits nonzero. The envelope identifies the CLI shape, and the job has its own `v`, `docs/dev/architecture/state.md` §3.
 
 The command submits an `immediate` job to the daemon and waits for it, `docs/dev/architecture/ipc.md` §6. Immediate means it does not queue behind a directory's renames: it is journalled, visible in `jobs list`, cancellable with `jobs cancel`, and shares the pool, so parallelism is bounded the same way for a person and a watcher.
 
@@ -177,7 +177,7 @@ retype why <path>
 
 `undo` reads the undo store rather than the journal, so it answers even when the journal is gone, and it removes the record it used: one record, one restore target. An active conversion or recovery returns `E_IO_LOCKED`; cancel it and wait for it to stop before undoing.
 
-`jobs resume` continues a partial or interrupted job from a private copy of its verified retained original. An output whose identity, size and digest still match is skipped. Any other occupied path is `E_IO_EXISTS`; `--force` reruns outputs but cannot replace the input itself. Successful resume retains the backup for normal undo retention. Jobs without verified recovery bytes cannot resume.
+`jobs resume` continues a partial or interrupted job from a private copy of its verified retained original. An output whose identity, size and digest still match is skipped. Any other occupied path is `E_IO_EXISTS`; `--force` reruns outputs but cannot replace the input itself. Successful resume retains the backup for normal undo retention. Jobs without verified recovery bytes cannot resume. If the resume remains incomplete, the CLI exits nonzero; its JSON error detail includes the resume state and current job.
 
 Ids accept a unique prefix of at least four characters; an ambiguous prefix is `E_JOB_AMBIGUOUS` with the candidates printed, and a shorter one is a usage error. Listings print the shortest unambiguous prefix so copy-paste is short by default. Ids and `--state` values are read in either case and printed lowercase.
 

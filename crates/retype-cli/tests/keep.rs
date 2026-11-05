@@ -291,6 +291,7 @@ fn direct_keep_preserves_the_original_and_undo_leaves_later_edits_alone() {
 		String::from_utf8_lossy(&converted.stderr)
 	);
 	let answer: serde_json::Value = serde_json::from_slice(&converted.stdout).unwrap();
+	assert_eq!(answer["ok"], true);
 	assert_eq!(answer["job"]["state"], "done");
 	assert!(answer["job"]["intent"].as_str().unwrap().contains("+keep"));
 	check_zip(&output);
@@ -334,8 +335,9 @@ fn keep_does_not_hide_an_undo_storage_failure_from_the_cli() {
 		.unwrap();
 	assert!(!converted.status.success());
 	let answer: serde_json::Value = serde_json::from_slice(&converted.stdout).unwrap();
-	assert_eq!(answer["job"]["state"], "failed");
-	assert!(answer["job"]["error"]["message"].as_str().unwrap().contains("undo"));
+	assert_eq!(answer["ok"], false);
+	assert_eq!(answer["error"]["detail"]["job"]["state"], "failed");
+	assert!(answer["error"]["message"].as_str().unwrap().contains("undo"));
 	assert_eq!(fs::read(source).unwrap(), original);
 	assert!(!dir.path().join("Bundle.zip").exists());
 }

@@ -231,6 +231,21 @@ fn a_partial_job_resumes_and_skips_what_it_already_produced() {
 		.expect("a job id")
 		.to_string();
 
+	let still_blocked = retype()
+		.args(["jobs", "resume", &id, "--json"])
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+	assert!(!still_blocked.status.success(), "an incomplete resume is not success");
+	let answer: serde_json::Value = serde_json::from_slice(&still_blocked.stdout).unwrap();
+	assert_eq!(answer["ok"], false);
+	assert_eq!(answer["error"]["code"], "E_IO_EXISTS");
+	assert_eq!(answer["error"]["detail"]["resume_state"], "partial");
+	assert_eq!(answer["error"]["detail"]["job"]["state"], "partial");
+	assert!(blocked.is_dir());
+	assert_eq!(fs::read(&produced).unwrap(), b"pixels");
+
 	// Clear the obstruction; resume should now finish, and should not rewrite the
 	// output that is already what the job produced.
 	fs::remove_dir(&blocked).unwrap();

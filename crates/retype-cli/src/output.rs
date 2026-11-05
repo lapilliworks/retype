@@ -7,6 +7,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use retype_core::error::{Code, Diagnoses, Error as CoreError};
+use retype_core::job::{Job, JobState, OutputState};
 use serde_json::{Value, json};
 
 use crate::error::{Error, exit_code};
@@ -83,6 +84,28 @@ fn envelope_error(error: Value, diagnostics: Option<Value>) -> Value {
 	}
 
 	object
+}
+
+/// The reason a settled job did not fulfill its request, if any.
+pub fn job_failure(job: &Job) -> Option<(Code, String)> {
+	let reason = job.error.as_ref().or_else(|| {
+		job.outputs
+			.iter()
+			.filter(|output| output.state == OutputState::Failed)
+			.find_map(|output| output.error.as_ref())
+	});
+	if let Some(error) = reason {
+		return Some((Code::from(error.code.clone()), error.message.clone()));
+	}
+	if job.state == JobState::Done && job.outputs.iter().all(|output| output.state == OutputState::Done) {
+		return None;
+	}
+	let code = match job.state {
+		JobState::Cancelled => Code::JobCancelled,
+		JobState::Superseded => Code::JobSuperseded,
+		_ => Code::JobState,
+	};
+	Some((code, format!("job {} did not finish ({:?})", job.id, job.state)))
 }
 
 /// Report one failure and answer with the exit status it maps to.
@@ -170,4 +193,38 @@ pub fn fail_error(error: &Error) -> u8 {
 /// A usage error with the code the taxonomy names.
 pub fn usage(code: Code, message: impl AsRef<str>) -> u8 {
 	fail(&code, message)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn job(state: JobState) -> Job {
+		let mut job: Job = serde_json::from_value(json!({
+			"id": retype_core::job::JobId::now().unwrap(),
+			"created": 0, "updated": 0,
+			"source": {"path": "photo.png", "format": "png", "size": 1, "mtime_ns": 0},
+			"intent": "webp", "outputs": [], "state": state,
+			"machine": "test"
+		}))
+		.unwrap();
+		job.outputs.push(retype_core::job::Output::pending(
+			"photo.webp".into(),
+			"webp",
+			retype_core::job::Tier::Converted,
+		));
+		job
+	}
+
+	#[test]
+	fn incomplete_jobs_report_the_specific_failure_or_a_state_error() {
+		let mut job = job(JobState::Partial);
+		job.outputs[0].state = OutputState::Failed;
+		job.outputs[0].error = Some(retype_core::job::JobError::new("E_IO_SPACE", "disk full"));
+		assert_eq!(job_failure(&job), Some((Code::IoSpace, "disk full".to_string())));
+		job.outputs.clear();
+		assert_eq!(job_failure(&job).unwrap().0, Code::JobState);
+		job.state = JobState::Done;
+		assert_eq!(job_failure(&job), None);
+	}
 }

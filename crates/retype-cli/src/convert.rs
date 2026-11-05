@@ -101,8 +101,16 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	};
 
 	if request.json {
+		if let Some((code, message)) = output::job_failure(&job) {
+			return Ok(ExitCode::from(output::fail_with_detail(
+				&code,
+				message,
+				serde_json::json!({"job": job}),
+			)));
+		}
 		// The job keeps its own `v`; the envelope names the CLI shape.
 		output::success(serde_json::json!({"job": job}));
+		return Ok(ExitCode::SUCCESS);
 	}
 
 	let mut failure: Option<u8> = None;
@@ -148,8 +156,11 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 		failure.get_or_insert(exit_code_of(&error.code));
 	}
 
-	if job.state == JobState::Cancelled {
-		failure.get_or_insert(4);
+	if failure.is_none() {
+		if let Some((code, message)) = output::job_failure(&job) {
+			eprintln!("retype: {code}: {message}");
+			failure = Some(exit_code_of(code.as_str()));
+		}
 	}
 
 	match failure {
