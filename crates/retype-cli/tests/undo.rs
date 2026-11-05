@@ -63,6 +63,101 @@ impl Drop for Daemon {
 	}
 }
 
+fn archive_bytes() -> Vec<u8> {
+	let mut archive = tar::Builder::new(Vec::new());
+	let mut header = tar::Header::new_gnu();
+	header.set_size(7);
+	header.set_mode(0o644);
+	header.set_cksum();
+	archive.append_data(&mut header, "file.txt", &b"payload"[..]).unwrap();
+	archive.into_inner().unwrap()
+}
+
+#[test]
+fn a_watched_native_archive_conversion_restores_the_original_on_undo() {
+	let dir = tempfile::tempdir().unwrap();
+	let photos = dir.path().join("photos");
+	fs::create_dir(&photos).unwrap();
+	let state = dir.path().join("state");
+	let config = copy_config(dir.path());
+
+	let registered = retype()
+		.args(["watch", photos.to_str().unwrap()])
+		.arg("--state-dir")
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config)
+		.output()
+		.unwrap();
+	assert!(registered.status.success());
+	let _daemon = Daemon(
+		retype()
+			.args(["daemon", "--detached"])
+			.arg("--state-dir")
+			.arg(&state)
+			.env("RETYPE_CONFIG", &config)
+			.stdout(Stdio::null())
+			.stderr(Stdio::from(fs::File::create(dir.path().join("daemon.log")).unwrap()))
+			.spawn()
+			.unwrap(),
+	);
+	let deadline = Instant::now() + Duration::from_secs(20);
+	while !state.join("endpoint").exists() {
+		assert!(Instant::now() < deadline, "the daemon did not start");
+		std::thread::sleep(Duration::from_millis(50));
+	}
+
+	let original = archive_bytes();
+	let source = photos.join("bundle.tar");
+	let target = photos.join("bundle.zip");
+	let before = support::observed(&state);
+	fs::write(&source, &original).unwrap();
+	support::observe(&state, before);
+	fs::rename(&source, &target).unwrap();
+
+	let store = retype_core::undo::Store::open(&state);
+	let deadline = Instant::now() + Duration::from_secs(20);
+	let journal = state.join("jobs.jsonl");
+	loop {
+		let records = fs::read_to_string(&journal).unwrap_or_default();
+		if records.contains("\"state\":\"done\"") && store.list().unwrap().iter().any(|record| !record.pinned) {
+			assert!(records.contains("\"state\":\"queued\""), "{records}");
+			break;
+		}
+		assert!(Instant::now() < deadline, "the archive was not converted: {records}");
+		std::thread::sleep(Duration::from_millis(50));
+	}
+
+	let mut zip = zip::ZipArchive::new(fs::File::open(&target).unwrap()).unwrap();
+	let mut content = String::new();
+	std::io::Read::read_to_string(&mut zip.by_name("file.txt").unwrap(), &mut content).unwrap();
+	assert_eq!(content, "payload");
+	drop(zip);
+	if retype_core::fsx::supports_durable_cleanup() {
+		assert!(
+			!source.exists(),
+			"a validated transform should retain the source only in undo"
+		);
+	} else {
+		assert_eq!(fs::read(&source).unwrap(), original);
+	}
+	let undo = retype()
+		.args(["--no-spawn", "undo", "--last"])
+		.arg("--state-dir")
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config)
+		.output()
+		.unwrap();
+	if !retype_core::fsx::supports_durable_cleanup() {
+		assert!(!undo.status.success());
+		assert_eq!(fs::read(&source).unwrap(), original);
+		assert!(target.exists());
+		return;
+	}
+	assert!(undo.status.success(), "{}", String::from_utf8_lossy(&undo.stderr));
+	assert_eq!(fs::read(&source).unwrap(), original);
+	assert!(!target.exists());
+}
+
 #[test]
 fn undo_puts_the_source_back_and_removes_the_output() {
 	let dir = tempfile::tempdir().unwrap();
