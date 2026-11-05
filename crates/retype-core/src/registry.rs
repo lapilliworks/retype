@@ -1629,16 +1629,21 @@ fn split_compounds(
 	(entry, compounds)
 }
 
-/// Merge `over` into `base`, key by key for tables, whole for arrays and scalars,
-/// with `enabled = false` removing an entry, `docs/config.md` §2.
+/// Merge tables key by key and arrays or scalars whole. Nested entries with
+/// `enabled = false` are removed; top-level policy switches are preserved.
 fn merge(base: &mut toml::Value, over: &toml::Value) {
+	merge_layer(base, over, false);
+}
+
+fn merge_layer(base: &mut toml::Value, over: &toml::Value, can_remove_entries: bool) {
 	match (base, over) {
 		(toml::Value::Table(base), toml::Value::Table(over)) => {
 			for (key, value) in over {
-				let disables = value
-					.get("enabled")
-					.and_then(toml::Value::as_bool)
-					.is_some_and(|enabled| !enabled);
+				let disables = can_remove_entries
+					&& value
+						.get("enabled")
+						.and_then(toml::Value::as_bool)
+						.is_some_and(|enabled| !enabled);
 
 				if disables {
 					base.remove(key);
@@ -1646,7 +1651,7 @@ fn merge(base: &mut toml::Value, over: &toml::Value) {
 				}
 
 				match base.get_mut(key) {
-					Some(existing) => merge(existing, value),
+					Some(existing) => merge_layer(existing, value, true),
 					None => {
 						base.insert(key.clone(), value.clone());
 					}

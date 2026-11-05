@@ -51,7 +51,8 @@ Merge rules per key type:
 | Table | Merged key by key, recursively |
 | Array | Replaced whole, never concatenated |
 | Scalar | Replaced |
-| Entry with `enabled = false` | Removed from the merged result |
+| Nested entry with `enabled = false` | Removed from the merged result |
+| Top-level `[undo]` or `[notify]` with `enabled = false` | The policy is disabled |
 
 So a user who redefines one operation's `argv` keeps that operation's slot, parameter class and format applicability, because those keys are not present in the override. To change them is to define a different operation under a name that is already taken, which is rejected as `E_CFG_VALIDATION`.
 
