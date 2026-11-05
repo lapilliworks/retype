@@ -66,6 +66,8 @@ pub struct Shared {
 	/// the file may be renamed again before then, and asking the filesystem later
 	/// would find nothing to record.
 	pub own_renames: Mutex<Vec<retype_core::correlate::Sighting>>,
+	/// Serializes parked-job decisions, timer admission and cancellation.
+	pub(crate) parked_admission: Mutex<()>,
 	/// What clients replay from, `docs/dev/architecture/ipc.md` §7.
 	pub events: Mutex<crate::daemon::events::Events>,
 	/// Installed watcher state, distinct from the persisted registrations.
@@ -118,6 +120,12 @@ impl Recent {
 }
 
 impl Shared {
+	pub(crate) fn lock_parked_admission(&self) -> retype_core::error::Result<std::sync::MutexGuard<'_, ()>> {
+		self.parked_admission
+			.lock()
+			.map_err(|_| retype_core::error::Error::Io(std::io::Error::other("parked admission lock poisoned")))
+	}
+
 	/// Note a path this process moved itself, for the watcher to record.
 	pub fn note_own_rename(&self, path: &Path) {
 		let Some(sighting) = retype_core::correlate::Sighting::of(path) else {
@@ -765,6 +773,17 @@ fn decide(
 		return;
 	};
 
+	let admission = match shared.lock_parked_admission() {
+		Ok(guard) => guard,
+		Err(error) => {
+			eprintln!(
+				"retype: cannot decide the rename to {}: {error}; check the file before retrying",
+				fact.target.display()
+			);
+			return;
+		}
+	};
+
 	// A rename chain that spans two batches: the file being renamed is
 	// what an earlier job is writing, so the earlier job is spent and the
 	// chain becomes one conversion, `docs/dev/architecture/state.md` §5.3.
@@ -786,15 +805,24 @@ fn decide(
 		false => supersede(shared, pool, &earlier),
 	};
 
+	// A later rename replaces a parked job for the same file. The same lock
+	// prevents a timer from queueing that job between the lookup and this update.
+	if let Err(error) = crate::daemon::park::superseded(shared, &source, &admission) {
+		eprintln!(
+			"retype: cannot replace a parked job for {}: {error}; check {} before retrying",
+			source.display(),
+			fact.target.display()
+		);
+		return;
+	}
+	drop(admission);
+
 	// Registered before anything is published, because the first thing
 	// published may be the last thing this batch does: a parked job settles
 	// immediately.
 	if let Some(batch) = parked_batch {
 		shared.batches.open(batch, &id);
 	}
-
-	// A later rename replaces a parked job for the same file.
-	crate::daemon::park::superseded(shared, &source);
 
 	match crate::daemon::park::decide(
 		shared,
@@ -1398,6 +1426,12 @@ fn run(
 			return;
 		}
 	};
+	if let Err(error) = super::park::verify_input(&started, &snapshot.original) {
+		let mut failed = started.clone();
+		failed.fail(JobError::new(error.code().to_string(), error.to_string()));
+		publish(shared, &failed);
+		return;
+	}
 	let registry = shared.registry();
 	let undo = store.save_with_policy(
 		retype_core::undo::Subject {

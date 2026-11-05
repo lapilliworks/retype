@@ -215,6 +215,24 @@ fn an_expensive_rename_is_parked_under_its_own_name_and_runs_when_the_timer_fire
 }
 
 #[test]
+fn a_timed_job_refuses_changed_bytes_even_when_size_and_time_match() {
+	let fixture = Fixture::new("3s");
+	let parked = fixture.rename("timed.png", "timed.webp");
+	assert_eq!(parked["state"], "pending");
+	let source = fixture.photos.join("timed.png");
+	let modified = fs::metadata(&source).unwrap().modified().unwrap();
+	let mut file = fs::OpenOptions::new().write(true).open(&source).unwrap();
+	file.write_all(b"q").unwrap();
+	file.set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+	drop(file);
+
+	let failed = fixture.wait_for(|record| record["state"] == "failed" && Fixture::id(record) == Fixture::id(&parked));
+	assert_eq!(failed["error"]["code"], "E_JOB_INTERRUPTED");
+	assert_eq!(fs::read(&source).unwrap()[0], b'q');
+	assert!(!fixture.photos.join("timed.webp").exists());
+}
+
+#[test]
 fn ask_waits_without_a_timeout_and_explicit_confirmation_runs_it() {
 	let fixture = Fixture::new("1s");
 	let small = fixture.photos.join("b.png");
@@ -425,6 +443,40 @@ fn the_interactive_walk_refuses_a_pipe_rather_than_reading_a_script() {
 }
 
 #[test]
+fn a_watched_ask_refuses_a_same_size_source_changed_while_waiting() {
+	let fixture = Fixture::new("1h");
+	let source = fixture.photos.join("changed.png");
+	let before = support::observed(&fixture.state);
+	fs::write(&source, b"pixels").unwrap();
+	support::observe(&fixture.state, before);
+	fs::rename(&source, fixture.photos.join("changed.webp+ask")).unwrap();
+	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");
+	let modified = fs::metadata(&source).unwrap().modified().unwrap();
+	fs::write(&source, b"change").unwrap();
+	fs::OpenOptions::new()
+		.write(true)
+		.open(&source)
+		.unwrap()
+		.set_times(fs::FileTimes::new().set_modified(modified))
+		.unwrap();
+
+	let confirmed = fixture
+		.command()
+		.args(["jobs", "resolve", &Fixture::id(&parked), "--now"])
+		.output()
+		.unwrap();
+	assert!(
+		confirmed.status.success(),
+		"{}",
+		String::from_utf8_lossy(&confirmed.stderr)
+	);
+	let failed = fixture.wait_for(|record| record["state"] == "failed" && Fixture::id(record) == Fixture::id(&parked));
+	assert_eq!(failed["error"]["code"], "E_JOB_INTERRUPTED");
+	assert_eq!(fs::read(source).unwrap(), b"change");
+	assert!(!fixture.photos.join("changed.webp").exists());
+}
+
+#[test]
 fn a_file_that_appeared_during_the_pause_is_not_overwritten() {
 	let fixture = Fixture::new("1h");
 	let small = fixture.photos.join("d.png");
@@ -446,9 +498,7 @@ fn a_file_that_appeared_during_the_pause_is_not_overwritten() {
 		.unwrap();
 	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
 
-	let ended = fixture.wait_for(|record| {
-		Fixture::id(record) == Fixture::id(&parked) && record["state"] != "running" && record["state"] != "pending"
-	});
+	let ended = fixture.wait_for(|record| Fixture::id(record) == Fixture::id(&parked) && record["state"] == "failed");
 
 	assert_eq!(ended["state"], "failed", "{ended}");
 	assert_eq!(ended["outputs"][0]["error"]["code"], "E_IO_EXISTS", "{ended}");
@@ -480,6 +530,10 @@ fn force_replaces_a_file_that_appeared_during_the_pause() {
 
 	let done = fixture.wait_for(|record| record["state"] == "done" && Fixture::id(record) == Fixture::id(&parked));
 	assert_eq!(done["state"], "done");
+	assert_eq!(
+		done["parked"]["force"], true,
+		"overwrite consent remains in the job history"
+	);
 	assert_eq!(fs::read(&theirs).unwrap(), b"pixels", "the output replaced it");
 	assert!(
 		fixture.photos.join("e.png").exists(),

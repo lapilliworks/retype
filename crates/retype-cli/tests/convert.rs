@@ -152,6 +152,59 @@ fn a_noninteractive_explicit_ask_stays_pending_until_a_person_confirms() {
 		std::thread::sleep(std::time::Duration::from_millis(50));
 	}
 	assert_eq!(fs::read(output).unwrap(), b"pixels");
+	loop {
+		let result = fixture.convert(&["jobs", "get", id]);
+		let job: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+		if job["state"] == "done" {
+			assert_eq!(job["parked"]["reason"], "ask");
+			break;
+		}
+		assert!(
+			std::time::Instant::now() < deadline,
+			"the confirmed job did not finish: {job}"
+		);
+		std::thread::sleep(std::time::Duration::from_millis(50));
+	}
+}
+
+#[test]
+fn an_explicit_ask_refuses_a_same_size_source_changed_while_waiting() {
+	let fixture = Fixture::new();
+	let input = fixture.input();
+	let output = fixture.convert(&["convert", input.to_str().unwrap(), "webp+ask", "--json"]);
+	assert_eq!(output.status.code(), Some(7));
+	let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+	let id = answer["error"]["detail"]["id"].as_str().unwrap();
+	let modified = fs::metadata(&input).unwrap().modified().unwrap();
+	fs::write(&input, b"change").unwrap();
+	fs::OpenOptions::new()
+		.write(true)
+		.open(&input)
+		.unwrap()
+		.set_times(fs::FileTimes::new().set_modified(modified))
+		.unwrap();
+	let confirmed = fixture.convert(&["jobs", "resolve", id, "--now"]);
+	assert!(
+		confirmed.status.success(),
+		"{}",
+		String::from_utf8_lossy(&confirmed.stderr)
+	);
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+	loop {
+		let result = fixture.convert(&["jobs", "get", id]);
+		let job: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+		if job["state"] == "failed" {
+			assert_eq!(job["error"]["code"], "E_JOB_INTERRUPTED");
+			break;
+		}
+		assert!(
+			std::time::Instant::now() < deadline,
+			"the changed source was not refused: {job}"
+		);
+		std::thread::sleep(std::time::Duration::from_millis(50));
+	}
+	assert_eq!(fs::read(input).unwrap(), b"change");
+	assert!(!fixture.dir.path().join("photo.webp").exists());
 }
 
 #[test]

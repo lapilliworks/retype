@@ -571,6 +571,8 @@ mod tests {
 			corrected: None,
 			dropped: Vec::new(),
 			consume: true,
+			force: false,
+			input_fingerprint: None,
 		});
 
 		job

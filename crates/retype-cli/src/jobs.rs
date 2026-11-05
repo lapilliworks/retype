@@ -674,6 +674,8 @@ mod tests {
 				corrected: corrected.map(str::to_string),
 				dropped: Vec::new(),
 				consume: false,
+				force: false,
+				input_fingerprint: None,
 			}),
 			consume_source: false,
 		}
@@ -720,6 +722,8 @@ mod tests {
 			corrected: None,
 			dropped: Vec::new(),
 			consume: false,
+			force: false,
+			input_fingerprint: None,
 		});
 
 		assert_eq!(choose('n', &sized), Some(Action::Now));

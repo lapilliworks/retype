@@ -433,6 +433,16 @@ pub struct Parked {
 	/// rename asked for and false for one a client submitted.
 	#[serde(default)]
 	pub consume: bool,
+	/// Whether the confirmed resolution permits replacing existing outputs.
+	#[serde(default, skip_serializing_if = "is_false")]
+	pub force: bool,
+	/// Identity and content captured before the request was parked.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub input_fingerprint: Option<crate::safety::Fingerprint>,
+}
+
+fn is_false(value: &bool) -> bool {
+	!*value
 }
 
 /// What a job is expected to cost, `docs/dev/architecture/state.md` §7.
@@ -703,6 +713,8 @@ mod tests {
 			corrected: None,
 			dropped: Vec::new(),
 			consume: true,
+			force: false,
+			input_fingerprint: None,
 		});
 
 		let line = job.to_line().expect("a record");

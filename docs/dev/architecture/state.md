@@ -84,7 +84,7 @@ One JSON object per line. Every line is self-contained and carries its own versi
 | `backend` | Backend name that ran or will run the job: a tool's name, or the codec's, such as `zip`, when this build wrote the file itself |
 | `machine` | Per-install identity |
 | `error` | Null, or `{code, message}` with a journal-level code such as `E_JOB_INTERRUPTED`, `E_JOB_SUPERSEDED` or `E_TOOL_FAILED` |
-| `parked` | Absent, or why the job is waiting and until when: `reason`, `deadline`, `batch`, `estimate`, `requested`, `corrected` and `dropped`, `docs/advanced/deferral.md` §11 |
+| `parked` | Absent, or its reason, deadline, batch, estimate, requested and corrected intent, dropped tokens, source disposition, input fingerprint and confirmed `force` choice |
 | `consume_source` | Whether the job may consume its source after the safety checks: true for a rename, false for `retype convert`. It is not proof that disposal happened |
 
 Per-output state is one of `pending`, `running`, `done`, `failed`. A `partial` job is one with at least one `done` and at least one not `done`, so the job state is derivable from its outputs and is stored anyway because a reader should not have to recompute it.
@@ -226,7 +226,7 @@ Accounting is retained source bytes, `docs/reference/config.md` §9. Quota decis
 2. Load `bench.toml`, then the journal, then the undo record index
 3. For every journal job in `queued`: mark it `failed` with `E_JOB_INTERRUPTED` and ask the user to review the input and resubmit the recorded intent. The queued record does not yet include a content fingerprint, so size and modification time cannot establish that the input is unchanged; do not automatically replay it
 4. For every journal job in `running`: verify publication intents from its recovery manifest against final files. Reconstruct the intended outputs and mark verified publications done. Mark the job interrupted, with state `partial` when any publication survived and `failed` otherwise. Both outcomes can resume using verified retained bytes, §5.2
-5. For every journal job in `pending`: it is parked, so it keeps its deadline and its timer is re-armed rather than run, `docs/advanced/deferral.md` §7
+5. For every journal job in `pending`: re-arm its timer. When due, require its recorded input fingerprint, recheck state under the admission lock and journal the queued transition; older records without a fingerprint wait for review and resubmission
 6. For a cancelled job with completed outputs and a pinned record, verify the live original, retained original and completed outputs before starting retention. Retain recovery records without journal entries for direct undo; do not infer completion from publication intents alone
 7. For every journal job whose record directory is missing, leave the state as recorded and mark undoing it as unavailable
 8. Drop undo records past retention, then compact if the thresholds are met

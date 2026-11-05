@@ -71,14 +71,17 @@ impl Fingerprint {
 		self.bytes == other.bytes && self.sha256 == other.sha256
 	}
 
-	pub fn matches(&self, path: &Path) -> Result<bool> {
-		let current = Self::of(path)?;
-		Ok(self.same_content(&current)
+	pub fn same_file_and_content(&self, other: &Self) -> bool {
+		self.same_content(other)
 			&& self
 				.identity
 				.as_ref()
-				.zip(current.identity.as_ref())
-				.is_some_and(|(expected, actual)| expected.matches(actual)))
+				.zip(other.identity.as_ref())
+				.is_some_and(|(expected, actual)| expected.matches(actual))
+	}
+
+	pub fn matches(&self, path: &Path) -> Result<bool> {
+		Ok(self.same_file_and_content(&Self::of(path)?))
 	}
 }
 
@@ -168,4 +171,24 @@ pub fn remove_owned(path: &Path, expected: &Fingerprint) -> Result<()> {
 	fs::remove_dir(&directory)?;
 	crate::fsx::sync_directory(parent)?;
 	Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn equal_contents_do_not_make_a_replacement_the_same_file() {
+		let dir = tempfile::tempdir().unwrap();
+		let first = dir.path().join("first");
+		let replacement = dir.path().join("replacement");
+		fs::write(&first, b"same bytes").unwrap();
+		fs::write(&replacement, b"same bytes").unwrap();
+		let expected = Fingerprint::of(&first).unwrap();
+		let other = Fingerprint::of(&replacement).unwrap();
+
+		assert!(expected.same_content(&other));
+		assert!(!expected.same_file_and_content(&other));
+		assert!(expected.same_file_and_content(&Fingerprint::of(&first).unwrap()));
+	}
 }

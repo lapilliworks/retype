@@ -33,7 +33,9 @@ pub fn start(shared: Arc<Shared>, pool: Arc<Pool>) -> (Arc<AtomicBool>, JoinHand
 	let handle = thread::spawn(move || {
 		while !worker_stop.load(Ordering::Relaxed) {
 			for job in due(&shared, &pool) {
-				start_job(&pool, &job, None, false);
+				if let Err(error) = start_due(&shared, &pool, &job) {
+					eprintln!("retype: parked job {} could not be queued: {error}", job.id);
+				}
 			}
 
 			thread::sleep(TICK);
@@ -46,7 +48,6 @@ pub fn start(shared: Arc<Shared>, pool: Arc<Pool>) -> (Arc<AtomicBool>, JoinHand
 /// The parked jobs whose time has come, which is also how a deadline that passed while
 /// the daemon was not running is honoured.
 fn due(shared: &Shared, pool: &Pool) -> Vec<Job> {
-	let now = now_ms();
 	let running = pool.ids();
 
 	let Ok(jobs) = shared.jobs.lock() else {
@@ -54,27 +55,119 @@ fn due(shared: &Shared, pool: &Pool) -> Vec<Job> {
 	};
 
 	jobs.iter()
-		.filter(|job| job.state == JobState::Pending)
-		.filter(|job| !job.parked.as_ref().is_some_and(|parked| parked.reason == "ask"))
+		.filter(|job| is_due(job))
 		.filter(|job| !running.contains(&job.id))
-		.filter(|job| {
-			job.parked
-				.as_ref()
-				.and_then(|parked| parked.deadline)
-				.is_some_and(|deadline| deadline <= now)
-		})
 		.cloned()
 		.collect()
 }
 
-/// Put a parked job back in the queue, either as it stands or with the intent a repair
-/// produced, `docs/deferral.md` §8.
-///
-/// The source is consumed when the job commits if it came from a rename, and left
-/// alone if it came from a client, which is the one thing the parked record has to
-/// remember.
-pub fn start_job(pool: &Pool, job: &Job, intent: Option<&str>, force: bool) -> bool {
-	work(job, intent, force).is_some_and(|work| pool.submit(work))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admission {
+	Queued,
+	Full,
+	Stale,
+}
+
+/// Start an ordinary timed deferral only if the current record is still due.
+pub fn start_due(shared: &Shared, pool: &Pool, expected: &Job) -> retype_core::error::Result<Admission> {
+	admit(shared, pool, expected, Decision::Deadline)
+}
+
+/// Start a parked job after a person confirms it.
+pub fn start_confirmed(
+	shared: &Shared,
+	pool: &Pool,
+	expected: &Job,
+	intent: Option<&str>,
+	force: bool,
+) -> retype_core::error::Result<Admission> {
+	admit(shared, pool, expected, Decision::Confirmed { intent, force })
+}
+
+#[derive(Clone, Copy)]
+enum Decision<'a> {
+	Deadline,
+	Confirmed { intent: Option<&'a str>, force: bool },
+}
+
+fn admit(
+	shared: &Shared,
+	pool: &Pool,
+	expected: &Job,
+	decision: Decision<'_>,
+) -> retype_core::error::Result<Admission> {
+	let _guard = shared.lock_parked_admission()?;
+	let current = shared
+		.jobs
+		.lock()
+		.map_err(|_| retype_core::error::Error::Io(std::io::Error::other("job list lock poisoned")))?
+		.iter()
+		.find(|job| job.id == expected.id)
+		.cloned();
+	let Some(current) = current.filter(|job| job == expected) else {
+		return Ok(Admission::Stale);
+	};
+	let (intent, force) = match decision {
+		Decision::Deadline if is_due(&current) => (None, false),
+		Decision::Confirmed { intent, force }
+			if matches!(current.state, JobState::Pending | JobState::NeedsAttention) =>
+		{
+			(intent, force)
+		}
+		_ => return Ok(Admission::Stale),
+	};
+	if current
+		.parked
+		.as_ref()
+		.and_then(|parked| parked.input_fingerprint.as_ref())
+		.is_none()
+	{
+		return missing_fingerprint(shared, current, decision);
+	}
+	let work = work(&current, intent, force)
+		.ok_or_else(|| retype_core::error::Error::Io(std::io::Error::other("parked job has no intent to queue")))?;
+	let mut queued = current;
+	queued.set_state(JobState::Queued);
+	if let Some(intent) = intent {
+		queued.intent = Some(intent.to_string());
+	}
+	queued.error = None;
+	if let Some(parked) = &mut queued.parked {
+		parked.deadline = None;
+		parked.force = force;
+	}
+	match pool.submit_after(work, || super::watcher::publish_checked(shared, &queued))? {
+		true => Ok(Admission::Queued),
+		false => Ok(Admission::Full),
+	}
+}
+
+fn missing_fingerprint(shared: &Shared, mut job: Job, decision: Decision<'_>) -> retype_core::error::Result<Admission> {
+	let message = "the parked input has no recorded fingerprint; cancel this job, review the file and resubmit it";
+	match decision {
+		Decision::Confirmed { .. } => Err(retype_core::error::Error::Diagnostic(
+			retype_core::error::Diagnostic::global(retype_core::error::Code::JobResumeUnavailable, message),
+		)),
+		Decision::Deadline => {
+			job.set_state(JobState::NeedsAttention);
+			job.error = Some(retype_core::job::JobError::new(
+				retype_core::error::Code::JobResumeUnavailable.to_string(),
+				message,
+			));
+			if let Some(parked) = &mut job.parked {
+				parked.deadline = None;
+			}
+			super::watcher::publish_checked(shared, &job)?;
+			Ok(Admission::Stale)
+		}
+	}
+}
+
+fn is_due(job: &Job) -> bool {
+	job.state == JobState::Pending
+		&& job.parked.as_ref().is_some_and(|parked| {
+			parked.reason != "ask" && parked.deadline.is_some_and(|deadline| deadline <= now_ms())
+		})
 }
 
 pub fn work(job: &Job, intent: Option<&str>, force: bool) -> Option<Work> {

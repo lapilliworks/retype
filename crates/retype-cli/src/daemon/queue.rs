@@ -106,6 +106,13 @@ impl Inner {
 	fn take_next(&mut self) -> Option<Work> {
 		self.immediate.pop_front().or_else(|| self.waiting.pop_front())
 	}
+
+	fn return_front(&mut self, work: Work) {
+		match &work.kind {
+			Kind::Immediate(_) => self.immediate.push_front(work),
+			_ => self.waiting.push_front(work),
+		}
+	}
 }
 
 /// The queue itself: a bounded deque with runners waiting on it. Runners take one
@@ -156,7 +163,7 @@ impl Queue {
 	}
 
 	/// Wait up to `idle` for a job.
-	fn take(&self, idle: Duration) -> Take {
+	fn take(&self, idle: Duration, inflight: &Inflight) -> Take {
 		let deadline = Instant::now() + idle;
 		let Ok(mut inner) = self.inner.lock() else {
 			return Take::Closed;
@@ -164,7 +171,16 @@ impl Queue {
 
 		loop {
 			if let Some(work) = inner.take_next() {
-				return Take::Work(work);
+				return match inflight.begin(&work.id) {
+					Ok(cancellation) => Take::Work(work, cancellation),
+					Err(error) => {
+						eprintln!("retype: queued job {} cannot start: {error}", work.id);
+						inner.return_front(work);
+						inner.closed = true;
+						self.ready.notify_all();
+						Take::Closed
+					}
+				};
 			}
 
 			if inner.closed {
@@ -243,14 +259,17 @@ pub struct Inflight {
 }
 
 impl Inflight {
-	fn begin(&self, id: &JobId) -> Cancellation {
-		let token = Cancellation::default();
-
-		if let Ok(mut tokens) = self.tokens.lock() {
-			tokens.insert(id.clone(), token.clone());
+	fn begin(&self, id: &JobId) -> std::io::Result<Cancellation> {
+		let mut tokens = self
+			.tokens
+			.lock()
+			.map_err(|_| std::io::Error::other("in-flight job lock poisoned"))?;
+		if tokens.contains_key(id) {
+			return Err(std::io::Error::other("the job is already running"));
 		}
-
-		token
+		let token = Cancellation::default();
+		tokens.insert(id.clone(), token.clone());
+		Ok(token)
 	}
 
 	fn end(&self, id: &JobId) {
@@ -309,6 +328,10 @@ impl Pool {
 
 	pub fn dropped(&self) -> u64 {
 		self.queue.dropped()
+	}
+
+	pub fn close_admissions(&self) {
+		self.queue.close();
 	}
 
 	/// Stop everything, waiting and running alike, which is what `daemon stop --now`
@@ -408,7 +431,7 @@ impl Pool {
 
 /// What a runner found when it asked for work.
 enum Take {
-	Work(Work),
+	Work(Work, Cancellation),
 	/// Nothing waiting, and the queue is still open: wait again.
 	Idle,
 	/// The queue is closed and empty, so this runner is done.
@@ -419,10 +442,8 @@ fn serve(shared: &Shared, queue: &Queue, inflight: &Inflight) {
 	// One job per turn: the loop dequeues only after the previous job is done, so
 	// a runner never holds work it is not executing.
 	loop {
-		match queue.take(IDLE) {
-			Take::Work(work) => {
-				let cancellation = inflight.begin(&work.id);
-
+		match queue.take(IDLE, inflight) {
+			Take::Work(work, cancellation) => {
 				match &work.kind {
 					Kind::Rename {
 						root,
@@ -528,6 +549,7 @@ tier = 'converted'
 			primed: AtomicU64::new(0),
 			observed: AtomicU64::new(0),
 			own_renames: Default::default(),
+			parked_admission: std::sync::Mutex::new(()),
 			events: std::sync::Mutex::new(crate::daemon::events::Events::default()),
 			watch_health: Default::default(),
 			policies: Default::default(),
@@ -637,22 +659,79 @@ tier = 'converted'
 		}));
 		assert!(queue.submit(rename(id(3))));
 
-		let first = match queue.take(Duration::ZERO) {
-			Take::Work(work) => work.id,
+		let inflight = Inflight::default();
+		let first = match queue.take(Duration::ZERO, &inflight) {
+			Take::Work(work, _) => work.id,
 			_ => panic!("the queue was empty"),
 		};
-		let second = match queue.take(Duration::ZERO) {
-			Take::Work(work) => work.id,
+		let second = match queue.take(Duration::ZERO, &inflight) {
+			Take::Work(work, _) => work.id,
 			_ => panic!("the queue was empty"),
 		};
-		let third = match queue.take(Duration::ZERO) {
-			Take::Work(work) => work.id,
+		let third = match queue.take(Duration::ZERO, &inflight) {
+			Take::Work(work, _) => work.id,
 			_ => panic!("the queue was empty"),
 		};
 
 		assert_eq!(first, id(2), "the submission skips the waiting renames");
 		assert_eq!(second, id(1), "the automatic jobs keep their own order");
 		assert_eq!(third, id(3));
+	}
+
+	#[test]
+	fn a_dequeued_job_is_already_reachable_for_cancellation() {
+		let queue = Arc::new(Queue::default());
+		let inflight = Arc::new(Inflight::default());
+		let pool = Pool {
+			queue: Arc::clone(&queue),
+			inflight: Arc::clone(&inflight),
+			workers: Mutex::new(Vec::new()),
+		};
+		let work = Work {
+			id: id(1),
+			kind: Kind::Immediate(crate::daemon::immediate::Request {
+				input: PathBuf::from("/photos/a.png"),
+				intent: "webp".to_string(),
+				output: None,
+				force: false,
+			}),
+		};
+		assert!(queue.submit(work.clone()));
+		let Take::Work(taken, cancellation) = queue.take(Duration::ZERO, &inflight) else {
+			panic!("the queued job was not taken");
+		};
+
+		assert_eq!(taken.id, work.id);
+		assert_eq!(pool.cancel(&work.id).0, Cancelled::Running);
+		assert!(cancellation.is_cancelled());
+	}
+
+	#[test]
+	fn an_unavailable_inflight_registry_does_not_start_or_drop_work() {
+		let queue = Queue::default();
+		let inflight = Arc::new(Inflight::default());
+		let broken = Arc::clone(&inflight);
+		assert!(
+			thread::spawn(move || {
+				let _tokens = broken.tokens.lock().unwrap();
+				panic!("inject an in-flight registry failure");
+			})
+			.join()
+			.is_err()
+		);
+		let work = Work {
+			id: id(1),
+			kind: Kind::Immediate(crate::daemon::immediate::Request {
+				input: PathBuf::from("/photos/a.png"),
+				intent: "webp".to_string(),
+				output: None,
+				force: false,
+			}),
+		};
+		assert!(queue.submit(work.clone()));
+
+		assert!(matches!(queue.take(Duration::ZERO, &inflight), Take::Closed));
+		assert_eq!(queue.ids(), vec![work.id]);
 	}
 
 	#[test]
@@ -684,8 +763,8 @@ tier = 'converted'
 			in_admission.recv_timeout(Duration::from_secs(10)).unwrap();
 			let consumer = Arc::clone(&queue);
 			let runner = scope.spawn(move || {
-				let next = consumer.take(Duration::from_secs(10));
-				taken.send(matches!(next, Take::Work(_))).unwrap();
+				let next = consumer.take(Duration::from_secs(10), &Inflight::default());
+				taken.send(matches!(next, Take::Work(_, _))).unwrap();
 			});
 			assert!(observed.recv_timeout(Duration::from_millis(100)).is_err());
 			release.send(()).unwrap();
@@ -712,7 +791,7 @@ tier = 'converted'
 		let result = queue.submit_after(work, || Err(std::io::Error::other("journal failed").into()));
 
 		assert!(result.is_err());
-		assert!(matches!(queue.take(Duration::ZERO), Take::Idle));
+		assert!(matches!(queue.take(Duration::ZERO, &Inflight::default()), Take::Idle));
 	}
 
 	#[test]

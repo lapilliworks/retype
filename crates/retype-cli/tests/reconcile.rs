@@ -191,6 +191,8 @@ fn an_old_timed_ask_is_restored_as_a_confirmation_without_a_deadline() {
 		corrected: None,
 		dropped: Vec::new(),
 		consume: true,
+		force: false,
+		input_fingerprint: None,
 	});
 	let journal = state.join("jobs.jsonl");
 	fs::write(&journal, format!("{}\n", job.to_line().unwrap())).unwrap();

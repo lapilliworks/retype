@@ -510,10 +510,26 @@ fn repair(
 		return None;
 	}
 
-	// The bytes go back under the name their content fits before anything runs, so
-	// the file is not mislabelled while the conversion happens.
+	// Capture the renamed bytes before restoring their source name.
+	let input_fingerprint = match retype_core::safety::Fingerprint::of(target) {
+		Ok(fingerprint) => fingerprint,
+		Err(error) => {
+			eprintln!(
+				"retype: cannot verify {} for automatic repair: {error}",
+				target.display()
+			);
+			return Some(Verdict::Ignore);
+		}
+	};
 	let source = retype_core::convert::restore_source_name(target, stem, format).ok()?;
 	shared.recent.note(&source, target);
+	if !matches!(input_fingerprint.matches(&source), Ok(true)) {
+		eprintln!(
+			"retype: {} changed during restoration; automatic repair did not start",
+			source.display()
+		);
+		return Some(Verdict::Ignore);
+	}
 	let source_metadata = fs::metadata(&source).ok();
 
 	let job = Job {
@@ -542,6 +558,8 @@ fn repair(
 			corrected: Some(correction.text.clone()),
 			dropped: correction.dropped.clone(),
 			consume: true,
+			force: false,
+			input_fingerprint: Some(input_fingerprint),
 		}),
 		consume_source: true,
 	};
@@ -627,6 +645,13 @@ fn park(
 	reason: Reason,
 	parking: Parking<'_>,
 ) -> Verdict {
+	let input_fingerprint = match retype_core::safety::Fingerprint::of(target) {
+		Ok(fingerprint) => fingerprint,
+		Err(error) => {
+			eprintln!("retype: cannot verify {} before parking: {error}", target.display());
+			return Verdict::Ignore;
+		}
+	};
 	let source_path = match retype_core::convert::restore_source_name(target, stem, format) {
 		Ok(source) => source,
 		Err(error) => {
@@ -651,6 +676,13 @@ fn park(
 	// asking for the inverse conversion: `a.webp` back to `a.png` is what parking looks
 	// like from outside, and without this it parks itself again, for ever.
 	shared.recent.note(&source_path, target);
+	if !matches!(input_fingerprint.matches(&source_path), Ok(true)) {
+		eprintln!(
+			"retype: {} changed during restoration; the job was not parked",
+			source_path.display()
+		);
+		return Verdict::Ignore;
+	}
 
 	let state = reason.parked();
 	let deadline = match state {
@@ -731,34 +763,75 @@ fn park(
 				.map(|correction| correction.dropped.clone())
 				.unwrap_or_default(),
 			consume: parking.consume,
+			force: false,
+			input_fingerprint: Some(input_fingerprint),
 		}),
 		consume_source: true,
 	};
 
-	watcher::publish(shared, &job);
-	Verdict::Parked
+	match watcher::publish_checked(shared, &job) {
+		Ok(()) => Verdict::Parked,
+		Err(error) => {
+			eprintln!("retype: cannot record parked job {}: {error}", job.id);
+			Verdict::Ignore
+		}
+	}
 }
 
-/// Cancel a parked job that a later rename replaced.
-pub fn superseded(shared: &Shared, source: &Path) {
+/// Check a parked request against the working snapshot before any output is written.
+pub fn verify_input(job: &Job, actual: &retype_core::safety::Fingerprint) -> retype_core::error::Result<()> {
+	let Some(parked) = &job.parked else {
+		return Ok(());
+	};
+	let expected = parked.input_fingerprint.as_ref().ok_or_else(|| {
+		retype_core::error::Error::Diagnostic(retype_core::error::Diagnostic::global(
+			Code::JobResumeUnavailable,
+			"the parked input has no recorded fingerprint; review the file and submit a new request",
+		))
+	})?;
+	if !expected.same_file_and_content(actual) {
+		return Err(retype_core::error::Error::Diagnostic(
+			retype_core::error::Diagnostic::global(
+				Code::JobInterrupted,
+				format!(
+					"{} changed or was replaced while the job waited; no output was written",
+					job.source.path.display()
+				),
+			),
+		));
+	}
+	Ok(())
+}
+
+/// Cancel a parked job that a later rename replaced while admission is locked.
+pub fn superseded(
+	shared: &Shared,
+	source: &Path,
+	_guard: &std::sync::MutexGuard<'_, ()>,
+) -> retype_core::error::Result<()> {
 	let replaced = {
-		let Ok(jobs) = shared.jobs.lock() else {
-			return;
-		};
+		let jobs = shared
+			.jobs
+			.lock()
+			.map_err(|_| retype_core::error::Error::Io(std::io::Error::other("job list lock poisoned")))?;
 
 		jobs.iter()
-			.find(|job| job.source.path == source && matches!(job.state, JobState::Pending | JobState::NeedsAttention))
+			.filter(|job| {
+				job.source.path == source && matches!(job.state, JobState::Pending | JobState::NeedsAttention)
+			})
 			.map(|job| {
 				let mut superseded = job.clone();
 				superseded.set_state(JobState::Superseded);
 				superseded
 			})
+			.collect::<Vec<_>>()
 	};
 
-	// Published after the lock is released: `publish` takes the same one.
-	if let Some(job) = replaced {
-		watcher::publish(shared, &job);
+	// Published after the job-list lock is released: publication takes it again.
+	for job in replaced {
+		watcher::publish_checked(shared, &job)?;
 	}
+	Ok(())
 }
 
 #[cfg(test)]

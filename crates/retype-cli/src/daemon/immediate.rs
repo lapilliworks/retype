@@ -245,6 +245,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 	};
 
 	let mut started = queued(shared, &prepared, id);
+	started.parked = super::watcher::carried(shared, id);
 	started.set_state(JobState::Running);
 	if let Err(error) = crate::daemon::watcher::publish_checked(shared, &started) {
 		crate::daemon::watcher::report_unrecorded_failure(shared, &started, &error);
@@ -271,6 +272,12 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 			return;
 		}
 	};
+	if let Err(error) = super::park::verify_input(&started, &snapshot.original) {
+		let mut failed = started.clone();
+		failed.fail(JobError::new(error.code().to_string(), error.to_string()));
+		publish(shared, &failed);
+		return;
+	}
 	let undo_record = store.save_with_policy(
 		retype_core::undo::Subject {
 			id: id.clone(),

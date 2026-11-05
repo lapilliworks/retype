@@ -110,11 +110,11 @@ A repaired job adds what it dropped and reaches the user through the same notifi
 
 ## 7. The timer
 
-A `pending` job carries a `deadline`, and expiry runs the job. Expiry is unconditional: it does not depend on a notification, a client, a terminal or a window.
+An ordinary `pending` job carries a `deadline`. Expiry attempts to queue it without requiring a notification, client or terminal. The job starts only after admission is recorded and its input still matches the recorded fingerprint.
 
 - The deadline is `parked + pause`, stored with the job
 - The daemon owns the timer. Nothing else has to be running for it to fire
-- At startup, a `pending` job whose deadline has passed runs immediately, and one whose deadline is ahead has its timer re-armed
+- At startup, a `pending` job whose deadline has passed is eligible for queueing, and one whose deadline is ahead has its timer re-armed. An older record without an input fingerprint waits for review and resubmission
 - `pause = '0s'` is refused at load rather than read as "never" or "at once"
 - The timer is a chance to regret and to act first. It is not a promise that the job will be wanted: refusing it with `jobs cancel` before the deadline is the whole point of having one
 
@@ -134,7 +134,7 @@ retype jobs cancel <id|prefix>
 | `--interactive` | Walk the parked jobs oldest first and read one key each: now, convert where it applies, refuse, skip, quit. Without a terminal it refuses rather than reading a script's stdin |
 | `jobs cancel` | Refuse it. Nothing was written, so nothing is undone |
 
-All four accept a unique prefix. A job that is no longer parked answers `E_JOB_STATE`, so a second `--now` on the same id is an error rather than a second conversion.
+All four accept a unique prefix. A job that is no longer parked answers `E_JOB_STATE`, so a second `--now` on the same id is an error rather than a second conversion. Timer admission, confirmation, cancellation and supersession are coordinated; a queued snapshot is recorded before a worker can take it. The selected correction and any `--force` confirmation are kept in the job record.
 
 ## 9. The file while it is parked
 
@@ -146,7 +146,8 @@ If the original name is occupied or restoration otherwise fails for an explicit 
 - An output whose name appeared during the pause is not overwritten for the job. It fails that output with `E_IO_EXISTS` and the source stays under its own name, because a file the person put there is theirs. `jobs resolve --now --force` is the deliberate override and the only one. A rename-derived job still overwrites an output of the same name
 - A second rename of the same source supersedes the parked job: the chain continues and the park is replaced rather than run later against a file that has moved on
 - A source that is gone when the timer fires ends the job `cancelled` with `E_IO_NOT_FOUND` and the message "the source is gone". Nothing was done and there is nothing left to do
-- A source whose bytes changed during the pause is converted as it is then, not as it was. The job converts a file, not a version of one, and matching a timestamp to decide otherwise would be a guess about what the user meant
+- A source that changed or was replaced during the pause is not converted. Identity and content are checked against the fingerprint recorded before parking; review the file and submit a new request
+- Fingerprinting reads the source before parking and again when work starts. It currently runs in the daemon's request or watcher path, so a large or slow file can delay other activity or exceed the IPC timeout
 
 ## 10. Batches
 

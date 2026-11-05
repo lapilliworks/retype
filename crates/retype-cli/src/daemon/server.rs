@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use retype_core::deferral::Reason;
 use retype_core::error::Code;
-use retype_core::job::{Job, JobError, JobState, Output, OutputState, Source, Tier};
+use retype_core::job::{Job, JobError, JobState, OutputState};
 use retype_core::journal::Journal;
 use retype_core::policy::Policy;
 use retype_core::watches;
@@ -89,6 +89,7 @@ impl Server {
 			primed: AtomicU64::new(0),
 			observed: AtomicU64::new(0),
 			own_renames: Default::default(),
+			parked_admission: Mutex::new(()),
 			events: Mutex::new(crate::daemon::events::Events::default()),
 			watch_health: Default::default(),
 			policies: Default::default(),
@@ -414,6 +415,21 @@ impl Server {
 	}
 
 	fn await_confirmation(&self, request_id: u64, mut job: Job, requested: &str) -> Result<Response> {
+		let fingerprint = match retype_core::safety::Fingerprint::of(&job.source.path) {
+			Ok(fingerprint) => fingerprint,
+			Err(error) => {
+				return Ok(Response::error(
+					request_id,
+					WireError::new(
+						error.code(),
+						format!(
+							"cannot verify {} before confirmation: {error}; no work was submitted",
+							job.source.path.display()
+						),
+					),
+				));
+			}
+		};
 		job.set_state(JobState::NeedsAttention);
 		job.parked = Some(retype_core::job::Parked {
 			reason: Reason::Ask.as_str().to_string(),
@@ -424,6 +440,8 @@ impl Server {
 			corrected: None,
 			dropped: Vec::new(),
 			consume: false,
+			force: false,
+			input_fingerprint: Some(fingerprint),
 		});
 
 		match crate::daemon::watcher::publish_checked(&self.shared, &job) {
@@ -453,6 +471,15 @@ impl Server {
 		if let Some(partial) = self.find(id.as_str()).filter(|job| job.state == JobState::Partial) {
 			return self.cancel_partial(request.id, partial);
 		}
+		let _guard = match self.shared.lock_parked_admission() {
+			Ok(guard) => guard,
+			Err(error) => {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(error.code(), error.to_string()),
+				));
+			}
+		};
 
 		// A parked job never reached the queue, so it is cancelled in the record rather
 		// than by stopping anything, `docs/deferral.md` §8.
@@ -461,8 +488,19 @@ impl Server {
 			.filter(|job| matches!(job.state, JobState::Pending | JobState::NeedsAttention))
 		{
 			let mut cancelled = parked;
-			cancelled.set_state(JobState::Cancelled);
-			crate::daemon::watcher::publish(&self.shared, &cancelled);
+			cancel_unfinished_outputs(&mut cancelled);
+			if let Err(error) = crate::daemon::watcher::publish_checked(&self.shared, &cancelled) {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(
+						error.code(),
+						format!(
+							"cancellation of {id} could not be durably recorded: {error}; \
+							 the job may still run, so check it before retrying"
+						),
+					),
+				));
+			}
 
 			return Ok(Response::ok(
 				request.id,
@@ -474,11 +512,25 @@ impl Server {
 
 		let response = match found {
 			crate::daemon::queue::Cancelled::Queued => {
-				if let Some(work) = queued {
-					self.record_cancelled(&id, &work);
+				let result = match queued {
+					Some(_) => self.record_cancelled(&id),
+					None => Err(retype_core::error::Error::Io(std::io::Error::other(
+						"the removed queue entry was unavailable",
+					))),
+				};
+				match result {
+					Ok(()) => Response::ok(request.id, json!({"id": id, "cancelled": true, "state": "cancelled"}))?,
+					Err(error) => Response::error(
+						request.id,
+						WireError::new(
+							error.code(),
+							format!(
+								"job {id} was removed from the queue, but cancellation could not be durably recorded: \
+								 {error}; check the job after restart"
+							),
+						),
+					),
 				}
-
-				Response::ok(request.id, json!({"id": id, "cancelled": true, "state": "cancelled"}))?
 			}
 			crate::daemon::queue::Cancelled::Running => {
 				Response::ok(request.id, json!({"id": id, "cancelled": true, "state": "cancelling"}))?
@@ -504,7 +556,7 @@ impl Server {
 			}
 		};
 
-		job.set_state(JobState::Cancelled);
+		cancel_unfinished_outputs(&mut job);
 		if let Err(error) = crate::daemon::watcher::persist(&self.shared, &job) {
 			return Ok(Response::error(
 				request_id,
@@ -652,14 +704,26 @@ impl Server {
 			}
 		};
 
-		if !crate::daemon::timer::start_job(&self.pool, &job, intent.as_deref(), force) {
-			return Ok(Response::error(
+		use crate::daemon::timer::Admission;
+		match crate::daemon::timer::start_confirmed(&self.shared, &self.pool, &job, intent.as_deref(), force) {
+			Ok(Admission::Queued) => Ok(Response::ok(request.id, json!({"id": job.id, "state": "queued"}))?),
+			Ok(Admission::Full) => Ok(Response::error(
 				request.id,
 				WireError::new(Code::JobState, "the queue is full, so nothing was started"),
-			));
+			)),
+			Ok(Admission::Stale) => Ok(Response::error(
+				request.id,
+				WireError::new(
+					Code::JobState,
+					"the job changed while it was being resolved; check its current state",
+				),
+			)),
+			Err(error) if error.code() == Code::JobResumeUnavailable => Ok(Response::error(
+				request.id,
+				WireError::new(error.code(), format!("job {} did not start: {error}", job.id)),
+			)),
+			Err(error) => Ok(Response::error(request.id, admission_error(&job.id, error))),
 		}
-
-		Ok(Response::ok(request.id, json!({"id": job.id, "state": "queued"}))?)
 	}
 
 	/// Stop, unless a supervisor would only start us again.
@@ -706,6 +770,7 @@ impl Server {
 	/// Shared with the signal path, which cannot send itself a request: a `SIGTERM` is a
 	/// stop request whether or not a client made it, `docs/dev/architecture/ipc.md` §2.
 	pub fn stop(&mut self, now: bool) -> usize {
+		self.pool.close_admissions();
 		let cancelled = match now {
 			true => {
 				let cancelled = self.cancel_everything();
@@ -731,7 +796,12 @@ impl Server {
 		let (running, waiting) = self.pool.stop_all();
 
 		for work in &waiting {
-			self.record_cancelled(&work.id, work);
+			if let Err(error) = self.record_cancelled(&work.id) {
+				eprintln!(
+					"retype: cancellation of queued job {} was not recorded: {error}",
+					work.id
+				);
+			}
 		}
 
 		running.len() + waiting.len()
@@ -807,51 +877,13 @@ impl Server {
 			.cloned()
 	}
 
-	/// A queued job that never started still gets a record, so its id is answerable
-	/// afterwards.
-	fn record_cancelled(&self, id: &retype_core::job::JobId, work: &crate::daemon::queue::Work) {
-		use crate::daemon::queue::Kind;
-
-		let (source, target, consume_source) = match &work.kind {
-			Kind::Rename { source, target, .. } => (source.clone(), target.clone(), true),
-			Kind::Immediate(request) => (request.input.clone(), request.input.clone(), false),
-			Kind::Deferred { source, .. } => (source.clone(), source.clone(), true),
-		};
-
-		let job = Job {
-			id: id.clone(),
-			created: retype_core::job::now_ms(),
-			updated: retype_core::job::now_ms(),
-			source: Source {
-				path: source,
-				format: String::new(),
-				size: 0,
-				mtime_ns: 0,
-			},
-			intent: None,
-			outputs: vec![Output {
-				path: target,
-				format: String::new(),
-				state: OutputState::Failed,
-				bytes: None,
-				tier: Tier::Converted,
-				identity: None,
-				stderr: None,
-				error: Some(JobError {
-					code: Code::JobCancelled.to_string(),
-					message: "cancelled before it started".to_string(),
-				}),
-			}],
-			state: JobState::Cancelled,
-			backend: None,
-			engine: None,
-			machine: self.machine.clone(),
-			error: None,
-			parked: None,
-			consume_source,
-		};
-
-		crate::daemon::watcher::publish(&self.shared, &job);
+	/// Preserve the admitted request when a queued job is cancelled before starting.
+	fn record_cancelled(&self, id: &retype_core::job::JobId) -> retype_core::error::Result<()> {
+		let mut job = self.find(id.as_str()).ok_or_else(|| {
+			retype_core::error::Error::Io(std::io::Error::other("the queued job has no admission record"))
+		})?;
+		cancel_unfinished_outputs(&mut job);
+		crate::daemon::watcher::publish_checked(&self.shared, &job)
 	}
 
 	/// Registrations and the separately observed state of each installed watcher.
@@ -1253,6 +1285,19 @@ impl Server {
 		};
 
 		Ok(response)
+	}
+}
+
+fn cancel_unfinished_outputs(job: &mut Job) {
+	job.set_state(JobState::Cancelled);
+	for output in &mut job.outputs {
+		if matches!(output.state, OutputState::Pending | OutputState::Running) {
+			output.state = OutputState::Skipped;
+			output.error = Some(JobError::new(
+				Code::JobCancelled.to_string(),
+				"cancelled before this output started",
+			));
+		}
 	}
 }
 
