@@ -178,13 +178,37 @@ pub fn feed_with(correlator: &mut Correlator, batch: &Batch, own: &mut Vec<Sight
 	coalesce(facts)
 }
 
-/// Record the identity of every file under a root, so a file that existed
-/// before the daemon started can still be correlated by identity when it is
-/// renamed. Returns how many files were primed.
+/// The initial scan's progress and its first error, if it could not inspect the tree.
+#[derive(Debug)]
+pub struct PrimeReport {
+	pub primed: usize,
+	pub error: Option<String>,
+}
+
+/// Record the identities needed to recognise renames of existing files.
 ///
-/// Directories in the ignore list are pruned, matching `docs/watch.md` §4. A
-/// directory's own `patterns` do not prune priming: an ignored file is still
-/// primed, because a later rename can make it interesting.
+/// Directories in the ignore list are pruned. A directory's own `patterns` do
+/// not prune priming: an ignored file can later be renamed into scope.
+pub fn prime_checked(
+	correlator: &mut Correlator,
+	root: &Path,
+	recursive: bool,
+	admit: impl FnMut(&Path) -> bool,
+	stop: impl FnMut() -> bool,
+) -> PrimeReport {
+	let mut first_error = None;
+	let (_, primed) = scan(correlator, root, recursive, admit, stop, |path, error| {
+		if first_error.is_none() {
+			first_error = Some(format!("{}: {error}", path.display()));
+		}
+	});
+	PrimeReport {
+		primed,
+		error: first_error,
+	}
+}
+
+/// Record identities and return how many files were primed.
 pub fn prime(
 	correlator: &mut Correlator,
 	root: &Path,
@@ -192,7 +216,7 @@ pub fn prime(
 	admit: impl FnMut(&Path) -> bool,
 	stop: impl FnMut() -> bool,
 ) -> usize {
-	scan(correlator, root, recursive, admit, stop).1
+	prime_checked(correlator, root, recursive, admit, stop).primed
 }
 
 /// Record the identity of every file under a root and return the renames the tree
@@ -210,7 +234,7 @@ pub fn rescan(
 	admit: impl FnMut(&Path) -> bool,
 	stop: impl FnMut() -> bool,
 ) -> (Vec<RenameFact>, usize) {
-	scan(correlator, root, recursive, admit, stop)
+	scan(correlator, root, recursive, admit, stop, |_, _| {})
 }
 
 /// Whether the platform dropped events in this batch.
@@ -225,70 +249,93 @@ fn scan(
 	correlator: &mut Correlator,
 	root: &Path,
 	recursive: bool,
-	mut admit: impl FnMut(&Path) -> bool,
-	mut stop: impl FnMut() -> bool,
+	admit: impl FnMut(&Path) -> bool,
+	stop: impl FnMut() -> bool,
+	on_error: impl FnMut(&Path, std::io::Error),
 ) -> (Vec<RenameFact>, usize) {
-	let mut primed = 0;
-	let mut facts = Vec::new();
+	let mut scanner = Scanner {
+		correlator,
+		admit,
+		stop,
+		on_error,
+		primed: 0,
+		facts: Vec::new(),
+	};
+	scanner.walk(root, recursive);
+	(coalesce(dedupe(scanner.facts)), scanner.primed)
+}
 
-	fn walk(
-		correlator: &mut Correlator,
-		directory: &Path,
-		recursive: bool,
-		admit: &mut impl FnMut(&Path) -> bool,
-		stop: &mut impl FnMut() -> bool,
-		primed: &mut usize,
-		facts: &mut Vec<RenameFact>,
-	) {
-		if stop() {
+struct Scanner<'a, Admit, Stop, OnError> {
+	correlator: &'a mut Correlator,
+	admit: Admit,
+	stop: Stop,
+	on_error: OnError,
+	primed: usize,
+	facts: Vec<RenameFact>,
+}
+
+impl<Admit, Stop, OnError> Scanner<'_, Admit, Stop, OnError>
+where
+	Admit: FnMut(&Path) -> bool,
+	Stop: FnMut() -> bool,
+	OnError: FnMut(&Path, std::io::Error),
+{
+	fn walk(&mut self, directory: &Path, recursive: bool) {
+		if (self.stop)() {
 			return;
 		}
 
 		let entries = match fs::read_dir(directory) {
 			Ok(entries) => entries,
-			Err(_) => return,
+			Err(error) => {
+				(self.on_error)(directory, error);
+				return;
+			}
 		};
 
-		for entry in entries.flatten() {
-			if stop() {
+		for entry in entries {
+			if (self.stop)() {
 				return;
 			}
 
+			let entry = match entry {
+				Ok(entry) => entry,
+				Err(error) => {
+					(self.on_error)(directory, error);
+					continue;
+				}
+			};
 			let path = entry.path();
-			let Ok(meta) = fs::symlink_metadata(&path) else {
-				continue;
+			let meta = match fs::symlink_metadata(&path) {
+				Ok(meta) => meta,
+				Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+				Err(error) => {
+					(self.on_error)(&path, error);
+					continue;
+				}
 			};
 
 			if meta.is_dir() {
-				if recursive && admit(&path) {
-					walk(correlator, &path, true, admit, stop, primed, facts);
+				if recursive && (self.admit)(&path) {
+					self.walk(&path, true);
 				}
 				continue;
 			}
 
-			if !meta.is_file() || !admit(&path) {
+			if !meta.is_file() || !(self.admit)(&path) {
 				continue;
 			}
 
 			if let Some(sighting) = sighting(&path) {
-				if let Some(fact) = correlator.observe(sighting) {
-					facts.push(fact);
+				if let Some(fact) = self.correlator.observe(sighting) {
+					self.facts.push(fact);
 				}
-				*primed += 1;
+				self.primed += 1;
+			} else if path.exists() {
+				(self.on_error)(&path, std::io::Error::other("could not read file identity"));
 			}
 		}
 	}
-
-	walk(
-		correlator,
-		root,
-		recursive,
-		&mut admit,
-		&mut stop,
-		&mut primed,
-		&mut facts,
-	);
-	(coalesce(dedupe(facts)), primed)
 }
 
 /// A directory rename changes every path beneath it without per-file events, so
@@ -463,6 +510,36 @@ mod tests {
 		let facts = feed_identity(&mut correlator, &batch(vec![rename(RenameMode::Any, &[&target])]));
 
 		assert_eq!(sources(&facts), vec![(source, target)]);
+	}
+
+	#[test]
+	fn checked_priming_reports_an_unreadable_root() {
+		let dir = dir();
+		let missing = dir.path().join("missing");
+		let report = prime_checked(&mut fresh(), &missing, true, |_| true, || false);
+
+		assert_eq!(report.primed, 0);
+		assert!(report.error.unwrap().contains("missing"));
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn checked_priming_reports_a_subdirectory_it_cannot_read() {
+		use std::os::unix::fs::PermissionsExt;
+
+		let dir = dir();
+		let blocked = dir.path().join("blocked");
+		fs::create_dir(&blocked).unwrap();
+		fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+		let inaccessible = fs::read_dir(&blocked).is_err();
+		let report = prime_checked(&mut fresh(), dir.path(), true, |_| true, || false);
+		fs::set_permissions(&blocked, fs::Permissions::from_mode(0o700)).unwrap();
+
+		if inaccessible {
+			assert!(report.error.unwrap().contains("blocked"));
+		} else {
+			eprintln!("SKIPPED: this user can read a directory with no permissions");
+		}
 	}
 
 	#[test]
