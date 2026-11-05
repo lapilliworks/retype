@@ -91,16 +91,17 @@ Per-output state is one of `pending`, `running`, `done`, `failed`. A `partial` j
 
 A record is a full snapshot of the job at that transition, so replay is last-wins per id and no record depends on another. Snapshots are affordable because a job has a handful of transitions. Per-output publication checkpoints can carry a `done` output inside a `running` job; only the latest top-level job state establishes terminal completion.
 
-Initial publication holds the job-list mutex across journal append, synchronization and cache registration. IPC readers wait through that interval rather than returning `E_JOB_NOT_FOUND` for an already journaled job. Emit the event only after the snapshot is registered in the job list. A failed checkpoint is not published to the cache or event ring.
+Initial publication holds the job-list mutex across journal append, synchronization and cache registration. IPC readers wait through that interval rather than returning `E_JOB_NOT_FOUND` for an already journaled job. Emit the event only after the snapshot is registered in the job list. A failed running checkpoint can produce an explicitly non-durable failure in memory, but it does not start conversion.
 
 ## 4. Journal rules
 
 - Records are appended, never edited in place
 - Sync every appended snapshot and its parent directory where supported, including running output checkpoints and partial outcomes
+- After a journal write or sync failure, refuse subsequent appends until reopening and recovery rather than extending a possibly torn record
 - Require a durable recovery manifest and completion snapshot before source disposal
 - Line order defines time; wall-clock fields are informational
 - A trailing line that does not parse is a torn write and is dropped silently
-- A non-trailing line that does not parse is corruption: the file is moved to `jobs.jsonl.corrupt.<ts>`, a new journal is started, and the event is reported once. Records after the damage are still replayed, because losing jobs that are intact on disk would be a second failure on top of the first
+- A non-trailing line that does not parse is corruption: the file is copied without replacement to `jobs.jsonl.corrupt.<ts>`, then readable records are synced into a replacement journal. The damaged original remains in place until the replacement is ready; the event is reported once and records after the damage are still replayed
 - A line whose `v` is not the supported identifier is skipped and reported once, so a downgrade remains usable
 - Adding fields is compatible within an identifier. Removing or renaming a field requires a new identifier, and the previous one stays readable for one major release
 
