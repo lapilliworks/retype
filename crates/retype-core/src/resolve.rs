@@ -130,6 +130,15 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 		for token in &tokens {
 			let token = desugar(token);
 
+			if token.name == "keep" {
+				if token.value.is_some() {
+					problems.push(error(Code::ValueUnexpected, "'keep' takes no value", token.span));
+				} else {
+					meta.keep = true;
+				}
+				continue;
+			}
+
 			let Some(found) = registry.resolve(&token.name) else {
 				problems.push(unknown_name(&token, registry));
 				continue;
@@ -252,9 +261,10 @@ pub fn resolve(intent: &Intent, source: Source<'_>, registry: &Registry) -> Resu
 			});
 		}
 
+		let keep_source = format == source.format && ops.is_empty();
 		groups.push(Group {
 			format,
-			keep_source: group.format == source.format && ops.is_empty(),
+			keep_source,
 			ops,
 		});
 	}
@@ -309,7 +319,10 @@ pub fn intent_of(registry: &Registry, source_name: &str, target_name: &str) -> R
 	// A rename that asks for the format the file already has is a rename, not a
 	// request: `photo.heic` to `photo.HEIC` should not raise `E_NOOP` at someone
 	// who only changed the case.
-	if intent.groups.len() == 1 && intent.groups[0].tokens.is_empty() && intent.groups[0].format == source_format {
+	if intent.groups.len() == 1
+		&& intent.groups[0].tokens.is_empty()
+		&& registry.canonical_format(&intent.groups[0].format) == Some(source_format)
+	{
 		return Ok(None);
 	}
 
@@ -592,6 +605,7 @@ aliases = ['tar.gz']
 	#[test]
 	fn a_rename_that_asks_for_the_same_format_carries_nothing() {
 		assert!(intent_of(&registry(), "photo.jpeg", "photo.jpg").unwrap().is_none());
+		assert!(intent_of(&registry(), "photo.jpg", "photo.jpeg").unwrap().is_none());
 	}
 
 	#[test]
@@ -746,6 +760,28 @@ aliases = ['tar.gz']
 
 		assert!(resolved.groups[0].keep_source);
 		assert!(!resolved.groups[1].keep_source);
+	}
+
+	#[test]
+	fn keep_is_a_job_wide_control_in_any_output_group() {
+		for text in ["webp+keep,png", "webp,png+keep", "webp+KEEP,png+ask"] {
+			let resolved = resolve_text(text, image("jpg")).unwrap();
+			assert!(resolved.meta.keep, "{text}");
+			assert!(
+				resolved
+					.groups
+					.iter()
+					.all(|group| group.ops.iter().all(|op| op.key != "keep"))
+			);
+		}
+		assert_eq!(codes("webp+keep=yes", image("jpg")), vec![Code::ValueUnexpected]);
+	}
+
+	#[test]
+	fn an_alias_of_the_source_format_is_also_a_kept_source_group() {
+		let resolved = resolve_text("jpeg,webp", image("jpg")).unwrap();
+		assert!(resolved.groups[0].keep_source);
+		assert_eq!(resolved.groups[0].format, "jpg");
 	}
 
 	#[test]

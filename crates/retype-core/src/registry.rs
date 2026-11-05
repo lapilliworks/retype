@@ -382,6 +382,7 @@ impl Registry {
 			Some(_) => {}
 		}
 
+		problems.extend(reserved_keep_declarations(&over, label));
 		problems.extend(shadowing(&base, &over, label, &mut warnings));
 
 		if problems.is_empty() {
@@ -501,6 +502,16 @@ impl Registry {
 		for (key, entry) in &document.ops {
 			let op = entry.view(key);
 
+			if key.eq_ignore_ascii_case("keep")
+				|| op.name.eq_ignore_ascii_case("keep")
+				|| op.aliases.iter().any(|alias| alias.eq_ignore_ascii_case("keep"))
+			{
+				problems.push(fail(
+					Code::CfgNameClash,
+					format!("{label}: 'keep' is reserved for the job-wide keep-original control"),
+				));
+			}
+
 			if !is_name(&op.name) || !op.aliases.iter().all(|alias| is_name(alias)) {
 				problems.push(fail(
 					Code::CfgValidation,
@@ -581,6 +592,13 @@ impl Registry {
 		let mut presets = BTreeMap::new();
 		for (key, entry) in &document.presets {
 			let preset = entry.view(key);
+
+			if key.eq_ignore_ascii_case("keep") || preset.name.eq_ignore_ascii_case("keep") {
+				problems.push(fail(
+					Code::CfgNameClash,
+					format!("{label}: 'keep' is reserved for the job-wide keep-original control"),
+				));
+			}
 
 			if !is_name(&preset.name) {
 				problems.push(fail(
@@ -988,6 +1006,16 @@ impl Registry {
 					}
 				};
 
+				if token.name == "keep" {
+					problems.push(fail(
+						Code::CfgValidation,
+						format!(
+							"{label}: preset '{}' uses 'keep', which is control rather than conversion",
+							preset.key
+						),
+					));
+					continue;
+				}
 				match self.resolve(&token.name) {
 					None => problems.push(fail(
 						Code::CfgValidation,
@@ -1438,8 +1466,40 @@ fn collect_format_names(formats: &BTreeMap<String, Format>) -> Vec<(String, Stri
 /// disagree about the same intent string, `docs/config.md` §2.
 const OPERATION_BEHAVIOUR: &[&str] = &["argv", "say"];
 
-/// What a user file may not do: redefine an operation's identity, or replace a
-/// shipped preset without being told.
+/// Reserve the job-wide control before removed entries are pruned.
+fn reserved_keep_declarations(document: &toml::Value, label: &str) -> Vec<Error> {
+	let mut problems = Vec::new();
+	for section in ["ops", "presets"] {
+		let Some(entries) = document.get(section).and_then(toml::Value::as_table) else {
+			continue;
+		};
+		for (key, entry) in entries {
+			let reserved = key.eq_ignore_ascii_case("keep")
+				|| entry
+					.get("name")
+					.and_then(toml::Value::as_str)
+					.is_some_and(|name| name.eq_ignore_ascii_case("keep"))
+				|| entry
+					.get("aliases")
+					.and_then(toml::Value::as_array)
+					.is_some_and(|aliases| {
+						aliases
+							.iter()
+							.filter_map(toml::Value::as_str)
+							.any(|alias| alias.eq_ignore_ascii_case("keep"))
+					});
+			if reserved {
+				problems.push(fail(
+					Code::CfgNameClash,
+					format!("{label}: 'keep' is reserved for the job-wide keep-original control"),
+				));
+			}
+		}
+	}
+	problems
+}
+
+/// Check operation identity changes and replacements of shipped presets.
 fn shadowing(base: &toml::Value, over: &toml::Value, label: &str, warnings: &mut Vec<Diagnostic>) -> Vec<Error> {
 	let mut problems = Vec::new();
 
@@ -3080,6 +3140,33 @@ tokens = ['cap={value}', 'quality90']
 	fn a_preset_may_not_smuggle_a_control_token() {
 		let text = [WEBP, "[presets.look]\ntokens = ['ask']\n"].concat();
 		assert_eq!(config(&text).unwrap_err(), [Code::CfgValidation]);
+	}
+
+	#[test]
+	fn keep_cannot_be_redeclared_as_an_operation_or_preset() {
+		for declaration in [
+			"[ops.keep]\nslot = 1\nformats = ['*']\n",
+			"[ops.other]\nname = 'keep'\nslot = 1\nformats = ['*']\n",
+			"[ops.other]\naliases = ['keep']\nslot = 1\nformats = ['*']\n",
+			"[presets.keep]\ntokens = ['quality80']\n",
+			"[presets.other]\nname = 'keep'\ntokens = ['quality80']\n",
+		] {
+			let text = [HEADER, declaration].concat();
+			assert!(codes(&text).contains(&Code::CfgNameClash), "{declaration}");
+		}
+		let disabled = "version = 'retype-config-1'\n[ops.keep]\nenabled = false\n";
+		assert!(
+			Registry::with_user(disabled, "user.toml")
+				.unwrap_err()
+				.codes()
+				.contains(&Code::CfgNameClash)
+		);
+	}
+
+	#[test]
+	fn a_preset_cannot_hide_the_keep_control() {
+		let text = [WEBP, "[presets.look]\ntokens = ['keep']\n"].concat();
+		assert!(config(&text).unwrap_err().contains(&Code::CfgValidation));
 	}
 
 	#[test]

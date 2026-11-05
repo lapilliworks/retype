@@ -104,7 +104,7 @@ parse(source, new_name) -> Job | Diagnosis
 3. Strip a final `+` and record the `ask` meta token. A `+` in any other position MUST be followed by a non-empty token.
 4. Split on `,`. An empty group is `E_GROUP_EMPTY`.
 5. Split each group on `+`. Element 0 is the format; the remainder are tokens.
-6. For each token: split at `=` when present and require an exact name match. Otherwise resolve the longest registered name prefix; the remainder is the value. No name prefix is `E_NAME_UNKNOWN`.
+6. For each token: recognise the job-wide `keep` control, or split at `=` when present and require an exact registered name. Otherwise resolve the longest registered name prefix; the remainder is the value. No name prefix is `E_NAME_UNKNOWN`.
 7. Validate the value against its class and bounds, then against the duplicate and exclusive rules in 8.
 8. Check applicability against the group's format and the pair's backend support.
 9. When both `ask` and `now` are present, keep `ask`, drop `now`, and record a warning with code `E_META_CONFLICT`. A prompt can be dismissed with one key; a refused rename has to be performed again, so the recoverable reading wins
@@ -217,7 +217,7 @@ Rules:
 - C3 Groups retain written order
 - C4 Values are printed in the form produced by their class, without leading zeros. A duration prints in the tagged form with zero units omitted, so 3630 s prints as `1h30s` and 3600 s prints as `1h`
 - C5 A token is printed without `=` when reparsing the compact form yields an identical token, and with `=` otherwise
-- C6 `ask` and `now` print as `ask` and `now`, never as `+` or `!`
+- C6 `keep`, `ask` and `now` print on the first group as `+keep`, `+ask` and `+now`, never as the trailing `+` or `!` shorthands
 - C7 Nothing is printed for the implicit conversion of a group
 
 The `slot` an operation declares is a presentation category: it orders controls in the editor and rows in `retype list`, and it decides nothing about a conversion. Two operations that interact may not share one, so that a generated interface still presents them in a workable order.
@@ -238,9 +238,11 @@ Because order is the user's, two spellings that differ only in the order of comm
 
 A group denotes one output file.
 
-- A group whose format equals the source format and which carries no tokens means: keep the source file unchanged. No conversion runs for it
-- A group whose format equals the source format and which carries tokens means: re-encode the source
+- A group whose format equals the source format and which carries no conversion operations means: keep the source file unchanged. No conversion runs for it
+- A group whose format equals the source format and which carries conversion operations means: re-encode the source
 - Every other group produces a converted file
+- `+keep` applies to the whole job regardless of which group carries it. It keeps the original visible independently of undo, preserving the exact original filename, format alias and case
+- `keep` is reserved for this control; user operations and presets cannot redeclare it or hide it in a preset
 
 Derived names:
 
@@ -288,9 +290,7 @@ One code is a warning rather than a diagnosis: `E_META_CONFLICT`, when an intent
 
 ## 13. Application on diagnosis
 
-The job MUST NOT run. The source file MUST be restored to its source format name, and the intent string and diagnosis MUST be journalled so an editor can reopen them unmodified.
-
-No path exists in which a file carries a format it does not contain.
+The job MUST NOT run as written. Retype restores the original name when it can do so without overwriting another file, and reports a failure when it cannot. A user-space watcher observes the rename after the operating system performs it, so it cannot prevent a temporary mismatch or recover a destination overwritten before observation.
 
 ## 14. Conformance
 
@@ -316,6 +316,7 @@ Valid, with canonical form:
 | `photo.webp+q80` | `photo.webp+quality80` | Alias expanded |
 | `photo.png,webp` | `photo.png,webp` | Two files from one source |
 | `photo.jpg,png` | `photo.jpg,png` | Keep the JPEG, add a PNG |
+| `photo.png+keep` from `photo.jpg` | `photo.png+keep` | Keep the original JPEG, add a PNG |
 | `photo.jpg,jpg+q60,jpg+q90` | `photo.jpg,jpg+quality60,jpg+quality90` | Kept plus `photo-quality60.jpg`, `photo-quality90.jpg` |
 | `clip.mp4+1080p+mute` | `clip.mp4+cap1080+mute` | Downscale only, drop audio |
 | `clip.mp4+mute!` | `clip.mp4+mute+now` | No confirmation |
