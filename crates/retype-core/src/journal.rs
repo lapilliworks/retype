@@ -110,7 +110,11 @@ impl Journal {
 		let cutoff = now_ms() - horizon.as_millis() as i64;
 		let total = replay.jobs.len();
 
-		let kept: Vec<Job> = replay.jobs.into_iter().filter(|job| job.updated >= cutoff).collect();
+		let kept: Vec<Job> = replay
+			.jobs
+			.into_iter()
+			.filter(|job| job.updated >= cutoff || is_unresolved(job.state))
+			.collect();
 		let dropped = total - kept.len();
 
 		self.rewrite(&kept)?;
@@ -174,6 +178,13 @@ impl Journal {
 
 		Ok(())
 	}
+}
+
+fn is_unresolved(state: crate::job::JobState) -> bool {
+	!matches!(
+		state,
+		crate::job::JobState::Done | crate::job::JobState::Cancelled | crate::job::JobState::Superseded
+	)
 }
 
 /// Remove the incomplete line at the end of the journal.
@@ -321,6 +332,7 @@ mod tests {
 			// Four records for one job, plus an old job of its own: enough
 			// supersession to earn a rewrite, and one record old enough to drop.
 			let mut old = job();
+			old.state = JobState::Done;
 			old.updated = now_ms() - 20 * month;
 			journal.append(&old).unwrap();
 
@@ -344,6 +356,38 @@ mod tests {
 		let (_, replay) = Journal::open(&path).unwrap();
 		assert_eq!(replay.jobs.len(), 1);
 		assert!(journal.path().exists());
+	}
+
+	#[test]
+	fn compaction_keeps_unresolved_jobs_past_the_history_horizon() {
+		let (_dir, path) = path();
+		let (mut journal, _) = Journal::open(&path).unwrap();
+		let mut expected = Vec::new();
+		for state in [
+			JobState::Pending,
+			JobState::NeedsAttention,
+			JobState::Queued,
+			JobState::Running,
+			JobState::Partial,
+			JobState::Failed,
+		] {
+			let mut unresolved = job();
+			unresolved.state = state;
+			unresolved.updated = now_ms() - 60 * 24 * 60 * 60 * 1_000;
+			expected.push(unresolved.id.clone());
+			journal.append(&unresolved).unwrap();
+		}
+		let current = job();
+		for _ in 0..10 {
+			journal.append(&current).unwrap();
+		}
+
+		let compact = journal.compact(Duration::from_secs(7 * 24 * 60 * 60)).unwrap();
+		let kept = compact.kept.expect("the file earned a rewrite");
+		assert_eq!(compact.dropped, 0);
+		for id in expected {
+			assert!(kept.iter().any(|job| job.id == id), "unresolved job {id} was dropped");
+		}
 	}
 
 	#[test]

@@ -309,7 +309,7 @@ Time-based retention starts when a job completes, including after a successful r
 
 The current quota is a size bound. No `on_overflow` setting automatically removes an unexpired record; if a new record does not fit, the conversion currently proceeds with the source retained and no new undo record. The planned soft-goal admission modes and an interactive overflow decision are not yet implemented.
 
-The journal outlives them. It is compacted at startup when it earns it, dropping records past twice the retention with a floor of thirty days, `docs/dev/architecture/state.md` §4.
+The journal outlives them. It is compacted at startup when it earns it, dropping resolved records past twice the retention with a floor of thirty days. Unresolved jobs remain in the journal beyond that horizon, `docs/dev/architecture/state.md` §4.
 
 ## 10. Deferral
 
