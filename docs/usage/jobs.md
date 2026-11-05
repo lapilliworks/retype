@@ -58,6 +58,8 @@ One record restores one job. Undoing the same job twice is a refusal, not a seco
 
 The settings are host-level in configuration; a folder cannot set them, so a repository cannot decide every contributor's disk budget. They are read from the `[undo]` table in [Configuration schema](../reference/config.md).
 
+Unexpired records are not automatically evicted. If a new record does not fit, this build currently retains the source and converts without a new undo record; `ask` does not yet prompt.
+
 Undo is also the button on the notification a watched folder produces, and it reverses every job of that batch that has a record. [Watching a folder](watch.md) describes the batching that makes it one notification.
 
 ## What made this file

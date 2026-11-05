@@ -166,7 +166,7 @@ Resume accepts partial jobs and failed jobs marked `E_JOB_INTERRUPTED`. Its inpu
 
 Resume skips only outputs whose recorded identity, size and digest still match. Any other occupied path is refused without `--force`, including paths whose platform identity is unavailable. `--force` reruns outputs but cannot override protection of the job's input. A successful resume retains its backup for normal undo retention and leaves any live source in place.
 
-Unfinished records are pinned against both quota eviction and expiry. A successful completion releases the pin, records `retention_started` in Unix milliseconds and retains the backup. A successful resume starts a new retention period; a failed or interrupted recovery leaves its record pinned. Records without a known retention start are not removed by the age sweep, although the current quota overflow policy can still evict unpinned records.
+Unfinished records are pinned against both quota eviction and expiry. A successful completion releases the pin, records `retention_started` in Unix milliseconds and retains the backup. A successful resume starts a new retention period; a failed or interrupted recovery leaves its record pinned. Records without a known retention start are not assumed expired.
 
 ## 5.3 Supersession
 
@@ -215,19 +215,9 @@ Source removal first atomically claims the live path into a persistent recovery 
 
 ## 5.5 Quota and overflow
 
-The store is bounded by age first and by size second. A record is kept only when it fits, and a conversion is never blocked or delayed by the bookkeeping: the answer can be "no record", and the conversion proceeds.
+The current store is bounded by age and size. Only unpinned records with a known retention start beyond the configured period are eligible for automatic removal. If the remaining records and the new source do not fit within `quota`, no record is removed and the conversion currently proceeds with its source retained and no new undo record. The `ask`, `evict` and `skip` settings do not override minimum retention; interactive overflow decisions and soft-goal admission are not yet implemented.
 
-Order of decisions, for a record that costs `s` bytes:
-
-1. Consider only unpinned records for expiry or eviction; unfinished recovery records are never discarded
-2. If the records kept plus `s` fit within `quota`, keep the record
-3. If `s` alone is larger than `quota`, keep no record, evict nothing for it, and retain the live original
-4. Otherwise `on_overflow` decides:
-   - `evict` drops the oldest eligible unpinned records until the new one fits; if pinned records prevent that, keep no new record and retain the original
-   - `skip` keeps no record and retains the original
-   - `ask` asks; until notifications exist this build reads it as `evict` and says so once at startup
-
-Accounting is retained source bytes, `docs/reference/config.md` §9. Quota decisions, eviction and record creation are one locked transaction. Every record selected for eviction is leased first, then the new record is written, then the old ones are removed, so a failed save leaves the old records in place rather than an empty store and no new record. A process mutex and an operating-system file lock serialize store writers, including undo clients. Pins are persisted in the manifest and survive process death.
+Accounting is retained source bytes, `docs/reference/config.md` §9. Quota decisions, expiry and record creation are one locked transaction. Every record selected for expiry is leased first, then the new record is written, then the old ones are removed, so a failed save leaves the old records in place rather than an empty store and no new record. A process mutex and an operating-system file lock serialize store writers, including undo clients. Pins are persisted in the manifest and survive process death.
 
 ## 6. Startup reconciliation
 

@@ -305,9 +305,9 @@ on_overflow = 'ask'
 
 `retention` is read as the grammar's duration class, so it is spelled the way an intent spells one: `w`, `d`, `h`, `m` and `s`, in that order, and a unit may be skipped. Months are not a unit, because a month is not a fixed number of seconds. `quota` is read as the size class, so `gb` is decimal and `gib` binary, `docs/reference/intents.md` §7.
 
-Time-based retention starts when a job completes, including after a successful resume. An older record without a known retention start is not removed by the age sweep; the quota overflow policy can still evict unpinned records earlier. Unfinished recovery records remain pinned against both expiry and quota eviction, including across restart. A record also stays pinned when a failed disposal cannot prove the live source is still the original, because the backup may then be the only copy. Disabling undo, insufficient quota, or unexpected backup failure retains the live original rather than silently permitting permanent removal, `docs/dev/architecture/state.md` §5.
+Time-based retention starts when a job completes, including after a successful resume. An older record without a known retention start is not assumed expired. Unfinished recovery records remain pinned against both expiry and quota eviction, including across restart. A record also stays pinned when a failed disposal cannot prove the live source is still the original, because the backup may then be the only copy. Disabling undo, insufficient quota, or unexpected backup failure retains the live original rather than silently permitting permanent removal, `docs/dev/architecture/state.md` §5.
 
-The quota is a second, independent bound: retention bounds records by age and the quota bounds them by size. `ask` is the intended answer and behaves as `evict` until notifications exist to ask with.
+The current quota is a size bound. No `on_overflow` setting automatically removes an unexpired record; if a new record does not fit, the conversion currently proceeds with the source retained and no new undo record. The planned soft-goal admission modes and an interactive overflow decision are not yet implemented.
 
 The journal outlives them. It is compacted at startup when it earns it, dropping records past twice the retention with a floor of thirty days, `docs/dev/architecture/state.md` §4.
 
