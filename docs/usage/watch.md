@@ -14,7 +14,7 @@ retype watching                         # list what is registered
 retype unwatch ~/Pictures               # stop watching it
 ```
 
-`retype watch` registers and returns; it does not start the daemon. If the daemon is stopped, a rename can change an extension without converting the bytes. Status lists registered paths but does not yet verify that each watcher is active. Allow time for registration and the initial scan, inspect the daemon log for watch errors, and test with a disposable copy.
+`retype watch` registers and returns; it does not start the daemon. If the daemon is stopped, a rename can change an extension without converting the bytes. In `daemon status`, wait until the directory says `ready`: the filesystem watcher is installed and its initial identity scan completed. `pending`, `starting`, `stopping`, `paused`, `unavailable`, `degraded` and `error` are not readiness; errors name the problem. Readiness does not guarantee delivery of every later filesystem event. Test with a disposable copy.
 
 Registration is idempotent: a running daemon re-reads the file within a second, so registering twice is not an error and does not convert twice. Registrations are remembered across restarts. Every flag these commands take is in [Command line](../reference/cli.md).
 
@@ -26,7 +26,7 @@ A registration whose folder is later deleted stays in the list, marked unavailab
 
 Registering a folder does not inspect the names of the files in it. A file that already carried intent syntax before registration keeps it.
 
-What does happen is a scan: the daemon walks the folder once to learn which files it has, so that renaming an existing file can be recognised afterwards. The scan reads no file contents and writes nothing. It runs in the background, reports its progress in `daemon status`, and stops if the registration is removed. A folder of a million files delays what it can recognise, never its start.
+The daemon scans the folder to learn the identities of existing files, so it can recognise their renames. The scan reads no file contents and writes nothing. It runs in the background and stops if the registration is removed; `daemon status` reports an aggregate count and the readiness of each folder. Renames before readiness can be missed. If the scan cannot inspect the folder, the watcher stops, reports the error and retries later.
 
 ## What is ignored
 
@@ -107,7 +107,7 @@ One batch produces one notification, when its last job settles.
 retype daemon status
 ```
 
-That reports whether the daemon is running, what it is doing, and the counters behind the answers above: converted, parked, failed, and placeholders. A parked job is one waiting for an answer, and [Jobs, undo and history](jobs.md) is where it is answered or refused.
+That reports whether the daemon is running, each registered watcher's state, and its job and event counters. A `degraded` watcher has reported lost events; rescanning may not recover every rename. A parked job is one waiting for an answer, and [Jobs, undo and history](jobs.md) is where it is answered or refused. Interactive-login enforcement and live foreground monitoring are not implemented yet.
 
 Notifications say what a batch produced rather than what it attempted: three converted, or one converted and one failed with the reason, or one parked. The button on the notification is Undo, and it reverses every job of that batch that has a record, which is the same record [Jobs, undo and history](jobs.md) describes.
 

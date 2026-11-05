@@ -27,12 +27,19 @@ pub struct Watch {
 	pub available: bool,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub patterns: Vec<String>,
+	/// Installed watcher state, not just registration; absent on older daemons.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub status: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub problem: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchList {
 	#[serde(default)]
 	pub watches: Vec<Watch>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +84,8 @@ pub struct Status {
 	pub observed: u64,
 	#[serde(default)]
 	pub watches: Vec<Watch>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub watch_error: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub endpoint: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]

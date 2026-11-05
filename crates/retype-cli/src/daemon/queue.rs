@@ -529,6 +529,7 @@ tier = 'converted'
 			observed: AtomicU64::new(0),
 			own_renames: Default::default(),
 			events: std::sync::Mutex::new(crate::daemon::events::Events::default()),
+			watch_health: Default::default(),
 			policies: Default::default(),
 			batches: Default::default(),
 			notifier: std::sync::Mutex::new(None),

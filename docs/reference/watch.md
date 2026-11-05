@@ -23,10 +23,11 @@ A file outside every registration root is never converted, so it has no director
 
 - **Nothing is converted retroactively.** Registering a directory does not convert files that are already there, even if their names carry intent syntax. That would be surprising, and on first registration it would be destructive
 - **Identity priming does happen.** The daemon stats every file under the root and records device and inode, or the volume and file id on Windows, because without priming, renaming a file that existed before the daemon started has no identity to correlate and would be silently ignored. Priming reads no file contents and writes nothing
-- The watcher for each registration is started before the daemon publishes its endpoint. macOS reports only what happens after its event stream starts, so a rename made in the gap between "the daemon answers" and "the watcher is live" would be lost rather than late
-- Priming is incremental and cancellable: it walks in the background, reports a running count in `daemon status`, and stops immediately if the registration is removed. A root of a million files delays correlation of unprimed files, it does not delay startup
-- `daemon status` reports `observed`, the number of event paths the watcher has looked at. It answers whether the watcher is seeing anything at all, and it is how a test waits for a file it has just written to be known before renaming it: macOS reports a create and a rename inside one window as a create alone, which carries no pair and no identity to correlate
-- A file whose identity is unprimed at rename time is still handled: the `From` and `To` event pair covers it, and if that is unavailable the result is `NeedsAttention`, never silence
+- The daemon starts the first registration round before publishing its endpoint, with a two-second bound. An answering daemon does not establish that a watch is ready
+- Priming is cancellable and runs in the background. `daemon status` reports an aggregate count and each root's state; `ready` means the watcher was installed and the initial scan completed without an observed error. A scan error stops that watcher and is reported
+- Renames before readiness can be missed, especially on platforms that rely on identity correlation. `observed` counts event paths the watcher has processed; a newly created file can be renamed after its create event is observed
+- If the filesystem reports lost events, the watcher rescans and reports `degraded`. The rescan can recover some renames but cannot establish that none were missed
+- On Unix, replacing a watched root is detected by directory identity and causes reinstallation and priming. Equivalent Windows root-replacement detection remains unverified
 
 ## 4. Ignores
 
@@ -120,7 +121,7 @@ Event delivery on network mounts is unreliable in both directions, and identity 
 
 ## 10. Stopping
 
-A `SIGTERM` or `SIGINT` is a stop request, not an ending: the daemon stops accepting work and lets the running jobs finish before it exits, `docs/dev/architecture/ipc.md` §2. A second signal cancels them instead, which is the difference between a supervisor stopping a unit and a person who wants it gone.
+A `SIGTERM` or `SIGINT` sent to the daemon requests a draining stop: it stops accepting work and lets running jobs finish. A second signal cancels them. A daemon spawned by a Unix client has its own process group, so an interrupt sent to that client's foreground process group does not stop the daemon.
 
 The signal handler counts and nothing else, because that is all a handler may safely do; the accept loop polls for the count and the wait for the running jobs watches it too. When the daemon does exit it removes its socket and its endpoint file, so a missing endpoint means no daemon rather than an unknown one.
 

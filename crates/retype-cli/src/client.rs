@@ -67,7 +67,10 @@ pub fn describe_status(status: &Value) -> Vec<(String, String)> {
 		("placeholders".to_string(), field("placeholders")),
 		("primed".to_string(), field("primed")),
 		("observed".to_string(), field("observed")),
-		("watches".to_string(), watch_line(&status["watches"])),
+		(
+			"watches".to_string(),
+			watch_line(&status["watches"], &status["watch_error"]),
+		),
 		("journal".to_string(), field("journal")),
 		("endpoint".to_string(), field("endpoint")),
 		(
@@ -81,9 +84,11 @@ pub fn describe_status(status: &Value) -> Vec<(String, String)> {
 	]
 }
 
-/// A one-line account of the registrations, with a missing or paused one named
-/// rather than silently leaving `daemon status` looking healthy.
-fn watch_line(watches: &Value) -> String {
+/// Registrations are not proof that their filesystem watchers are installed.
+fn watch_line(watches: &Value, error: &Value) -> String {
+	if let Some(error) = error.as_str() {
+		return format!("unavailable: {error}");
+	}
 	let Some(watches) = watches.as_array() else {
 		return "-".to_string();
 	};
@@ -96,13 +101,10 @@ fn watch_line(watches: &Value) -> String {
 		.iter()
 		.map(|watch| {
 			let path = watch["path"].as_str().unwrap_or_default();
-			match (
-				watch["available"].as_bool().unwrap_or(false),
-				watch["paused"].as_bool().unwrap_or(false),
-			) {
-				(false, _) => format!("{path} (missing)"),
-				(_, true) => format!("{path} (paused)"),
-				_ => path.to_string(),
+			let state = watch["status"].as_str().unwrap_or("unverified");
+			match watch["problem"].as_str() {
+				Some(problem) => format!("{path} ({state}: {problem})"),
+				None => format!("{path} ({state})"),
 			}
 		})
 		.collect::<Vec<_>>()
@@ -131,6 +133,23 @@ mod tests {
 		assert_eq!(format_uptime(1_500), "1s");
 		assert_eq!(format_uptime(91_000), "1m 31s");
 		assert_eq!(format_uptime(3_723_000), "1h 2m");
+	}
+
+	#[test]
+	fn watcher_status_distinguishes_readiness_from_registration() {
+		let watches = serde_json::json!([
+			{"path": "/ready", "status": "ready"},
+			{"path": "/broken", "status": "error", "problem": "permission denied"},
+			{"path": "/old-daemon"}
+		]);
+		let line = watch_line(&watches, &Value::Null);
+		assert!(line.contains("/ready (ready)"), "{line}");
+		assert!(line.contains("/broken (error: permission denied)"), "{line}");
+		assert!(line.contains("/old-daemon (unverified)"), "{line}");
+		assert_eq!(
+			watch_line(&watches, &serde_json::json!("bad registry")),
+			"unavailable: bad registry"
+		);
 	}
 
 	#[test]

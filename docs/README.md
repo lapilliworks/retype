@@ -81,7 +81,7 @@ retype watch ~/Pictures
 retype --no-spawn daemon status
 ```
 
-`retype watch` currently registers and returns; it does not start the daemon. If the daemon is stopped, a rename can change the extension without converting the bytes. Status reports registrations and whether paths exist, but does not yet prove that each watcher is active. Allow the registration and initial scan to complete, check the daemon log for watch errors, and try a disposable copy before relying on it.
+`retype watch` currently registers and returns; it does not start the daemon. If the daemon is stopped, a rename can change the extension without converting the bytes. Wait for the directory to report `ready` in `daemon status`, and try a disposable copy before relying on it. Readiness means the watcher started and its initial scan finished; it cannot guarantee every later filesystem event.
 
 Nothing already in the folder is converted. While watching is active, renaming `photo.heic` to `photo.jpg` requests a conversion, and `photo.webp+q80` adds a quality setting. Registrations survive a restart; [Deferral](advanced/deferral.md) describes jobs that wait.
 

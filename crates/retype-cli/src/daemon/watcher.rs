@@ -9,7 +9,7 @@
 //! Conversions are submitted to the runner pool, so a slow job does not hold the
 //! event thread. The queue is what makes them cancellable and concurrent.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -68,6 +68,8 @@ pub struct Shared {
 	pub own_renames: Mutex<Vec<retype_core::correlate::Sighting>>,
 	/// What clients replay from, `docs/dev/architecture/ipc.md` §7.
 	pub events: Mutex<crate::daemon::events::Events>,
+	/// Installed watcher state, distinct from the persisted registrations.
+	pub(crate) watch_health: crate::daemon::watch_health::WatchHealth,
 	/// Each directory's `.retype.toml`, read once per change rather than once per file,
 	/// `docs/config.md` §12.
 	pub policies: retype_core::policy::Cache,
@@ -198,7 +200,15 @@ pub fn start(shared: Arc<Shared>, pool: Arc<Pool>, state_dir: &Path) -> Result<O
 		let stop = Arc::clone(&stop);
 		let state_dir = state_dir.to_path_buf();
 
-		thread::spawn(move || supervise(&shared, &pool, &state_dir, &stop, ready))
+		thread::spawn(move || {
+			let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				supervise(&shared, &pool, &state_dir, &stop, ready);
+			}));
+			if result.is_err() {
+				eprintln!("retype: watcher supervisor stopped unexpectedly");
+				shared.watch_health.supervisor_failed();
+			}
+		})
 	};
 
 	// A daemon a client can reach has to be watching already. macOS reports only
@@ -225,7 +235,7 @@ fn supervise(
 	ready: std::sync::mpsc::Sender<()>,
 ) {
 	// One worker per root, keyed by the canonical path the registration holds.
-	let mut workers: BTreeMap<PathBuf, (Arc<AtomicBool>, JoinHandle<()>)> = BTreeMap::new();
+	let mut workers: BTreeMap<PathBuf, Worker> = BTreeMap::new();
 	// A missing path is retried on a slow clock so a deleted directory does not
 	// fill the daemon log every second, `docs/watch.md` §1.
 	let mut retry: BTreeMap<PathBuf, Instant> = BTreeMap::new();
@@ -235,60 +245,24 @@ fn supervise(
 		reload_config(shared, &mut config_stamp);
 
 		let wanted = match watches::load(state_dir) {
-			Ok(registrations) => registrations,
+			Ok(registrations) => {
+				shared.watch_health.set_registry_error(None);
+				registrations
+			}
 			Err(error) => {
-				eprintln!("retype: cannot read watch registrations: {error}");
-				// Nothing can be watched, but the daemon still has to become reachable
-				// and report the error.
+				let message = format!("cannot read watch registrations: {error}");
+				eprintln!("retype: {message}");
+				shared.watch_health.set_registry_error(Some(message));
+				shared.watch_health.clear_roots();
+				stop_workers(&mut workers);
+				retry.clear();
 				let _ = ready.send(());
 				thread::sleep(RELOAD);
 				continue;
 			}
 		};
 
-		// Stop what is no longer registered, paused, or whose path vanished. A
-		// paused registration is state, and a policy-paused directory is handled
-		// when a fact arrives, `docs/watch.md` §8.
-		let keep: BTreeSet<PathBuf> = wanted
-			.iter()
-			.filter(|registration| !registration.paused && registration.path.exists())
-			.map(|registration| registration.path.clone())
-			.collect();
-
-		let stale: Vec<PathBuf> = workers.keys().filter(|root| !keep.contains(*root)).cloned().collect();
-
-		for root in stale {
-			if let Some((worker_stop, handle)) = workers.remove(&root) {
-				worker_stop.store(true, Ordering::Relaxed);
-				let _ = handle.join();
-			}
-		}
-
-		for registration in wanted {
-			if registration.paused || workers.contains_key(&registration.path) {
-				continue;
-			}
-
-			if retry.get(&registration.path).is_some_and(|at| *at > Instant::now()) {
-				continue;
-			}
-
-			match spawn_worker(
-				Arc::clone(shared),
-				Arc::clone(pool),
-				&registration.path,
-				registration.recursive,
-			) {
-				Ok((worker_stop, handle)) => {
-					retry.remove(&registration.path);
-					workers.insert(registration.path.clone(), (worker_stop, handle));
-				}
-				Err(error) => {
-					eprintln!("retype: cannot watch {}: {error}", registration.path.display());
-					retry.insert(registration.path.clone(), Instant::now() + Duration::from_secs(30));
-				}
-			}
-		}
+		refresh_workers(shared, pool, wanted, &mut workers, &mut retry);
 
 		// Everything registered by now has a live watcher, so the daemon may say it
 		// is ready. Later rounds have nobody waiting, and the send is ignored.
@@ -297,9 +271,133 @@ fn supervise(
 		thread::sleep(RELOAD);
 	}
 
-	for (_, (worker_stop, handle)) in workers {
-		worker_stop.store(true, Ordering::Relaxed);
-		let _ = handle.join();
+	shared.watch_health.clear_roots();
+	stop_workers(&mut workers);
+}
+
+struct Worker {
+	stop: Arc<AtomicBool>,
+	handle: Option<JoinHandle<()>>,
+	health: Arc<super::watch_health::Root>,
+}
+
+impl Worker {
+	fn matches(&self, root: &Path, recursive: bool) -> bool {
+		self.health.recursive == recursive
+			&& self.health.identity.is_none_or(|identity| {
+				retype_core::correlate::Identity::of(root).is_some_and(|current| current == identity)
+			})
+	}
+
+	fn is_finished(&self) -> bool {
+		self.handle.as_ref().is_none_or(JoinHandle::is_finished)
+	}
+
+	fn stop(mut self) {
+		self.stop.store(true, Ordering::Relaxed);
+		if let Some(handle) = self.handle.take() {
+			let _ = handle.join();
+		}
+	}
+}
+
+impl Drop for Worker {
+	fn drop(&mut self) {
+		self.stop.store(true, Ordering::Relaxed);
+	}
+}
+
+fn stop_workers(workers: &mut BTreeMap<PathBuf, Worker>) {
+	for (_, worker) in std::mem::take(workers) {
+		worker.stop();
+	}
+}
+
+fn refresh_workers(
+	shared: &Arc<Shared>,
+	pool: &Arc<Pool>,
+	registrations: Vec<watches::Registration>,
+	workers: &mut BTreeMap<PathBuf, Worker>,
+	retry: &mut BTreeMap<PathBuf, Instant>,
+) {
+	let wanted: BTreeMap<PathBuf, bool> = registrations
+		.into_iter()
+		.filter(|registration| {
+			!registration.paused
+				&& registration.path.is_dir()
+				&& retype_core::policy::Policy::open(&registration.path).is_ok_and(|policy| !policy.paused)
+		})
+		.map(|registration| (registration.path, registration.recursive))
+		.collect();
+
+	let stale: Vec<(PathBuf, bool)> = workers
+		.iter()
+		.filter_map(|(path, worker)| {
+			let matches = wanted
+				.get(path)
+				.is_some_and(|recursive| worker.matches(path, *recursive));
+			let finished = worker.is_finished();
+			(!matches || finished).then(|| (path.clone(), matches && finished))
+		})
+		.collect();
+
+	for (path, unexpected) in stale {
+		let worker = workers.remove(&path).expect("stale worker exists");
+		let health = Arc::clone(&worker.health);
+		if !unexpected {
+			health.stopping();
+		}
+		worker.stop();
+		if unexpected {
+			if !matches!(health.phase(), super::watch_health::Phase::Failed(_)) {
+				health.fail("the watcher stopped unexpectedly");
+			}
+			shared.watch_health.set_root(&path, health);
+			retry.insert(path, Instant::now() + Duration::from_secs(30));
+		} else {
+			shared.watch_health.remove_root(&path);
+			retry.remove(&path);
+		}
+	}
+
+	shared.watch_health.retain_roots(&wanted);
+	retry.retain(|path, _| wanted.contains_key(path));
+	for (path, recursive) in wanted {
+		if workers.contains_key(&path) || retry.get(&path).is_some_and(|at| *at > Instant::now()) {
+			continue;
+		}
+		start_worker(shared, pool, &path, recursive, workers, retry);
+	}
+}
+
+fn start_worker(
+	shared: &Arc<Shared>,
+	pool: &Arc<Pool>,
+	path: &Path,
+	recursive: bool,
+	workers: &mut BTreeMap<PathBuf, Worker>,
+	retry: &mut BTreeMap<PathBuf, Instant>,
+) {
+	let identity = retype_core::correlate::Identity::of(path);
+	let health = Arc::new(super::watch_health::Root::new(recursive, identity));
+	shared.watch_health.set_root(path, Arc::clone(&health));
+	match spawn_worker(
+		Arc::clone(shared),
+		Arc::clone(pool),
+		path,
+		recursive,
+		Arc::clone(&health),
+	) {
+		Ok(worker) => {
+			retry.remove(path);
+			workers.insert(path.to_path_buf(), worker);
+		}
+		Err(error) => {
+			let message = format!("cannot install watcher: {error}");
+			eprintln!("retype: {}: {message}", path.display());
+			health.fail(message);
+			retry.insert(path.to_path_buf(), Instant::now() + Duration::from_secs(30));
+		}
 	}
 }
 
@@ -347,12 +445,19 @@ fn spawn_worker(
 	pool: Arc<Pool>,
 	root: &Path,
 	recursive: bool,
-) -> std::result::Result<(Arc<AtomicBool>, JoinHandle<()>), retype_watch::notify::Error> {
+	health: Arc<super::watch_health::Root>,
+) -> std::result::Result<Worker, retype_watch::notify::Error> {
 	let (watcher, receiver) = retype_watch::watch_mode(root, recursive)?;
+	if health.identity.is_some() && health.identity != retype_core::correlate::Identity::of(root) {
+		return Err(retype_watch::notify::Error::generic(
+			"directory changed while its watcher was starting",
+		));
+	}
 	let stop = Arc::new(AtomicBool::new(false));
 	let window = Window::default();
 	let watched_root = root.to_path_buf();
 	let worker_stop = Arc::clone(&stop);
+	let worker_health = Arc::clone(&health);
 	// Event paths are resolved, so a filter on the state directory has to be too:
 	// macOS reports `/private/var` for a path written as `/var`, and a comparison
 	// against the unresolved form matches nothing.
@@ -369,7 +474,7 @@ fn spawn_worker(
 		// daemon started has no identity otherwise, and on macOS identity is the
 		// only correlation mechanism, `docs/watch.md` §3 and `docs/dev/measurement/events.md` §3.
 		let registry = shared.registry();
-		let primed = retype_watch::prime(
+		let primed = retype_watch::prime_checked(
 			&mut correlator,
 			&watched_root,
 			recursive,
@@ -380,8 +485,22 @@ fn spawn_worker(
 			},
 			|| worker_stop.load(Ordering::Relaxed),
 		);
-		shared.primed.fetch_add(primed as u64, Ordering::Relaxed);
-		crate::verbose::note(format!("primed {primed} file(s) under {}", watched_root.display()));
+		shared.primed.fetch_add(primed.primed as u64, Ordering::Relaxed);
+		if worker_stop.load(Ordering::Relaxed) {
+			return;
+		}
+		if let Some(error) = primed.error {
+			let message = format!("initial scan incomplete: {error}");
+			eprintln!("retype: {}: {message}", watched_root.display());
+			worker_health.fail(message);
+			return;
+		}
+		worker_health.ready();
+		crate::verbose::note(format!(
+			"primed {} file(s) under {}",
+			primed.primed,
+			watched_root.display()
+		));
 		// Renames waiting out a directory's own debounce, by directory.
 		let mut held: std::collections::BTreeMap<PathBuf, Held> = std::collections::BTreeMap::new();
 
@@ -391,6 +510,15 @@ fn spawn_worker(
 			release(&shared, &pool, &watched_root, &mut held);
 
 			let batch = retype_watch::collect(&receiver, less_than(&held, window));
+			if worker_stop.load(Ordering::Relaxed) {
+				break;
+			}
+			if batch.disconnected {
+				let message = "the filesystem event stream disconnected";
+				eprintln!("retype: {}: {message}", watched_root.display());
+				worker_health.fail(message);
+				break;
+			}
 
 			// State is not part of the watched tree even when the tree contains it, and the
 			// undo record it holds is a hard link to a file the user may rename.
@@ -437,6 +565,7 @@ fn spawn_worker(
 			// instead, and identity correlation names what moved while nothing was watching,
 			// `docs/dev/measurement/events.md` §3.
 			if retype_watch::needs_rescan(&batch) {
+				worker_health.degraded("filesystem events were lost; a rescan may not recover every rename");
 				for error in &batch.errors {
 					eprintln!("retype: {}: watching: {error}", watched_root.display());
 				}
@@ -521,7 +650,11 @@ fn spawn_worker(
 		crate::verbose::detail(format!("stopped watching {}", watched_root.display()));
 	});
 
-	Ok((stop, handle))
+	Ok(Worker {
+		stop,
+		handle: Some(handle),
+		health,
+	})
 }
 
 /// One fact from a batch or from a rescan: honour the directory's debounce, or decide.

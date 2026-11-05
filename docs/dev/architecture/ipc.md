@@ -20,7 +20,7 @@ Client start sequence:
 2. On failure, spawn `retype daemon --detached` and retry with backoff for up to 3 s
 3. If the socket still does not answer, report `E_IPC_UNAVAILABLE` with the spawn log path
 4. Racing clients are harmless: all spawn candidates contend for the lock, one wins, the rest exit, and every client connects to the winner
-5. The endpoint is published only once the first registration round has started a watcher for every root, or two seconds have passed if a registration is stalled. macOS reports only what happens after its event stream starts, so a rename made in that gap would be lost rather than late
+5. The endpoint is published after the first registration round, or after two seconds if that round is stalled. `watch.list` and `status` separately report per-root watcher readiness; an endpoint does not imply a successful watcher or completed identity scan
 
 Suppression:
 
@@ -34,6 +34,7 @@ Supervision:
 
 - The daemon reads how it was started from the environment the supervisor sets
 - The variables are inherited by every process in the session, so a daemon the CLI started itself clears them: its supervisor would never restart it
+- On Unix, a spawned daemon has its own process group, so a foreground client's interrupt does not stop it
 - Under a supervisor, `retype daemon stop` refuses with `E_IPC_SUPERVISED`, telling the user to run the supervisor's stop command, because stopping a supervised daemon is immediately undone by the supervisor
 - `--force` overrides the refusal for the case where the unit is being removed
 - `retype daemon start` exists for tests, units and scripts that want an explicit start without the foreground
@@ -53,11 +54,11 @@ Stop behaviour:
 |---|---|
 | `watch.add` | Canonicalise the path, reject a missing path, add or update. Idempotent |
 | `watch.remove` | Remove by path. Absent is a success |
-| `watch.list` | Current registrations with their directory configuration summary |
+| `watch.list` | Registrations, directory policy and installed-watcher state, plus any registration-read error |
 | Overlap | Registrations are independent; a path inside a registered root is accepted and supplies only its own directory configuration |
 | Persistence | The registry is a file, so registrations survive daemon restart and reboot |
 
-Directory configuration is not re-read only on registration. The daemon watches every `.retype.toml` under a registered root and the global configuration file, so editing either takes effect without re-registering.
+Directory configuration is not re-read only on registration. Edits take effect without re-registering. A watch is `ready` only after its filesystem watcher starts and the initial identity scan finishes without an observed error; `pending`, `starting`, `stopping`, `paused`, `unavailable`, `degraded` and `error` are distinct states. An unreadable registration file is reported and the supervisor stops its watchers until it can read the file again.
 
 ## 4. Transport
 

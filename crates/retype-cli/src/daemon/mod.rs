@@ -22,6 +22,7 @@ pub mod signals;
 pub mod supervision;
 pub mod timer;
 mod transaction;
+mod watch_health;
 pub mod watcher;
 
 pub use server::Server;

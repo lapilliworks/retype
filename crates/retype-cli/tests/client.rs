@@ -171,6 +171,10 @@ fn the_daemon_owns_watch_registration_while_it_is_reachable() {
 		photos.canonicalize().unwrap().display().to_string()
 	);
 	assert_eq!(listed["watches"][0]["available"], true);
+	assert_eq!(
+		listed["watches"][0]["status"], "pending",
+		"registration alone is not readiness"
+	);
 
 	let removed = client
 		.call(

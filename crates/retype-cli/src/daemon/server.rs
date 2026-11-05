@@ -90,6 +90,7 @@ impl Server {
 			observed: AtomicU64::new(0),
 			own_renames: Default::default(),
 			events: Mutex::new(crate::daemon::events::Events::default()),
+			watch_health: Default::default(),
 			policies: Default::default(),
 			batches: Default::default(),
 			notifier: Mutex::new(notifier),
@@ -814,35 +815,81 @@ impl Server {
 		crate::daemon::watcher::publish(&self.shared, &job);
 	}
 
-	/// The registrations as `daemon status` and `watch.list` report them: what is
-	/// registered, whether its path is there, and whether state or policy paused it.
-	fn watches(&self) -> Vec<serde_json::Value> {
-		let Ok(registrations) = watches::load(&self.shared.state_dir) else {
-			return Vec::new();
+	/// Registrations and the separately observed state of each installed watcher.
+	fn watches(&self) -> (Vec<serde_json::Value>, Option<String>) {
+		let registrations = match watches::load(&self.shared.state_dir) {
+			Ok(registrations) => registrations,
+			Err(error) => return (Vec::new(), Some(format!("cannot read watch registrations: {error}"))),
 		};
 
-		registrations
+		let watches = registrations
 			.into_iter()
 			.map(|registration| {
-				let available = registration.path.exists();
-				let policy = Policy::open(&registration.path).ok();
-				let paused = registration.paused || policy.as_ref().is_some_and(|policy| policy.paused);
+				let available = registration.path.is_dir();
+				let policy = Policy::open(&registration.path);
+				let paused_by_policy = policy.as_ref().is_ok_and(|policy| policy.paused);
+				let paused = registration.paused || paused_by_policy;
+				let (status, problem) = self.watch_status(&registration, available, paused, policy.as_ref().err());
 
 				json!({
 					"path": registration.path.display().to_string(),
 					"recursive": registration.recursive,
 					"added": registration.added,
 					"paused": paused,
-					"paused_by": match (registration.paused, policy.as_ref().is_some_and(|policy| policy.paused)) {
+					"paused_by": match (registration.paused, paused_by_policy) {
 						(true, _) => Some("state"),
 						(_, true) => Some("policy"),
 						_ => None,
 					},
 					"available": available,
 					"patterns": policy.map(|policy| policy.patterns).unwrap_or_default(),
+					"status": status,
+					"problem": problem,
 				})
 			})
-			.collect()
+			.collect();
+		(watches, self.shared.watch_health.registry_error())
+	}
+
+	fn watch_status(
+		&self,
+		registration: &watches::Registration,
+		available: bool,
+		paused: bool,
+		policy_error: Option<&retype_core::error::Error>,
+	) -> (&'static str, Option<String>) {
+		use super::watch_health::Phase;
+
+		let phase = self
+			.shared
+			.watch_health
+			.phase(&registration.path, registration.recursive);
+		if paused {
+			return match phase {
+				Some(Phase::Starting | Phase::Ready | Phase::Stopping | Phase::Degraded(_)) => ("stopping", None),
+				None | Some(Phase::Failed(_)) => ("paused", None),
+			};
+		}
+		if !available {
+			return (
+				"unavailable",
+				Some("directory is missing or is not a directory".to_string()),
+			);
+		}
+		if let Some(error) = policy_error {
+			return ("error", Some(format!("cannot read directory policy: {error}")));
+		}
+		if let Some(error) = self.shared.watch_health.registry_error() {
+			return ("error", Some(error));
+		}
+		match phase {
+			None => ("pending", None),
+			Some(Phase::Starting) => ("starting", None),
+			Some(Phase::Ready) => ("ready", None),
+			Some(Phase::Stopping) => ("stopping", None),
+			Some(Phase::Degraded(message)) => ("degraded", Some(message)),
+			Some(Phase::Failed(message)) => ("error", Some(message)),
+		}
 	}
 
 	fn watch_add(&self, request: &Request) -> Result<Response> {
@@ -1099,9 +1146,11 @@ impl Server {
 
 	fn answer(&mut self, request: &Request) -> Result<Response> {
 		let response = match request.method.as_str() {
-			"status" => Response::ok(
-				request.id,
-				json!({
+			"status" => {
+				let (watches, watch_error) = self.watches();
+				Response::ok(
+					request.id,
+					json!({
 					"pid": std::process::id(),
 					"machine": self.machine,
 					"uptime_ms": self.started.elapsed().as_millis() as u64,
@@ -1114,11 +1163,13 @@ impl Server {
 					"placeholders": self.shared.placeholders.load(Ordering::Relaxed),
 					"primed": self.shared.primed.load(Ordering::Relaxed),
 					"observed": self.shared.observed.load(Ordering::Relaxed),
-					"watches": self.watches(),
+					"watches": watches,
+					"watch_error": watch_error,
 					"endpoint": self.endpoint,
 					"supervised": self.supervisor,
-				}),
-			)?,
+					}),
+				)?
+			}
 			"jobs.list" => Response::ok(
 				request.id,
 				json!({
@@ -1141,7 +1192,10 @@ impl Server {
 			"events" | "events.subscribe" => self.events(request)?,
 			"watch.add" => self.watch_add(request)?,
 			"watch.remove" => self.watch_remove(request)?,
-			"watch.list" => Response::ok(request.id, json!({"watches": self.watches()}))?,
+			"watch.list" => {
+				let (watches, error) = self.watches();
+				Response::ok(request.id, json!({"watches": watches, "error": error}))?
+			}
 			"undo" => self.undo(request)?,
 			"undo.list" => self.undo_list(request)?,
 			"config.reload" => self.config_reload(request)?,

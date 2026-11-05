@@ -50,11 +50,12 @@ impl Default for Window {
 pub struct Batch {
 	pub events: Vec<Event>,
 	pub errors: Vec<notify::Error>,
+	pub disconnected: bool,
 }
 
 impl Batch {
 	pub fn is_empty(&self) -> bool {
-		self.events.is_empty() && self.errors.is_empty()
+		self.events.is_empty() && self.errors.is_empty() && !self.disconnected
 	}
 
 	/// Drop the events whose every path is under `prefix`.
@@ -73,6 +74,7 @@ impl Batch {
 		Self {
 			events,
 			errors: self.errors,
+			disconnected: self.disconnected,
 		}
 	}
 }
@@ -115,7 +117,10 @@ pub fn collect(receiver: &mpsc::Receiver<notify::Result<Event>>, window: Window)
 			}
 			Ok(Err(error)) => batch.errors.push(error),
 			Err(mpsc::RecvTimeoutError::Timeout) => {}
-			Err(mpsc::RecvTimeoutError::Disconnected) => break,
+			Err(mpsc::RecvTimeoutError::Disconnected) => {
+				batch.disconnected = true;
+				break;
+			}
 		}
 	}
 	batch
@@ -470,6 +475,7 @@ mod tests {
 		Batch {
 			events,
 			errors: Vec::new(),
+			disconnected: false,
 		}
 	}
 
@@ -988,6 +994,7 @@ mod tests {
 
 		let batch = collect(&receiver, window);
 
-		assert!(batch.is_empty());
+		assert!(batch.disconnected);
+		assert!(!batch.is_empty());
 	}
 }
