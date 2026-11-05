@@ -1043,7 +1043,19 @@ fn malformed(what: &str, error: &dyn std::fmt::Display) -> Error {
 	))
 }
 
-fn unwritable(error: &dyn std::fmt::Display) -> Error {
+fn unwritable(error: &(dyn std::error::Error + 'static)) -> Error {
+	let mut cause = Some(error);
+	while let Some(current) = cause {
+		if let Some(io) = current.downcast_ref::<std::io::Error>() {
+			if crate::error::code_for_io(io) == Code::IoSpace {
+				return Error::Diagnostic(Diagnostic::global(
+					Code::IoSpace,
+					format!("the archive could not be written: {io}"),
+				));
+			}
+		}
+		cause = current.source();
+	}
 	Error::Diagnostic(Diagnostic::global(
 		Code::IoFailed,
 		format!("the archive could not be written: {error}"),
@@ -1054,6 +1066,25 @@ fn unwritable(error: &dyn std::fmt::Display) -> Error {
 mod tests {
 	use super::*;
 	use std::io::Read;
+
+	#[test]
+	fn archive_write_errors_preserve_storage_exhaustion_from_the_error_chain() {
+		let full = std::io::Error::from(std::io::ErrorKind::StorageFull);
+		assert_eq!(unwritable(&full).code(), Code::IoSpace);
+		let quota = zip::result::ZipError::Io(std::io::Error::from(std::io::ErrorKind::QuotaExceeded));
+		assert_eq!(unwritable(&quota).code(), Code::IoSpace);
+		let other = std::io::Error::other("another failure");
+		assert_eq!(unwritable(&other).code(), Code::IoFailed);
+	}
+
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn writing_a_tar_to_the_full_device_reports_storage_exhaustion() {
+		let full = fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
+		let mut sink = Sink::Tar(Box::new(tar::Builder::new(TarSink::Plain(full))));
+		let error = sink.file("entry.txt", 0o644, 1, &mut &b"x"[..]).unwrap_err();
+		assert_eq!(error.code(), Code::IoSpace);
+	}
 
 	/// A directory tree to put into an archive, next to the archive itself.
 	fn tree() -> (tempfile::TempDir, std::path::PathBuf) {
