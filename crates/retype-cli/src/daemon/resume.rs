@@ -65,13 +65,14 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 	let ledger = store.load(&job.id)?.ok_or_else(|| unavailable("no recovery ledger"))?;
 	let cancellation = execute::Cancellation::default();
 	let mut outputs = Vec::with_capacity(plans.len());
+	let mut output_gate = super::transaction::OutputGate::default();
 
 	for (index, plan) in plans.iter().enumerate() {
 		let recorded = job.outputs.get(index);
+		let stopped = output_gate.skipped();
 
-		// An output that is still what the job produced needs no work; anything
-		// else, including a different file with the same name, is run again.
-		if !force {
+		// Once stopped, retain verified prior outputs even if this resume requested replacement.
+		if !force || stopped.is_some() {
 			if let Some(recorded) = recorded {
 				if still_produced(recorded)
 					&& ledger.commits.iter().any(|commit| {
@@ -87,6 +88,14 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 		let path = recorded
 			.map(|output| output.path.clone())
 			.unwrap_or_else(|| output_path(&job.source.path, &resolved, index));
+
+		if let Some((code, message)) = stopped {
+			let mut skipped = Output::pending(path, &plan.format, plan.tier);
+			skipped.state = OutputState::Skipped;
+			skipped.error = Some(JobError::new(code.to_string(), message));
+			outputs.push(skipped);
+			continue;
+		}
 
 		if blocked(recorded, &path, force) {
 			outputs.push(Output {
@@ -133,19 +142,22 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 				},
 				error: None,
 			}),
-			Err(error) => outputs.push(Output {
-				path,
-				format: plan.format.clone(),
-				state: OutputState::Failed,
-				bytes: None,
-				tier: plan.tier,
-				identity: None,
-				stderr: None,
-				error: Some(JobError {
-					code: error.code().to_string(),
-					message: error.to_string(),
-				}),
-			}),
+			Err(error) => {
+				output_gate.observe(&error);
+				outputs.push(Output {
+					path,
+					format: plan.format.clone(),
+					state: OutputState::Failed,
+					bytes: None,
+					tier: plan.tier,
+					identity: None,
+					stderr: None,
+					error: Some(JobError {
+						code: error.code().to_string(),
+						message: error.to_string(),
+					}),
+				});
+			}
 		}
 	}
 
@@ -174,7 +186,10 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 		consume_source: job.consume_source,
 	};
 
-	crate::daemon::watcher::persist(shared, &resumed)?;
+	if let Err(error) = crate::daemon::watcher::persist(shared, &resumed) {
+		super::watcher::report_unrecorded_completion(shared, &resumed, &error);
+		return Err(error);
+	}
 	if state == JobState::Done {
 		store.finish(&job.id)?;
 	}

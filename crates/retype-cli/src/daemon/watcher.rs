@@ -1459,6 +1459,7 @@ fn run(
 		}
 	};
 	let mut all_validated = true;
+	let mut output_gate = super::transaction::OutputGate::default();
 	let checkpoint = settled(
 		shared,
 		&id,
@@ -1478,6 +1479,10 @@ fn run(
 		};
 
 		let output = target.parent().unwrap_or(Path::new("")).join(&derived.path);
+		if let Some(reason) = output_gate.skipped() {
+			outputs.push(record(&output, plan, OutputState::Skipped, None, None, Some(reason)));
+			continue;
+		}
 
 		// A file that was not this job's source is not overwritten by a rename. The
 		// rename target itself is the source bytes under their new name, so that one
@@ -1532,6 +1537,7 @@ fn run(
 				));
 			}
 			Err(error) => {
+				output_gate.observe(&error);
 				// A superseded job did not fail: the work was overtaken, so its output
 				// is skipped rather than failed, `docs/dev/architecture/state.md` §5.3.
 				// The code the failure came with, not a generic one: an archive that
@@ -1588,7 +1594,7 @@ fn run(
 		&& !resolved.meta.keep
 		&& !resolved.groups.iter().any(|group| group.keep_source);
 	if let Err(error) = persist(shared, &job) {
-		eprintln!("retype: original retained because completion could not be persisted: {error}");
+		report_unrecorded_completion(shared, &job, &error);
 		return;
 	}
 	let mut disposed = false;
@@ -1732,7 +1738,10 @@ pub fn publish(shared: &Shared, job: &Job) {
 pub(super) fn fail_before_conversion(shared: &Shared, started: &Job, context: &str, error: &retype_core::error::Error) {
 	let mut failed = started.clone();
 	failed.outputs.clear();
-	let message = format!("{context}; conversion did not start: {error}");
+	let mut message = format!("{context}; conversion did not start: {error}");
+	if error.code() == Code::IoSpace {
+		message.push_str("; free space before trying again");
+	}
 	failed.fail(JobError::new(error.code().to_string(), &message));
 	if let Err(journal_error) = publish_checked(shared, &failed) {
 		let message = format!("{message}; status could not be recorded and is not durable: {journal_error}");
@@ -1756,6 +1765,29 @@ pub fn report_unrecorded_failure(shared: &Shared, job: &Job, error: &retype_core
 	failed.fail(JobError::new(error.code().to_string(), message));
 	if let Err(error) = record_job(shared, &failed, || Ok(())) {
 		eprintln!("retype: cannot report unrecorded failure for {}: {error}", failed.id);
+	}
+}
+
+/// Expose an incomplete result without claiming that the final state is durable.
+pub(super) fn report_unrecorded_completion(shared: &Shared, job: &Job, error: &retype_core::error::Error) {
+	let mut incomplete = job.clone();
+	incomplete.set_state(if job.outputs.iter().any(|output| output.state == OutputState::Done) {
+		JobState::Partial
+	} else {
+		JobState::Failed
+	});
+	let mut message =
+		format!("completion could not be recorded: {error}; the source was not removed and this status is not durable");
+	if error.code() == Code::IoSpace {
+		message.push_str("; free space before trying again");
+	}
+	incomplete.error = Some(JobError::new(error.code().to_string(), &message));
+	eprintln!("retype: job {}: {message}", incomplete.id);
+	if let Err(error) = record_job(shared, &incomplete, || Ok(())) {
+		eprintln!(
+			"retype: cannot report unrecorded completion for {}: {error}",
+			incomplete.id
+		);
 	}
 }
 

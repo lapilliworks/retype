@@ -60,7 +60,7 @@ One record restores one job. Undoing the same job twice is a refusal, not a seco
 
 The settings are host-level in configuration; a folder cannot set them, so a repository cannot decide every contributor's disk budget. They are read from the `[undo]` table in [Configuration schema](../reference/config.md).
 
-Unexpired records are not automatically evicted. If a new record does not fit, this build currently retains the source and converts without a new undo record; `ask` does not yet prompt. An error creating an input snapshot or undo record stops the job before conversion and is reported. If the failure itself cannot be journalled, the live status says it is not durable.
+Unexpired records are not automatically evicted. If a new record does not fit, this build currently retains the source and converts without a new undo record; `ask` does not yet prompt. An error creating an input snapshot or undo record stops the job before conversion and is reported. A recognized storage-exhaustion error or a failed output recovery checkpoint stops the remaining outputs; completed outputs are kept. If the final state cannot be journalled, live status says it is not durable. External tools do not always provide a machine-readable cause, so an encoder's disk-full failure may be reported as a general tool failure.
 
 Undo is also the button on the notification a watched folder produces, and it reverses every job of that batch that has a record. [Watching a folder](watch.md) describes the batching that makes it one notification.
 

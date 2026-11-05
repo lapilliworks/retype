@@ -313,8 +313,13 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 		}
 	}
 	let mut outputs = Vec::new();
+	let mut output_gate = super::transaction::OutputGate::default();
 
 	for (plan, path) in prepared.plans.iter().zip(&prepared.paths) {
+		if let Some(reason) = output_gate.skipped() {
+			outputs.push(record(path, plan, OutputState::Skipped, None, None, Some(reason)));
+			continue;
+		}
 		if path.exists() && !request.force {
 			outputs.push(record(
 				path,
@@ -349,6 +354,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 				None,
 			)),
 			Err(error) => {
+				output_gate.observe(&error);
 				// The failure's own code, so a refusal reads as a refusal rather than as
 				// a tool that fell over.
 				let code = match cancellation.is_cancelled() {
@@ -382,7 +388,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 	job.state = state;
 	job.updated = now_ms();
 	if let Err(error) = crate::daemon::watcher::persist(shared, &job) {
-		eprintln!("retype: recovery record retained because completion could not be persisted: {error}");
+		super::watcher::report_unrecorded_completion(shared, &job, &error);
 		return;
 	}
 	if job.state == JobState::Done && matches!(undo_record, Ok(Some(_))) {

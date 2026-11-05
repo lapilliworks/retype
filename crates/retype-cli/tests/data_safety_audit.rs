@@ -73,12 +73,16 @@ impl Fixture {
 			&id,
 			cancellation,
 		);
+		self.job(&id)
+	}
+
+	fn job(&self, id: &JobId) -> Job {
 		self.shared
 			.jobs
 			.lock()
 			.unwrap()
 			.iter()
-			.find(|job| job.id == id)
+			.find(|job| &job.id == id)
 			.unwrap()
 			.clone()
 	}
@@ -517,6 +521,156 @@ fn loss_of_the_journal_directory_prevents_publication_and_source_disposal() {
 		!fixture.path("photo.webp").exists(),
 		"a missing durable checkpoint must prevent publication"
 	);
+}
+
+const BREAK_SECOND_CHECKPOINT: &str = "\
+root=$(dirname \"$0\")\n\
+printf '%s\\n' \"$2\" >> \"$root/started\"\n\
+cp \"$1\" \"$2\"\n\
+case \"$2\" in *.jpg) mv \"$root/state\" \"$root/state-moved\";; esac\n";
+
+fn assert_checkpoint_failure_preserved_work(fixture: &Fixture, job: &Job) {
+	assert_eq!(job.state, JobState::Partial);
+	assert!(job.error.as_ref().unwrap().message.contains("not durable"));
+	assert_eq!(job.outputs.len(), 3);
+	assert_eq!(job.outputs[0].state, retype_core::job::OutputState::Done);
+	assert_eq!(job.outputs[1].state, retype_core::job::OutputState::Failed);
+	assert_eq!(job.outputs[2].state, retype_core::job::OutputState::Skipped);
+	assert!(job.outputs[2].error.as_ref().unwrap().message.contains("not attempted"));
+	assert!(fixture.source().exists());
+	assert_eq!(fs::read(fixture.path("photo.webp")).unwrap(), ORIGINAL);
+	assert!(!fixture.path("photo.jpg").exists());
+	assert!(!fixture.path("photo-2.webp").exists());
+	let started = fs::read_to_string(fixture.path("started")).unwrap();
+	assert_eq!(started.lines().count(), 2, "later output must not start");
+}
+
+#[test]
+fn a_watched_journal_failure_stops_later_outputs_and_reports_non_durable_status() {
+	let fixture = Fixture::new(BREAK_SECOND_CHECKPOINT, "enabled = false");
+	let job = fixture.convert("webp,jpg,webp", &Cancellation::default());
+	assert_checkpoint_failure_preserved_work(&fixture, &job);
+}
+
+#[test]
+fn a_direct_journal_failure_stops_later_outputs_and_reports_non_durable_status() {
+	let fixture = Fixture::new(BREAK_SECOND_CHECKPOINT, "enabled = false");
+	fs::write(fixture.source(), ORIGINAL).unwrap();
+	let id = JobId::now().unwrap();
+	let request = immediate::Request {
+		input: fixture.source(),
+		intent: "webp,jpg,webp".to_string(),
+		output: None,
+		force: false,
+	};
+	immediate::run(&fixture.shared, &request, &id, &Cancellation::default());
+	let job = fixture.job(&id);
+	assert_checkpoint_failure_preserved_work(&fixture, &job);
+}
+
+#[test]
+fn a_resume_checkpoint_failure_stops_later_outputs_and_keeps_recovery_data() {
+	let initial = "case \"$2\" in *.jpg|*-2.webp) exit 1;; esac\ncp \"$1\" \"$2\"\n";
+	let fixture = Fixture::new(initial, "enabled = true");
+	let job = fixture.convert("webp,jpg,webp", &Cancellation::default());
+	assert_eq!(job.state, JobState::Partial);
+	let fail_ledger = "\
+root=$(dirname \"$0\")\n\
+printf '%s\\n' \"$2\" >> \"$root/started\"\n\
+cp \"$1\" \"$2\"\n\
+case \"$2\" in *.jpg) for meta in \"$root\"/state/undo/*/meta.toml; do mv \"$meta\" \"$meta.before\"; done;; esac\n";
+	fs::write(fixture.path("converter.sh"), fail_ledger).unwrap();
+	assert_eq!(
+		resume::run(&fixture.shared, "test", &job, false).unwrap(),
+		JobState::Partial
+	);
+	let reported = fixture.job(&job.id);
+	assert_eq!(reported.state, JobState::Partial);
+	assert_eq!(reported.outputs[0].state, retype_core::job::OutputState::Done);
+	assert_eq!(reported.outputs[1].state, retype_core::job::OutputState::Failed);
+	assert!(
+		reported.outputs[1]
+			.error
+			.as_ref()
+			.unwrap()
+			.message
+			.contains("checkpoint")
+	);
+	assert_eq!(reported.outputs[2].state, retype_core::job::OutputState::Skipped);
+	assert!(fixture.source().exists());
+	assert_eq!(fs::read(fixture.path("photo.webp")).unwrap(), ORIGINAL);
+	assert!(!fixture.path("photo.jpg").exists());
+	assert!(!fixture.path("photo-2.webp").exists());
+	assert!(fixture.path(&format!("state/undo/{}/source.png", job.id)).is_file());
+	assert!(
+		fixture
+			.path(&format!("state/undo/{}/meta.toml.before", job.id))
+			.is_file()
+	);
+	let started = fs::read_to_string(fixture.path("started")).unwrap();
+	assert_eq!(started.lines().count(), 1, "resume must not start another output");
+}
+
+#[test]
+fn a_stopped_forced_resume_still_reports_previously_completed_outputs() {
+	let initial = "case \"$2\" in *.jpg) exit 1;; esac\ncp \"$1\" \"$2\"\n";
+	let fixture = Fixture::new(initial, "enabled = true");
+	let job = fixture.convert("webp,jpg,webp", &Cancellation::default());
+	assert_eq!(job.state, JobState::Partial);
+	assert_eq!(job.outputs[2].state, retype_core::job::OutputState::Done);
+	let fail_ledger = "\
+root=$(dirname \"$0\")\n\
+printf '%s\\n' \"$2\" >> \"$root/started\"\n\
+cp \"$1\" \"$2\"\n\
+for meta in \"$root\"/state/undo/*/meta.toml; do mv \"$meta\" \"$meta.before\"; done\n";
+	fs::write(fixture.path("converter.sh"), fail_ledger).unwrap();
+	assert_eq!(
+		resume::run(&fixture.shared, "test", &job, true).unwrap(),
+		JobState::Partial
+	);
+	let reported = fixture.job(&job.id);
+	assert_eq!(reported.outputs[0].state, retype_core::job::OutputState::Failed);
+	assert_eq!(reported.outputs[1].state, retype_core::job::OutputState::Skipped);
+	assert_eq!(reported.outputs[2].state, retype_core::job::OutputState::Done);
+	assert_eq!(fs::read(fixture.path("photo.webp")).unwrap(), ORIGINAL);
+	assert_eq!(fs::read(fixture.path("photo-2.webp")).unwrap(), ORIGINAL);
+	assert_eq!(fs::read(fixture.source()).unwrap(), ORIGINAL);
+	assert_eq!(fs::read_to_string(fixture.path("started")).unwrap().lines().count(), 1);
+}
+
+#[test]
+fn a_resume_journal_failure_reports_its_result_as_non_durable() {
+	let initial = "case \"$2\" in *.jpg|*-2.webp) exit 1;; esac\ncp \"$1\" \"$2\"\n";
+	let fixture = Fixture::new(initial, "enabled = true");
+	let job = fixture.convert("webp,jpg,webp", &Cancellation::default());
+	assert_eq!(job.state, JobState::Partial);
+	fs::write(fixture.path("converter.sh"), BREAK_SECOND_CHECKPOINT).unwrap();
+	assert!(resume::run(&fixture.shared, "test", &job, false).is_err());
+	let reported = fixture.job(&job.id);
+	assert_eq!(reported.state, JobState::Partial);
+	assert!(reported.error.as_ref().unwrap().message.contains("not durable"));
+	assert_eq!(fs::read(fixture.source()).unwrap(), ORIGINAL);
+	assert_eq!(fs::read(fixture.path("photo.webp")).unwrap(), ORIGINAL);
+	assert!(
+		fixture
+			.path(&format!("state-moved/undo/{}/source.png", job.id))
+			.is_file()
+	);
+	assert!(!fixture.path("photo.jpg").exists());
+	assert!(!fixture.path("photo-2.webp").exists());
+}
+
+#[test]
+fn an_ordinary_output_failure_does_not_stop_independent_outputs() {
+	let fixture = Fixture::new(
+		"case \"$2\" in *.webp) exit 1;; esac\ncp \"$1\" \"$2\"\n",
+		"enabled = false",
+	);
+	let job = fixture.convert("webp,jpg", &Cancellation::default());
+	assert_eq!(job.state, JobState::Partial);
+	assert!(fixture.source().exists());
+	assert!(!fixture.path("photo.webp").exists());
+	assert_eq!(fs::read(fixture.path("photo.jpg")).unwrap(), ORIGINAL);
 }
 
 #[test]

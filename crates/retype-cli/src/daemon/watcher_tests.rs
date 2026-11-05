@@ -111,6 +111,27 @@ fn a_preconversion_failure_remains_visible_if_its_journal_write_fails() {
 	assert!(!journal.contains("injected storage failure"));
 }
 
+#[test]
+fn an_unrecorded_completion_cannot_be_reported_as_success() {
+	let dir = tempfile::tempdir().unwrap();
+	let server = crate::daemon::Server::open(dir.path()).unwrap();
+	server.pool().stop();
+	let shared = server.shared();
+	let mut job = pending();
+	job.set_state(JobState::Done);
+	let mut output = Output::pending("photo.webp".into(), "webp", retype_core::job::Tier::Converted);
+	output.state = OutputState::Done;
+	job.outputs.push(output);
+	let error = retype_core::error::Error::Io(std::io::Error::from(std::io::ErrorKind::StorageFull));
+	report_unrecorded_completion(&shared, &job, &error);
+	let jobs = shared.jobs.lock().unwrap();
+	let reported = jobs.iter().find(|entry| entry.id == job.id).unwrap();
+	assert_eq!(reported.state, JobState::Partial);
+	assert_eq!(reported.outputs[0].state, OutputState::Done);
+	assert_eq!(reported.error.as_ref().unwrap().code, Code::IoSpace.to_string());
+	assert!(reported.error.as_ref().unwrap().message.contains("not durable"));
+}
+
 fn fill_queue(pool: &Pool, photos: &Path) {
 	for _ in 0..crate::daemon::queue::CAPACITY {
 		assert!(pool.submit(crate::daemon::queue::Work {
