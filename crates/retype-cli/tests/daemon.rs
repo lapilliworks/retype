@@ -39,12 +39,24 @@ impl Daemon {
 
 impl Drop for Daemon {
 	fn drop(&mut self) {
-		// Stop the accept loop even when the test failed before asking.
-		if let Ok(mut stream) = UnixStream::connect(&self.socket) {
-			let _ = write_frame(&mut stream, &greeted(99, "shutdown"));
+		if let Ok(mut client) = retype_ipc::Client::connect(&self.socket) {
+			if client.hello("test-cleanup").is_ok() {
+				let _ = client.call_without_params("shutdown");
+			}
 		}
 		if let Some(handle) = self.handle.take() {
-			let _ = handle.join();
+			let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+			while !handle.is_finished() && std::time::Instant::now() < deadline {
+				std::thread::sleep(std::time::Duration::from_millis(20));
+			}
+			if handle.is_finished() {
+				let joined = handle.join();
+				if !std::thread::panicking() {
+					assert!(joined.is_ok(), "the daemon's request loop panicked");
+				}
+			} else if !std::thread::panicking() {
+				panic!("the daemon's request loop did not stop");
+			}
 		}
 		let _ = &self.dir;
 	}
