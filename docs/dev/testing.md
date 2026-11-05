@@ -17,6 +17,7 @@ Make the programs available on `PATH` in the same terminal that runs Cargo. Reop
 | Test target | Required preparation |
 |---|---|
 | `fidelity`, `fidelity_axes` | ImageMagick 7.1 or newer, with 16-bit image support such as a Q16 build; PNG, JPEG, GIF and TIFF support |
+| `keep` real watched workflow | ImageMagick 7.1 or newer with HEIC read/write and JPEG support |
 | `video` | FFmpeg 6 or newer and FFprobe, with `libx264`, `aac` and `libmp3lame` encoders |
 | `documents` | Pandoc 3 or newer and at least one usable PDF engine: `typst`, `xelatex`, `lualatex`, `pdflatex`, `weasyprint` or `wkhtmltopdf` |
 | `archives` | Native ZIP/TAR cases need no external archiver; 7z cases require 7-Zip 23 or newer as `7zz`, `7z` or `7za` |
@@ -60,10 +61,29 @@ cargo test --workspace --locked --no-fail-fast -- --nocapture
 To check only the real-tool targets after installing their prerequisites:
 
 ```sh
-cargo test -p retype-cli --locked --test fidelity --test fidelity_axes --test video --test documents --test archives --no-fail-fast -- --nocapture
+cargo test -p retype-cli --locked --test keep --test fidelity --test fidelity_axes --test video --test documents --test archives --no-fail-fast -- --nocapture
 ```
 
 Set strict tool mode in that shell before the targeted command too. Without it, `SKIPPED:` messages still identify missing prerequisites, but the test harness can report those tests as passed. A missing PDF engine is an error once Pandoc is present, including in an ordinary run.
+
+### Strict native rename and undo gate
+
+Run this on each release OS to require a real watched HEIC-to-JPEG conversion, normal source disposition and a complete undo that restores the exact original bytes and removes the output. The strict mode fails rather than skipping if ImageMagick or its HEIC delegate is unavailable. The test uses private generated files and starts its own daemon.
+
+Linux/macOS:
+
+```sh
+RETYPE_REQUIRE_NATIVE_WORKFLOW=1 cargo test -p retype-cli --locked --test keep a_real_watched_heic_conversion_and_undo_preserve_the_original -- --nocapture
+```
+
+PowerShell:
+
+```powershell
+$env:RETYPE_REQUIRE_NATIVE_WORKFLOW = '1'
+cargo test -p retype-cli --locked --test keep a_real_watched_heic_conversion_and_undo_preserve_the_original -- --nocapture
+```
+
+This gate currently fails when the validator retains the visible source or the platform cannot complete destructive undo. A passing ordinary tool suite is not a substitute for this gate.
 
 ## 4. Filesystem and OS preparation
 

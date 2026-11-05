@@ -1,10 +1,13 @@
 //! The keep-original control and exact source-name preservation.
 
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+
+#[path = "support/tools.rs"]
+mod tool_support;
 
 struct Daemon {
 	child: Child,
@@ -19,6 +22,57 @@ impl Drop for Daemon {
 		let _ = self.child.kill();
 		let _ = self.child.wait();
 	}
+}
+
+struct CommandResult {
+	status: ExitStatus,
+	stdout: String,
+	stderr: String,
+}
+
+struct TestCommand(Child);
+
+impl Drop for TestCommand {
+	fn drop(&mut self) {
+		let _ = self.0.kill();
+		let _ = self.0.wait();
+	}
+}
+
+fn bounded(command: &mut Command, limit: Duration) -> std::io::Result<CommandResult> {
+	let mut stdout = tempfile::tempfile()?;
+	let mut stderr = tempfile::tempfile()?;
+	let mut child = TestCommand(
+		command
+			.stdout(Stdio::from(stdout.try_clone()?))
+			.stderr(Stdio::from(stderr.try_clone()?))
+			.spawn()?,
+	);
+	let deadline = Instant::now() + limit;
+	let status = loop {
+		if let Some(status) = child.0.try_wait()? {
+			break status;
+		}
+		if Instant::now() >= deadline {
+			return Err(std::io::Error::new(
+				std::io::ErrorKind::TimedOut,
+				"test command timed out",
+			));
+		}
+		std::thread::sleep(Duration::from_millis(25));
+	};
+	fn text(file: &mut fs::File) -> std::io::Result<String> {
+		let length = file.metadata()?.len();
+		file.seek(SeekFrom::Start(length.saturating_sub(128 * 1024)))?;
+		let mut bytes = Vec::new();
+		file.read_to_end(&mut bytes)?;
+		Ok(String::from_utf8_lossy(&bytes).into_owned())
+	}
+	Ok(CommandResult {
+		status,
+		stdout: text(&mut stdout)?,
+		stderr: text(&mut stderr)?,
+	})
 }
 
 fn archive() -> Vec<u8> {
@@ -340,6 +394,118 @@ fn keep_does_not_hide_an_undo_storage_failure_from_the_cli() {
 	assert!(answer["error"]["message"].as_str().unwrap().contains("undo"));
 	assert_eq!(fs::read(source).unwrap(), original);
 	assert!(!dir.path().join("Bundle.zip").exists());
+}
+
+fn requires_native_workflow() -> bool {
+	std::env::var_os("RETYPE_REQUIRE_NATIVE_WORKFLOW").as_deref() == Some(std::ffi::OsStr::new("1"))
+}
+
+fn missing_heic(reason: &str) {
+	assert!(
+		!requires_native_workflow(),
+		"required native workflow prerequisite unavailable: {reason}"
+	);
+	tool_support::unavailable(reason);
+}
+
+fn has_heic_codec() -> bool {
+	let mut capabilities = Command::new("magick");
+	capabilities.args(["-list", "format"]);
+	let capabilities = match bounded(&mut capabilities, Duration::from_secs(10)) {
+		Ok(output) => output,
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+			missing_heic("ImageMagick 7 with HEIC read/write support");
+			return false;
+		}
+		Err(error) => panic!("cannot inspect ImageMagick: {error}"),
+	};
+	assert!(capabilities.status.success(), "{}", capabilities.stderr);
+	let has_heic = capabilities.stdout.lines().any(|line| {
+		let fields: Vec<&str> = line.split_whitespace().collect();
+		fields.first().is_some_and(|name| name.trim_end_matches('*') == "HEIC")
+			&& fields
+				.get(2)
+				.is_some_and(|mode| mode.contains('r') && mode.contains('w'))
+	});
+	if !has_heic {
+		missing_heic("ImageMagick HEIC read/write delegate");
+	}
+	has_heic
+}
+
+fn assert_jpeg_dimensions(path: &Path) {
+	let mut identify = Command::new("magick");
+	identify.args(["identify", "-format", "%m %wx%h"]).arg(path);
+	let image = bounded(&mut identify, Duration::from_secs(10)).unwrap();
+	assert!(image.status.success(), "{}", image.stderr);
+	assert_eq!(image.stdout, "JPEG 40x32");
+}
+
+#[test]
+fn a_real_watched_heic_conversion_and_undo_preserve_the_original() {
+	if !has_heic_codec() {
+		return;
+	}
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let photos = dir.path().join("photos");
+	fs::create_dir(&photos).unwrap();
+	let source = photos.join("photo.HEIC");
+	let target = photos.join("photo.jpg");
+	let mut generate = Command::new("magick");
+	generate.args(["-size", "40x32", "xc:orange"]).arg(&source);
+	let generated = bounded(&mut generate, Duration::from_secs(20)).unwrap();
+	assert!(generated.status.success(), "{}", generated.stderr);
+	let original = fs::read(&source).unwrap();
+	let config = configuration(dir.path(), UndoPolicy::Enabled);
+	let registered = Command::new(env!("CARGO_BIN_EXE_retype"))
+		.arg("watch")
+		.arg(&photos)
+		.arg("--state-dir")
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config)
+		.output()
+		.unwrap();
+	assert!(
+		registered.status.success(),
+		"{}",
+		String::from_utf8_lossy(&registered.stderr)
+	);
+	let _daemon = start_daemon(&state, &config);
+	wait_for_watch(&state);
+	fs::rename(&source, &target).unwrap();
+	let job = wait_for_job(&state, retype_core::job::JobState::Done);
+
+	assert_jpeg_dimensions(&target);
+	let retained_before_undo = source.exists();
+	if retained_before_undo {
+		assert_eq!(fs::read(&source).unwrap(), original);
+	}
+	let mut undo = Command::new(env!("CARGO_BIN_EXE_retype"));
+	undo.args(["undo", job.id.as_str(), "--no-spawn"])
+		.arg("--state-dir")
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config);
+	let undo = bounded(&mut undo, Duration::from_secs(10)).unwrap();
+	assert_eq!(fs::read(&source).unwrap(), original);
+	if undo.status.success() {
+		assert!(!target.exists());
+	} else {
+		assert!(!retype_core::fsx::supports_durable_cleanup(), "{}", undo.stderr);
+		assert!(undo.stderr.contains("directory durability"), "{}", undo.stderr);
+		assert!(target.exists());
+	}
+	if requires_native_workflow() {
+		assert!(
+			undo.status.success(),
+			"release workflow requires a complete native undo: {}",
+			undo.stderr
+		);
+		assert!(
+			!retained_before_undo,
+			"release workflow requires normal source disposition"
+		);
+	}
 }
 
 #[test]
