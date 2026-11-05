@@ -42,7 +42,7 @@ pub enum Verdict {
 pub fn decide(
 	shared: &Shared,
 	pool: &Pool,
-	root: &Path,
+	_root: &Path,
 	source: &Path,
 	target: &Path,
 	id: &JobId,
@@ -74,7 +74,7 @@ pub fn decide(
 			return park(
 				shared,
 				&stem,
-				root,
+				source,
 				&format,
 				target,
 				id,
@@ -103,7 +103,7 @@ pub fn decide(
 		Ok(resolved) => resolved,
 		Err(problems) => {
 			return uncarried(
-				shared, pool, root, &stem, &format, target, id, batch, &parsed, requested, problems, policy, None,
+				shared, pool, source, &stem, &format, target, id, batch, &parsed, requested, problems, policy, None,
 			);
 		}
 	};
@@ -115,7 +115,7 @@ pub fn decide(
 		return uncarried(
 			shared,
 			pool,
-			root,
+			source,
 			&stem,
 			&format,
 			target,
@@ -135,7 +135,7 @@ pub fn decide(
 			return uncarried(
 				shared,
 				pool,
-				root,
+				source,
 				&stem,
 				&format,
 				target,
@@ -160,7 +160,7 @@ pub fn decide(
 		return park(
 			shared,
 			&stem,
-			root,
+			source,
 			&format,
 			target,
 			id,
@@ -182,7 +182,7 @@ pub fn decide(
 		return park(
 			shared,
 			&stem,
-			root,
+			source,
 			&format,
 			target,
 			id,
@@ -204,7 +204,7 @@ pub fn decide(
 		return park(
 			shared,
 			&stem,
-			root,
+			source,
 			&format,
 			target,
 			id,
@@ -230,7 +230,7 @@ pub fn decide(
 fn uncarried(
 	shared: &Shared,
 	pool: &Pool,
-	root: &Path,
+	source: &Path,
 	stem: &str,
 	format: &str,
 	target: &Path,
@@ -249,7 +249,7 @@ fn uncarried(
 		if let Some(verdict) = repair(
 			shared,
 			pool,
-			stem,
+			source,
 			format,
 			target,
 			id,
@@ -265,7 +265,7 @@ fn uncarried(
 	park(
 		shared,
 		stem,
-		root,
+		source,
 		format,
 		target,
 		id,
@@ -394,6 +394,14 @@ fn corrected(registry: &Registry, parsed: &intent::Intent, format: &str, policy:
 		text.push_str(target);
 
 		for token in &group.tokens {
+			if token.name == "keep" {
+				if token.value.is_some() {
+					return None;
+				}
+				text.push_str("+keep");
+				kept_any = true;
+				continue;
+			}
 			let found = registry.resolve(&token.name);
 			let op = found.as_ref().and_then(|found| found.op());
 
@@ -475,7 +483,7 @@ struct Correction {
 fn repair(
 	shared: &Shared,
 	pool: &Pool,
-	stem: &str,
+	source: &Path,
 	format: &str,
 	target: &Path,
 	id: &JobId,
@@ -521,16 +529,21 @@ fn repair(
 			return Some(Verdict::Ignore);
 		}
 	};
-	let source = retype_core::convert::restore_source_name(target, stem, format).ok()?;
-	shared.recent.note(&source, target);
-	if !matches!(input_fingerprint.matches(&source), Ok(true)) {
+	if let Err(error) = watcher::restore_queued_source(shared, source, target) {
+		eprintln!(
+			"retype: cannot restore {} for automatic repair: {error}",
+			target.display()
+		);
+		return Some(Verdict::Ignore);
+	}
+	if !matches!(input_fingerprint.matches(source), Ok(true)) {
 		eprintln!(
 			"retype: {} changed during restoration; automatic repair did not start",
 			source.display()
 		);
 		return Some(Verdict::Ignore);
 	}
-	let source_metadata = fs::metadata(&source).ok();
+	let source_metadata = fs::metadata(source).ok();
 
 	let job = Job {
 		id: id.clone(),
@@ -538,7 +551,7 @@ fn repair(
 		updated: now_ms(),
 		source: Source {
 			size: source_metadata.as_ref().map(|metadata| metadata.len()).unwrap_or(bytes),
-			path: source.clone(),
+			path: source.to_path_buf(),
 			format: format.to_string(),
 			mtime_ns: source_metadata.as_ref().map(mtime_ns).unwrap_or_default(),
 		},
@@ -637,7 +650,7 @@ struct Parking<'a> {
 fn park(
 	shared: &Shared,
 	stem: &str,
-	_root: &Path,
+	source: &Path,
 	format: &str,
 	target: &Path,
 	id: &JobId,
@@ -652,30 +665,23 @@ fn park(
 			return Verdict::Ignore;
 		}
 	};
-	let source_path = match retype_core::convert::restore_source_name(target, stem, format) {
-		Ok(source) => source,
-		Err(error) => {
-			let asks = reason == Reason::Ask
-				|| parking
-					.requested
-					.as_deref()
-					.and_then(|text| intent::parse(text).ok())
-					.is_some_and(|intent| requests_confirmation(&intent, &shared.registry()));
-			if asks {
-				eprintln!(
-					"retype: cannot restore {} for confirmation: {error}; conversion did not start",
-					target.display()
-				);
-				return Verdict::Ignore;
-			}
-			return Verdict::Run;
+	if let Err(error) = watcher::restore_queued_source(shared, source, target) {
+		let asks = reason == Reason::Ask
+			|| parking
+				.requested
+				.as_deref()
+				.and_then(|text| intent::parse(text).ok())
+				.is_some_and(|intent| requests_confirmation(&intent, &shared.registry()));
+		if asks {
+			eprintln!(
+				"retype: cannot restore {} for confirmation: {error}; conversion did not start",
+				target.display()
+			);
+			return Verdict::Ignore;
 		}
-	};
-
-	// The restore is a rename of our own, and the watcher must not read it as the user
-	// asking for the inverse conversion: `a.webp` back to `a.png` is what parking looks
-	// like from outside, and without this it parks itself again, for ever.
-	shared.recent.note(&source_path, target);
+		return Verdict::Run;
+	}
+	let source_path = source.to_path_buf();
 	if !matches!(input_fingerprint.matches(&source_path), Ok(true)) {
 		eprintln!(
 			"retype: {} changed during restoration; the job was not parked",
@@ -692,9 +698,10 @@ fn park(
 		Parked::Attention => None,
 	};
 
+	let source_name = source.file_name().and_then(|name| name.to_str()).unwrap_or(stem);
 	let derived = parking
 		.resolved
-		.map(|resolved| output::derive(stem, format, &resolved.groups))
+		.map(|resolved| output::derive_with_source_name(stem, source_name, &resolved.groups))
 		.unwrap_or_default();
 
 	let outputs: Vec<Output> = parking
@@ -867,6 +874,19 @@ mod tests {
 		let dir = tempfile::tempdir().expect("a directory");
 		let policy = Policy::open(dir.path()).expect("a policy");
 		(dir, policy)
+	}
+
+	#[test]
+	fn a_repair_keeps_the_job_wide_original_control() {
+		let registry = registry();
+		let (_dir, policy) = nothing();
+		let parsed = intent::parse("zip+unknown+keep").unwrap();
+		let correction = corrected(&registry, &parsed, "tar", &policy).unwrap();
+		assert_eq!(correction.text, "zip+keep");
+		assert_eq!(correction.dropped, vec!["unknown".to_string()]);
+
+		let malformed = intent::parse("zip+unknown+keep=yes").unwrap();
+		assert!(corrected(&registry, &malformed, "tar", &policy).is_none());
 	}
 
 	#[test]

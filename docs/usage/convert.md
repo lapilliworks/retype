@@ -30,12 +30,14 @@ retype c holiday.heic png,webp+cap1080
 
 That writes `holiday.png` unchanged in size, and `holiday-cap1080.webp`.
 
-A group whose format equals the source format keeps the source as it is, which is how a converted copy is added without losing the original:
+A source-format group with no conversion operations keeps the original. The job-wide `+keep` control does the same regardless of which output group carries it:
 
 ```
-retype c holiday.jpg png                # holiday.jpg stays, holiday.png appears
-retype c holiday.jpg jpg+q60            # holiday.jpg stays, holiday-quality60.jpg appears
+holiday.heic  ->  holiday.heic,jpg       # keep holiday.heic, add holiday.jpg
+holiday.heic  ->  holiday.jpg+keep        # the same visible result
 ```
+
+The original name, including extension alias and case, is preserved. `+keep` works independently of undo. The current `retype convert` path always retains its source, even without `+keep`; watched conversions can consume it only after their safety checks pass.
 
 ## Names the source does not need
 
@@ -82,8 +84,8 @@ Both together is not an error: asking wins and the `!` is ignored with a warning
 ## What is written, and what is left alone
 
 - The output is written under a temporary name in its target directory and renamed into place only when the converter exits successfully. An output path is therefore absent or complete, never half a file
-- A failure writes nothing. A source that fails to convert keeps its name
-- `convert` does not consume its source. It was given a path and leaves it where it is. A rename performed in a folder does consume the source name, which is why those jobs are the ones that can be reversed by [undo](jobs.md)
+- A partial failure keeps completed outputs and preserves the source; it does not automatically roll back successful outputs
+- `convert` currently retains its source. A watched conversion removes the original only when its backup, output validation, ownership and durability checks all permit it. `+keep` requests that the original remain visible
 - A conversion that takes a while shows the source name until it finishes: the file is put back to its original extension before the work starts, and renamed to the target when it commits
 
 ## When the name is wrong

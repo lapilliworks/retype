@@ -87,7 +87,19 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	};
 	let installed = failure.is_none();
 
-	let mut derived = names::derive(&source.stem, &source.format, &resolved.groups);
+	let source_name = source.original_name();
+	let mut derived = names::derive_with_source_name(&source.stem, &source_name, &resolved.groups);
+	if resolved.meta.keep && !derived.iter().any(|entry| entry.keep_source) {
+		derived.insert(
+			0,
+			Derived {
+				group: resolved.groups.len(),
+				path: PathBuf::from(&source_name),
+				format: source.format.clone(),
+				keep_source: true,
+			},
+		);
+	}
 
 	if request.output.is_some() && plans.len() != 1 {
 		return Ok(ExitCode::from(output::fail(
@@ -227,6 +239,15 @@ struct Named {
 impl Named {
 	fn display(&self) -> String {
 		self.written.clone()
+	}
+
+	fn original_name(&self) -> String {
+		let name = self.written.rsplit(['/', '\\']).next().unwrap_or(&self.written);
+		if !self.is_directory && self.stem == DEFAULT_STEM && !name.contains('.') {
+			format!("{}.{}", self.stem, name)
+		} else {
+			name.to_string()
+		}
 	}
 }
 

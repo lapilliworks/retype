@@ -72,7 +72,7 @@ pub fn prepare(registry: &Registry, request: &Request) -> std::result::Result<Pr
 	let parsed = intent::parse(&request.intent)?;
 	let resolved = resolve::resolve(&parsed, Origin { format, is_directory }, registry)?;
 	let plans = plan::compile(registry, &tools::Machine, &resolved)?;
-	let paths = targets(request, &plans, stem, format, &resolved)?;
+	let paths = targets(request, &plans, stem, &resolved)?;
 
 	validate(request, &paths)?;
 
@@ -174,10 +174,10 @@ fn targets(
 	request: &Request,
 	plans: &[plan::Plan],
 	stem: &str,
-	format: &str,
 	resolved: &resolve::Resolved,
 ) -> std::result::Result<Vec<PathBuf>, Diagnoses> {
-	let derived = output::derive(stem, format, &resolved.groups);
+	let source_name = request.input.file_name().and_then(|name| name.to_str()).unwrap_or(stem);
+	let derived = output::derive_with_source_name(stem, source_name, &resolved.groups);
 
 	match &request.output {
 		Some(_) if plans.len() > 1 => Err(Diagnoses::one(Error::Diagnostic(Diagnostic::global(

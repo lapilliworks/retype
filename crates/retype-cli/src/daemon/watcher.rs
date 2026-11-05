@@ -914,7 +914,7 @@ fn forget_batch(shared: &Shared, batch: Option<&str>, id: &JobId) {
 }
 
 /// Restore the exact source name before accepting a queued rename.
-fn restore_queued_source(shared: &Shared, source: &Path, target: &Path) -> retype_core::error::Result<()> {
+pub(super) fn restore_queued_source(shared: &Shared, source: &Path, target: &Path) -> retype_core::error::Result<()> {
 	let metadata = std::fs::symlink_metadata(target)?;
 	if !metadata.file_type().is_file() {
 		return Err(std::io::Error::other("the renamed input is not a regular file").into());
@@ -958,7 +958,11 @@ fn queued_rename(
 		.and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
 		.and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
 		.unwrap_or_default();
-	let derived = retype_core::output::derive(&prepared.stem, &prepared.format, &prepared.resolved.groups);
+	let source_name = source
+		.file_name()
+		.and_then(|name| name.to_str())
+		.unwrap_or(&prepared.stem);
+	let derived = retype_core::output::derive_with_source_name(&prepared.stem, source_name, &prepared.resolved.groups);
 	let outputs = prepared
 		.plans
 		.iter()
@@ -1326,7 +1330,8 @@ fn run(
 
 	// The rename names the request; the file is called what the tokens say, the
 	// same way `convert` derives its paths.
-	let derived = retype_core::output::derive(&stem, &format, &resolved.groups);
+	let source_name = source.file_name().and_then(|name| name.to_str()).unwrap_or(&stem);
+	let derived = retype_core::output::derive_with_source_name(&stem, source_name, &resolved.groups);
 
 	let store = retype_core::undo::Store::open(&shared.state_dir);
 	let lease = match store.lease(&id) {
@@ -1608,6 +1613,7 @@ fn run(
 		&& output_count == plans.len()
 		&& all_validated
 		&& has_backup
+		&& !resolved.meta.keep
 		&& !resolved.groups.iter().any(|group| group.keep_source);
 	if let Err(error) = persist(shared, &job) {
 		eprintln!("retype: original retained because completion could not be persisted: {error}");
