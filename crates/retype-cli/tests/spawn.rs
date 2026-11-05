@@ -86,6 +86,40 @@ fn the_binary_starts_a_daemon_and_stops_it() {
 
 #[cfg(unix)]
 #[test]
+fn a_disconnected_client_does_not_terminate_the_real_daemon() {
+	use std::net::Shutdown;
+	use std::os::unix::net::UnixStream;
+	use std::time::Duration;
+
+	let dir = tempfile::tempdir().unwrap();
+	let daemon = Daemon::start(dir.path());
+	let endpoint = retype_cli::state::read_endpoint(dir.path()).unwrap();
+	for _ in 0..5 {
+		let mut stream = UnixStream::connect(&endpoint).unwrap();
+		let hello = retype_ipc::Request::new(1, "hello")
+			.with_params(retype_ipc::Hello {
+				ipc: retype_ipc::IPC_VERSION.to_string(),
+				client: "disconnect-test".to_string(),
+				features: Vec::new(),
+			})
+			.unwrap();
+		retype_ipc::write_frame(&mut stream, &hello).unwrap();
+		stream.shutdown(Shutdown::Both).unwrap();
+		drop(stream);
+		std::thread::sleep(Duration::from_millis(50));
+		let status = retype()
+			.args(["daemon", "status", "--no-spawn"])
+			.arg("--state-dir")
+			.arg(dir.path())
+			.output()
+			.unwrap();
+		assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+	}
+	drop(daemon);
+}
+
+#[cfg(unix)]
+#[test]
 fn a_foreground_process_group_interrupt_does_not_stop_the_spawned_daemon() {
 	use std::os::unix::process::CommandExt;
 	use std::process::Stdio;

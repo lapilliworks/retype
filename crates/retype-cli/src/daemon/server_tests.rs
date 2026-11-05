@@ -23,6 +23,15 @@ fn submission(input: &Path) -> Request {
 }
 
 #[test]
+fn a_disconnected_client_is_not_a_daemon_failure() {
+	let disconnected = crate::error::Error::Frame(retype_ipc::FrameError::Io("broken pipe".to_string()));
+	assert!(connection_result(Err(disconnected)).is_ok());
+
+	let internal = crate::error::Error::Io(std::io::Error::other("internal failure"));
+	assert!(connection_result(Err(internal)).is_err());
+}
+
+#[test]
 fn a_cli_submission_is_journalled_before_it_waits_in_the_queue() {
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");

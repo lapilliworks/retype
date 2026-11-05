@@ -42,20 +42,22 @@ impl Running {
 
 impl Drop for Running {
 	fn drop(&mut self) {
-		if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&self.socket) {
-			use retype_ipc::{Request, write_frame};
-			let request = Request::new(1, "hello").with_params(retype_ipc::Hello {
-				ipc: retype_ipc::IPC_VERSION.to_string(),
-				client: "test".to_string(),
-				features: Vec::new(),
-			});
-			if let Ok(request) = request {
-				let _ = write_frame(&mut stream, &request);
-				let _ = write_frame(&mut stream, &Request::new(2, "shutdown"));
-			}
+		if let Ok(mut client) = client::connect(self.state_dir()) {
+			let _ = client.call_without_params("shutdown");
 		}
 		if let Some(handle) = self.handle.take() {
-			let _ = handle.join();
+			let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+			while !handle.is_finished() && std::time::Instant::now() < deadline {
+				std::thread::sleep(std::time::Duration::from_millis(20));
+			}
+			if handle.is_finished() {
+				let joined = handle.join();
+				if !std::thread::panicking() {
+					assert!(joined.is_ok(), "the daemon's request loop panicked");
+				}
+			} else if !std::thread::panicking() {
+				panic!("the daemon's request loop did not stop");
+			}
 		}
 	}
 }
@@ -70,6 +72,30 @@ fn a_client_greets_and_reads_status_through_the_published_endpoint() {
 	assert_eq!(status["pid"], std::process::id());
 	assert_eq!(status["jobs"], 0);
 	assert_eq!(status["endpoint"], daemon.socket.to_str().unwrap());
+}
+
+#[test]
+fn a_client_disconnecting_during_a_reply_does_not_stop_the_daemon() {
+	use std::io::Write;
+	use std::net::Shutdown;
+
+	let daemon = Running::start();
+	for _ in 0..10 {
+		let mut stream = std::os::unix::net::UnixStream::connect(&daemon.socket).unwrap();
+		let hello = retype_ipc::Request::new(1, "hello")
+			.with_params(retype_ipc::Hello {
+				ipc: retype_ipc::IPC_VERSION.to_string(),
+				client: "disconnect-test".to_string(),
+				features: Vec::new(),
+			})
+			.unwrap();
+		retype_ipc::write_frame(&mut stream, &hello).unwrap();
+		stream.flush().unwrap();
+		stream.shutdown(Shutdown::Both).unwrap();
+		drop(stream);
+		let mut client = client::connect(daemon.state_dir()).unwrap();
+		assert_eq!(client.status().unwrap().pid, std::process::id());
+	}
 }
 
 #[test]

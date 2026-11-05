@@ -90,7 +90,7 @@ pub fn serve(name: &str, server: &mut Server) -> Result<()> {
 			continue;
 		}
 
-		serve_client(handle, server)?;
+		super::server::connection_result(serve_client(handle, server))?;
 	}
 
 	Ok(())

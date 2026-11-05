@@ -1191,6 +1191,18 @@ fn wire_problems(problems: &retype_core::error::Diagnoses) -> WireError {
 	error
 }
 
+/// A client can disappear while a reply is being written; that is local to the
+/// connection, not a reason to stop the daemon or its watchers.
+pub(crate) fn connection_result(result: Result<()>) -> Result<()> {
+	match result {
+		Err(crate::error::Error::Frame(retype_ipc::FrameError::Io(message))) => {
+			eprintln!("retype: client connection ended while sending a response: {message}");
+			Ok(())
+		}
+		other => other,
+	}
+}
+
 /// Accept connections until the daemon is asked to stop.
 #[cfg(unix)]
 pub fn serve(listener: std::os::unix::net::UnixListener, server: &mut Server) -> Result<()> {
@@ -1246,7 +1258,7 @@ pub fn serve(listener: std::os::unix::net::UnixListener, server: &mut Server) ->
 
 		let mut reader = BufReader::new(stream.try_clone()?);
 
-		server.serve_connection(&mut reader, &mut stream)?;
+		connection_result(server.serve_connection(&mut reader, &mut stream))?;
 
 		if server.stopped() {
 			break;
