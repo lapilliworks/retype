@@ -168,6 +168,13 @@ pub fn spawn_detached(context: &Context) -> Result<PathBuf> {
 	// passing them on would claim a supervision that would never restart it.
 	command.env_remove("INVOCATION_ID").env_remove("XPC_SERVICE_NAME");
 
+	// A foreground client's Ctrl+C must not also reach the detached daemon.
+	#[cfg(unix)]
+	{
+		use std::os::unix::process::CommandExt;
+		command.process_group(0);
+	}
+
 	// Without this the child inherits the console and dies with it.
 	#[cfg(windows)]
 	{

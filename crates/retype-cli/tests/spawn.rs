@@ -84,6 +84,62 @@ fn the_binary_starts_a_daemon_and_stops_it() {
 	drop(daemon);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_foreground_process_group_interrupt_does_not_stop_the_spawned_daemon() {
+	use std::os::unix::process::CommandExt;
+	use std::process::Stdio;
+	use std::time::{Duration, Instant};
+
+	let dir = tempfile::tempdir().unwrap();
+	let daemon = Daemon {
+		state: dir.path().to_path_buf(),
+	};
+	let mut shell = Command::new("sh");
+	shell
+		.args([
+			"-c",
+			"\"$RETYPE\" daemon start --state-dir \"$STATE\" && : > \"$STATE/foreground-ready\"; exec sleep 30",
+		])
+		.env("RETYPE", env!("CARGO_BIN_EXE_retype"))
+		.env("STATE", dir.path())
+		.env_remove("RETYPE_NO_SPAWN")
+		.stdout(Stdio::null())
+		.stderr(Stdio::null())
+		.process_group(0);
+	let mut foreground = shell.spawn().unwrap();
+	let deadline = Instant::now() + Duration::from_secs(8);
+	while !dir.path().join("foreground-ready").exists() && Instant::now() < deadline {
+		std::thread::sleep(Duration::from_millis(20));
+	}
+	if !dir.path().join("foreground-ready").exists() {
+		let _ = foreground.kill();
+		let _ = foreground.wait();
+		panic!("the detached daemon did not start");
+	}
+
+	// The shell keeps this group alive after its `daemon start` command returns.
+	assert_eq!(unsafe { libc::kill(-(foreground.id() as i32), libc::SIGINT) }, 0);
+	let deadline = Instant::now() + Duration::from_secs(3);
+	while foreground.try_wait().unwrap().is_none() {
+		if Instant::now() >= deadline {
+			let _ = foreground.kill();
+			let _ = foreground.wait();
+			panic!("the foreground process did not stop after SIGINT");
+		}
+		std::thread::sleep(Duration::from_millis(20));
+	}
+	std::thread::sleep(Duration::from_millis(200));
+	let status = retype()
+		.args(["daemon", "status", "--no-spawn"])
+		.arg("--state-dir")
+		.arg(dir.path())
+		.output()
+		.unwrap();
+	assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+	drop(daemon);
+}
+
 #[test]
 fn starting_twice_is_not_an_error() {
 	let dir = tempfile::tempdir().unwrap();
