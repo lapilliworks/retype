@@ -53,23 +53,28 @@ fn a_backslash_parent_component_is_refused() {
 	let mut header = tar::Header::new_gnu();
 	header.set_size(4);
 	header.set_mode(0o644);
+	/* A safe archive writer rejects this name on Windows before Retype can test it. */
+	let name = b"..\\escape.txt";
+	header.as_mut_bytes()[..name.len()].copy_from_slice(name);
 	header.set_cksum();
-	builder
-		.append_data(&mut header, "..\\escape.txt", &b"evil"[..])
-		.unwrap();
+	builder.append(&header, &b"evil"[..]).unwrap();
 	builder.finish().unwrap();
+	drop(builder);
 
-	assert!(
-		repack(
-			None,
-			Native::Tar,
-			Native::Zip,
-			&input,
-			&output,
-			&Cancellation::default()
-		)
-		.is_err()
-	);
+	let bytes = fs::read(&input).unwrap();
+	assert_eq!(&bytes[..name.len()], name);
+	let mut archive = tar::Archive::new(&bytes[..]);
+	assert_eq!(archive.entries().unwrap().next().unwrap().unwrap().size(), 4);
+	let error = repack(
+		None,
+		Native::Tar,
+		Native::Zip,
+		&input,
+		&output,
+		&Cancellation::default(),
+	)
+	.unwrap_err();
+	assert_eq!(error.code(), retype_core::error::Code::Unsupported);
 	assert!(!output.exists());
 }
 
