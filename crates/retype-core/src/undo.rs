@@ -597,7 +597,7 @@ impl Store {
 			let planned = record.outputs.iter().find(|planned| planned.path == output.path);
 			if output.state != crate::job::OutputState::Done
 				|| !seen.insert(&output.path)
-				|| !planned.is_some_and(|planned| planned.ext == output.format)
+				|| planned.is_none_or(|planned| planned.ext != output.format)
 			{
 				return Err(Error::Io(std::io::Error::other(format!(
 					"{} does not match the intended output inventory; source retained",
