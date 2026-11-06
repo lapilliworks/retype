@@ -49,7 +49,7 @@ retype undo 01J8Z
 
 Undo reverses one job: it removes what the job produced, and puts the source back under its original name when the job consumed it. It reads a store of source bytes, not the job history, so it still works after the history has aged out.
 
-One record restores one job. Undoing the same job twice is a refusal, not a second restoration.
+One record restores one job. Undoing the same job twice is a refusal, not a second restoration. If the daemon cannot be reached, offline undo acquires the state lock and refuses while another process owns it. On Windows, this build reports an error and retains outputs when directory durability is unavailable; it does not claim that undo completed.
 
 | Setting | Default | Effect |
 |---|---|---|

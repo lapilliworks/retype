@@ -125,8 +125,10 @@ pub fn connect(context: &Context) -> Result<Client> {
 
 /// Connect, starting a daemon if none answers and starting one is allowed.
 pub fn connect_or_spawn(context: &Context) -> Result<Client> {
-	if let Ok(client) = connect(context) {
-		return Ok(client);
+	match connect(context) {
+		Ok(client) => return Ok(client),
+		Err(Error::Client(error)) if error.is_connection_busy() => return Err(Error::Client(error)),
+		Err(_) => {}
 	}
 
 	if !context.allow_spawn || spawn_suppressed() {

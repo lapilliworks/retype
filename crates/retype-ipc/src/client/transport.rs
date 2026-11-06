@@ -15,6 +15,8 @@ use crate::{FrameError, Request, read_frame, write_frame};
 #[cfg(test)]
 #[path = "transport_tests.rs"]
 mod tests;
+#[cfg(windows)]
+mod windows;
 
 #[cfg(unix)]
 pub(super) type Stream = std::os::unix::net::UnixStream;
@@ -30,7 +32,24 @@ pub(super) fn open(endpoint: &Path) -> std::io::Result<Stream> {
 
 #[cfg(windows)]
 pub(super) fn open(endpoint: &Path) -> std::io::Result<Stream> {
-	std::fs::OpenOptions::new().read(true).write(true).open(endpoint)
+	windows::open_with_timeout(endpoint, Duration::from_secs(3))
+}
+
+#[cfg(all(test, windows))]
+pub(super) fn open_with_timeout(endpoint: &Path, timeout: Duration) -> std::io::Result<Stream> {
+	windows::open_with_timeout(endpoint, timeout)
+}
+
+pub(super) fn is_connection_busy(error: &std::io::Error) -> bool {
+	#[cfg(windows)]
+	{
+		windows::is_busy(error)
+	}
+	#[cfg(not(windows))]
+	{
+		let _ = error;
+		false
+	}
 }
 
 /// The deadline covers the request write as well as the response read.

@@ -93,6 +93,15 @@ fn assert_undo_refused_without_stopping_daemon(undo: &std::process::Output, stat
 	assert_daemon_reachable(state);
 }
 
+fn assert_missing_endpoint_refuses_offline_undo(state: &Path, id: &retype_core::job::JobId) {
+	let endpoint = retype_cli::state::read_endpoint(state).unwrap();
+	fs::remove_file(state.join(retype_cli::state::ENDPOINT_FILE)).unwrap();
+	let result = retype_cli::undo::run(state, Some(id.as_str()), false, false);
+	retype_cli::state::publish_endpoint(state, &endpoint).unwrap();
+	assert!(matches!(result, Err(retype_cli::error::Error::AlreadyRunning(_))));
+	assert_daemon_reachable(state);
+}
+
 #[test]
 fn a_watched_native_archive_conversion_restores_the_original_on_undo() {
 	let dir = tempfile::tempdir().unwrap();
@@ -184,8 +193,37 @@ fn a_watched_native_archive_conversion_restores_the_original_on_undo() {
 	}
 	assert_eq!(fs::read(store.source(&record.id).unwrap().unwrap()).unwrap(), original);
 	assert!(store.load(&record.id).unwrap().is_some());
-	fs::write(&target, output).unwrap();
+	fs::write(&target, &output).unwrap();
 	assert!(fingerprint.matches(&target).unwrap());
+	assert_missing_endpoint_refuses_offline_undo(&state, &record.id);
+	assert!(fingerprint.matches(&target).unwrap());
+	assert!(store.load(&record.id).unwrap().is_some());
+	if retype_core::fsx::supports_durable_cleanup() {
+		assert!(!source.exists());
+	} else {
+		assert_eq!(fs::read(&source).unwrap(), original);
+	}
+
+	#[cfg(windows)]
+	{
+		let held = retype_cli::client::connect(&state).unwrap();
+		let busy = retype_cli::undo::run(&state, Some(record.id.as_str()), false, false);
+		assert!(matches!(busy, Err(retype_cli::error::Error::Client(error)) if error.is_connection_busy()));
+		let context = retype_client::Context::new(&state)
+			.unwrap()
+			.with_daemon(retype_client::Daemon::at(dir.path().join("must-not-start")));
+		let busy = retype_client::connect_or_spawn(&context);
+		assert!(matches!(busy, Err(retype_client::Error::Client(error)) if error.is_connection_busy()));
+		assert!(
+			!state.join("daemon.log").exists(),
+			"a busy daemon must not be spawned again"
+		);
+		assert_eq!(fs::read(&source).unwrap(), original);
+		assert_eq!(fs::read(&target).unwrap(), output);
+		assert!(store.load(&record.id).unwrap().is_some());
+		drop(held);
+		assert_daemon_reachable(&state);
+	}
 
 	let undo = retype()
 		.args(["--no-spawn", "undo", "--last"])

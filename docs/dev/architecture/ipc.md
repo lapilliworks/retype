@@ -68,7 +68,7 @@ Directory configuration is not re-read only on registration. Edits take effect w
 | macOS, BSD | `<state>/daemon.sock` | Directory `0700`; `LOCAL_PEERCRED` |
 | Windows | `\\.\pipe\retype-<machine>-<user>` | Default DACL, owner only; impersonation must succeed |
 
-A Windows pipe can only be impersonated after its client has written, so the first frame is read before the check and handed to the connection loop rather than read twice. A client that connects and sends nothing therefore holds the daemon's single connection slot until it writes or goes away, which is a self-inflicted stall: the DACL admits only the user whose daemon it is.
+A Windows pipe can only be impersonated after its client has written, so the first frame is read before the check and handed to the connection loop rather than read twice. A client that connects and sends nothing holds the daemon's single connection slot until it writes or goes away. A client encountering a busy pipe waits up to three seconds for a connection slot, including the gap between instances; it does not retry a request that was sent or start another daemon when the slot remains busy. An initially missing pipe receives a 150 ms grace for instance turnover before it is treated as absent.
 
 Windows also hands a child every inheritable handle in its parent, and the pipes a caller uses to read the CLI's output are inheritable by construction. The CLI clears that flag on its own standard handles before it spawns a daemon, so a daemon cannot keep a caller's pipe open after the command exits. The daemon is detached and has no console, and every tool it runs is a console program, so each spawn carries `CREATE_NO_WINDOW`: without it Windows would give every conversion a console window of its own.
 
@@ -106,7 +106,7 @@ The request timeout defaults to 5 s and covers both writing the request and read
 | Live | `events.subscribe` |
 | Config | `config.reload` |
 
-`undo` and `undo.list` return undo-store errors with their code and message without stopping the daemon.
+`undo` and `undo.list` return undo-store errors with their code and message without stopping the daemon. Offline undo holds the daemon's state lock for the entire store operation and refuses when another process owns it.
 
 `shutdown` reads `force` and `now`. Without `force`, a daemon a supervisor started refuses with `E_IPC_SUPERVISED` and names the supervisor, §2. With `now`, running jobs are cancelled and waiting ones are recorded as cancelled, the runners are given a moment to write those records, and the answer carries how many were stopped.
 

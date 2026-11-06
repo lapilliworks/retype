@@ -35,7 +35,7 @@ use std::fs;
 
 use crate::error::Result;
 use crate::state;
-use lock::Lock;
+pub(crate) use lock::Lock;
 
 /// Run in the foreground, which is what a user unit or a launchd agent
 /// executes, `docs/dev/architecture/ipc.md` §1.

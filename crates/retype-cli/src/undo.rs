@@ -32,9 +32,15 @@ pub fn run(state_dir: &Path, id: Option<&str>, last: bool, json: bool) -> Result
 		)));
 	}
 
-	// A reachable daemon owns the undo store. Asking it is what keeps an undo from
-	// racing a conversion that still has the record open, `docs/dev/architecture/ipc.md` §1.
-	if let Ok(mut client) = crate::client::connect(state_dir) {
+	// A reachable daemon owns the undo store. A busy pipe is not an absent daemon.
+	let client = match crate::client::connect(state_dir) {
+		Ok(client) => Some(client),
+		Err(crate::error::Error::Client(error)) if error.is_connection_busy() => {
+			return Err(crate::error::Error::Client(error));
+		}
+		Err(_) => None,
+	};
+	if let Some(mut client) = client {
 		let request = retype_ipc::UndoRequest {
 			id: id.map(str::to_string),
 			last,
@@ -57,6 +63,9 @@ pub fn run(state_dir: &Path, id: Option<&str>, last: bool, json: bool) -> Result
 		};
 	}
 
+	// Hold the daemon's state lock through offline undo, even if its endpoint is stale.
+	crate::state::ensure_private_directory(state_dir)?;
+	let _lock = crate::daemon::Lock::acquire(&state_dir.join("lock"), state_dir)?;
 	let store = Store::open(state_dir);
 	let records = store.list()?;
 
@@ -137,4 +146,50 @@ pub fn ids(state_dir: &Path) -> Result<Vec<JobId>> {
 		.into_iter()
 		.map(|record| record.id)
 		.collect())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn offline_undo_refuses_while_the_state_lock_is_held() {
+		let dir = tempfile::tempdir().unwrap();
+		let state = dir.path().join("state");
+		let source = dir.path().join("original.tar");
+		std::fs::write(&source, b"original bytes").unwrap();
+		let store = Store::open(&state);
+		let id = JobId::now().unwrap();
+		store
+			.save(retype_core::undo::Subject {
+				id: id.clone(),
+				intent: "zip".to_string(),
+				machine: "test".to_string(),
+				bytes: source.clone(),
+				source_path: source.clone(),
+				source_ext: "tar".to_string(),
+				outputs: Vec::new(),
+				consume_source: true,
+			})
+			.unwrap();
+		std::fs::remove_file(&source).unwrap();
+		let lock = crate::daemon::Lock::acquire(&state.join("lock"), &state).unwrap();
+
+		let result = run(&state, Some(id.as_str()), false, false);
+		assert!(matches!(result, Err(crate::error::Error::AlreadyRunning(_))));
+		assert!(!source.exists());
+		assert_eq!(
+			std::fs::read(store.source(&id).unwrap().unwrap()).unwrap(),
+			b"original bytes"
+		);
+		assert!(store.load(&id).unwrap().is_some());
+		drop(lock);
+	}
+
+	#[test]
+	fn offline_undo_without_a_record_keeps_its_state_error() {
+		let dir = tempfile::tempdir().unwrap();
+		let result = run(&dir.path().join("state"), None, true, false).unwrap();
+		assert_eq!(result, ExitCode::from(7));
+	}
 }

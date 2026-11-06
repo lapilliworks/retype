@@ -281,9 +281,15 @@ impl From<crate::FrameError> for ClientError {
 }
 
 impl ClientError {
-	/// Whether the daemon is simply not there, as opposed to broken.
+	/// Whether the daemon's connection slot remained busy after the bounded wait.
+	pub fn is_connection_busy(&self) -> bool {
+		matches!(self, Self::Connect(error) if transport::is_connection_busy(error))
+	}
+
+	/// Whether connection failed or timed out, excluding an explicitly busy slot.
 	pub fn is_unavailable(&self) -> bool {
-		matches!(self, Self::Connect(_) | Self::Timeout(_))
+		matches!(self, Self::Connect(error) if !transport::is_connection_busy(error))
+			|| matches!(self, Self::Timeout(_))
 	}
 
 	pub fn code(&self) -> Option<&Code> {

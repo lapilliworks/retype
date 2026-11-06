@@ -1,16 +1,17 @@
-use std::ffi::OsStr;
 use std::fs::File;
 use std::io::BufReader;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{
+	ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE,
+};
 use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
 use windows_sys::Win32::System::Pipes::{
@@ -25,12 +26,17 @@ type TestResult = Result<(), String>;
 static NEXT_PIPE: AtomicU64 = AtomicU64::new(0);
 
 fn pipe() -> (PathBuf, File) {
-	let name = format!(
+	let name = PathBuf::from(format!(
 		r"\\.\pipe\retype-ipc-test-{}-{}",
 		std::process::id(),
 		NEXT_PIPE.fetch_add(1, Ordering::Relaxed)
-	);
-	let wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
+	));
+	let file = pipe_at(&name);
+	(name, file)
+}
+
+fn pipe_at(name: &Path) -> File {
+	let wide: Vec<u16> = name.as_os_str().encode_wide().chain(Some(0)).collect();
 	let handle = unsafe {
 		CreateNamedPipeW(
 			wide.as_ptr(),
@@ -44,7 +50,7 @@ fn pipe() -> (PathBuf, File) {
 		)
 	};
 	assert_ne!(handle, INVALID_HANDLE_VALUE, "{}", std::io::Error::last_os_error());
-	(PathBuf::from(name), unsafe { File::from_raw_handle(handle as _) })
+	unsafe { File::from_raw_handle(handle as _) }
 }
 
 fn connect_server(file: &File) -> TestResult {
@@ -208,6 +214,105 @@ fn a_timed_out_pipe_write_is_cancelled() {
 		|mut client| expect_timeout(&mut client, serde_json::json!({"data": "x".repeat(4 * 1024 * 1024)})),
 	);
 	running.finish(Some(release));
+}
+
+#[test]
+fn a_busy_pipe_reports_busy_after_the_bounded_wait() {
+	let (path, server) = pipe();
+	let first = Client::connect(&path).unwrap();
+	let started = Instant::now();
+	let error = super::super::transport::open_with_timeout(&path, Duration::from_millis(250)).unwrap_err();
+	assert_eq!(error.raw_os_error(), Some(ERROR_PIPE_BUSY as i32));
+	assert!(started.elapsed() >= Duration::from_millis(200));
+	assert!(started.elapsed() < Duration::from_secs(2));
+	let error = ClientError::Connect(error);
+	assert!(error.is_connection_busy());
+	assert!(!error.is_unavailable());
+	drop(first);
+	drop(server);
+}
+
+#[test]
+fn an_absent_pipe_is_not_treated_as_busy() {
+	let (path, server) = pipe();
+	drop(server);
+	let started = Instant::now();
+	let error = super::super::transport::open_with_timeout(&path, Duration::from_secs(2)).unwrap_err();
+	assert_eq!(error.raw_os_error(), Some(ERROR_FILE_NOT_FOUND as i32));
+	assert!(started.elapsed() < Duration::from_secs(1));
+	let error = ClientError::Connect(error);
+	assert!(!error.is_connection_busy());
+	assert!(error.is_unavailable());
+}
+
+#[test]
+fn an_initial_pipe_instance_gap_is_retried() {
+	let (path, file) = pipe();
+	drop(file);
+	let server_path = path.clone();
+	let (server_sender, server_result) = mpsc::channel();
+	let server = thread::spawn(move || {
+		thread::sleep(Duration::from_millis(50));
+		let file = pipe_at(&server_path);
+		let result = connect_server(&file).and_then(|()| expect_closed(&mut BufReader::new(&file)));
+		let _ = server_sender.send(result);
+	});
+	let (client_sender, client_result) = mpsc::channel();
+	let client = thread::spawn(move || {
+		let result = Client::connect(&path).map(drop).map_err(|error| error.to_string());
+		let _ = client_sender.send(result);
+	});
+	Running {
+		client,
+		server,
+		client_result,
+		server_result,
+	}
+	.finish(None);
+}
+
+#[test]
+fn a_busy_pipe_waits_through_the_gap_before_the_next_instance() {
+	let (path, file) = pipe();
+	let first = Client::connect(&path).unwrap();
+	let server_path = path.clone();
+	let (ready, wait_ready) = mpsc::channel();
+	let (release, wait_release) = mpsc::channel();
+	let (server_sender, server_result) = mpsc::channel();
+	let server = thread::spawn(move || {
+		let result = (|| {
+			connect_server(&file)?;
+			ready.send(()).map_err(|error| error.to_string())?;
+			wait_release
+				.recv_timeout(Duration::from_secs(3))
+				.map_err(|error| error.to_string())?;
+			drop(file);
+			thread::sleep(Duration::from_millis(80));
+			let file = pipe_at(&server_path);
+			connect_server(&file)?;
+			expect_closed(&mut BufReader::new(&file))
+		})();
+		let _ = server_sender.send(result);
+	});
+	wait_ready.recv_timeout(Duration::from_secs(2)).unwrap();
+
+	let (client_sender, client_result) = mpsc::channel();
+	let client = thread::spawn(move || {
+		let result = Client::connect(&path).map(drop).map_err(|error| error.to_string());
+		let _ = client_sender.send(result);
+	});
+	thread::sleep(Duration::from_millis(100));
+	let ended_while_busy = client.is_finished();
+	drop(first);
+	release.send(()).unwrap();
+	Running {
+		client,
+		server,
+		client_result,
+		server_result,
+	}
+	.finish(None);
+	assert!(!ended_while_busy, "the second connection failed instead of waiting");
 }
 
 fn expect_timeout(client: &mut Client, params: serde_json::Value) -> TestResult {
