@@ -86,7 +86,8 @@ Both together is not an error: asking wins and the `!` is ignored with a warning
 - The output is written under a temporary name in its target directory and renamed into place only when the converter exits successfully. An output path is therefore absent or complete, never half a file
 - A partial failure keeps completed outputs and preserves the source; it does not automatically roll back successful outputs
 - `convert` currently retains its source. A watched conversion removes the original only when its backup, output validation, ownership and durability checks all permit it. `+keep` requests that the original remain visible
-- A conversion that takes a while shows the source name until it finishes: the file is put back to its original extension before the work starts, and renamed to the target when it commits
+- For ImageMagick or FFmpeg JPEG output, independent validation requires both `magick` and `ffmpeg` on `PATH`. If either is missing, the daemon log reports the fallback and the original remains visible. Other external output formats retain the source for now
+- A watched conversion attempts to restore the source name before work begins. If that name is occupied, the source is preserved at the available location rather than overwriting the occupant
 
 ## When the name is wrong
 

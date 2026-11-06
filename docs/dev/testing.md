@@ -12,7 +12,7 @@ From the repository root, use the runner for the native operating system:
 | macOS | `./scripts/test-macos.sh` |
 | Windows PowerShell 7 | `pwsh -NoProfile -File .\scripts\test-windows.ps1` |
 
-Each runner checks formatting and workspace Clippy, runs every workspace test selected for the host with real tools required, and enables the strict native HEIC rename and undo gate. The Unix runners also check and exercise the shell installer against a local fake release; the Windows runner parses the PowerShell installer. A missing prerequisite, skipped test, unrun ignored test, timeout, leaked test process or failed check makes the runner exit nonzero. The strict HEIC gate currently fails because normal source disposition or complete native undo is not yet available; this is a release blocker, not a test-runner error.
+Each runner checks formatting and workspace Clippy, runs every workspace test selected for the host with real tools required, and enables the strict native HEIC rename and undo gate. The Unix runners also check and exercise the shell installer against a local fake release; the Windows runner parses the PowerShell installer. A missing prerequisite, skipped test, unrun ignored test, timeout, leaked test process or failed check makes the runner exit nonzero. Windows currently cannot complete destructive undo; the strict gate remains a release blocker there, not a test-runner error.
 
 The macOS runner requires GNU coreutils for `gtimeout`; install it with `brew install coreutils`. Windows requires PowerShell 7, CIM process-query support and cargo-nextest 0.9.151 or newer; install nextest with `cargo install cargo-nextest --locked`. Windows PowerShell 5.1 has a reported Git-revision-check failure that is not yet diagnosed. The codec, PDF-engine and Rust prerequisites are listed below. Native Windows and macOS results must be collected on those systems.
 
@@ -37,7 +37,7 @@ Make the programs available on `PATH` in the same terminal that runs Cargo. Reop
 | Test target | Required preparation |
 |---|---|
 | `fidelity`, `fidelity_axes` | ImageMagick 7.1 or newer, with 16-bit image support such as a Q16 build; PNG, JPEG, GIF and TIFF support |
-| `keep` real watched workflow | ImageMagick 7.1 or newer with HEIC decoding and JPEG encoding |
+| `keep` real watched workflow and core JPEG validation | ImageMagick 7.1 or newer with HEIC decoding and JPEG encoding; FFmpeg with MJPEG decoding |
 | `video` | FFmpeg 6 or newer and FFprobe, with `libx264`, `aac` and `libmp3lame` encoders |
 | `documents` | Pandoc 3 or newer and at least one usable PDF engine: `typst`, `xelatex`, `lualatex`, `pdflatex`, `weasyprint` or `wkhtmltopdf` |
 | `archives` | Native ZIP/TAR cases need no external archiver; 7z cases require 7-Zip 23 or newer as `7zz`, `7z` or `7za` |
@@ -63,7 +63,7 @@ Use the PDF-engine and 7-Zip command names actually installed on the host. In th
 
 ## 3. Strict tool verification
 
-`RETYPE_REQUIRE_TEST_TOOLS=1` makes the CLI image, fidelity, video, document and archive suites fail their prerequisite guards instead of returning early. It does not enable tests excluded by `cfg`, and is not a promise that every codec supported by an installed program has been exercised.
+`RETYPE_REQUIRE_TEST_TOOLS=1` makes the CLI image, fidelity, video, document and archive suites and core JPEG validation tests fail their prerequisite guards instead of returning early. It does not enable tests excluded by `cfg`, and is not a promise that every codec supported by an installed program has been exercised.
 
 Linux/macOS:
 
@@ -88,7 +88,7 @@ Set strict tool mode in that shell before the targeted command too. Without it, 
 
 ### Strict native rename and undo gate
 
-Run this on each release OS to require a real watched HEIC-to-JPEG conversion, normal source disposition and a complete undo that restores the exact original bytes and removes the output. The strict mode fails rather than skipping if ImageMagick, its HEIC decoder or JPEG encoder is unavailable. The test copies a checked-in synthetic HEIC fixture into private state and starts its own daemon.
+Run this on each release OS to require a real watched HEIC-to-JPEG conversion, normal source disposition and a complete undo that restores the exact original bytes and removes the output. The strict mode fails rather than skipping if ImageMagick, its HEIC decoder or JPEG encoder, or FFmpeg is unavailable. The test copies a checked-in synthetic HEIC fixture into private state and starts its own daemon.
 
 Linux/macOS:
 

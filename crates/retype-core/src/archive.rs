@@ -30,7 +30,7 @@ use sha2::{Digest, Sha256};
 
 use crate::convert::StagedOutput;
 use crate::error::{Code, Diagnostic, Error, Result};
-use crate::execute::{Cancellation, Report};
+use crate::execute::{Cancellation, Report, Validation};
 use crate::registry::Native;
 
 /// How many entries one repack will carry.
@@ -92,9 +92,10 @@ pub fn repack_published(
 	let staged = StagedOutput::for_publication(output, publication)?;
 
 	let (stderr, validation) = match tool {
-		Some(tool) if from.needs_tool() || to.needs_tool() => {
-			(through(tool, from, to, input, staged.temp(), cancellation)?, None)
-		}
+		Some(tool) if from.needs_tool() || to.needs_tool() => (
+			through(tool, from, to, input, staged.temp(), cancellation)?,
+			Validation::Unavailable("independent 7z archive validation is unavailable".to_string()),
+		),
 		_ => {
 			let mut source = Source::open(from, input)?;
 			let mut sink = Sink::open(to, staged.temp())?;
@@ -108,7 +109,7 @@ pub fn repack_published(
 			if !fingerprint.matches(staged.temp())? {
 				return Err(malformed("the output", &"archive changed during validation"));
 			}
-			(String::new(), Some(fingerprint))
+			(String::new(), Validation::Verified(fingerprint))
 		}
 	};
 

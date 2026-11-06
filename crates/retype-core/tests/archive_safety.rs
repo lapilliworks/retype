@@ -34,7 +34,7 @@ fn a_pax_size_override_is_carried_into_the_new_container() {
 		&Cancellation::default(),
 	)
 	.unwrap();
-	assert!(report.validation.is_some());
+	assert!(report.validation.fingerprint().is_some());
 
 	let mut zip = zip::ZipArchive::new(fs::File::open(&output).unwrap()).unwrap();
 	let mut entry = zip.by_index(0).unwrap();

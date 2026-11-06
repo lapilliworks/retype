@@ -1458,7 +1458,7 @@ fn run(
 			return;
 		}
 	};
-	let mut all_validated = true;
+	let mut validation_failure = None;
 	let mut output_gate = super::transaction::OutputGate::default();
 	let checkpoint = settled(
 		shared,
@@ -1523,7 +1523,9 @@ fn run(
 		};
 		match transaction.run(plan, &snapshot.path, &output, cancellation, publication) {
 			Ok(report) => {
-				all_validated &= report.validation.is_some();
+				if let Some(reason) = report.validation.reason() {
+					validation_failure.get_or_insert_with(|| reason.to_string());
+				}
 				outputs.push(record(
 					&output,
 					plan,
@@ -1583,13 +1585,15 @@ fn run(
 
 	let output_count = outputs.len();
 	let mut job = settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state);
-	if state == JobState::Done && !all_validated {
-		eprintln!("retype: original retained: the backend has no complete independent output validator");
+	if state == JobState::Done {
+		if let Some(reason) = &validation_failure {
+			eprintln!("retype: original retained: {reason}");
+		}
 	}
 	let can_dispose = state == JobState::Done
 		&& !plans.is_empty()
 		&& output_count == plans.len()
-		&& all_validated
+		&& validation_failure.is_none()
 		&& has_backup
 		&& !resolved.meta.keep
 		&& !resolved.groups.iter().any(|group| group.keep_source);

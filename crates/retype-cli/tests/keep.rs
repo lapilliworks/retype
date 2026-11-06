@@ -465,6 +465,15 @@ fn a_real_watched_heic_conversion_and_undo_preserve_the_original() {
 	if !has_heic_decoder_and_jpeg_encoder() {
 		return;
 	}
+	if requires_native_workflow() {
+		let mut ffmpeg = Command::new("ffmpeg");
+		ffmpeg.arg("-version");
+		let result = bounded(&mut ffmpeg, Duration::from_secs(10));
+		assert!(
+			result.is_ok_and(|output| output.status.success()),
+			"required native workflow prerequisite unavailable: FFmpeg for independent JPEG validation"
+		);
+	}
 	let dir = tempfile::tempdir().unwrap();
 	let state = dir.path().join("state");
 	let photos = dir.path().join("photos");
@@ -521,6 +530,57 @@ fn a_real_watched_heic_conversion_and_undo_preserve_the_original() {
 			!retained_before_undo,
 			"release workflow requires normal source disposition"
 		);
+	}
+}
+
+#[test]
+fn a_real_watched_jpeg_with_keep_retains_the_original() {
+	if !has_heic_decoder_and_jpeg_encoder() {
+		return;
+	}
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let photos = dir.path().join("photos");
+	fs::create_dir(&photos).unwrap();
+	let source = photos.join("photo.HEIC");
+	let request = photos.join("photo.jpg+keep");
+	let output = photos.join("photo.jpg");
+	fs::write(&source, HEIC_FIXTURE).unwrap();
+	let config = configuration(dir.path(), UndoPolicy::Enabled);
+	let registered = Command::new(env!("CARGO_BIN_EXE_retype"))
+		.arg("watch")
+		.arg(&photos)
+		.arg("--state-dir")
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config)
+		.output()
+		.unwrap();
+	assert!(
+		registered.status.success(),
+		"{}",
+		String::from_utf8_lossy(&registered.stderr)
+	);
+	let _daemon = start_daemon(&state, &config);
+	wait_for_watch(&state);
+	fs::rename(&source, &request).unwrap();
+	let job = wait_for_job(&state, retype_core::job::JobState::Done);
+
+	assert_jpeg_dimensions(&output);
+	assert_eq!(fs::read(&source).unwrap(), HEIC_FIXTURE);
+	let mut undo = Command::new(env!("CARGO_BIN_EXE_retype"));
+	undo.args(["undo", job.id.as_str(), "--no-spawn"])
+		.arg("--state-dir")
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config);
+	let undo = bounded(&mut undo, Duration::from_secs(10)).unwrap();
+	assert_eq!(fs::read(&source).unwrap(), HEIC_FIXTURE);
+	if retype_core::fsx::supports_durable_cleanup() {
+		assert!(undo.status.success(), "{}", undo.stderr);
+		assert!(!output.exists());
+	} else {
+		assert!(!undo.status.success());
+		assert!(undo.stderr.contains("directory durability"), "{}", undo.stderr);
+		assert!(output.exists());
 	}
 }
 

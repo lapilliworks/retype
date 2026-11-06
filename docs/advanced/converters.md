@@ -13,6 +13,8 @@ Retype converts nothing by itself. Every conversion is carried out by an externa
 
 A tool is installed with the platform's package manager and found on `PATH`, or managed by the GUI. [Quickstart](../README.md) has the install commands. `retype doctor` reports what is present, its version and its build, and names any component a format needs but the build lacks.
 
+For ImageMagick or FFmpeg JPEG output, independent output validation currently uses both `magick` and `ffmpeg` from `PATH`, regardless of the configured encoder path. If either is unavailable, the original is retained and the daemon log identifies the missing validator. Validation checks readability, not fidelity.
+
 The defaults are not the whole story. A tool can be installed and still not carry a format, because the feature belongs to a build-time component rather than to the program:
 
 | Tool | What the build must have | Formats affected |

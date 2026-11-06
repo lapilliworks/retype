@@ -112,7 +112,7 @@ impl OutputTransaction<'_> {
 		produced.bytes = Some(report.bytes);
 		produced.identity = FileIdentity::of(staged);
 		if let Some(store) = self.store {
-			store.prepare_checked_output(&self.job.id, produced.clone(), staged, report.validation.as_ref())?;
+			store.prepare_checked_output(&self.job.id, produced.clone(), staged, report.validation.fingerprint())?;
 		}
 		let mut checkpoint = self.job.clone();
 		checkpoint.state = JobState::Running;

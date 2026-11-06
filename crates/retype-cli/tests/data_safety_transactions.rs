@@ -375,7 +375,7 @@ fn valid_native_output_does_not_authorize_removing_a_replacement_source() {
 		},
 	)
 	.unwrap();
-	assert!(report.validation.is_some());
+	assert!(report.validation.fingerprint().is_some());
 	check_zip(&output);
 	assert!(remove_owned(&source, &snapshot.original).is_err());
 	assert_eq!(fs::read(&source).unwrap(), b"a new unrelated file at the old name");
@@ -477,7 +477,7 @@ fn a_replaced_staged_output_cannot_be_recorded_as_validated() {
 		None,
 		Publication::Create,
 		&|staged, report| {
-			let validated = report.validation.as_ref().expect("archive was validated");
+			let validated = report.validation.fingerprint().expect("archive was validated");
 			let moved = staged.with_extension("validated");
 			fs::rename(staged, &moved)?;
 			fs::copy(&moved, staged)?;
@@ -512,7 +512,7 @@ fn a_staged_output_changed_after_its_checkpoint_is_not_published() {
 		Publication::Create,
 		&|staged, report| {
 			let produced = Output::pending(output.clone(), "zip", Tier::Exact);
-			store.prepare_checked_output(&id, produced, staged, report.validation.as_ref())?;
+			store.prepare_checked_output(&id, produced, staged, report.validation.fingerprint())?;
 			fs::write(staged, b"changed after the checkpoint")?;
 			Ok(())
 		},
@@ -876,7 +876,7 @@ fn crash_worker() {
 			},
 		)
 		.unwrap();
-		assert!(report.validation.is_some());
+		assert!(report.validation.fingerprint().is_some());
 		job.outputs[index].state = OutputState::Done;
 		job.outputs[index].identity = FileIdentity::of(&report.output);
 		job.outputs[index].bytes = Some(report.bytes);

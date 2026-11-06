@@ -76,13 +76,36 @@ impl Cancellation {
 /// while succeeding, small enough to sit in a journal record.
 const STDERR_TAIL: usize = 4 * 1024;
 
+/// Whether output validation checked the exact bytes that will be published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Validation {
+	Verified(crate::safety::Fingerprint),
+	Unavailable(String),
+}
+
+impl Validation {
+	pub fn fingerprint(&self) -> Option<&crate::safety::Fingerprint> {
+		match self {
+			Self::Verified(fingerprint) => Some(fingerprint),
+			Self::Unavailable(_) => None,
+		}
+	}
+
+	pub fn reason(&self) -> Option<&str> {
+		match self {
+			Self::Verified(_) => None,
+			Self::Unavailable(reason) => Some(reason),
+		}
+	}
+}
+
 /// What a successful run produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
 	pub output: PathBuf,
 	pub bytes: u64,
-	/// The exact staged file and bytes that passed an independent output check.
-	pub validation: Option<crate::safety::Fingerprint>,
+	/// The checked staged file, or why it could not authorize source disposal.
+	pub validation: Validation,
 	/// The tail of stderr, kept because a tool can succeed and still say
 	/// something worth reading, `docs/tools.md` §5.2.
 	pub stderr: String,
@@ -91,7 +114,7 @@ pub struct Report {
 impl Report {
 	/// Refuse publication if the checked file has changed since validation.
 	pub fn verify_staged(&self, staged: &Path) -> Result<()> {
-		if let Some(expected) = &self.validation {
+		if let Some(expected) = self.validation.fingerprint() {
 			if !expected.matches(staged)? {
 				return Err(Error::Io(std::io::Error::other(format!(
 					"{} changed after output validation; original retained",
@@ -250,7 +273,7 @@ pub fn run_recorded(
 	let report = Report {
 		output: staged.target().to_path_buf(),
 		bytes: validation
-			.as_ref()
+			.fingerprint()
 			.map_or(metadata.len(), |fingerprint| fingerprint.bytes),
 		validation,
 		stderr,
@@ -263,13 +286,12 @@ pub fn run_recorded(
 	Ok(report)
 }
 
-/// Decode with the supported backend, rather than treating an exit status as format validation.
-/// Custom/document backends remain usable but cannot authorize source disposal.
-fn validate_output(
-	plan: &Plan,
-	output: &Path,
-	cancellation: &Cancellation,
-) -> Result<Option<crate::safety::Fingerprint>> {
+/// Check external output rather than treating the encoder's exit status as validation.
+fn validate_output(plan: &Plan, output: &Path, cancellation: &Cancellation) -> Result<Validation> {
+	if matches!(plan.backend.name(), "magick" | "ffmpeg") && matches!(plan.format.as_str(), "jpg" | "jpeg") {
+		return crate::validation::jpeg(output, cancellation);
+	}
+	let unavailable = || Validation::Unavailable(format!("independent {} validation is unavailable", plan.format));
 	let argv: Vec<OsString> = match plan.backend.name() {
 		"magick" => vec![output.into(), "null:".into()],
 		"ffmpeg" => vec![
@@ -284,7 +306,7 @@ fn validate_output(
 			"null".into(),
 			"-".into(),
 		],
-		_ => return Ok(None),
+		_ => return Ok(unavailable()),
 	};
 	let path = executable(&plan.command).ok_or_else(|| Error::Io(std::io::Error::other("validator disappeared")))?;
 	run_child(&plan.command, &path, &argv, None, None, cancellation)?;
@@ -295,13 +317,12 @@ fn validate_output(
 	let prefix = &prefix[..read];
 	let matches = match plan.format.as_str() {
 		"png" => prefix.starts_with(b"\x89PNG\r\n\x1a\n"),
-		"jpg" | "jpeg" => prefix.starts_with(b"\xff\xd8\xff"),
 		"webp" => prefix.starts_with(b"RIFF") && prefix.get(8..12) == Some(b"WEBP"),
 		"gif" => prefix.starts_with(b"GIF87a") || prefix.starts_with(b"GIF89a"),
 		"bmp" => prefix.starts_with(b"BM"),
 		"wav" => prefix.starts_with(b"RIFF") && prefix.get(8..12) == Some(b"WAVE"),
 		"flac" => prefix.starts_with(b"fLaC"),
-		_ => return Ok(None),
+		_ => return Ok(unavailable()),
 	};
 	if !matches {
 		return Err(Error::Diagnostic(Diagnostic::global(
@@ -309,8 +330,8 @@ fn validate_output(
 			"output format does not match the request",
 		)));
 	}
-	/* Full source-to-output property coverage is not yet available for external encoders. */
-	Ok(None)
+	/* Other external formats do not yet have an independent validation check. */
+	Ok(unavailable())
 }
 
 /// The source a rename left under the target's name, prepared once for a whole
@@ -369,7 +390,7 @@ fn kill(child: &mut std::process::Child) {
 
 /// Where a resolved command name actually lives. An absolute path was pinned by
 /// the configuration, so it is used as written, `docs/config.md` §3.
-fn executable(command: &str) -> Option<PathBuf> {
+pub(crate) fn executable(command: &str) -> Option<PathBuf> {
 	if Path::new(command).is_absolute() {
 		return Path::new(command).is_file().then(|| PathBuf::from(command));
 	}
@@ -381,6 +402,52 @@ fn executable(command: &str) -> Option<PathBuf> {
 fn tail(stderr: &[u8]) -> String {
 	let start = stderr.len().saturating_sub(STDERR_TAIL);
 	String::from_utf8_lossy(&stderr[start..]).trim().to_string()
+}
+
+struct StderrCapture {
+	kept: Vec<u8>,
+	has_message: bool,
+}
+
+impl StderrCapture {
+	fn message(&self) -> String {
+		let message = tail(&self.kept);
+		if message.is_empty() && self.has_message {
+			"earlier stderr was omitted before trailing whitespace".to_string()
+		} else {
+			message
+		}
+	}
+}
+
+fn drain_stderr(pipe: &mut impl Read, mut log: Option<&mut std::fs::File>) -> std::io::Result<StderrCapture> {
+	let mut captured = StderrCapture {
+		kept: Vec::new(),
+		has_message: false,
+	};
+	let mut buffer = [0u8; 8 * 1024];
+	loop {
+		let read = match pipe.read(&mut buffer) {
+			Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+			result => result?,
+		};
+		if read == 0 {
+			break;
+		}
+		let bytes = &buffer[..read];
+		captured.has_message |= bytes.iter().any(|byte| !byte.is_ascii_whitespace());
+		captured.kept.extend_from_slice(bytes);
+		if captured.kept.len() > STDERR_TAIL * 4 {
+			let excess = captured.kept.len() - STDERR_TAIL * 4;
+			captured.kept.drain(..excess);
+		}
+		if let Some(file) = log.as_mut() {
+			use std::io::Write;
+			let _ = file.write_all(bytes);
+			let _ = file.flush();
+		}
+	}
+	Ok(captured)
 }
 
 /// Run a program to completion, killing it if the job is cancelled.
@@ -429,37 +496,16 @@ pub fn run_child(
 
 	// Drain stderr while the tool runs: a chatty tool would otherwise block on a
 	// full pipe, and we would be waiting for it to exit.
-	let stderr_pipe = child.stderr.take();
+	let Some(mut stderr_pipe) = child.stderr.take() else {
+		kill(&mut child);
+		return Err(Error::Io(std::io::Error::other("tool stderr pipe is unavailable")));
+	};
 	let journal = log.map(Path::to_path_buf);
 	let reader = thread::spawn(move || {
-		let mut kept = Vec::new();
-
 		// A log that cannot be opened is not a reason to fail a conversion; the tail
 		// in the journal is what a report depends on.
 		let mut file = journal.and_then(|path| std::fs::OpenOptions::new().create(true).append(true).open(path).ok());
-
-		if let Some(mut pipe) = stderr_pipe {
-			let mut buffer = [0u8; 8 * 1024];
-			while let Ok(read) = pipe.read(&mut buffer) {
-				if read == 0 {
-					break;
-				}
-
-				kept.extend_from_slice(&buffer[..read]);
-				if kept.len() > STDERR_TAIL * 4 {
-					let excess = kept.len() - STDERR_TAIL * 4;
-					kept.drain(..excess);
-				}
-
-				if let Some(file) = file.as_mut() {
-					use std::io::Write;
-					let _ = file.write_all(&buffer[..read]);
-					let _ = file.flush();
-				}
-			}
-		}
-
-		kept
+		drain_stderr(&mut stderr_pipe, file.as_mut())
 	});
 
 	let status = loop {
@@ -507,11 +553,10 @@ pub fn run_child(
 		}
 		thread::sleep(POLL);
 	}
-	let stderr = tail(
-		&reader
-			.join()
-			.map_err(|_| Error::Io(std::io::Error::other("stderr reader panicked")))?,
-	);
+	let stderr = reader
+		.join()
+		.map_err(|_| Error::Io(std::io::Error::other("stderr reader panicked")))??
+		.message();
 	cancellation.commit(|| Ok(()))?;
 
 	if !status.success() {
@@ -564,6 +609,25 @@ mod tests {
 	use crate::registry::Registry;
 	use crate::resolve::{self, Source};
 	use crate::tools::Tool;
+
+	#[test]
+	fn stderr_warnings_are_not_lost_behind_a_long_whitespace_tail() {
+		let mut bytes = b"warning: corrupt JPEG\n".to_vec();
+		bytes.extend(vec![b' '; STDERR_TAIL * 8]);
+		let captured = drain_stderr(&mut std::io::Cursor::new(bytes), None).unwrap();
+		assert!(!captured.message().is_empty());
+	}
+
+	#[test]
+	fn stderr_read_errors_are_not_treated_as_silence() {
+		struct Broken;
+		impl Read for Broken {
+			fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+				Err(std::io::Error::other("pipe failed"))
+			}
+		}
+		assert!(drain_stderr(&mut Broken, None).is_err());
+	}
 
 	#[test]
 	fn process_completion_waits_for_accounting_to_reach_zero() {
@@ -641,6 +705,35 @@ tier = 'converted'
 		.expect("the fixture loads")
 	}
 
+	/// A successful copier masquerading as an image encoder, to exercise output checks.
+	fn jpeg_copy_fixture() -> Registry {
+		let (command, layout) = match cfg!(windows) {
+			true => ("cmd", "layout = ['/c', 'copy', '{input}', '{ops}', '{output}']"),
+			false => ("cp", "layout = ['{input}', '{ops}', '{output}']"),
+		};
+		Registry::load(&format!(
+			"\
+version = 'retype-config-1'
+[backends]
+prefer = ['magick']
+[tools.magick]
+command = '{command}'
+{layout}
+[formats.png]
+family = 'image'
+lossy = false
+alpha = true
+tier = 'exact'
+[formats.jpg]
+family = 'image'
+lossy = true
+alpha = false
+tier = 'converted'
+"
+		))
+		.unwrap()
+	}
+
 	/// A fixture whose only tool writes nothing and succeeds, so the runner can be
 	/// told that a tool producing no output is a failure. `cmd /c rem` exits zero
 	/// and ignores its arguments on Windows; `true` does the same elsewhere.
@@ -712,6 +805,20 @@ tier = 'converted'
 
 		assert_eq!(error.code(), Code::IoNotFound);
 		assert!(!output.exists(), "an output path is absent or correct, never empty");
+	}
+
+	#[test]
+	fn a_successful_encoder_cannot_publish_a_non_jpeg_as_jpeg() {
+		let plans = plans(&jpeg_copy_fixture(), "jpg");
+		let dir = tempfile::tempdir().unwrap();
+		let input = dir.path().join("a.png");
+		let output = dir.path().join("a.jpg");
+		fs::write(&input, b"not JPEG bytes").unwrap();
+
+		let error = run(&plans[0], &input, &output).unwrap_err();
+		assert_eq!(error.code(), Code::ToolFailed);
+		assert!(!output.exists());
+		assert_eq!(fs::read(input).unwrap(), b"not JPEG bytes");
 	}
 
 	#[test]
