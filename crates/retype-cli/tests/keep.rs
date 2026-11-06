@@ -1,7 +1,7 @@
 //! The keep-original control and exact source-name preservation.
 
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -377,44 +377,87 @@ fn missing_heic(reason: &str) {
 	tool_support::unavailable(reason);
 }
 
-fn supports_image_conversion(formats: &str) -> bool {
-	fn supports(formats: &str, format: &str, permission: char) -> bool {
-		formats.lines().any(|line| {
-			let fields: Vec<&str> = line.split_whitespace().collect();
-			fields.first().is_some_and(|name| name.trim_end_matches('*') == format)
-				&& fields.get(2).is_some_and(|mode| mode.contains(permission))
-		})
+fn has_jpeg_markers(path: &Path) -> io::Result<bool> {
+	let mut file = fs::File::open(path)?;
+	if file.metadata()?.len() < 4 {
+		return Ok(false);
 	}
-	supports(formats, "HEIC", 'r') && supports(formats, "JPEG", 'w')
+	let mut start = [0; 3];
+	let mut end = [0; 2];
+	file.read_exact(&mut start)?;
+	file.seek(SeekFrom::End(-2))?;
+	file.read_exact(&mut end)?;
+	Ok(start == [0xff, 0xd8, 0xff] && end == [0xff, 0xd9])
 }
 
 #[test]
-fn a_read_only_heic_delegate_is_enough_for_heic_to_jpeg() {
-	let formats = "  HEIC HEIC r-- High Efficiency Image Format\n  JPEG* JPEG rw- JPEG\n";
-	assert!(supports_image_conversion(formats));
-	assert!(!supports_image_conversion(
-		"  HEIC HEIC -w- HEIC\n  JPEG* JPEG rw- JPEG\n"
-	));
-	assert!(!supports_image_conversion(
-		"  HEIC HEIC r-- HEIC\n  JPEG* JPEG r-- JPEG\n"
-	));
+fn the_jpeg_prerequisite_probe_checks_start_and_end_markers() {
+	let dir = tempfile::tempdir().unwrap();
+	let path = dir.path().join("output.jpg");
+	fs::write(&path, [0xff, 0xd8, 0xff, 0xd9]).unwrap();
+	assert!(has_jpeg_markers(&path).unwrap());
+	fs::write(&path, [0xff, 0xd8, 0xff]).unwrap();
+	assert!(!has_jpeg_markers(&path).unwrap());
+	fs::write(&path, b"not jpeg").unwrap();
+	assert!(!has_jpeg_markers(&path).unwrap());
+}
+
+fn probe_heic_conversion(program: &Path) -> io::Result<(bool, String)> {
+	let dir = tempfile::tempdir()?;
+	let input = dir.path().join("photo.heic");
+	let output = dir.path().join("photo.jpg");
+	fs::write(&input, HEIC_FIXTURE)?;
+	let mut magick = Command::new(program);
+	magick.arg(&input).arg(&output);
+	let result = bounded(&mut magick, Duration::from_secs(10))?;
+	if !result.status.success() {
+		return Ok((false, result.stderr));
+	}
+	match has_jpeg_markers(&output) {
+		Ok(true) => Ok((true, result.stderr)),
+		Ok(false) => Ok((false, "output is not a JPEG".to_string())),
+		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok((false, "no JPEG was produced".to_string())),
+		Err(error) => Err(error),
+	}
+}
+
+#[test]
+#[cfg(unix)]
+fn the_heic_prerequisite_probes_conversion_instead_of_format_enumeration() {
+	use std::os::unix::fs::PermissionsExt;
+
+	let dir = tempfile::tempdir().unwrap();
+	let program = dir.path().join("magick");
+	for (script, expected) in [
+		(
+			r#"#!/bin/sh
+[ "$#" -eq 2 ] && [ -s "$1" ] || exit 1
+printf '\377\330\377\331' > "$2"
+"#,
+			true,
+		),
+		("#!/bin/sh\nexit 0\n", false),
+		("#!/bin/sh\nprintf invalid > \"$2\"\n", false),
+	] {
+		fs::write(&program, script).unwrap();
+		fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+		let (supported, _) = probe_heic_conversion(&program).unwrap();
+		assert_eq!(supported, expected);
+	}
 }
 
 fn has_heic_decoder_and_jpeg_encoder() -> bool {
-	let mut capabilities = Command::new("magick");
-	capabilities.args(["-list", "format"]);
-	let capabilities = match bounded(&mut capabilities, Duration::from_secs(10)) {
-		Ok(output) => output,
-		Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-			missing_heic("ImageMagick 7 with HEIC decoding and JPEG encoding");
-			return false;
-		}
-		Err(error) => panic!("cannot inspect ImageMagick: {error}"),
+	let path = std::env::var_os("PATH").unwrap_or_default();
+	let Some(magick) = retype_core::tools::find_in_path(&path, "magick") else {
+		missing_heic("ImageMagick 7 with HEIC decoding and JPEG encoding");
+		return false;
 	};
-	assert!(capabilities.status.success(), "{}", capabilities.stderr);
-	let supported = supports_image_conversion(&capabilities.stdout);
+	let (supported, detail) = probe_heic_conversion(&magick)
+		.unwrap_or_else(|error| panic!("cannot test ImageMagick HEIC conversion: {error}"));
 	if !supported {
-		missing_heic("ImageMagick HEIC decoder and JPEG encoder");
+		missing_heic(&format!(
+			"ImageMagick could not convert the HEIC fixture to JPEG: {detail}"
+		));
 	}
 	supported
 }
