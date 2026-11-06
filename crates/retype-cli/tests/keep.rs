@@ -1,13 +1,17 @@
 //! The keep-original control and exact source-name preservation.
 
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "support/commands.rs"]
+mod commands;
 #[path = "support/tools.rs"]
 mod tool_support;
+
+use commands::bounded;
 
 const HEIC_FIXTURE: &[u8] = include_bytes!("../../../fixtures/native-watch/photo.heic");
 
@@ -24,57 +28,6 @@ impl Drop for Daemon {
 		let _ = self.child.kill();
 		let _ = self.child.wait();
 	}
-}
-
-struct CommandResult {
-	status: ExitStatus,
-	stdout: String,
-	stderr: String,
-}
-
-struct TestCommand(Child);
-
-impl Drop for TestCommand {
-	fn drop(&mut self) {
-		let _ = self.0.kill();
-		let _ = self.0.wait();
-	}
-}
-
-fn bounded(command: &mut Command, limit: Duration) -> std::io::Result<CommandResult> {
-	let mut stdout = tempfile::tempfile()?;
-	let mut stderr = tempfile::tempfile()?;
-	let mut child = TestCommand(
-		command
-			.stdout(Stdio::from(stdout.try_clone()?))
-			.stderr(Stdio::from(stderr.try_clone()?))
-			.spawn()?,
-	);
-	let deadline = Instant::now() + limit;
-	let status = loop {
-		if let Some(status) = child.0.try_wait()? {
-			break status;
-		}
-		if Instant::now() >= deadline {
-			return Err(std::io::Error::new(
-				std::io::ErrorKind::TimedOut,
-				"test command timed out",
-			));
-		}
-		std::thread::sleep(Duration::from_millis(25));
-	};
-	fn text(file: &mut fs::File) -> std::io::Result<String> {
-		let length = file.metadata()?.len();
-		file.seek(SeekFrom::Start(length.saturating_sub(128 * 1024)))?;
-		let mut bytes = Vec::new();
-		file.read_to_end(&mut bytes)?;
-		Ok(String::from_utf8_lossy(&bytes).into_owned())
-	}
-	Ok(CommandResult {
-		status,
-		stdout: text(&mut stdout)?,
-		stderr: text(&mut stderr)?,
-	})
 }
 
 fn archive() -> Vec<u8> {
