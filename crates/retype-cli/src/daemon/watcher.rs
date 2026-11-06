@@ -1523,7 +1523,7 @@ fn run(
 		};
 		match transaction.run(plan, &snapshot.path, &output, cancellation, publication) {
 			Ok(report) => {
-				all_validated &= report.validated;
+				all_validated &= report.validation.is_some();
 				outputs.push(record(
 					&output,
 					plan,

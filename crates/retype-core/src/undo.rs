@@ -542,15 +542,30 @@ impl Store {
 
 	/// Write the output's identity before publication. Recovery verifies it at the final path.
 	pub fn prepare_output(&self, id: &JobId, output: crate::job::Output, staged: &Path) -> Result<()> {
+		self.prepare_checked_output(id, output, staged, None)
+	}
+
+	/// Bind a publication intent to the file and bytes that passed validation, when available.
+	pub fn prepare_checked_output(
+		&self,
+		id: &JobId,
+		output: crate::job::Output,
+		staged: &Path,
+		validated: Option<&Fingerprint>,
+	) -> Result<()> {
 		let _guard = store_lock(&self.root)?;
+		let fingerprint = Fingerprint::of(staged)?;
+		if validated.is_some_and(|expected| !expected.same_file_and_content(&fingerprint)) {
+			return Err(Error::Io(std::io::Error::other(format!(
+				"{} changed after output validation; original retained",
+				staged.display()
+			))));
+		}
 		let mut record = self
 			.load(id)?
 			.ok_or_else(|| Error::Io(std::io::Error::other("undo record disappeared")))?;
 		record.commits.retain(|commit| commit.output.path != output.path);
-		record.commits.push(Commit {
-			output,
-			fingerprint: Fingerprint::of(staged)?,
-		});
+		record.commits.push(Commit { output, fingerprint });
 		write_manifest(&self.directory(id), &record)
 	}
 

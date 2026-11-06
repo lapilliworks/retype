@@ -375,7 +375,7 @@ fn valid_native_output_does_not_authorize_removing_a_replacement_source() {
 		},
 	)
 	.unwrap();
-	assert!(report.validated);
+	assert!(report.validation.is_some());
 	check_zip(&output);
 	assert!(remove_owned(&source, &snapshot.original).is_err());
 	assert_eq!(fs::read(&source).unwrap(), b"a new unrelated file at the old name");
@@ -457,6 +457,72 @@ fn a_published_output_that_changes_cannot_authorize_source_disposal() {
 	);
 	assert!(source.exists());
 	assert_eq!(fs::read(output).unwrap(), b"a replacement created after publication");
+}
+
+#[test]
+fn a_replaced_staged_output_cannot_be_recorded_as_validated() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	archive(&source);
+	let output = fixture.path("bundle.zip");
+	let id = JobId::now().unwrap();
+	let store = fixture.store();
+	store.save(subject(id.clone(), &source, Vec::new())).unwrap();
+
+	let result = execute::run_recorded(
+		&plans("zip")[0],
+		&source,
+		&output,
+		&Cancellation::default(),
+		None,
+		Publication::Create,
+		&|staged, report| {
+			let validated = report.validation.as_ref().expect("archive was validated");
+			let moved = staged.with_extension("validated");
+			fs::rename(staged, &moved)?;
+			fs::copy(&moved, staged)?;
+			let produced = Output::pending(output.clone(), "zip", Tier::Exact);
+			store.prepare_checked_output(&id, produced, staged, Some(validated))
+		},
+	);
+
+	assert!(result.is_err());
+	assert!(!output.exists());
+	assert!(source.exists());
+	assert!(store.load(&id).unwrap().unwrap().commits.is_empty());
+	assert!(store.source(&id).unwrap().is_some());
+}
+
+#[test]
+fn a_staged_output_changed_after_its_checkpoint_is_not_published() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	archive(&source);
+	let output = fixture.path("bundle.zip");
+	let id = JobId::now().unwrap();
+	let store = fixture.store();
+	store.save(subject(id.clone(), &source, Vec::new())).unwrap();
+
+	let result = execute::run_recorded(
+		&plans("zip")[0],
+		&source,
+		&output,
+		&Cancellation::default(),
+		None,
+		Publication::Create,
+		&|staged, report| {
+			let produced = Output::pending(output.clone(), "zip", Tier::Exact);
+			store.prepare_checked_output(&id, produced, staged, report.validation.as_ref())?;
+			fs::write(staged, b"changed after the checkpoint")?;
+			Ok(())
+		},
+	);
+
+	assert!(result.is_err());
+	assert!(!output.exists());
+	assert!(source.exists());
+	assert_eq!(store.load(&id).unwrap().unwrap().commits.len(), 1);
+	assert!(store.source(&id).unwrap().is_some());
 }
 
 #[test]
@@ -810,7 +876,7 @@ fn crash_worker() {
 			},
 		)
 		.unwrap();
-		assert!(report.validated);
+		assert!(report.validation.is_some());
 		job.outputs[index].state = OutputState::Done;
 		job.outputs[index].identity = FileIdentity::of(&report.output);
 		job.outputs[index].bytes = Some(report.bytes);

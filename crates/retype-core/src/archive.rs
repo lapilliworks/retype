@@ -91,9 +91,9 @@ pub fn repack_published(
 
 	let staged = StagedOutput::for_publication(output, publication)?;
 
-	let stderr = match tool {
+	let (stderr, validation) = match tool {
 		Some(tool) if from.needs_tool() || to.needs_tool() => {
-			through(tool, from, to, input, staged.temp(), cancellation)?
+			(through(tool, from, to, input, staged.temp(), cancellation)?, None)
 		}
 		_ => {
 			let mut source = Source::open(from, input)?;
@@ -103,8 +103,12 @@ pub fn repack_published(
 			let expected = source.each(&mut sink, cancellation, &mut budget)?;
 			source.finish(cancellation)?;
 			sink.commit()?;
+			let fingerprint = crate::safety::Fingerprint::of(staged.temp())?;
 			verify_inventory(to, staged.temp(), &expected, cancellation)?;
-			String::new()
+			if !fingerprint.matches(staged.temp())? {
+				return Err(malformed("the output", &"archive changed during validation"));
+			}
+			(String::new(), Some(fingerprint))
 		}
 	};
 
@@ -117,11 +121,12 @@ pub fn repack_published(
 	let report = Report {
 		output: staged.target().to_path_buf(),
 		bytes,
-		validated: !from.needs_tool() && !to.needs_tool(),
+		validation,
 		stderr,
 	};
 	cancellation.commit(|| {
 		before_commit(staged.temp(), &report)?;
+		report.verify_staged(staged.temp())?;
 		staged.commit()
 	})?;
 	Ok(report)

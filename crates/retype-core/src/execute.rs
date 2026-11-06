@@ -81,11 +81,26 @@ const STDERR_TAIL: usize = 4 * 1024;
 pub struct Report {
 	pub output: PathBuf,
 	pub bytes: u64,
-	/// Only independently validated outputs can authorize original disposal.
-	pub validated: bool,
+	/// The exact staged file and bytes that passed an independent output check.
+	pub validation: Option<crate::safety::Fingerprint>,
 	/// The tail of stderr, kept because a tool can succeed and still say
 	/// something worth reading, `docs/tools.md` §5.2.
 	pub stderr: String,
+}
+
+impl Report {
+	/// Refuse publication if the checked file has changed since validation.
+	pub fn verify_staged(&self, staged: &Path) -> Result<()> {
+		if let Some(expected) = &self.validation {
+			if !expected.matches(staged)? {
+				return Err(Error::Io(std::io::Error::other(format!(
+					"{} changed after output validation; original retained",
+					staged.display()
+				))));
+			}
+		}
+		Ok(())
+	}
 }
 
 /// Run one plan, staging the output and committing it on success.
@@ -225,7 +240,7 @@ pub fn run_recorded(
 			"tool produced no regular nonempty output",
 		)));
 	}
-	let validated = validate_output(plan, staged.temp(), cancellation)?;
+	let validation = validate_output(plan, staged.temp(), cancellation)?;
 	if !original.matches(input)? {
 		return Err(Error::Diagnostic(Diagnostic::global(
 			Code::ToolFailed,
@@ -234,12 +249,15 @@ pub fn run_recorded(
 	}
 	let report = Report {
 		output: staged.target().to_path_buf(),
-		bytes: metadata.len(),
-		validated,
+		bytes: validation
+			.as_ref()
+			.map_or(metadata.len(), |fingerprint| fingerprint.bytes),
+		validation,
 		stderr,
 	};
 	cancellation.commit(|| {
 		before_commit(staged.temp(), &report)?;
+		report.verify_staged(staged.temp())?;
 		staged.commit()
 	})?;
 	Ok(report)
@@ -247,7 +265,11 @@ pub fn run_recorded(
 
 /// Decode with the supported backend, rather than treating an exit status as format validation.
 /// Custom/document backends remain usable but cannot authorize source disposal.
-fn validate_output(plan: &Plan, output: &Path, cancellation: &Cancellation) -> Result<bool> {
+fn validate_output(
+	plan: &Plan,
+	output: &Path,
+	cancellation: &Cancellation,
+) -> Result<Option<crate::safety::Fingerprint>> {
 	let argv: Vec<OsString> = match plan.backend.name() {
 		"magick" => vec![output.into(), "null:".into()],
 		"ffmpeg" => vec![
@@ -262,7 +284,7 @@ fn validate_output(plan: &Plan, output: &Path, cancellation: &Cancellation) -> R
 			"null".into(),
 			"-".into(),
 		],
-		_ => return Ok(false),
+		_ => return Ok(None),
 	};
 	let path = executable(&plan.command).ok_or_else(|| Error::Io(std::io::Error::other("validator disappeared")))?;
 	run_child(&plan.command, &path, &argv, None, None, cancellation)?;
@@ -279,7 +301,7 @@ fn validate_output(plan: &Plan, output: &Path, cancellation: &Cancellation) -> R
 		"bmp" => prefix.starts_with(b"BM"),
 		"wav" => prefix.starts_with(b"RIFF") && prefix.get(8..12) == Some(b"WAVE"),
 		"flac" => prefix.starts_with(b"fLaC"),
-		_ => return Ok(false),
+		_ => return Ok(None),
 	};
 	if !matches {
 		return Err(Error::Diagnostic(Diagnostic::global(
@@ -288,7 +310,7 @@ fn validate_output(plan: &Plan, output: &Path, cancellation: &Cancellation) -> R
 		)));
 	}
 	/* Full source-to-output property coverage is not yet available for external encoders. */
-	Ok(false)
+	Ok(None)
 }
 
 /// The source a rename left under the target's name, prepared once for a whole
