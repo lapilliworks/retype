@@ -75,8 +75,8 @@ pub struct Record {
 	pub source_fingerprint: Option<Fingerprint>,
 	#[serde(default)]
 	pub pinned: bool,
-	/// Source-disposal eligibility, not proof of disposal. Rename jobs may retain their input.
-	/// A `convert` undo only removes verified outputs and never replaces the live source.
+	/// Whether undo may need to restore the source; not proof that disposal occurred.
+	/// Explicit keep requests leave an independently retained live source untouched.
 	#[serde(default = "consumed_default")]
 	pub consume_source: bool,
 }
@@ -127,7 +127,7 @@ pub struct Subject {
 	pub source_path: PathBuf,
 	pub source_ext: String,
 	pub outputs: Vec<Output>,
-	/// True for a rename-derived job, false for `retype convert`.
+	/// Whether undo may need to restore the source at its original path.
 	pub consume_source: bool,
 }
 
@@ -429,11 +429,17 @@ impl Store {
 				return Err(Error::Exists(commit.output.path.clone()));
 			}
 		}
-		if record.consume_source {
+		let source = match fs::symlink_metadata(&record.source_path) {
+			Ok(metadata) if metadata.file_type().is_file() => true,
+			Ok(_) => return Err(Error::Exists(record.source_path.clone())),
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+			Err(error) => return Err(error.into()),
+		};
+		if record.consume_source || record.pinned || !source {
 			let held = self
 				.source(id)?
 				.ok_or_else(|| Error::Io(std::io::Error::other("no verified original to restore")))?;
-			if fs::symlink_metadata(&record.source_path).is_ok() {
+			if source {
 				let expected = record.source_fingerprint.as_ref().expect("verified record");
 				if !expected.matches(&record.source_path)? {
 					return Err(Error::Exists(record.source_path.clone()));
@@ -878,6 +884,56 @@ mod tests {
 		Policy {
 			quota,
 			..Policy::default()
+		}
+	}
+
+	fn kept_record(store: &Store, directory: &Path) -> (Record, PathBuf) {
+		let output = directory.join("photo.jpg");
+		fs::write(&output, b"converted bytes").unwrap();
+		let mut subject = subject(1, directory);
+		subject.consume_source = false;
+		subject.outputs.push(Output {
+			path: output.clone(),
+			ext: "jpg".to_string(),
+		});
+		let record = store.save(subject).unwrap();
+		let produced = crate::job::Output::pending(output.clone(), "jpg", crate::job::Tier::Converted);
+		store.prepare_output(&record.id, produced, &output).unwrap();
+		(record, output)
+	}
+
+	#[test]
+	fn undo_of_a_pinned_keep_record_refuses_a_changed_original() {
+		let state = state();
+		let store = Store::open(state.path());
+		let (record, output) = kept_record(&store, state.path());
+		fs::write(&record.source_path, b"later changes").unwrap();
+
+		assert!(store.restore(&record.id).is_err());
+		assert_eq!(fs::read(&record.source_path).unwrap(), b"later changes");
+		assert!(output.exists());
+		assert!(store.load(&record.id).unwrap().unwrap().pinned);
+		assert!(store.source(&record.id).unwrap().is_some());
+	}
+
+	#[test]
+	fn undo_restores_a_missing_kept_original_before_removing_outputs() {
+		let state = state();
+		let store = Store::open(state.path());
+		let (record, output) = kept_record(&store, state.path());
+		store.finish(&record.id).unwrap();
+		fs::remove_file(&record.source_path).unwrap();
+
+		let result = store.restore(&record.id);
+		assert_eq!(fs::read(&record.source_path).unwrap(), b"heic bytes");
+		if crate::fsx::supports_durable_cleanup() {
+			result.unwrap();
+			assert!(!output.exists());
+			assert!(store.load(&record.id).unwrap().is_none());
+		} else {
+			assert!(result.is_err());
+			assert!(output.exists());
+			assert!(store.source(&record.id).unwrap().is_some());
 		}
 	}
 
