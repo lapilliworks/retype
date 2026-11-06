@@ -39,6 +39,16 @@ case "$1" in
 esac
 "#;
 
+const MAGICK: &str = r#"#!/bin/sh
+if [ "${1-}" = '-list' ] && [ "${2-}" = 'format' ]; then
+    case "$MOCK_MODE" in
+        probe-failure) echo 'synthetic probe failure' >&2; exit 42;;
+        probe-hang) trap '' TERM; sleep 20; exit 42;;
+    esac
+fi
+echo 'mock tool'
+"#;
+
 const TIMEOUT_SHIM: &str = r#"#!/bin/sh
 grace=${1#--kill-after=}
 grace=${grace%s}
@@ -94,6 +104,7 @@ struct Run {
 	status: ExitStatus,
 	text: String,
 	invocations: String,
+	summary: String,
 }
 
 fn executable(path: &Path, text: &str) {
@@ -183,9 +194,10 @@ fn run(platform: &str, host: &str, mode: &str, limit: u64) -> Run {
 		&bin.join("retype"),
 		"#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done\n",
 	);
-	for tool in ["rustc", "magick", "ffmpeg", "ffprobe", "pandoc", "7zz", "typst"] {
+	for tool in ["rustc", "ffmpeg", "ffprobe", "pandoc", "7zz", "typst"] {
 		executable(&bin.join(tool), "#!/bin/sh\necho 'mock tool'\n");
 	}
+	executable(&bin.join("magick"), MAGICK);
 	if platform == "test-linux.sh" {
 		let path = std::env::var_os("PATH").unwrap_or_default();
 		let timeout = if cfg!(target_os = "linux") {
@@ -237,10 +249,17 @@ fn run(platform: &str, host: &str, mode: &str, limit: u64) -> Run {
 		child_pid.assert_stopped();
 	}
 	let invocations = fs::read_to_string(record).unwrap_or_default();
+	let summary = fs::read_dir(dir.path().join("reports"))
+		.ok()
+		.and_then(|mut entries| entries.next())
+		.and_then(Result::ok)
+		.and_then(|entry| fs::read_to_string(entry.path().join("summary.txt")).ok())
+		.unwrap_or_default();
 	Run {
 		status,
 		text,
 		invocations,
+		summary,
 	}
 }
 
@@ -302,6 +321,32 @@ fn the_macos_wrapper_uses_the_native_runner_contract() {
 	assert!(result.status.success(), "{}", result.text);
 	assert!(result.text.contains("Platform test: Darwin"));
 	assert!(result.text.contains("Platform validation passed."));
+}
+
+#[test]
+fn a_failed_tool_probe_makes_the_runner_fail() {
+	let result = run("test-macos.sh", "Darwin", "probe-failure", 5);
+	assert!(!result.status.success());
+	assert!(result.text.contains("workspace: command exit 0"), "{}", result.text);
+	assert!(
+		result.summary.contains("probe magick -list format: exit 42"),
+		"{}",
+		result.summary
+	);
+	assert!(result.text.contains("Platform validation failed"), "{}", result.text);
+}
+
+#[test]
+fn a_timed_out_tool_probe_makes_the_runner_fail() {
+	let result = run("test-macos.sh", "Darwin", "probe-hang", 5);
+	assert!(!result.status.success());
+	assert!(result.text.contains("workspace: command exit 0"), "{}", result.text);
+	assert!(
+		result.summary.contains("probe magick -list format: exit 124"),
+		"{}",
+		result.summary
+	);
+	assert!(result.text.contains("Platform validation failed"), "{}", result.text);
 }
 
 #[test]

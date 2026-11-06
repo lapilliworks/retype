@@ -134,15 +134,21 @@ trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
 probe() {
-	local name=$1
+	local name=$1 label=$1 argument status
 	shift
-	printf '\n$ %s' "$name"
-	printf ' %s' "$@"
-	printf '\n'
+	for argument in "$@"; do label="$label $argument"; done
+	printf '\n$ %s\n' "$label"
 	if ! command -v "$name" >/dev/null 2>&1; then
 		printf 'Not installed\n'
-	elif ! bounded 10 3 "$name" "$@" 2>&1; then
-		printf 'Probe failed or timed out\n'
+		printf 'probe %s: command not found\n' "$label" | tee -a "$report/summary.txt"
+		failures=1
+	elif bounded 10 3 "$name" "$@" 2>&1; then
+		:
+	else
+		status=$?
+		printf 'Probe failed or timed out (exit %s)\n' "$status"
+		printf 'probe %s: exit %s\n' "$label" "$status" | tee -a "$report/summary.txt"
+		failures=1
 	fi
 }
 {
