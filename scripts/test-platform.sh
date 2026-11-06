@@ -200,6 +200,10 @@ if grep -E 'SKIPPED:|so this test proves nothing|[1-9][0-9]* ignored' "$report/w
 		tee -a "$report/summary.txt"
 	failures=1
 fi
+if grep -E '^test result: FAILED|^error: test failed' "$report/workspace.log" >/dev/null; then
+	printf 'Workspace output contains a failed test summary.\n' | tee -a "$report/summary.txt"
+	failures=1
+fi
 cleanup
 printf '\nReports: %s\nScratch retained: %s\n' "$report" "$scratch"
 if [ "$failures" -ne 0 ]; then

@@ -26,6 +26,7 @@ case "$1" in
             hang) sleep 15;;
             leak) "$MOCK_RETYPE" "$TMPDIR/leak-state" >/dev/null 2>&1 & sleep 0.15;;
             skip) echo 'SKIPPED: mock missing prerequisite';;
+            falsepass) echo 'test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out;';;
         esac
         echo 'test a_real_watched_heic_conversion_and_undo_preserve_the_original ... ok'
         echo 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s'
@@ -175,6 +176,15 @@ fn the_runner_does_not_accept_a_skipped_test_as_success() {
 	};
 	assert!(!result.status.success());
 	assert!(result.text.contains("skip or ignored test"), "{}", result.text);
+}
+
+#[test]
+fn the_runner_rejects_a_failed_summary_even_if_cargo_exits_zero() {
+	let Some(result) = run("test-linux.sh", "Linux", "falsepass", 5) else {
+		return;
+	};
+	assert!(!result.status.success());
+	assert!(result.text.contains("failed test summary"));
 }
 
 #[test]

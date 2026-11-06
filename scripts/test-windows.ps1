@@ -305,6 +305,10 @@ try {
 		Write-Summary 'Workspace output contains a skip or ignored test; release evidence is incomplete.'
 		$script:Failed = $true
 	}
+	if (Select-String -Path $logs -Pattern '^test result: FAILED|^error: test failed' -Quiet) {
+		Write-Summary 'Workspace output contains a failed test summary.'
+		$script:Failed = $true
+	}
 	if ($workspace.Code -ne 0) {
 		Select-String -Path $logs -Pattern 'FAILED|release workflow|SKIPPED:' |
 			Select-Object -Last 30 | ForEach-Object { Write-Host $_ }
