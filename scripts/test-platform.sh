@@ -23,15 +23,26 @@ for command in git cargo rustc tee mktemp ps; do
 	fi
 done
 if [ "$platform" = Darwin ]; then
-	timeout_command=gtimeout
-else
-	timeout_command=timeout
-fi
-if ! command -v "$timeout_command" >/dev/null 2>&1; then
-	printf 'Required command is missing: %s. On macOS, install GNU coreutils.\n' "$timeout_command" >&2
+	if [ ! -x /usr/bin/perl ]; then
+		printf 'The macOS runner requires the system Perl at /usr/bin/perl.\n' >&2
+		exit 2
+	fi
+elif ! command -v timeout >/dev/null 2>&1; then
+	printf 'Required command is missing: timeout\n' >&2
 	exit 2
 fi
-if ! revision=$("$timeout_command" --kill-after=3s 10s git rev-parse --verify HEAD); then
+
+bounded() {
+	local seconds=$1 grace=$2
+	shift 2
+	if [ "$platform" = Darwin ]; then
+		/usr/bin/perl "$script_dir/run-bounded.pl" "$seconds" "$grace" "$@"
+	else
+		timeout --kill-after="${grace}s" "${seconds}s" "$@"
+	fi
+}
+
+if ! revision=$(bounded 10 3 git rev-parse --verify HEAD); then
 	printf 'Cannot determine the Git revision from %s.\n' "$root" >&2
 	exit 2
 fi
@@ -81,7 +92,7 @@ cleanup() {
 	cleaned=1
 	local pid command executable current deadline listing
 	deadline=$((SECONDS + 15))
-	if ! listing=$("$timeout_command" --kill-after=2s 5s ps -ww -axo pid=,command=); then
+	if ! listing=$(bounded 5 2 ps -ww -axo pid=,command=); then
 		printf 'Could not inspect processes for test cleanup.\n' | tee -a "$report/cleanup.log" "$report/summary.txt"
 		failures=1
 		return
@@ -130,14 +141,14 @@ probe() {
 	printf '\n'
 	if ! command -v "$name" >/dev/null 2>&1; then
 		printf 'Not installed\n'
-	elif ! "$timeout_command" --kill-after=3s 10s "$name" "$@" 2>&1; then
+	elif ! bounded 10 3 "$name" "$@" 2>&1; then
 		printf 'Probe failed or timed out\n'
 	fi
 }
 {
 	printf 'Platform: %s\nRevision: %s\n' "$platform" "$revision"
 	printf '\nWorking tree:\n'
-	if ! "$timeout_command" --kill-after=3s 10s git status --short; then
+	if ! bounded 10 3 git status --short; then
 		printf 'Could not inspect working tree\n' | tee -a "$report/summary.txt"
 		failures=1
 	fi
@@ -170,7 +181,7 @@ run_step() {
 	shift 2
 	printf '\n== %s (timeout %ss) ==\n' "$name" "$seconds"
 	set +e
-	"$timeout_command" --kill-after=5s "${seconds}s" "$@" 2>&1 | tee "$report/$name.log"
+	bounded "$seconds" 5 "$@" 2>&1 | tee "$report/$name.log"
 	local statuses=("${PIPESTATUS[@]}")
 	set -e
 	printf '%s: command exit %s, log exit %s\n' "$name" "${statuses[0]}" "${statuses[1]}" | tee -a "$report/summary.txt"
