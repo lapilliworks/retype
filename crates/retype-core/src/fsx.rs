@@ -13,6 +13,10 @@
 use std::io;
 use std::path::Path;
 
+#[cfg(all(test, windows))]
+#[path = "fsx_windows_tests.rs"]
+mod windows_tests;
+
 /// Rename, retrying while Windows reports a sharing or lock violation.
 pub fn rename(from: &Path, to: &Path) -> io::Result<()> {
 	#[cfg(windows)]

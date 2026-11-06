@@ -16,7 +16,7 @@ Each runner checks formatting and workspace Clippy, runs every workspace test se
 
 The macOS runner requires GNU coreutils for `gtimeout`; install it with `brew install coreutils`. Windows requires PowerShell 7, CIM process-query support and cargo-nextest 0.9.151 or newer; install nextest with `cargo install cargo-nextest --locked`. Windows PowerShell 5.1 has a reported Git-revision-check failure that is not yet diagnosed. The codec, PDF-engine and Rust prerequisites are listed below. Native Windows and macOS results must be collected on those systems.
 
-The runners print a report directory under `target/platform-test-reports/` with revision, host and tool versions, step logs and a summary. Logs can contain local paths; inspect them before sharing. Test files and daemon state are isolated in a new scratch directory, which is retained and printed for inspection. The runners attempt to stop only leaked processes whose command lines identify that scratch directory; an unidentifiable detached helper may need manual cleanup. They do not test published release artifacts, power loss, real disk exhaustion, remote filesystems or cloud providers.
+The runners print a report directory under `target/platform-test-reports/` with revision, host and tool versions, step logs and a summary. They record working-tree status but not the contents of local modifications; use a clean checkout or preserve and inspect the diffs separately when sharing evidence. Logs can contain local paths; inspect them before sharing. Test files and daemon state are isolated in a new scratch directory, which is retained and printed for inspection. The runners attempt to stop only leaked processes whose command lines identify that scratch directory; an unidentifiable detached helper may need manual cleanup. They do not test published release artifacts, power loss, real disk exhaustion, remote filesystems or cloud providers.
 
 `RETYPE_TEST_TIMEOUT_SECONDS` sets the per-step timeout for Clippy and the Unix installer and workspace tests from 1 to 3600 seconds; the default is 300. On Windows, the same limit is shared by the strict workflow, non-CLI workspace tests, doctests and CLI workspace tests. Windows uses cargo-nextest with four workers, no retries and a 60-second timeout for each test, so a hung test is reported without blocking the rest of the phase. It runs ignored tests rather than omitting them. The strict workflow is also included in the CLI workspace phase. A phase not reached before the shared deadline is reported as incomplete, and any timeout still fails the runner.
 
@@ -130,11 +130,14 @@ On native Windows, also run:
 
 ```sh
 cargo test -p retype-core --locked --lib execute::windows_tests -- --nocapture
+cargo test -p retype-core --locked --lib fsx::windows_tests::directory_flush_probe_is_not_durability_evidence -- --exact --nocapture
 cargo test -p retype-core --locked --lib correlate::tests::a_hard_link -- --nocapture
 cargo test -p retype-cli --locked --test deferral --test video --no-fail-fast -- --nocapture
 ```
 
 The Windows process tests create controlled descendants, require the process tree to finish before accepting completion, and verify kill-on-close after a timeout. The `process_worker` entry point does nothing in an ordinary parent test run. The real FFmpeg target is a separate check of the installed executable and any wrapper it uses.
+
+The directory-flush probe logs whether a temporary directory can be opened and synced with read, write and combined access. The Windows runner includes it in `workspace-libraries` output. This is diagnostic only: a successful call does not prove directory-entry or power-loss durability and does not enable destructive cleanup. Record the scratch filesystem type with the results.
 
 Twenty-five CLI archive/transaction safety tests now run on Windows instead of being excluded with their entire files. Twenty-eight cases in the three CLI safety binaries remain Unix-only: the main shell-based audit, two additional shell/symlink cases, and actual post-disposal crash recovery. Cross-platform ownership tests and Windows-specific process tests provide further coverage, not substitutes for the excluded cases.
 
