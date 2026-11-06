@@ -204,6 +204,26 @@ fn a_watched_conversion_stops_and_reports_an_undo_storage_error() {
 }
 
 #[test]
+fn an_occupied_source_name_does_not_make_a_temporary_input_a_disposed_original() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	fs::write(&source, b"unrelated occupant").unwrap();
+	let id = JobId::now().unwrap();
+	let job = fixture.convert("zip,tar.gz", &id);
+
+	assert_eq!(job.state, JobState::Done);
+	assert_eq!(fs::read(&source).unwrap(), b"unrelated occupant");
+	let original_location = fixture.path("bundle.zip,tar.gz");
+	let mut original = tar::Archive::new(fs::File::open(original_location).unwrap());
+	assert_eq!(original.entries().unwrap().count(), 2);
+	check_zip(&fixture.path("bundle.zip"));
+	check_tar_gzip(&fixture.path("bundle.tar.gz"));
+	let record = fixture.store().load(&id).unwrap().unwrap();
+	assert!(record.pinned, "ambiguous original location must keep recovery pinned");
+	assert!(fixture.store().source(&id).unwrap().is_some());
+}
+
+#[test]
 fn a_direct_conversion_stops_and_reports_an_undo_storage_error() {
 	let fixture = Fixture::new();
 	let source = fixture.path("bundle.tar");

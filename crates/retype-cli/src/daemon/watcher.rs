@@ -1589,8 +1589,15 @@ fn run(
 		if let Some(reason) = &validation_failure {
 			eprintln!("retype: original retained: {reason}");
 		}
+		if input_is_temporary {
+			eprintln!(
+				"retype: source name is occupied; check the original at {} and its recovery record",
+				target.display()
+			);
+		}
 	}
 	let can_dispose = state == JobState::Done
+		&& !input_is_temporary
 		&& !plans.is_empty()
 		&& output_count == plans.len()
 		&& validation_failure.is_none()
