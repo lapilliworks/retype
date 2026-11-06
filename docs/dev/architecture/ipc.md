@@ -93,7 +93,7 @@ Handshake, required before any other method:
 
 A different major receives `E_IPC_VERSION` and the connection closes. New fields and new methods do not change the major. A client that does not send `hello` first receives `E_IPC_HANDSHAKE`.
 
-Request timeout defaults to 5 s. No method blocks on work that can outlive it.
+The request timeout defaults to 5 s and covers both writing the request and reading the response. A timed-out connection is discarded; failure to stop its I/O is reported. The client timeout does not imply that a request already received by the daemon was cancelled.
 
 ## 6. Methods
 

@@ -7,7 +7,6 @@
 use std::io::BufReader;
 use std::path::Path;
 use std::sync::OnceLock;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -16,23 +15,18 @@ use serde_json::Value;
 
 use retype_core::error::Code;
 
-use crate::{FrameError, Hello, HelloResult, IPC_VERSION, Request, Response, WireError, read_frame, write_frame};
+use crate::{Hello, HelloResult, IPC_VERSION, Request, Response, WireError};
+
+#[cfg(test)]
+mod tests;
+mod transport;
 
 /// How long a request waits for its answer, `docs/dev/architecture/ipc.md` §5.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[cfg(unix)]
-type Stream = std::os::unix::net::UnixStream;
-
-#[cfg(windows)]
-type Stream = std::fs::File;
-
 #[derive(Debug)]
 pub struct Client {
-	writer: Stream,
-	/// A clone kept only so a timed-out or dropped client can unblock its reader.
-	cancel: Stream,
-	frames: Receiver<Result<Option<Value>, FrameError>>,
+	stream: Option<BufReader<transport::Stream>>,
 	next_id: u64,
 	daemon: Option<HelloResult>,
 	timed_out: bool,
@@ -54,45 +48,18 @@ fn trace(line: String) {
 
 impl Client {
 	/// Connect to a socket path or a pipe name. No greeting is sent yet.
-	///
-	/// Reading happens on a small thread so a request can time out on every
-	/// transport. A Windows named pipe has no read timeout, and a client that
-	/// blocks its caller for ever is worse than one that closes the connection.
 	pub fn connect(endpoint: &Path) -> Result<Self, ClientError> {
-		let stream = open(endpoint).map_err(ClientError::Connect)?;
-		let reader = stream.try_clone().map_err(ClientError::Connect)?;
-		let cancel = stream.try_clone().map_err(ClientError::Connect)?;
-		let (sender, frames) = mpsc::channel();
+		let stream = transport::open(endpoint).map_err(ClientError::Connect)?;
+		Ok(Self::from_stream(stream))
+	}
 
-		std::thread::spawn(move || {
-			let mut reader = BufReader::new(reader);
-			loop {
-				match read_frame(&mut reader) {
-					Ok(Some(frame)) => {
-						if sender.send(Ok(Some(frame))).is_err() {
-							return;
-						}
-					}
-					Ok(None) => {
-						let _ = sender.send(Ok(None));
-						return;
-					}
-					Err(error) => {
-						let _ = sender.send(Err(error));
-						return;
-					}
-				}
-			}
-		});
-
-		Ok(Self {
-			writer: stream,
-			cancel,
-			frames,
+	fn from_stream(stream: transport::Stream) -> Self {
+		Self {
+			stream: Some(BufReader::new(stream)),
 			next_id: 1,
 			daemon: None,
 			timed_out: false,
-		})
+		}
 	}
 
 	/// Greet the daemon and keep what it says about itself.
@@ -226,35 +193,33 @@ impl Client {
 	}
 
 	fn request(&mut self, method: &str, params: Value) -> Result<Value, ClientError> {
+		self.request_with_timeout(method, params, REQUEST_TIMEOUT)
+	}
+
+	fn request_with_timeout(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value, ClientError> {
 		if self.timed_out {
-			return Err(ClientError::Timeout(REQUEST_TIMEOUT));
+			return Err(ClientError::Timeout(timeout));
 		}
 
 		let id = self.next_id;
 		self.next_id += 1;
-
 		let request = Request::new(id, method).with_params(params)?;
+		let stream = self
+			.stream
+			.take()
+			.ok_or_else(|| ClientError::Protocol("the connection is no longer available".to_string()))?;
 
 		trace(format!("request {method} #{id}"));
-		write_frame(&mut self.writer, &request)?;
-
-		let frame = match self.frames.recv_timeout(REQUEST_TIMEOUT) {
-			Ok(Ok(Some(frame))) => frame,
-			Ok(Ok(None)) => {
-				return Err(ClientError::Protocol(format!(
-					"the daemon closed the connection during '{method}'"
-				)));
-			}
-			Ok(Err(error)) => return Err(ClientError::Frame(error)),
-			Err(RecvTimeoutError::Timeout) => {
-				self.timed_out = true;
-				abort(&self.cancel);
-				return Err(ClientError::Timeout(REQUEST_TIMEOUT));
-			}
-			Err(RecvTimeoutError::Disconnected) => {
-				return Err(ClientError::Protocol("the reader stopped".to_string()));
+		let (stream, frame) = match transport::exchange(stream, request, timeout) {
+			Ok(result) => result,
+			Err(error) => {
+				self.timed_out = matches!(error, ClientError::Timeout(_));
+				return Err(error);
 			}
 		};
+		self.stream = Some(stream);
+		let frame = frame?
+			.ok_or_else(|| ClientError::Protocol(format!("the daemon closed the connection during '{method}'")))?;
 
 		let response: Response =
 			serde_json::from_value(frame).map_err(|error| ClientError::Protocol(error.to_string()))?;
@@ -280,38 +245,6 @@ impl Client {
 			)),
 		}
 	}
-}
-
-impl Drop for Client {
-	fn drop(&mut self) {
-		abort(&self.cancel);
-	}
-}
-
-#[cfg(unix)]
-fn abort(stream: &Stream) {
-	use std::net::Shutdown;
-	let _ = stream.shutdown(Shutdown::Both);
-}
-
-#[cfg(windows)]
-fn abort(stream: &Stream) {
-	use std::os::windows::io::AsRawHandle;
-	use windows_sys::Win32::System::IO::CancelIoEx;
-
-	unsafe {
-		CancelIoEx(stream.as_raw_handle() as _, std::ptr::null());
-	}
-}
-
-#[cfg(unix)]
-fn open(endpoint: &Path) -> std::io::Result<Stream> {
-	Stream::connect(endpoint)
-}
-
-#[cfg(windows)]
-fn open(endpoint: &Path) -> std::io::Result<Stream> {
-	std::fs::OpenOptions::new().read(true).write(true).open(endpoint)
 }
 
 #[derive(Debug)]
