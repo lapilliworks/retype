@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 #[path = "support/tools.rs"]
 mod tool_support;
 
+const HEIC_FIXTURE: &[u8] = include_bytes!("../../../fixtures/native-watch/photo.heic");
+
 struct Daemon {
 	child: Child,
 	state: PathBuf,
@@ -408,29 +410,46 @@ fn missing_heic(reason: &str) {
 	tool_support::unavailable(reason);
 }
 
-fn has_heic_codec() -> bool {
+fn supports_image_conversion(formats: &str) -> bool {
+	fn supports(formats: &str, format: &str, permission: char) -> bool {
+		formats.lines().any(|line| {
+			let fields: Vec<&str> = line.split_whitespace().collect();
+			fields.first().is_some_and(|name| name.trim_end_matches('*') == format)
+				&& fields.get(2).is_some_and(|mode| mode.contains(permission))
+		})
+	}
+	supports(formats, "HEIC", 'r') && supports(formats, "JPEG", 'w')
+}
+
+#[test]
+fn a_read_only_heic_delegate_is_enough_for_heic_to_jpeg() {
+	let formats = "  HEIC HEIC r-- High Efficiency Image Format\n  JPEG* JPEG rw- JPEG\n";
+	assert!(supports_image_conversion(formats));
+	assert!(!supports_image_conversion(
+		"  HEIC HEIC -w- HEIC\n  JPEG* JPEG rw- JPEG\n"
+	));
+	assert!(!supports_image_conversion(
+		"  HEIC HEIC r-- HEIC\n  JPEG* JPEG r-- JPEG\n"
+	));
+}
+
+fn has_heic_decoder_and_jpeg_encoder() -> bool {
 	let mut capabilities = Command::new("magick");
 	capabilities.args(["-list", "format"]);
 	let capabilities = match bounded(&mut capabilities, Duration::from_secs(10)) {
 		Ok(output) => output,
 		Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-			missing_heic("ImageMagick 7 with HEIC read/write support");
+			missing_heic("ImageMagick 7 with HEIC decoding and JPEG encoding");
 			return false;
 		}
 		Err(error) => panic!("cannot inspect ImageMagick: {error}"),
 	};
 	assert!(capabilities.status.success(), "{}", capabilities.stderr);
-	let has_heic = capabilities.stdout.lines().any(|line| {
-		let fields: Vec<&str> = line.split_whitespace().collect();
-		fields.first().is_some_and(|name| name.trim_end_matches('*') == "HEIC")
-			&& fields
-				.get(2)
-				.is_some_and(|mode| mode.contains('r') && mode.contains('w'))
-	});
-	if !has_heic {
-		missing_heic("ImageMagick HEIC read/write delegate");
+	let supported = supports_image_conversion(&capabilities.stdout);
+	if !supported {
+		missing_heic("ImageMagick HEIC decoder and JPEG encoder");
 	}
-	has_heic
+	supported
 }
 
 fn assert_jpeg_dimensions(path: &Path) {
@@ -443,7 +462,7 @@ fn assert_jpeg_dimensions(path: &Path) {
 
 #[test]
 fn a_real_watched_heic_conversion_and_undo_preserve_the_original() {
-	if !has_heic_codec() {
+	if !has_heic_decoder_and_jpeg_encoder() {
 		return;
 	}
 	let dir = tempfile::tempdir().unwrap();
@@ -452,11 +471,8 @@ fn a_real_watched_heic_conversion_and_undo_preserve_the_original() {
 	fs::create_dir(&photos).unwrap();
 	let source = photos.join("photo.HEIC");
 	let target = photos.join("photo.jpg");
-	let mut generate = Command::new("magick");
-	generate.args(["-size", "40x32", "xc:orange"]).arg(&source);
-	let generated = bounded(&mut generate, Duration::from_secs(20)).unwrap();
-	assert!(generated.status.success(), "{}", generated.stderr);
-	let original = fs::read(&source).unwrap();
+	fs::write(&source, HEIC_FIXTURE).unwrap();
+	let original = HEIC_FIXTURE.to_vec();
 	let config = configuration(dir.path(), UndoPolicy::Enabled);
 	let registered = Command::new(env!("CARGO_BIN_EXE_retype"))
 		.arg("watch")

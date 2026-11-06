@@ -35,7 +35,7 @@ Make the programs available on `PATH` in the same terminal that runs Cargo. Reop
 | Test target | Required preparation |
 |---|---|
 | `fidelity`, `fidelity_axes` | ImageMagick 7.1 or newer, with 16-bit image support such as a Q16 build; PNG, JPEG, GIF and TIFF support |
-| `keep` real watched workflow | ImageMagick 7.1 or newer with HEIC read/write and JPEG support |
+| `keep` real watched workflow | ImageMagick 7.1 or newer with HEIC decoding and JPEG encoding |
 | `video` | FFmpeg 6 or newer and FFprobe, with `libx264`, `aac` and `libmp3lame` encoders |
 | `documents` | Pandoc 3 or newer and at least one usable PDF engine: `typst`, `xelatex`, `lualatex`, `pdflatex`, `weasyprint` or `wkhtmltopdf` |
 | `archives` | Native ZIP/TAR cases need no external archiver; 7z cases require 7-Zip 23 or newer as `7zz`, `7z` or `7za` |
@@ -86,7 +86,7 @@ Set strict tool mode in that shell before the targeted command too. Without it, 
 
 ### Strict native rename and undo gate
 
-Run this on each release OS to require a real watched HEIC-to-JPEG conversion, normal source disposition and a complete undo that restores the exact original bytes and removes the output. The strict mode fails rather than skipping if ImageMagick or its HEIC delegate is unavailable. The test uses private generated files and starts its own daemon.
+Run this on each release OS to require a real watched HEIC-to-JPEG conversion, normal source disposition and a complete undo that restores the exact original bytes and removes the output. The strict mode fails rather than skipping if ImageMagick, its HEIC decoder or JPEG encoder is unavailable. The test copies a checked-in synthetic HEIC fixture into private state and starts its own daemon.
 
 Linux/macOS:
 
