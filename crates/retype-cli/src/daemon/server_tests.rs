@@ -22,6 +22,41 @@ fn submission(input: &Path) -> Request {
 		.unwrap()
 }
 
+#[test]
+fn raw_submissions_reject_paths_relative_to_the_daemon() {
+	let directory = tempfile::tempdir().unwrap();
+	let server = server(&directory.path().join("state"));
+	let relative_input = submission(Path::new("photo.tar"));
+	let response = server.submit(&relative_input).unwrap();
+	assert!(!response.ok);
+	assert_eq!(response.error.unwrap().code, Code::UsageArgs);
+
+	let input = directory.path().join("photo.tar");
+	let relative_output = Request::new(2, "jobs.submit")
+		.with_params(json!({"input": input, "intent": "zip", "output": "photo.zip"}))
+		.unwrap();
+	let response = server.submit(&relative_output).unwrap();
+	assert!(!response.ok);
+	assert_eq!(response.error.unwrap().code, Code::UsageArgs);
+	assert!(server.shared.jobs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn raw_watch_mutations_reject_paths_relative_to_the_daemon() {
+	let directory = tempfile::tempdir().unwrap();
+	let server = server(&directory.path().join("state"));
+	for method in ["watch.add", "watch.remove"] {
+		let request = Request::new(1, method).with_params(json!({"path": "photos"})).unwrap();
+		let response = match method {
+			"watch.add" => server.watch_add(&request),
+			_ => server.watch_remove(&request),
+		}
+		.unwrap();
+		assert!(!response.ok);
+		assert_eq!(response.error.unwrap().code, Code::UsageArgs);
+	}
+}
+
 fn partial_job(server: &Server, directory: &Path) -> Job {
 	let id = JobId::now().unwrap();
 	let source = directory.join("source.tar");

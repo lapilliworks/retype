@@ -356,6 +356,19 @@ impl Server {
 				WireError::new(Code::IpcMethod, "jobs.submit needs an intent"),
 			));
 		};
+		if !Path::new(input).is_absolute() {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::UsageArgs, "jobs.submit input must be an absolute path"),
+			));
+		}
+		let output = request.params.get("output").and_then(|output| output.as_str());
+		if output.is_some_and(|path| !Path::new(path).is_absolute()) {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::UsageArgs, "jobs.submit output must be an absolute path"),
+			));
+		}
 
 		// The only mode that exists so far. A rename is queued by the watcher
 		// rather than by a client, so there is nothing else to name yet.
@@ -371,11 +384,7 @@ impl Server {
 		let asked = Convert {
 			input: PathBuf::from(input),
 			intent: intent.to_string(),
-			output: request
-				.params
-				.get("output")
-				.and_then(|output| output.as_str())
-				.map(str::to_string),
+			output: output.map(str::to_string),
 			force: request
 				.params
 				.get("force")
@@ -979,6 +988,12 @@ impl Server {
 
 		let paused = request.params.get("paused").and_then(|value| value.as_bool());
 		let directory = Path::new(path);
+		if !directory.is_absolute() {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::UsageArgs, "watch.add path must be absolute"),
+			));
+		}
 
 		if !directory.is_dir() {
 			return Ok(Response::error(
@@ -1040,6 +1055,12 @@ impl Server {
 			));
 		};
 
+		if !Path::new(path).is_absolute() {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::UsageArgs, "watch.remove path must be absolute"),
+			));
+		}
 		let removed = watches::unregister(&self.shared.state_dir, Path::new(path))?;
 		Ok(Response::ok(request.id, json!({"path": path, "removed": removed}))?)
 	}

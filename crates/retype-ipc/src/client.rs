@@ -5,7 +5,7 @@
 //! above this module is transport independent.
 
 use std::io::BufReader;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -44,6 +44,10 @@ fn trace(line: String) {
 	if let Some(trace) = TRACE.get() {
 		trace(&line);
 	}
+}
+
+fn local_path(path: &Path) -> Result<PathBuf, ClientError> {
+	std::path::absolute(path).map_err(ClientError::LocalPath)
 }
 
 impl Client {
@@ -109,10 +113,14 @@ impl Client {
 	}
 
 	pub fn watch_add(&mut self, request: &crate::WatchAdd) -> Result<crate::Watch, ClientError> {
+		let mut request = request.clone();
+		request.path = local_path(&request.path)?;
 		self.typed("watch.add", request)
 	}
 
 	pub fn watch_remove(&mut self, request: &crate::WatchRemove) -> Result<crate::WatchRemoved, ClientError> {
+		let mut request = request.clone();
+		request.path = local_path(&request.path)?;
 		self.typed("watch.remove", request)
 	}
 
@@ -130,6 +138,9 @@ impl Client {
 	}
 
 	pub fn jobs_submit(&mut self, request: &crate::JobSubmit) -> Result<crate::JobSubmitted, ClientError> {
+		let mut request = request.clone();
+		request.input = local_path(&request.input)?;
+		request.output = request.output.as_deref().map(local_path).transpose()?;
 		self.typed("jobs.submit", request)
 	}
 
@@ -252,6 +263,8 @@ pub enum ClientError {
 	/// The endpoint could not be reached, which is the answer that makes a
 	/// caller consider spawning a daemon.
 	Connect(std::io::Error),
+	/// A request path could not be resolved in the client process.
+	LocalPath(std::io::Error),
 	Frame(crate::FrameError),
 	/// The daemon answered with a code, `docs/dev/architecture/ipc.md` §8.
 	Rpc(Box<WireError>),
@@ -264,6 +277,7 @@ impl std::fmt::Display for ClientError {
 	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			Self::Connect(error) => write!(formatter, "cannot reach the daemon: {error}"),
+			Self::LocalPath(error) => write!(formatter, "cannot resolve request path: {error}"),
 			Self::Frame(error) => write!(formatter, "{error}"),
 			Self::Rpc(error) => write!(formatter, "{}: {}", error.code, error.message),
 			Self::Timeout(timeout) => write!(formatter, "the daemon did not answer within {} ms", timeout.as_millis()),

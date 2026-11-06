@@ -1,3 +1,10 @@
+#[test]
+fn request_paths_are_resolved_in_the_client_process() {
+	let relative = std::path::Path::new("relative").join("file.png");
+	let expected = std::env::current_dir().unwrap().join(&relative);
+	assert_eq!(super::local_path(&relative).unwrap(), expected);
+}
+
 #[cfg(unix)]
 mod unix {
 	use std::io::{BufReader, Read};

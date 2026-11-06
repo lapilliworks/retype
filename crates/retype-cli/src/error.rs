@@ -87,6 +87,7 @@ impl Error {
 				| retype_ipc::ClientError::Timeout(_)
 				| retype_ipc::ClientError::Protocol(_) => Code::IpcUnavailable,
 				retype_ipc::ClientError::Frame(_) => Code::IpcFrame,
+				retype_ipc::ClientError::LocalPath(error) => retype_core::error::code_for_io(error),
 			},
 			Self::AlreadyRunning(_) => Code::IoLocked,
 			Self::NoStateDirectory => Code::InternalUnexpected,
