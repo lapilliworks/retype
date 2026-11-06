@@ -91,13 +91,16 @@ fn a_transparent_fixture_told_the_truth_about_jpeg() {
 	let alpha = Probe::read(&directory.join("alpha.png")).expect("a readable fixture");
 
 	let work = tempfile::tempdir().unwrap();
+	let input = work.path().join("alpha.png");
+	let original = fs::read(directory.join("alpha.png")).unwrap();
+	fs::write(&input, &original).unwrap();
 	let flat = work.path().join("flat.jpg");
 	let state = work.path().join("state");
 	let _daemon = Autostarted { state: state.clone() };
 
 	let ran = retype()
 		.arg("convert")
-		.arg(directory.join("alpha.png"))
+		.arg(&input)
 		.arg("jpg")
 		.arg("--output")
 		.arg(&flat)
@@ -107,6 +110,7 @@ fn a_transparent_fixture_told_the_truth_about_jpeg() {
 		.unwrap();
 
 	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+	assert_eq!(fs::read(directory.join("alpha.png")).unwrap(), original);
 
 	let output = Probe::read(&flat).expect("a readable output");
 	let fixture = Fixtures::open(&directory).unwrap();
