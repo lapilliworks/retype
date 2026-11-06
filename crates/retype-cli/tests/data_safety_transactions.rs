@@ -440,7 +440,7 @@ fn a_published_output_that_changes_cannot_authorize_source_disposal() {
 			let mut produced = Output::pending(output.clone(), "zip", Tier::Exact);
 			produced.state = OutputState::Done;
 			produced.bytes = Some(report.bytes);
-			store.prepare_output(&id, produced, staged)
+			store.prepare_checked_output(&id, produced, staged, report.validation.fingerprint())
 		},
 	)
 	.unwrap();
@@ -868,7 +868,7 @@ fn crash_worker() {
 				output.state = OutputState::Done;
 				output.bytes = Some(report.bytes);
 				output.identity = FileIdentity::of(staged);
-				store.prepare_output(&id, output, staged)?;
+				store.prepare_checked_output(&id, output, staged, report.validation.fingerprint())?;
 				if phase == "before_publish" {
 					std::process::exit(81);
 				}

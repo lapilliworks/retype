@@ -24,6 +24,9 @@ static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub struct Commit {
 	pub output: crate::job::Output,
 	pub fingerprint: Fingerprint,
+	/// Older or unvalidated publication intents never authorize source disposal.
+	#[serde(default)]
+	pub validated: bool,
 }
 
 /// Schema identifier, `docs/dev/architecture/state.md` §5.
@@ -565,7 +568,11 @@ impl Store {
 			.load(id)?
 			.ok_or_else(|| Error::Io(std::io::Error::other("undo record disappeared")))?;
 		record.commits.retain(|commit| commit.output.path != output.path);
-		record.commits.push(Commit { output, fingerprint });
+		record.commits.push(Commit {
+			output,
+			fingerprint,
+			validated: validated.is_some(),
+		});
 		write_manifest(&self.directory(id), &record)
 	}
 
@@ -585,6 +592,12 @@ impl Store {
 				.iter()
 				.find(|commit| commit.output.path == output.path)
 				.ok_or_else(|| Error::Exists(output.path.clone()))?;
+			if !commit.validated {
+				return Err(Error::Io(std::io::Error::other(format!(
+					"{} has no recorded output validation; source retained",
+					output.path.display()
+				))));
+			}
 			if !commit.fingerprint.matches(&output.path)? {
 				return Err(Error::Io(std::io::Error::other(format!(
 					"{} changed after publication; source retained",
@@ -866,6 +879,38 @@ mod tests {
 			quota,
 			..Policy::default()
 		}
+	}
+
+	#[test]
+	fn disposal_requires_validation_in_the_publication_record() {
+		let state = state();
+		let store = Store::open(state.path());
+		let output = state.path().join("photo.jpg");
+		fs::write(&output, b"output").unwrap();
+		let mut subject = subject(1, state.path());
+		subject.outputs.push(Output {
+			path: output.clone(),
+			ext: "jpg".to_string(),
+		});
+		let record = store.save(subject).unwrap();
+		let produced = crate::job::Output::pending(output.clone(), "jpg", crate::job::Tier::Converted);
+		store.prepare_output(&record.id, produced.clone(), &output).unwrap();
+		assert!(!store.load(&record.id).unwrap().unwrap().commits[0].validated);
+		assert!(store.verify_disposal(&record.id).is_err());
+
+		let meta = store.directory(&record.id).join("meta.toml");
+		let text = fs::read_to_string(&meta).unwrap();
+		assert!(text.contains("validated = false\n"));
+		fs::write(&meta, text.replace("validated = false\n", "")).unwrap();
+		assert!(!store.load(&record.id).unwrap().unwrap().commits[0].validated);
+		assert!(store.verify_disposal(&record.id).is_err());
+
+		let checked = Fingerprint::of(&output).unwrap();
+		store
+			.prepare_checked_output(&record.id, produced, &output, Some(&checked))
+			.unwrap();
+		assert!(store.load(&record.id).unwrap().unwrap().commits[0].validated);
+		store.verify_disposal(&record.id).unwrap();
 	}
 
 	#[test]

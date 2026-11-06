@@ -135,7 +135,7 @@ ext = 'jpg'
 
 New records always hold an independent copy. `source_fingerprint` records the original file identity, byte length and SHA-256 digest. The retained copy must match that digest whenever it is read. A hard link is not a snapshot and is no longer created. Old records without a fingerprint remain on disk but cannot authorize automatic recovery or deletion.
 
-`outputs` lists intended non-keep outputs. `commits` records publication intents with staged file identities and content fingerprints before each output is published. An intent counts as a committed output only when the final file matches its identity and digest. Undo never deletes an intended output merely because its pathname exists.
+`outputs` lists intended non-keep outputs. `commits` records publication intents with staged file identities, content fingerprints and whether those exact bytes passed output validation before each output is published. An intent counts as a committed output only when the final file matches its identity and digest. Disposal additionally requires the validation flag; older intents without it do not authorize disposal. Undo never deletes an intended output merely because its pathname exists.
 
 `consume_source` is true for a rename-derived job and false for `retype convert`. Undo refuses changed or replaced outputs, restores or verifies the original source first, syncs the restoration, and only then claims and removes verified job outputs. An occupied source name is acceptable only when it still holds the recorded original. Successful undo removes the record. Unsupported directory durability refuses destructive cleanup and retains the available files.
 
