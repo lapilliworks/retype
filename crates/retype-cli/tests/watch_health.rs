@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "support/journal.rs"]
+mod journal;
+
 struct Fixture {
 	_dir: tempfile::TempDir,
 	state: PathBuf,
@@ -104,6 +107,26 @@ fn archive(path: &Path) {
 	builder.finish().unwrap();
 }
 
+fn has_settled_job(contents: &str) -> bool {
+	journal::latest(contents).iter().any(|job| {
+		job["state"] == "done"
+			&& matches!(
+				job["source_disposition"]["state"].as_str(),
+				Some("kept" | "removed" | "retained")
+			)
+	})
+}
+
+#[test]
+fn an_output_checkpoint_does_not_count_as_a_settled_job() {
+	let running = r#"{"id":"job","state":"running","outputs":[{"state":"done"}]}"#;
+	let pending = r#"{"id":"job","state":"done","source_disposition":{"state":"pending"}}"#;
+	let settled = r#"{"id":"job","state":"done","source_disposition":{"state":"retained"}}"#;
+	assert!(!has_settled_job(running));
+	assert!(!has_settled_job(&format!("{running}\n{pending}")));
+	assert!(has_settled_job(&format!("{running}\n{pending}\n{settled}")));
+}
+
 #[test]
 fn a_ready_watcher_has_primed_a_preexisting_file() {
 	let mut fixture = Fixture::new();
@@ -120,7 +143,7 @@ fn a_ready_watcher_has_primed_a_preexisting_file() {
 	let deadline = Instant::now() + Duration::from_secs(15);
 	loop {
 		let jobs = fs::read_to_string(fixture.state.join("jobs.jsonl")).unwrap_or_default();
-		if jobs.contains("\"state\":\"done\"") {
+		if has_settled_job(&jobs) {
 			break;
 		}
 		assert!(Instant::now() < deadline, "the rename did not finish: {jobs}");

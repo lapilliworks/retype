@@ -257,14 +257,29 @@ fn ask_waits_without_a_timeout_and_explicit_confirmation_runs_it() {
 		.unwrap();
 	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
 
-	let done = fixture.wait_for(|record| record["state"] == "done" && Fixture::id(record) == Fixture::id(&parked));
-	assert_eq!(done["state"], "done");
+	let done = fixture.wait_for(|record| {
+		record["state"] == "done"
+			&& record["source_disposition"]["state"] == "retained"
+			&& Fixture::id(record) == Fixture::id(&parked)
+	});
 	assert!(fixture.photos.join("b.webp").exists());
+
+	// A durable checkpoint can precede publication to IPC readers.
+	let id = Fixture::id(&done);
+	let deadline = Instant::now() + Duration::from_secs(20);
+	loop {
+		let mut client = retype_cli::client::connect(&fixture.state).unwrap();
+		let published = client.jobs_get(&id).unwrap();
+		if published.state == retype_core::job::JobState::Done {
+			break;
+		}
+		assert!(Instant::now() < deadline, "completion was not published: {published:?}");
+		std::thread::sleep(Duration::from_millis(25));
+	}
 
 	// The resolved job had a parked record before it ran. Its running snapshot must
 	// replace that record rather than becoming a second one, or `jobs get` keeps
 	// answering from a job that has already finished.
-	let id = Fixture::id(&done);
 	let asked = fixture.command().args(["jobs", "get", &id]).output().unwrap();
 	assert!(asked.status.success(), "{}", String::from_utf8_lossy(&asked.stderr));
 	let record: serde_json::Value = serde_json::from_slice(&asked.stdout).unwrap();
