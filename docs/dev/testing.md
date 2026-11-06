@@ -65,6 +65,8 @@ Use the PDF-engine and 7-Zip command names actually installed on the host. In th
 
 `RETYPE_REQUIRE_TEST_TOOLS=1` makes the CLI image, fidelity, video, document and archive suites and core JPEG validation tests fail their prerequisite guards instead of returning early. It does not enable tests excluded by `cfg`, and is not a promise that every codec supported by an installed program has been exercised.
 
+Video test commands have bounded probes and conversions; a timeout reports the stage, command and captured output. On Unix, timed-out commands are stopped as process groups. These bounds identify a stalled step, not its underlying cause.
+
 Linux/macOS:
 
 ```sh
