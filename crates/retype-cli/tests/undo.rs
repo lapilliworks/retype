@@ -148,9 +148,13 @@ fn a_watched_native_archive_conversion_restores_the_original_on_undo() {
 	let journal = state.join("jobs.jsonl");
 	loop {
 		let records = fs::read_to_string(&journal).unwrap_or_default();
-		if records.contains("\"state\":\"done\"") && store.list().unwrap().iter().any(|record| !record.pinned) {
-			assert!(records.contains("\"state\":\"queued\""), "{records}");
-			break;
+		let finished = store.list().unwrap().into_iter().find(|record| !record.pinned);
+		if let Some(record) = finished {
+			if let Ok(lease) = store.lease(&record.id) {
+				drop(lease);
+				assert!(records.contains("\"state\":\"queued\""), "{records}");
+				break;
+			}
 		}
 		assert!(Instant::now() < deadline, "the archive was not converted: {records}");
 		std::thread::sleep(Duration::from_millis(50));
@@ -287,20 +291,25 @@ fn undo_puts_the_source_back_and_removes_the_output() {
 	// is done when the journal says so, not when the file has content.
 	let output = photos.join("photo.webp");
 	let journal = state.join("jobs.jsonl");
+	let store = retype_core::undo::Store::open(&state);
 	let deadline = Instant::now() + Duration::from_secs(20);
 	loop {
 		let recorded = fs::read_to_string(&journal).unwrap_or_default();
-		if recorded.contains("\"state\":\"done\"") {
-			break;
+		let finished = store.list().unwrap().into_iter().find(|record| !record.pinned);
+		if let Some(record) = finished {
+			if let Ok(lease) = store.lease(&record.id) {
+				drop(lease);
+				break;
+			}
 		}
 
-		assert!(Instant::now() < deadline, "the rename was not converted: {recorded}");
+		assert!(Instant::now() < deadline, "the rename was not settled: {recorded}");
 		std::thread::sleep(Duration::from_millis(100));
 	}
 
 	assert_eq!(fs::read(&output).unwrap(), b"pixels");
 
-	// The record is written before the conversion, so it is already there.
+	// The settled record is no longer leased by the conversion worker.
 	let undo = retype()
 		.args(["undo", "--last"])
 		.arg("--state-dir")

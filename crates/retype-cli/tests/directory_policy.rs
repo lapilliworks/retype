@@ -355,7 +355,7 @@ fn debounce_ms_holds_a_rename_until_the_file_stops_changing() {
 	support::observe(&fixture.state, before);
 
 	let done = fixture
-		.wait_for(|record| record["state"] == "done")
+		.wait_for(|record| record["state"] == "done" && record["source_disposition"]["state"] == "retained")
 		.unwrap_or_else(|| panic!("a settled job: {:?}\ndaemon: {}", fixture.records(), fixture.daemon()));
 
 	// One job, asked for what the last name asked for, and named after it.
@@ -369,5 +369,11 @@ fn debounce_ms_holds_a_rename_until_the_file_stops_changing() {
 		1,
 		"one job, including its durable output checkpoints: {records:?}"
 	);
-	assert_eq!(records.iter().filter(|record| record["state"] == "done").count(), 1);
+	assert!(
+		records
+			.iter()
+			.any(|record| { record["state"] == "done" && record["source_disposition"]["state"] == "pending" })
+	);
+	let final_record = records.iter().rev().find(|record| record["state"] == "done").unwrap();
+	assert_eq!(final_record["source_disposition"]["state"], "retained");
 }
