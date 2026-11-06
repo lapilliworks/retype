@@ -107,16 +107,30 @@ fn configuration(dir: &Path, undo: UndoPolicy) -> PathBuf {
 }
 
 fn start_daemon(state: &Path, config: &Path) -> Daemon {
+	start_daemon_with(state, config, None, None)
+}
+
+fn start_daemon_in(state: &Path, config: &Path, directory: Option<&Path>) -> Daemon {
+	start_daemon_with(state, config, directory, None)
+}
+
+fn start_daemon_with(state: &Path, config: &Path, directory: Option<&Path>, path: Option<&std::ffi::OsStr>) -> Daemon {
+	let mut command = Command::new(env!("CARGO_BIN_EXE_retype"));
+	command
+		.args(["daemon", "--detached"])
+		.arg("--state-dir")
+		.arg(state)
+		.env("RETYPE_CONFIG", config)
+		.stdout(Stdio::null())
+		.stderr(Stdio::null());
+	if let Some(directory) = directory {
+		command.current_dir(directory);
+	}
+	if let Some(path) = path {
+		command.env("PATH", path);
+	}
 	let daemon = Daemon {
-		child: Command::new(env!("CARGO_BIN_EXE_retype"))
-			.args(["daemon", "--detached"])
-			.arg("--state-dir")
-			.arg(state)
-			.env("RETYPE_CONFIG", config)
-			.stdout(Stdio::null())
-			.stderr(Stdio::null())
-			.spawn()
-			.unwrap(),
+		child: command.spawn().unwrap(),
 		state: state.to_path_buf(),
 	};
 	let deadline = Instant::now() + Duration::from_secs(10);
@@ -531,6 +545,244 @@ fn a_real_watched_heic_conversion_and_undo_preserve_the_original() {
 			"release workflow requires normal source disposition"
 		);
 	}
+}
+
+#[test]
+fn relative_conversion_paths_use_the_clients_working_directory() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let daemon_directory = dir.path().join("daemon");
+	let client_directory = dir.path().join("client");
+	fs::create_dir(&daemon_directory).unwrap();
+	fs::create_dir(&client_directory).unwrap();
+	let daemon_source = daemon_directory.join("photo.tar");
+	let client_source = client_directory.join("photo.tar");
+	let daemon_output = daemon_directory.join("result.zip");
+	let client_output = client_directory.join("result.zip");
+	fs::write(&daemon_source, archive()).unwrap();
+	let mut client_archive = archive();
+	let payload = client_archive.windows(7).position(|bytes| bytes == b"payload").unwrap();
+	client_archive[payload..payload + 7].copy_from_slice(b"client!");
+	fs::write(&client_source, &client_archive).unwrap();
+	fs::write(&daemon_output, b"unrelated destination").unwrap();
+	let config = configuration(dir.path(), UndoPolicy::Enabled);
+	let _daemon = start_daemon_in(&state, &config, Some(&daemon_directory));
+	let mut convert = Command::new(env!("CARGO_BIN_EXE_retype"));
+	convert
+		.args(["convert", "photo.tar", "zip", "-o", "result.zip", "--force", "--json"])
+		.arg("--state-dir")
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config)
+		.current_dir(&client_directory);
+	let converted = bounded(&mut convert, Duration::from_secs(20)).unwrap();
+	assert!(converted.status.success(), "{}", converted.stderr);
+	let answer: serde_json::Value = serde_json::from_str(&converted.stdout).unwrap();
+	assert_eq!(
+		Path::new(answer["job"]["source"]["path"].as_str().unwrap()),
+		client_source
+	);
+	assert_eq!(fs::read(&daemon_source).unwrap(), archive());
+	assert_eq!(fs::read(&daemon_output).unwrap(), b"unrelated destination");
+	let mut zip = zip::ZipArchive::new(fs::File::open(&client_output).unwrap()).unwrap();
+	let mut content = Vec::new();
+	zip.by_name("file.txt").unwrap().read_to_end(&mut content).unwrap();
+	assert_eq!(content, b"client!");
+	assert_eq!(client_source.exists(), !retype_core::fsx::supports_durable_cleanup());
+}
+
+#[test]
+fn relative_watch_paths_use_the_clients_working_directory() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let daemon_directory = dir.path().join("daemon");
+	let client_directory = dir.path().join("client");
+	fs::create_dir_all(daemon_directory.join("photos")).unwrap();
+	fs::create_dir_all(client_directory.join("photos")).unwrap();
+	let config = configuration(dir.path(), UndoPolicy::Enabled);
+	let _daemon = start_daemon_in(&state, &config, Some(&daemon_directory));
+	let mut watch = Command::new(env!("CARGO_BIN_EXE_retype"));
+	watch
+		.args(["watch", "photos", "--state-dir"])
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config)
+		.current_dir(&client_directory);
+	let watched = bounded(&mut watch, Duration::from_secs(10)).unwrap();
+	assert!(watched.status.success(), "{}", watched.stderr);
+	let registrations = retype_core::watches::load(&state).unwrap();
+	assert_eq!(registrations.len(), 1);
+	assert_eq!(
+		registrations[0].path,
+		fs::canonicalize(client_directory.join("photos")).unwrap()
+	);
+
+	let mut unwatch = Command::new(env!("CARGO_BIN_EXE_retype"));
+	unwatch
+		.args(["unwatch", "photos", "--state-dir"])
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config)
+		.current_dir(&client_directory);
+	let unwatched = bounded(&mut unwatch, Duration::from_secs(10)).unwrap();
+	assert!(unwatched.status.success(), "{}", unwatched.stderr);
+	assert!(retype_core::watches::load(&state).unwrap().is_empty());
+}
+
+#[test]
+fn a_real_direct_heic_conversion_and_undo_follow_watched_disposition() {
+	if !has_heic_decoder_and_jpeg_encoder() {
+		return;
+	}
+	let mut ffmpeg = Command::new("ffmpeg");
+	ffmpeg.arg("-version");
+	let has_ffmpeg = bounded(&mut ffmpeg, Duration::from_secs(10)).is_ok_and(|output| output.status.success());
+	if requires_native_workflow() {
+		assert!(has_ffmpeg, "strict JPEG workflow requires FFmpeg");
+	}
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let source = dir.path().join("photo.HEIC");
+	let output = dir.path().join("photo.jpg");
+	fs::write(&source, HEIC_FIXTURE).unwrap();
+	let config = configuration(dir.path(), UndoPolicy::Enabled);
+	let _daemon = start_daemon(&state, &config);
+	let mut convert = Command::new(env!("CARGO_BIN_EXE_retype"));
+	convert
+		.arg("convert")
+		.arg(&source)
+		.args(["jpg", "--json", "--no-spawn", "--state-dir"])
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config);
+	let converted = bounded(&mut convert, Duration::from_secs(20)).unwrap();
+	assert!(converted.status.success(), "{}", converted.stderr);
+	let answer: serde_json::Value = serde_json::from_str(&converted.stdout).unwrap();
+	assert_eq!(answer["job"]["state"], "done");
+	let id = answer["job"]["id"].as_str().unwrap();
+	assert_jpeg_dimensions(&output);
+	let should_remove = has_ffmpeg && retype_core::fsx::supports_durable_cleanup();
+	if should_remove {
+		assert_eq!(answer["job"]["source_disposition"]["state"], "removed");
+		assert!(!source.exists());
+	} else {
+		assert_eq!(answer["job"]["source_disposition"]["state"], "retained");
+		assert_eq!(fs::read(&source).unwrap(), HEIC_FIXTURE);
+	}
+	let mut undo = Command::new(env!("CARGO_BIN_EXE_retype"));
+	undo.args(["undo", id, "--no-spawn", "--state-dir"])
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config);
+	let undo = bounded(&mut undo, Duration::from_secs(10)).unwrap();
+	assert_eq!(fs::read(&source).unwrap(), HEIC_FIXTURE);
+	if retype_core::fsx::supports_durable_cleanup() {
+		assert!(undo.status.success(), "{}", undo.stderr);
+		assert!(!output.exists());
+	} else {
+		assert!(!undo.status.success());
+		assert!(undo.stderr.contains("directory durability"), "{}", undo.stderr);
+		assert!(output.exists());
+	}
+	if requires_native_workflow() {
+		assert!(should_remove, "strict CLI workflow requires normal source disposition");
+		assert!(
+			undo.status.success(),
+			"strict CLI workflow requires complete native undo"
+		);
+	}
+}
+
+#[test]
+#[cfg(unix)]
+fn an_unresolved_direct_source_is_a_failed_cli_result_with_recovery() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let source = dir.path().join("photo.png");
+	let output = dir.path().join("photo.webp");
+	let script = dir.path().join("converter.sh");
+	fs::write(&source, b"original bytes").unwrap();
+	fs::write(
+		&script,
+		format!("cp \"$1\" \"$2\"\nprintf 'changed source' > '{}'\n", source.display()),
+	)
+	.unwrap();
+	let config = dir.path().join("retype.toml");
+	fs::write(
+		&config,
+		format!(
+			"version = 'retype-config-1'\n[notify]\nenabled = false\n\
+			[backends]\nprefer = ['copy']\n[tools.copy]\ncommand = 'sh'\n\
+			layout = ['{}', '{{input}}', '{{ops}}', '{{output}}']\n\
+			[formats.png]\nfamily = 'image'\nlossy = false\nalpha = true\ntier = 'exact'\n\
+			[formats.webp]\nfamily = 'image'\nlossy = true\nalpha = true\ntier = 'converted'\n",
+			script.display()
+		),
+	)
+	.unwrap();
+	let _daemon = start_daemon(&state, &config);
+	let mut convert = Command::new(env!("CARGO_BIN_EXE_retype"));
+	convert
+		.arg("convert")
+		.arg(&source)
+		.args(["webp", "--json", "--no-spawn", "--state-dir"])
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config);
+	let result = bounded(&mut convert, Duration::from_secs(20)).unwrap();
+	assert!(!result.status.success());
+	let answer: serde_json::Value = serde_json::from_str(&result.stdout).unwrap();
+	assert_eq!(answer["ok"], false);
+	assert_eq!(answer["error"]["code"], "E_IO_FAILED");
+	assert_eq!(
+		answer["error"]["detail"]["job"]["source_disposition"]["state"],
+		"unresolved"
+	);
+	assert_eq!(fs::read(&source).unwrap(), b"changed source");
+	assert_eq!(fs::read(&output).unwrap(), b"original bytes");
+	let id = retype_core::job::JobId::parse(answer["error"]["detail"]["job"]["id"].as_str().unwrap()).unwrap();
+	let store = retype_core::undo::Store::open(&state);
+	assert!(store.load(&id).unwrap().unwrap().pinned);
+	assert_eq!(
+		fs::read(store.source(&id).unwrap().unwrap()).unwrap(),
+		b"original bytes"
+	);
+	assert!(store.restore(&id).is_err());
+	assert!(output.exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn a_missing_jpeg_validator_retains_and_reports_the_original() {
+	if !has_heic_decoder_and_jpeg_encoder() {
+		return;
+	}
+	let dir = tempfile::tempdir().unwrap();
+	let bin = dir.path().join("bin");
+	fs::create_dir(&bin).unwrap();
+	let path = std::env::var_os("PATH").unwrap_or_default();
+	let magick = retype_core::tools::find_in_path(&path, "magick").unwrap();
+	std::os::unix::fs::symlink(magick, bin.join("magick")).unwrap();
+	let state = dir.path().join("state");
+	let source = dir.path().join("photo.HEIC");
+	let output = dir.path().join("photo.jpg");
+	fs::write(&source, HEIC_FIXTURE).unwrap();
+	let config = configuration(dir.path(), UndoPolicy::Enabled);
+	let _daemon = start_daemon_with(&state, &config, None, Some(bin.as_os_str()));
+	let mut convert = Command::new(env!("CARGO_BIN_EXE_retype"));
+	convert
+		.arg("convert")
+		.arg(&source)
+		.args(["jpg", "--no-spawn", "--state-dir"])
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config);
+	let converted = bounded(&mut convert, Duration::from_secs(20)).unwrap();
+	assert!(converted.status.success(), "{}", converted.stderr);
+	assert!(converted.stderr.contains("FFmpeg is missing"), "{}", converted.stderr);
+	assert_eq!(fs::read(&source).unwrap(), HEIC_FIXTURE);
+	assert_jpeg_dimensions(&output);
+	let mut undo = Command::new(env!("CARGO_BIN_EXE_retype"));
+	undo.args(["undo", "--last", "--no-spawn", "--state-dir"])
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config);
+	let undo = bounded(&mut undo, Duration::from_secs(10)).unwrap();
+	assert!(undo.status.success(), "{}", undo.stderr);
+	assert_eq!(fs::read(source).unwrap(), HEIC_FIXTURE);
+	assert!(!output.exists());
 }
 
 #[test]

@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use retype_core::error::{Code, Diagnoses, Error as CoreError};
-use retype_core::job::{Job, JobState, OutputState};
+use retype_core::job::{Job, JobState, OutputState, SourceDisposition};
 use serde_json::{Value, json};
 
 use crate::error::{Error, exit_code};
@@ -97,6 +97,15 @@ pub fn job_failure(job: &Job) -> Option<(Code, String)> {
 	if let Some(error) = reason {
 		return Some((Code::from(error.code.clone()), error.message.clone()));
 	}
+	match &job.source_disposition {
+		Some(SourceDisposition::Pending) => {
+			return Some((Code::IoFailed, "source disposition is still pending".to_string()));
+		}
+		Some(SourceDisposition::Unresolved { reason }) => {
+			return Some((Code::IoFailed, format!("source disposition unresolved: {reason}")));
+		}
+		_ => {}
+	}
 	if job.state == JobState::Done && job.outputs.iter().all(|output| output.state == OutputState::Done) {
 		return None;
 	}
@@ -106,6 +115,16 @@ pub fn job_failure(job: &Job) -> Option<(Code, String)> {
 		_ => Code::JobState,
 	};
 	Some((code, format!("job {} did not finish ({:?})", job.id, job.state)))
+}
+
+/// A successful output can still require attention to the visible original.
+pub fn source_disposition_warning(job: &Job) -> Option<String> {
+	match &job.source_disposition {
+		Some(SourceDisposition::Pending) => Some("source disposition is pending".to_string()),
+		Some(SourceDisposition::Retained { reason }) => Some(format!("original retained: {reason}")),
+		Some(SourceDisposition::Unresolved { reason }) => Some(format!("source disposition unresolved: {reason}")),
+		_ => None,
+	}
 }
 
 /// Report one failure and answer with the exit status it maps to.
@@ -214,6 +233,22 @@ mod tests {
 			retype_core::job::Tier::Converted,
 		));
 		job
+	}
+
+	#[test]
+	fn an_unresolved_source_disposition_is_not_a_successful_job() {
+		let mut job = job(JobState::Done);
+		job.outputs[0].state = OutputState::Done;
+		job.source_disposition = Some(SourceDisposition::Unresolved {
+			reason: "the original changed".to_string(),
+		});
+		assert_eq!(job_failure(&job).unwrap().0, Code::IoFailed);
+		job.source_disposition = Some(SourceDisposition::Pending);
+		assert_eq!(job_failure(&job).unwrap().0, Code::IoFailed);
+		job.source_disposition = Some(SourceDisposition::Retained {
+			reason: "no validator".to_string(),
+		});
+		assert_eq!(job_failure(&job), None);
 	}
 
 	#[test]

@@ -582,23 +582,38 @@ impl Store {
 		write_manifest(&self.directory(id), &record)
 	}
 
-	/// Recheck the retained input and every published object immediately before disposal.
-	pub fn verify_disposal(&self, id: &JobId) -> Result<()> {
+	/// Recheck the retained input and complete published inventory before disposal.
+	pub fn verify_disposal(&self, id: &JobId, outputs: &[crate::job::Output]) -> Result<()> {
 		let record = self
 			.load(id)?
 			.ok_or_else(|| Error::Io(std::io::Error::other("recovery record disappeared")))?;
-		if self.source(id)?.is_none() || record.outputs.is_empty() {
+		if self.source(id)?.is_none() || record.outputs.is_empty() || record.outputs.len() != outputs.len() {
 			return Err(Error::Io(std::io::Error::other(
-				"no verified original or output inventory; source retained",
+				"no verified original or complete output inventory; source retained",
 			)));
 		}
-		for output in &record.outputs {
+		let mut seen = std::collections::BTreeSet::new();
+		for output in outputs {
+			let planned = record.outputs.iter().find(|planned| planned.path == output.path);
+			if output.state != crate::job::OutputState::Done
+				|| !seen.insert(&output.path)
+				|| !planned.is_some_and(|planned| planned.ext == output.format)
+			{
+				return Err(Error::Io(std::io::Error::other(format!(
+					"{} does not match the intended output inventory; source retained",
+					output.path.display()
+				))));
+			}
 			let commit = record
 				.commits
 				.iter()
 				.find(|commit| commit.output.path == output.path)
 				.ok_or_else(|| Error::Exists(output.path.clone()))?;
-			if !commit.validated {
+			if !commit.validated
+				|| commit.output.state != crate::job::OutputState::Done
+				|| commit.output.format != output.format
+				|| commit.output.bytes != output.bytes
+			{
 				return Err(Error::Io(std::io::Error::other(format!(
 					"{} has no recorded output validation; source retained",
 					output.path.display()
@@ -949,24 +964,47 @@ mod tests {
 			ext: "jpg".to_string(),
 		});
 		let record = store.save(subject).unwrap();
-		let produced = crate::job::Output::pending(output.clone(), "jpg", crate::job::Tier::Converted);
+		let mut produced = crate::job::Output::pending(output.clone(), "jpg", crate::job::Tier::Converted);
+		produced.state = crate::job::OutputState::Done;
 		store.prepare_output(&record.id, produced.clone(), &output).unwrap();
 		assert!(!store.load(&record.id).unwrap().unwrap().commits[0].validated);
-		assert!(store.verify_disposal(&record.id).is_err());
+		assert!(
+			store
+				.verify_disposal(&record.id, std::slice::from_ref(&produced))
+				.is_err()
+		);
 
 		let meta = store.directory(&record.id).join("meta.toml");
 		let text = fs::read_to_string(&meta).unwrap();
 		assert!(text.contains("validated = false\n"));
 		fs::write(&meta, text.replace("validated = false\n", "")).unwrap();
 		assert!(!store.load(&record.id).unwrap().unwrap().commits[0].validated);
-		assert!(store.verify_disposal(&record.id).is_err());
+		assert!(
+			store
+				.verify_disposal(&record.id, std::slice::from_ref(&produced))
+				.is_err()
+		);
 
 		let checked = Fingerprint::of(&output).unwrap();
 		store
-			.prepare_checked_output(&record.id, produced, &output, Some(&checked))
+			.prepare_checked_output(&record.id, produced.clone(), &output, Some(&checked))
 			.unwrap();
 		assert!(store.load(&record.id).unwrap().unwrap().commits[0].validated);
-		store.verify_disposal(&record.id).unwrap();
+		store
+			.verify_disposal(&record.id, std::slice::from_ref(&produced))
+			.unwrap();
+		assert!(store.verify_disposal(&record.id, &[]).is_err());
+		let mut wrong = produced.clone();
+		wrong.format = "png".to_string();
+		assert!(store.verify_disposal(&record.id, &[wrong]).is_err());
+		let mut unfinished = produced.clone();
+		unfinished.state = crate::job::OutputState::Failed;
+		assert!(store.verify_disposal(&record.id, &[unfinished]).is_err());
+		assert!(
+			store
+				.verify_disposal(&record.id, &[produced.clone(), produced])
+				.is_err()
+		);
 	}
 
 	#[test]

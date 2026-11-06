@@ -4,9 +4,8 @@
 //! so a person does not wait behind a directory's renames, and shares everything
 //! else with them, one journal, one runner pool, one cancellation path.
 //!
-//! The source is never consumed. A rename moved the file, so the job that answers
-//! it replaces the name; `convert` was handed a path and leaves it where it is.
-//! That difference is the whole of `consume_source`, `docs/dev/architecture/state.md` §5.3.
+//! Source disposition uses the same validation, recovery and ownership checks as a
+//! watched rename. An explicit keep request leaves the source visible.
 
 use std::path::{Path, PathBuf};
 
@@ -228,7 +227,8 @@ pub fn queued(shared: &Shared, prepared: &Prepared, id: &JobId) -> Job {
 		machine: shared.machine.clone(),
 		error: None,
 		parked: None,
-		consume_source: false,
+		consume_source: super::disposition::consumes_source(&prepared.resolved),
+		source_disposition: None,
 	}
 }
 
@@ -252,7 +252,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 		return;
 	}
 
-	/* A submitted conversion retains its live source and an independent recovery input. */
+	/* The live source and independent recovery input remain available during conversion. */
 	let store = retype_core::undo::Store::open(&shared.state_dir);
 	let lease = match store.lease(id) {
 		Ok(lease) => lease,
@@ -291,7 +291,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 					ext: plan.format.clone(),
 				})
 				.collect(),
-			consume_source: false,
+			consume_source: started.consume_source,
 		},
 		shared.registry().undo(),
 	);
@@ -313,6 +313,7 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 		}
 	}
 	let mut outputs = Vec::new();
+	let mut validation_failure = None;
 	let mut output_gate = super::transaction::OutputGate::default();
 
 	for (plan, path) in prepared.plans.iter().zip(&prepared.paths) {
@@ -345,14 +346,19 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 			store: matches!(undo_record, Ok(Some(_))).then_some(&store),
 		};
 		match transaction.run(plan, &snapshot.path, path, cancellation, publication) {
-			Ok(report) => outputs.push(record(
-				path,
-				plan,
-				OutputState::Done,
-				Some(report.bytes),
-				tail(&report),
-				None,
-			)),
+			Ok(report) => {
+				if let Some(reason) = report.validation.reason() {
+					validation_failure.get_or_insert_with(|| reason.to_string());
+				}
+				outputs.push(record(
+					path,
+					plan,
+					OutputState::Done,
+					Some(report.bytes),
+					tail(&report),
+					None,
+				));
+			}
 			Err(error) => {
 				output_gate.observe(&error);
 				// The failure's own code, so a refusal reads as a refusal rather than as
@@ -387,16 +393,29 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 	job.outputs = outputs;
 	job.state = state;
 	job.updated = now_ms();
-	if let Err(error) = crate::daemon::watcher::persist(shared, &job) {
-		super::watcher::report_unrecorded_completion(shared, &job, &error);
-		return;
-	}
-	if job.state == JobState::Done && matches!(undo_record, Ok(Some(_))) {
-		if let Err(error) = store.finish(id) {
-			eprintln!("retype: undo record remains pinned: {error}");
+	if job.state == JobState::Done {
+		let completion = super::disposition::Completion {
+			source: super::disposition::Source::Live {
+				path: &prepared.input,
+				fingerprint: &snapshot.original,
+			},
+			store: &store,
+			has_backup: matches!(undo_record, Ok(Some(_))),
+			requested_outputs: prepared.plans.len(),
+			validation_failure: validation_failure.as_deref(),
+		};
+		if let Err(error) = super::disposition::finish_done(shared, &mut job, completion, cancellation) {
+			super::watcher::report_unrecorded_completion(shared, &job, &error);
+			return;
 		}
-	} else if job.state == JobState::Cancelled && job.outputs.iter().any(|output| output.state == OutputState::Done) {
-		super::cancel::finish_after_persist(shared, &store, &mut job);
+	} else {
+		if let Err(error) = crate::daemon::watcher::persist(shared, &job) {
+			super::watcher::report_unrecorded_completion(shared, &job, &error);
+			return;
+		}
+		if job.state == JobState::Cancelled && job.outputs.iter().any(|output| output.state == OutputState::Done) {
+			super::cancel::finish_after_persist(shared, &store, &mut job);
+		}
 	}
 	drop(lease);
 	crate::daemon::watcher::publish_persisted(shared, &job);
@@ -493,5 +512,6 @@ fn unsatisfied(shared: &Shared, request: &Request, problems: Diagnoses, id: &Job
 		}),
 		parked: None,
 		consume_source: false,
+		source_disposition: None,
 	}
 }

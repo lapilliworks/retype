@@ -628,7 +628,13 @@ impl Server {
 		}
 
 		match crate::daemon::resume::run(&self.shared, &self.machine, &job, force) {
-			Ok(state) => Ok(Response::ok(request.id, json!({"id": job.id, "state": state}))?),
+			Ok(state) => match self.resolve_job(job.id.as_str()) {
+				Ok(current) => Ok(Response::ok(
+					request.id,
+					json!({"id": job.id, "state": state, "source_disposition": current.source_disposition}),
+				)?),
+				Err(error) => Ok(Response::error(request.id, error)),
+			},
 			Err(error) => Ok(Response::error(
 				request.id,
 				WireError::new(error.code(), error.to_string()),

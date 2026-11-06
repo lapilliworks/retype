@@ -575,6 +575,7 @@ fn repair(
 			input_fingerprint: Some(input_fingerprint),
 		}),
 		consume_source: true,
+		source_disposition: None,
 	};
 
 	let work = crate::daemon::timer::work(&job, Some(&correction.text), false).expect("a corrected job has an intent");
@@ -774,6 +775,7 @@ fn park(
 			input_fingerprint: Some(input_fingerprint),
 		}),
 		consume_source: true,
+		source_disposition: None,
 	};
 
 	match watcher::publish_checked(shared, &job) {

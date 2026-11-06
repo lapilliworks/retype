@@ -167,7 +167,7 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 		false => JobState::Failed,
 	};
 
-	let resumed = Job {
+	let mut resumed = Job {
 		id: job.id.clone(),
 		created: job.created,
 		updated: now_ms(),
@@ -184,14 +184,31 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 		error: None,
 		parked: None,
 		consume_source: job.consume_source,
+		source_disposition: None,
 	};
 
-	if let Err(error) = crate::daemon::watcher::persist(shared, &resumed) {
+	if state == JobState::Done {
+		let fingerprint = ledger
+			.source_fingerprint
+			.as_ref()
+			.ok_or_else(|| unavailable("no recorded source fingerprint"))?;
+		let completion = super::disposition::Completion {
+			source: super::disposition::Source::Live {
+				path: &job.source.path,
+				fingerprint,
+			},
+			store: &store,
+			has_backup: true,
+			requested_outputs: plans.len(),
+			validation_failure: None,
+		};
+		if let Err(error) = super::disposition::finish_done(shared, &mut resumed, completion, &cancellation) {
+			super::watcher::report_unrecorded_completion(shared, &resumed, &error);
+			return Err(error);
+		}
+	} else if let Err(error) = crate::daemon::watcher::persist(shared, &resumed) {
 		super::watcher::report_unrecorded_completion(shared, &resumed, &error);
 		return Err(error);
-	}
-	if state == JobState::Done {
-		store.finish(&job.id)?;
 	}
 	drop(lease);
 	crate::daemon::watcher::publish_persisted(shared, &resumed);

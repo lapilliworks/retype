@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use retype_core::error::Diagnostic;
-use retype_core::job::{Engine, Job, JobError, JobId, JobState, Output, Tier};
+use retype_core::job::{Engine, Job, JobError, JobId, JobState, Output, SourceDisposition, Tier};
 use retype_core::undo::Output as UndoOutput;
 use serde::{Deserialize, Serialize};
 
@@ -191,6 +191,8 @@ pub struct JobResume {
 pub struct JobResumed {
 	pub id: JobId,
 	pub state: JobState,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub source_disposition: Option<SourceDisposition>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

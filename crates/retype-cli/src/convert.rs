@@ -113,6 +113,12 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 		return Ok(ExitCode::SUCCESS);
 	}
 
+	if !request.quiet && output::job_failure(&job).is_none() {
+		if let Some(warning) = output::source_disposition_warning(&job) {
+			eprintln!("retype: {warning}");
+		}
+	}
+
 	let mut failure: Option<u8> = None;
 
 	for output in &job.outputs {

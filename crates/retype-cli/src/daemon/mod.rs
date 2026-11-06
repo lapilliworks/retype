@@ -6,6 +6,7 @@
 
 pub mod batches;
 mod cancel;
+mod disposition;
 pub mod events;
 pub mod immediate;
 mod lock;

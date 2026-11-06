@@ -304,21 +304,32 @@ pub fn resume(state_dir: &Path, prefix: &str, force: bool, json: bool, allow_spa
 	};
 
 	let answer = client.jobs_resume(id.as_str(), force)?;
-	if answer.state != JobState::Done {
-		let job = client.jobs_get(id.as_str())?;
+	let job = client.jobs_get(id.as_str())?;
+	if answer.state != JobState::Done || output::job_failure(&job).is_some() {
 		return Ok(ExitCode::from(incomplete_resume(answer.state, &job)));
 	}
 
 	match json {
-		true => output::success(serde_json::to_value(answer)?),
-		false => println!(
-			"{}  {}",
-			id.as_str(),
-			serde_json::to_value(answer.state)
-				.ok()
-				.and_then(|value| value.as_str().map(str::to_string))
-				.unwrap_or_else(|| "resumed".to_string())
-		),
+		true => {
+			let mut result = serde_json::to_value(answer)?;
+			if let Some(disposition) = &job.source_disposition {
+				result["source_disposition"] = serde_json::to_value(disposition)?;
+			}
+			output::success(result);
+		}
+		false => {
+			println!(
+				"{}  {}",
+				id.as_str(),
+				serde_json::to_value(answer.state)
+					.ok()
+					.and_then(|value| value.as_str().map(str::to_string))
+					.unwrap_or_else(|| "resumed".to_string())
+			);
+			if let Some(warning) = output::source_disposition_warning(&job) {
+				eprintln!("retype: {warning}");
+			}
+		}
 	}
 
 	Ok(ExitCode::SUCCESS)
@@ -692,6 +703,7 @@ mod tests {
 				input_fingerprint: None,
 			}),
 			consume_source: false,
+			source_disposition: None,
 		}
 	}
 

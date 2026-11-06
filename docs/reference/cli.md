@@ -62,7 +62,7 @@ Shell quoting is rarely needed: the intent character set excludes every shell me
 
 `--dry-run` is `explain` with a real file: same output, including the estimate from the file's actual size and the resolved backend.
 
-Under `--json`, a completed conversion returns `{v, ok, job}`. An incomplete conversion returns `ok: false` with the job under `error.detail.job` and exits nonzero. The envelope identifies the CLI shape, and the job has its own `v`, `docs/dev/architecture/state.md` §3.
+Under `--json`, a completed conversion returns `{v, ok, job}`. An incomplete conversion or unresolved source disposition returns `ok: false` with the job under `error.detail.job` and exits nonzero. The job's `source_disposition` distinguishes removal, an explicit keep, a safe retention fallback and an unresolved result. The envelope identifies the CLI shape, and the job has its own `v`, `docs/dev/architecture/state.md` §3.
 
 The command submits an `immediate` job to the daemon and waits for it, `docs/dev/architecture/ipc.md` §6. Immediate means it does not queue behind a directory's renames: it is journalled, visible in `jobs list`, cancellable with `jobs cancel`, and shares the pool, so parallelism is bounded the same way for a person and a watcher.
 
@@ -70,7 +70,7 @@ An intent with `+ask` or a trailing `+` requires a person's confirmation. A term
 
 Everything that can fail before a byte moves fails at submission, with the code and the exit status the failure would have had locally, so a bad intent or a missing tool is reported without a job that only fails later. The client polls `jobs.get` while the job runs, which keeps the daemon free to answer anything else, including the cancel that stops it.
 
-A submitted conversion does not consume its source. Its recovery record holds an independent source snapshot and verified publication identities. Undo removes only unchanged outputs produced by the job and leaves the live source untouched. Input aliases remain protected even with `--force`.
+A submitted conversion uses the same source-disposition checks as a watched rename. Without a keep request, a validated, durable conversion with a verified undo copy may remove its visible source; undo restores the original and removes only unchanged outputs produced by the job. `+keep` or a source-format group keeps the original visible, and undo does not overwrite later edits to a successfully kept source. Missing validation, recovery capacity or durability retains the source and is reported in the job. Input aliases remain protected even with `--force`.
 
 Each output is staged in a private directory on the target filesystem. Publication requires a fresh, regular, nonempty result and checked finalization. A failed output is not published; already completed sibling outputs and required recovery records are retained. Backend success alone never permits deleting the original.
 
@@ -177,7 +177,7 @@ retype why <path>
 
 `undo` reads the undo store rather than the journal, so it answers even when the journal is gone, and it removes the record it used: one record, one restore target. An active conversion or recovery returns `E_IO_LOCKED`; cancel it and wait for it to stop before undoing.
 
-`jobs resume` continues a partial or interrupted job from a private copy of its verified retained original. An output whose identity, size and digest still match is skipped. Any other occupied path is `E_IO_EXISTS`; `--force` reruns outputs but cannot replace the input itself. Successful resume retains the backup for normal undo retention. Jobs without verified recovery bytes cannot resume. If the resume remains incomplete, the CLI exits nonzero; its JSON error detail includes the resume state and current job.
+`jobs resume` continues a partial or interrupted job from a private copy of its verified retained original. An output whose identity, size and digest still match is skipped. Any other occupied path is `E_IO_EXISTS`; `--force` reruns outputs but cannot replace the input itself. A successful resume uses the original source-disposition intent and requires recorded validation for every output before source removal. It retains the backup for normal undo retention. Jobs without verified recovery bytes cannot resume. If the resume remains incomplete, the CLI exits nonzero; its JSON error detail includes the resume state and current job.
 
 Ids accept a unique prefix of at least four characters; an ambiguous prefix is `E_JOB_AMBIGUOUS` with the candidates printed, and a shorter one is a usage error. Listings print the shortest unambiguous prefix so copy-paste is short by default. Ids and `--state` values are read in either case and printed lowercase.
 

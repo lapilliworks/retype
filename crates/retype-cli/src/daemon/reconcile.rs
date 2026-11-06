@@ -24,6 +24,14 @@ pub fn run(shared: &Shared) {
 	for job in jobs {
 		match job.state {
 			JobState::Queued | JobState::Running => interrupted(shared, &job),
+			JobState::Done
+				if matches!(
+					&job.source_disposition,
+					Some(retype_core::job::SourceDisposition::Pending)
+				) =>
+			{
+				unresolved_disposition(shared, &job);
+			}
 			JobState::Pending if job.parked.as_ref().is_some_and(|parked| parked.reason == "ask") => {
 				require_confirmation(shared, &job);
 			}
@@ -37,6 +45,39 @@ pub fn run(shared: &Shared) {
 			}
 			_ => {}
 		}
+	}
+}
+
+fn unresolved_disposition(shared: &Shared, job: &Job) {
+	let store = retype_core::undo::Store::open(&shared.state_dir);
+	let has_record = match store.load(&job.id) {
+		Ok(record) => record.is_some(),
+		Err(error) => {
+			eprintln!("retype: cannot inspect source disposition for {}: {error}", job.id);
+			return;
+		}
+	};
+	let _lease = if has_record {
+		match store.lease(&job.id) {
+			Ok(lease) => Some(lease),
+			Err(error) => {
+				eprintln!("retype: cannot reconcile source disposition for {}: {error}", job.id);
+				return;
+			}
+		}
+	} else {
+		None
+	};
+	let mut unresolved = job.clone();
+	unresolved.source_disposition = Some(retype_core::job::SourceDisposition::Unresolved {
+		reason: "source disposition was interrupted; inspect the source and any recovery data".to_string(),
+	});
+	unresolved.updated = retype_core::job::now_ms();
+	if let Err(error) = watcher::publish_checked(shared, &unresolved) {
+		eprintln!(
+			"retype: cannot record unresolved source disposition for {}: {error}",
+			job.id
+		);
 	}
 }
 

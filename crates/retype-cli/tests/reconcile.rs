@@ -91,6 +91,7 @@ fn record(id: &JobId, source: &Path, output: &Path, state: JobState) -> Job {
 		error: None,
 		parked: None,
 		consume_source: true,
+		source_disposition: None,
 	}
 }
 

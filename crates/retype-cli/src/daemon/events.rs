@@ -93,6 +93,7 @@ mod tests {
 			error: None,
 			parked: None,
 			consume_source: false,
+			source_disposition: None,
 		}
 	}
 

@@ -38,7 +38,7 @@ retype jobs resume 01J8Z
 
 `cancel` requests that waiting or running work stop and can also cancel a settled partial job. It leaves the original and completed outputs in place; it is not undo. When a cancelled job has completed outputs, the undo retention period starts after the live original, retained original and those outputs are verified. If verification fails or no undo record exists, cancellation reports a warning and any record stays protected. A cancellation with no completed outputs keeps its recovery record pinned for now. Parked and queued cancellations are recorded before success is reported. A running cancellation is not durable until its terminal snapshot is recorded; after a crash, check the interrupted job before taking another action. If `daemon stop --now` cannot record a queued cancellation, the daemon log reports it.
 
-`resume` is for a job that stopped part way, usually because a disk filled or a converter died. Outputs that are already finished and unchanged are kept, and the rest are run again from the source. An output that has since been replaced by something else is refused rather than overwritten; `--force` replaces it anyway. If work remains incomplete, the command reports the failure and exits nonzero; JSON includes the current job in the error detail.
+`resume` is for a job that stopped part way, usually because a disk filled or a converter died. Outputs that are already finished and unchanged are kept, and the rest are run again from the verified undo copy. An output that has since been replaced by something else is refused rather than overwritten; `--force` replaces it anyway. A completed resume follows the original keep or removal request, subject to the same safety checks, and reports a retained or unresolved source. If work remains incomplete, the command reports the failure and exits nonzero; JSON includes the current job in the error detail.
 
 ## Undo
 
@@ -47,7 +47,7 @@ retype undo --last
 retype undo 01J8Z
 ```
 
-Undo reverses one job: it removes what the job produced, and puts the source back under its original name when the job consumed it. It reads a store of source bytes, not the job history, so it still works after the history has aged out.
+Undo reverses one job: it removes unchanged outputs and restores the original if it was removed or is missing. It never overwrites an unrelated file. If the job explicitly kept a source and completed safely, undo leaves later edits to that source alone. If recovery is pinned because source safety is unresolved, a changed source blocks undo and the verified backup remains. Undo reads a store of source bytes, not the job history, so it still works after the history has aged out.
 
 One record restores one job. Undoing the same job twice is a refusal, not a second restoration. If the daemon cannot be reached, offline undo acquires the state lock and refuses while another process owns it. On Windows, this build reports an error and retains outputs when directory durability is unavailable; it does not claim that undo completed.
 

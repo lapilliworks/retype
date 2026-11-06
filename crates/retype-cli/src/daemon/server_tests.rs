@@ -115,6 +115,7 @@ fn partial_job(server: &Server, directory: &Path) -> Job {
 		error: None,
 		parked: None,
 		consume_source: true,
+		source_disposition: None,
 	};
 	crate::daemon::watcher::publish_checked(&server.shared, &job).unwrap();
 	job
@@ -243,6 +244,7 @@ fn parked_job(server: &Server, directory: &Path, reason: &str, state: JobState) 
 			input_fingerprint: Some(retype_core::safety::Fingerprint::of(&source).unwrap()),
 		}),
 		consume_source: false,
+		source_disposition: None,
 	};
 	crate::daemon::watcher::publish_checked(&server.shared, &job).unwrap();
 	job

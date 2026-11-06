@@ -452,6 +452,22 @@ pub struct Cost {
 	pub bytes: u64,
 }
 
+/// What happened to the visible original after a successful conversion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum SourceDisposition {
+	/// Completion is durable, but disposal and its outcome may not be.
+	Pending,
+	Kept,
+	Removed,
+	Retained {
+		reason: String,
+	},
+	Unresolved {
+		reason: String,
+	},
+}
+
 /// One job, at one moment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Job {
@@ -474,10 +490,12 @@ pub struct Job {
 	/// Present when the job is parked or was repaired, `docs/deferral.md` §11.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub parked: Option<Parked>,
-	/// Whether the job removes its source when it commits: true for a rename,
-	/// false for a client submission, `docs/dev/architecture/state.md` §5.
+	/// Whether the request permits source removal after all safety checks.
 	#[serde(default)]
 	pub consume_source: bool,
+	/// Absent until source disposition has been recorded, or in older jobs.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub source_disposition: Option<SourceDisposition>,
 }
 
 impl Job {
@@ -505,6 +523,7 @@ impl Job {
 			error: None,
 			parked: None,
 			consume_source: false,
+			source_disposition: None,
 		})
 	}
 
@@ -740,6 +759,19 @@ mod tests {
 			"intent":"jpg","outputs":[],"state":"done","backend":null,"machine":"m","error":null}"#;
 		let read: Job = serde_json::from_str(old).expect("a job from an older journal");
 		assert!(read.parked.is_none());
+		assert!(read.source_disposition.is_none());
+	}
+
+	#[test]
+	fn source_disposition_round_trips_as_part_of_a_job() {
+		let mut job = job();
+		job.source_disposition = Some(SourceDisposition::Retained {
+			reason: "missing validator".to_string(),
+		});
+		let record = job.to_record().unwrap();
+		assert_eq!(record["source_disposition"]["state"], "retained");
+		assert_eq!(record["source_disposition"]["reason"], "missing validator");
+		assert_eq!(serde_json::from_value::<Job>(record).unwrap(), job);
 	}
 
 	#[test]

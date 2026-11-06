@@ -264,6 +264,11 @@ fn a_partial_job_resumes_and_skips_what_it_already_produced() {
 		String::from_utf8_lossy(&resumed.stdout)
 	);
 	assert!(String::from_utf8_lossy(&resumed.stdout).contains("done"));
+	assert!(
+		String::from_utf8_lossy(&resumed.stderr).contains("original retained"),
+		"{}",
+		String::from_utf8_lossy(&resumed.stderr)
+	);
 
 	assert_eq!(fs::read(&blocked).unwrap(), b"pixels", "the missing output is written");
 

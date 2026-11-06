@@ -1137,6 +1137,7 @@ fn retire(shared: &Shared, work: &crate::daemon::queue::Work, state: JobState) {
 			message: "replaced by a later rename before it started".to_string(),
 		}),
 		parked: None,
+		source_disposition: None,
 	};
 
 	job.outputs[0].state = OutputState::Skipped;
@@ -1418,7 +1419,7 @@ fn run(
 			bytes: read_from.clone(),
 			source_path: source.to_path_buf(),
 			source_ext: format.clone(),
-			consume_source: true,
+			consume_source: super::disposition::consumes_source(&resolved) || input_is_temporary,
 			outputs: derived
 				.iter()
 				.filter(|output| !output.keep_source)
@@ -1583,71 +1584,39 @@ fn run(
 		(false, false) => JobState::Failed,
 	};
 
-	let output_count = outputs.len();
 	let mut job = settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state);
 	if state == JobState::Done {
-		if let Some(reason) = &validation_failure {
-			eprintln!("retype: original retained: {reason}");
+		let source = if input_is_temporary {
+			super::disposition::Source::Displaced { target }
+		} else {
+			super::disposition::Source::Live {
+				path: &read_from,
+				fingerprint: &snapshot.original,
+			}
+		};
+		let completion = super::disposition::Completion {
+			source,
+			store: &store,
+			has_backup,
+			requested_outputs: plans.len(),
+			validation_failure: validation_failure.as_deref(),
+		};
+		if let Err(error) = super::disposition::finish_done(shared, &mut job, completion, cancellation) {
+			report_unrecorded_completion(shared, &job, &error);
+			return;
 		}
-		if input_is_temporary {
-			eprintln!(
-				"retype: source name is occupied; check the original at {} and its recovery record",
-				target.display()
-			);
+	} else {
+		if let Err(error) = persist(shared, &job) {
+			report_unrecorded_completion(shared, &job, &error);
+			return;
 		}
-	}
-	let can_dispose = state == JobState::Done
-		&& !input_is_temporary
-		&& !plans.is_empty()
-		&& output_count == plans.len()
-		&& validation_failure.is_none()
-		&& has_backup
-		&& !resolved.meta.keep
-		&& !resolved.groups.iter().any(|group| group.keep_source);
-	if let Err(error) = persist(shared, &job) {
-		report_unrecorded_completion(shared, &job, &error);
-		return;
-	}
-	let mut disposed = false;
-	if can_dispose {
-		match cancellation.commit(|| {
-			store.verify_disposal(&id)?;
-			retype_core::safety::remove_owned(&read_from, &snapshot.original)
-		}) {
-			Ok(()) => disposed = true,
-			Err(error) => eprintln!("retype: source retained or preserved for recovery: {error}"),
+		if state == JobState::Cancelled && job.outputs.iter().any(|output| output.state == OutputState::Done) {
+			super::cancel::finish_after_persist(shared, &store, &mut job);
 		}
-	}
-	if has_backup && state == JobState::Done {
-		/* A failed or ambiguous disposal can leave the original only in the backup.
-		 * Keep that backup pinned until the live source is proven intact. */
-		let retained = disposed || source_holds_original(&snapshot.original, &read_from, target, input_is_temporary);
-		if !retained {
-			eprintln!("retype: undo record remains pinned: the source was not verified after disposal failed");
-		} else if let Err(error) = store.finish(&id) {
-			eprintln!("retype: undo record remains pinned: {error}");
-		}
-	} else if state == JobState::Cancelled && job.outputs.iter().any(|output| output.state == OutputState::Done) {
-		super::cancel::finish_after_persist(shared, &store, &mut job);
 	}
 	drop(lease);
 	publish_persisted(shared, &job);
 	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
-}
-
-/// Whether the live source, or the occupied target that held it, still matches the
-/// snapshot the conversion used.
-fn source_holds_original(
-	original: &retype_core::safety::Fingerprint,
-	read_from: &Path,
-	target: &Path,
-	input_is_temporary: bool,
-) -> bool {
-	if !original.matches(read_from).unwrap_or(false) {
-		return false;
-	}
-
-	!input_is_temporary || original.matches(target).unwrap_or(false)
 }
 
 /// A job's last word, whether it got as far as an output or not.
@@ -1687,7 +1656,8 @@ fn settled(
 		machine: shared.machine.clone(),
 		error: None,
 		parked: carried(shared, id),
-		consume_source: true,
+		consume_source: super::disposition::consumes_source(resolved),
+		source_disposition: None,
 	}
 }
 
@@ -1787,8 +1757,16 @@ pub(super) fn report_unrecorded_completion(shared: &Shared, job: &Job, error: &r
 	} else {
 		JobState::Failed
 	});
-	let mut message =
-		format!("completion could not be recorded: {error}; the source was not removed and this status is not durable");
+	let source = match &job.source_disposition {
+		Some(retype_core::job::SourceDisposition::Removed) => {
+			"the source was removed and its recovery record remains protected"
+		}
+		Some(retype_core::job::SourceDisposition::Unresolved { .. }) => {
+			"the source disposition is unresolved and recovery remains protected when available"
+		}
+		_ => "the source was not removed",
+	};
+	let mut message = format!("completion could not be recorded: {error}; {source}; this status is not durable");
 	if error.code() == Code::IoSpace {
 		message.push_str("; free space before trying again");
 	}
@@ -1924,7 +1902,8 @@ fn running(
 		// A parked job keeps the reason it waited when its running snapshot
 		// replaces the parked one.
 		parked: carried(shared, id),
-		consume_source: true,
+		consume_source: super::disposition::consumes_source(resolved),
+		source_disposition: None,
 	}
 }
 

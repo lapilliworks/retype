@@ -37,7 +37,7 @@ holiday.heic  ->  holiday.heic,jpg       # keep holiday.heic, add holiday.jpg
 holiday.heic  ->  holiday.jpg+keep        # the same visible result
 ```
 
-The original name, including extension alias and case, is preserved. `+keep` works independently of undo. The current `retype convert` path always retains its source, even without `+keep`; watched conversions can consume it only after their safety checks pass.
+The original name, including extension alias and case, is preserved. `+keep` works independently of undo. Without it, both `retype convert` and watched conversions may remove the visible source only after their safety checks pass; the verified original remains in undo.
 
 ## Names the source does not need
 
@@ -85,8 +85,8 @@ Both together is not an error: asking wins and the `!` is ignored with a warning
 
 - The output is written under a temporary name in its target directory and renamed into place only when the converter exits successfully. An output path is therefore absent or complete, never half a file
 - A partial failure keeps completed outputs and preserves the source; it does not automatically roll back successful outputs
-- `convert` currently retains its source. A watched conversion removes the original only when its backup, output validation, ownership and durability checks all permit it. `+keep` requests that the original remain visible
-- For ImageMagick or FFmpeg JPEG output, independent validation requires both `magick` and `ffmpeg` on `PATH`. If either is missing, the daemon log reports the fallback and the original remains visible. Other external output formats retain the source for now
+- CLI and watched conversions remove the original only when backup, output validation, ownership and durability checks all permit it. `+keep` requests that the original remain visible
+- For ImageMagick or FFmpeg JPEG output, independent validation requires both `magick` and `ffmpeg` on `PATH`. If either is missing, the job reports the fallback and the original remains visible. Other external output formats retain the source for now
 - A watched conversion attempts to restore the source name before work begins. If that name is occupied, the source is preserved at the available location rather than overwriting the occupant
 
 ## When the name is wrong
