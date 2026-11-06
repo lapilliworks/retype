@@ -133,6 +133,10 @@ function Invoke-Bounded {
 		$process.WaitForExit()
 		$code = $process.ExitCode
 		$script:ActiveProcess = $null
+		if ($null -eq $code) {
+			[IO.File]::AppendAllText($stderr, "Process exited without an available exit status.`n")
+			$code = 1
+		}
 		return [pscustomobject]@{ Code = $code; Stdout = $stdout; Stderr = $stderr; TimedOut = $false }
 	} catch {
 		if ($script:ActiveProcess) { Stop-ProcessTree $script:ActiveProcess; $script:ActiveProcess = $null }
@@ -149,6 +153,34 @@ function Run-Step {
 	Write-Summary "${Name}: exit $($result.Code); stdout: $($result.Stdout); stderr: $($result.Stderr)"
 	if ($result.Code -ne 0) { $script:Failed = $true }
 	return $result
+}
+
+function Run-SuiteStep {
+	param([string]$Name, [string]$Executable, [string[]]$Arguments)
+	$remaining = $Limit - [int]($script:SuiteWatch.Elapsed.TotalSeconds)
+	if ($remaining -le 0) {
+		$stdout = Join-Path $Report "$Name.stdout.log"
+		$stderr = Join-Path $Report "$Name.stderr.log"
+		[IO.File]::WriteAllText($stdout, '')
+		[IO.File]::WriteAllText($stderr, "Not run: the ${Limit}s test-suite budget was exhausted.`n")
+		Write-Summary "${Name}: not run; test-suite budget exhausted; stderr: $stderr"
+		$script:Failed = $true
+		return [pscustomobject]@{ Code = 124; Stdout = $stdout; Stderr = $stderr; TimedOut = $true }
+	}
+	return (Run-Step -Name $Name -Seconds $remaining -Executable $Executable -Arguments $Arguments)
+}
+
+function Test-NextestSummary {
+	param([string]$Name, $Result)
+	$logs = @($Result.Stdout, $Result.Stderr)
+	if (-not (Select-String -Path $logs -Pattern 'Summary .*\b[1-9][0-9]* passed' -Quiet)) {
+		Write-Summary "${Name}: no passing nextest summary was recorded."
+		$script:Failed = $true
+	}
+	if (Select-String -Path $logs -Pattern 'Summary .*\b[1-9][0-9]* skipped' -Quiet) {
+		Write-Summary "${Name}: nextest reported skipped tests."
+		$script:Failed = $true
+	}
 }
 
 function Probe {
@@ -246,7 +278,9 @@ try {
 	[IO.File]::WriteAllLines((Join-Path $Report 'host.txt'), [string[]]$hostInfo)
 	$revision = Invoke-Bounded -Name 'git-revision' -Executable 'git' `
 		-Arguments @('rev-parse', '--verify', 'HEAD') -Seconds 10
-	if ($revision.Code -ne 0) { throw "Cannot determine the Git revision; see $($revision.Stderr)" }
+	if ($revision.Code -ne 0) {
+		throw "Cannot determine the Git revision (exit $($revision.Code)); see $($revision.Stdout) and $($revision.Stderr)"
+	}
 	$gitStatus = Invoke-Bounded -Name 'git-status' -Executable 'git' -Arguments @('status', '--short') -Seconds 10
 	if ($gitStatus.Code -ne 0) {
 		Write-Summary "Could not inspect the working tree; see $($gitStatus.Stderr)."
@@ -254,6 +288,11 @@ try {
 	}
 	Probe -Name 'rustc' -Executable 'rustc' -Arguments @('-vV')
 	Probe -Name 'cargo' -Executable 'cargo' -Arguments @('--version')
+	$nextestVersion = Invoke-Bounded -Name 'probe-nextest' -Executable 'cargo' `
+		-Arguments @('nextest', '--version') -Seconds 10
+	if ($nextestVersion.Code -ne 0) {
+		throw "cargo-nextest is required; run 'cargo install cargo-nextest --locked'. See $($nextestVersion.Stderr)"
+	}
 	Probe -Name 'magick-version' -Executable 'magick' -Arguments @('-version')
 	Probe -Name 'magick-formats' -Executable 'magick' -Arguments @('-list', 'format')
 	Probe -Name 'ffmpeg-version' -Executable 'ffmpeg' -Arguments @('-version')
@@ -289,28 +328,46 @@ try {
 	$null = Run-Step -Name 'clippy' -Seconds $Limit -Executable 'cargo' `
 		-Arguments @('clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings')
 	Test-InstallerSyntax
-	$workspace = Run-Step -Name 'workspace' -Seconds $Limit -Executable 'cargo' `
-		-Arguments @('test', '--workspace', '--locked', '--no-fail-fast', '--', '--nocapture')
-	$logs = @($workspace.Stdout, $workspace.Stderr)
+	$nextest = @('nextest', 'run', '--locked', '--config-file', 'scripts/nextest-platform.toml',
+		'--profile', 'platform', '--user-config-file', 'none', '--no-fail-fast', '--run-ignored', 'all',
+		'--test-threads', '4', '--retries', '0', '--status-level', 'pass', '--color', 'never',
+		'--success-output', 'immediate', '--failure-output', 'immediate-final', '--no-tests', 'fail')
 	$workflowTest = 'a_real_watched_heic_conversion_and_undo_preserve_the_original'
-	if (-not (Select-String -Path $logs -SimpleMatch $workflowTest -Quiet)) {
-		Write-Summary 'The strict native workflow test did not run.'
+	$script:SuiteWatch = [Diagnostics.Stopwatch]::StartNew()
+	$workflow = Run-SuiteStep -Name 'native-workflow' -Executable 'cargo' `
+		-Arguments ($nextest + @('-p', 'retype-cli', '--test', 'keep', '--', $workflowTest))
+	$libraries = Run-SuiteStep -Name 'workspace-libraries' -Executable 'cargo' `
+		-Arguments ($nextest + @('--workspace', '--exclude', 'retype-cli'))
+	$doctests = Run-SuiteStep -Name 'doctests' -Executable 'cargo' `
+		-Arguments @('test', '--workspace', '--doc', '--locked', '--no-fail-fast', '--', '--nocapture')
+	$cli = Run-SuiteStep -Name 'workspace-cli' -Executable 'cargo' -Arguments ($nextest + @('-p', 'retype-cli'))
+
+	$workflowLogs = @($workflow.Stdout, $workflow.Stderr)
+	$workflowPass = 'PASS\s+\[.*\].*' + [regex]::Escape($workflowTest)
+	if (-not (Select-String -Path $workflowLogs -Pattern $workflowPass -Quiet)) {
+		Write-Summary 'The strict native workflow test did not pass.'
 		$script:Failed = $true
 	}
-	if (-not (Select-String -Path $logs -Pattern 'test result: (ok|FAILED)\. [1-9][0-9]* passed' -Quiet)) {
-		Write-Summary 'No passing test summary was recorded.'
+	Test-NextestSummary -Name 'workspace-libraries' -Result $libraries
+	Test-NextestSummary -Name 'workspace-cli' -Result $cli
+	$docLogs = @($doctests.Stdout, $doctests.Stderr)
+	if (-not (Select-String -Path $docLogs -SimpleMatch 'Doc-tests' -Quiet) -or
+		-not (Select-String -Path $docLogs -SimpleMatch 'test result:' -Quiet)) {
+		Write-Summary 'No doctest summaries were recorded.'
 		$script:Failed = $true
 	}
+	$logs = @($workflow.Stdout, $workflow.Stderr, $libraries.Stdout, $libraries.Stderr,
+		$doctests.Stdout, $doctests.Stderr, $cli.Stdout, $cli.Stderr)
 	if (Select-String -Path $logs -Pattern 'SKIPPED:|so this test proves nothing|[1-9][0-9]* ignored' -Quiet) {
-		Write-Summary 'Workspace output contains a skip or ignored test; release evidence is incomplete.'
+		Write-Summary 'Test output contains a skip or ignored test; release evidence is incomplete.'
 		$script:Failed = $true
 	}
-	if (Select-String -Path $logs -Pattern '^test result: FAILED|^error: test failed' -Quiet) {
-		Write-Summary 'Workspace output contains a failed test summary.'
+	if (Select-String -Path $logs -Pattern '^\s*(FAIL|TIMEOUT|LEAK)\s+\[|test result: FAILED|^error: test failed' -Quiet) {
+		Write-Summary 'Test output contains a failed or timed-out result.'
 		$script:Failed = $true
 	}
-	if ($workspace.Code -ne 0) {
-		Select-String -Path $logs -Pattern 'FAILED|release workflow|SKIPPED:' |
+	if ($script:Failed) {
+		Select-String -Path $logs -Pattern 'FAILED|TIMEOUT|LEAK|release workflow|SKIPPED:' |
 			Select-Object -Last 30 | ForEach-Object { Write-Host $_ }
 	}
 } catch {
