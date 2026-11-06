@@ -332,10 +332,11 @@ try {
 		'--profile', 'platform', '--user-config-file', 'none', '--no-fail-fast', '--run-ignored', 'all',
 		'--test-threads', '4', '--retries', '0', '--status-level', 'pass', '--color', 'never',
 		'--success-output', 'immediate', '--failure-output', 'immediate-final', '--no-tests', 'fail')
-	$workflowTest = 'a_real_watched_heic_conversion_and_undo_preserve_the_original'
+	$workflowTests = @('a_real_watched_heic_conversion_and_undo_preserve_the_original',
+		'a_real_direct_heic_conversion_and_undo_follow_watched_disposition')
 	$script:SuiteWatch = [Diagnostics.Stopwatch]::StartNew()
 	$workflow = Run-SuiteStep -Name 'native-workflow' -Executable 'cargo' `
-		-Arguments ($nextest + @('-p', 'retype-cli', '--test', 'keep', '--', $workflowTest))
+		-Arguments ($nextest + @('-p', 'retype-cli', '--test', 'keep', '--', 'heic_conversion_and_undo'))
 	$libraries = Run-SuiteStep -Name 'workspace-libraries' -Executable 'cargo' `
 		-Arguments ($nextest + @('--workspace', '--exclude', 'retype-cli'))
 	$doctests = Run-SuiteStep -Name 'doctests' -Executable 'cargo' `
@@ -343,10 +344,12 @@ try {
 	$cli = Run-SuiteStep -Name 'workspace-cli' -Executable 'cargo' -Arguments ($nextest + @('-p', 'retype-cli'))
 
 	$workflowLogs = @($workflow.Stdout, $workflow.Stderr)
-	$workflowPass = 'PASS\s+\[.*\].*' + [regex]::Escape($workflowTest)
-	if (-not (Select-String -Path $workflowLogs -Pattern $workflowPass -Quiet)) {
-		Write-Summary 'The strict native workflow test did not pass.'
-		$script:Failed = $true
+	foreach ($workflowTest in $workflowTests) {
+		$workflowPass = 'PASS\s+\[.*\].*' + [regex]::Escape($workflowTest)
+		if (-not (Select-String -Path $workflowLogs -Pattern $workflowPass -Quiet)) {
+			Write-Summary "The strict native workflow test did not pass: $workflowTest"
+			$script:Failed = $true
+		}
 	}
 	Test-NextestSummary -Name 'workspace-libraries' -Result $libraries
 	Test-NextestSummary -Name 'workspace-cli' -Result $cli

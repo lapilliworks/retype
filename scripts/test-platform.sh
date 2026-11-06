@@ -187,10 +187,14 @@ if grep -i 'skipping installer test' "$report/installer.log" >/dev/null; then
 	failures=1
 fi
 run_step workspace "$limit" cargo test --workspace --locked --no-fail-fast -- --nocapture
-if ! grep -F 'a_real_watched_heic_conversion_and_undo_preserve_the_original' "$report/workspace.log" >/dev/null; then
-	printf 'The strict native workflow test did not run.\n' | tee -a "$report/summary.txt"
-	failures=1
-fi
+for workflow in \
+	a_real_watched_heic_conversion_and_undo_preserve_the_original \
+	a_real_direct_heic_conversion_and_undo_follow_watched_disposition; do
+	if ! grep -F "$workflow" "$report/workspace.log" >/dev/null; then
+		printf 'The strict native workflow test did not run: %s\n' "$workflow" | tee -a "$report/summary.txt"
+		failures=1
+	fi
+done
 if ! grep -E 'test result: (ok|FAILED)\. [1-9][0-9]* passed' "$report/workspace.log" >/dev/null; then
 	printf 'No passing test summary was recorded.\n' | tee -a "$report/summary.txt"
 	failures=1

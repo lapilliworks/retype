@@ -29,7 +29,10 @@ case "$1" in
             falsepass) echo 'test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out;';;
         esac
         echo 'test a_real_watched_heic_conversion_and_undo_preserve_the_original ... ok'
-        echo 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s'
+        if [ "$MOCK_MODE" != missing-direct ]; then
+            echo 'test a_real_direct_heic_conversion_and_undo_follow_watched_disposition ... ok'
+        fi
+        echo 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s'
         if [ "$MOCK_MODE" = fail ]; then exit 101; fi;;
     *) exit 2;;
 esac
@@ -185,6 +188,19 @@ fn the_runner_rejects_a_failed_summary_even_if_cargo_exits_zero() {
 	};
 	assert!(!result.status.success());
 	assert!(result.text.contains("failed test summary"));
+}
+
+#[test]
+fn the_runner_rejects_a_missing_direct_native_workflow() {
+	let Some(result) = run("test-linux.sh", "Linux", "missing-direct", 5) else {
+		return;
+	};
+	assert!(!result.status.success());
+	assert!(
+		result
+			.text
+			.contains("a_real_direct_heic_conversion_and_undo_follow_watched_disposition")
+	);
 }
 
 #[test]

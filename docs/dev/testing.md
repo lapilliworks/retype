@@ -88,12 +88,13 @@ Set strict tool mode in that shell before the targeted command too. Without it, 
 
 ### Strict native rename and undo gate
 
-Run this on each release OS to require a real watched HEIC-to-JPEG conversion, normal source disposition and a complete undo that restores the exact original bytes and removes the output. The strict mode fails rather than skipping if ImageMagick, its HEIC decoder or JPEG encoder, or FFmpeg is unavailable. The test copies a checked-in synthetic HEIC fixture into private state and starts its own daemon.
+Run these on each release OS to require real watched and direct HEIC-to-JPEG conversions, normal source disposition and complete undo that restores the exact original bytes and removes the output. Strict mode fails rather than skipping if ImageMagick, its HEIC decoder or JPEG encoder, or FFmpeg is unavailable. The tests copy a checked-in synthetic HEIC fixture into private state and start their own daemons.
 
 Linux/macOS:
 
 ```sh
 RETYPE_REQUIRE_NATIVE_WORKFLOW=1 cargo test -p retype-cli --locked --test keep a_real_watched_heic_conversion_and_undo_preserve_the_original -- --nocapture
+RETYPE_REQUIRE_NATIVE_WORKFLOW=1 cargo test -p retype-cli --locked --test keep a_real_direct_heic_conversion_and_undo_follow_watched_disposition -- --nocapture
 ```
 
 PowerShell:
@@ -101,6 +102,7 @@ PowerShell:
 ```powershell
 $env:RETYPE_REQUIRE_NATIVE_WORKFLOW = '1'
 cargo test -p retype-cli --locked --test keep a_real_watched_heic_conversion_and_undo_preserve_the_original -- --nocapture
+cargo test -p retype-cli --locked --test keep a_real_direct_heic_conversion_and_undo_follow_watched_disposition -- --nocapture
 ```
 
 This gate currently fails when the validator retains the visible source or the platform cannot complete destructive undo. A passing ordinary tool suite is not a substitute for this gate.
