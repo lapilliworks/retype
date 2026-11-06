@@ -167,10 +167,12 @@ impl Drop for ChildMarker {
 }
 
 fn run(platform: &str, host: &str, mode: &str, limit: u64) -> Run {
-	let dir = tempfile::Builder::new()
-		.prefix("retype-runner-test.")
-		.tempdir_in("/tmp")
-		.unwrap();
+	let dir = tempfile::Builder::new().prefix("rt.").tempdir_in("/tmp").unwrap();
+	let scratch = fs::canonicalize(dir.path()).unwrap().join("retype-test.XXXXXXXX");
+	assert!(
+		scratch.as_os_str().len() <= 56,
+		"test scratch path is too long: {scratch:?}"
+	);
 	let bin = dir.path().join("bin");
 	fs::create_dir(&bin).unwrap();
 	executable(&bin.join("cargo"), CARGO);
