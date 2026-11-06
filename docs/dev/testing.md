@@ -10,11 +10,11 @@ From the repository root, use the runner for the native operating system:
 |---|---|
 | Linux | `./scripts/test-linux.sh` |
 | macOS | `./scripts/test-macos.sh` |
-| Windows PowerShell | `powershell -NoProfile -File .\scripts\test-windows.ps1` |
+| Windows PowerShell 7 | `pwsh -NoProfile -File .\scripts\test-windows.ps1` |
 
 Each runner checks formatting and workspace Clippy, runs every workspace test selected for the host with real tools required, and enables the strict native HEIC rename and undo gate. The Unix runners also check and exercise the shell installer against a local fake release; the Windows runner parses the PowerShell installer. A missing prerequisite, skipped or ignored test, timeout, leaked test process or failed check makes the runner exit nonzero. The strict HEIC gate currently fails because normal source disposition or complete native undo is not yet available; this is a release blocker, not a test-runner error.
 
-The macOS runner requires GNU coreutils for `gtimeout`; install it with `brew install coreutils`. Windows requires PowerShell 5.1 or newer and CIM process-query support. The codec, PDF-engine and Rust prerequisites are listed below. Native Windows and macOS results must be collected on those systems.
+The macOS runner requires GNU coreutils for `gtimeout`; install it with `brew install coreutils`. Use PowerShell 7 and CIM process-query support on Windows. Windows PowerShell 5.1 has a reported Git-revision-check failure that is not yet diagnosed. The codec, PDF-engine and Rust prerequisites are listed below. Native Windows and macOS results must be collected on those systems.
 
 The runners print a report directory under `target/platform-test-reports/` with revision, host and tool versions, step logs and a summary. Logs can contain local paths; inspect them before sharing. Test files and daemon state are isolated in a new scratch directory, which is retained and printed for inspection. The runners attempt to stop only leaked processes whose command lines identify that scratch directory; an unidentifiable detached helper may need manual cleanup. They do not test published release artifacts, power loss, real disk exhaustion, remote filesystems or cloud providers.
 
