@@ -1,0 +1,8 @@
+nextest-version = '0.9.151'
+
+[profile.platform]
+test-threads = 4
+retries = 0
+fail-fast = false
+slow-timeout = { period = '30s', terminate-after = 2 }
+leak-timeout = { period = '3s', result = 'fail' }
