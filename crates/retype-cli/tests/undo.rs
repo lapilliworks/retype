@@ -73,6 +73,26 @@ fn archive_bytes() -> Vec<u8> {
 	archive.into_inner().unwrap()
 }
 
+fn assert_daemon_reachable(state: &Path) {
+	let deadline = Instant::now() + Duration::from_secs(3);
+	loop {
+		if let Ok(mut client) = retype_cli::client::connect(state) {
+			if client.status().is_ok() {
+				return;
+			}
+		}
+		assert!(Instant::now() < deadline, "the daemon stopped after refusing undo");
+		std::thread::sleep(Duration::from_millis(25));
+	}
+}
+
+fn assert_undo_refused_without_stopping_daemon(undo: &std::process::Output, state: &Path) {
+	assert!(!undo.status.success());
+	let stderr = String::from_utf8_lossy(&undo.stderr);
+	assert!(stderr.contains("directory durability"), "{stderr}");
+	assert_daemon_reachable(state);
+}
+
 #[test]
 fn a_watched_native_archive_conversion_restores_the_original_on_undo() {
 	let dir = tempfile::tempdir().unwrap();
@@ -140,6 +160,33 @@ fn a_watched_native_archive_conversion_restores_the_original_on_undo() {
 	} else {
 		assert_eq!(fs::read(&source).unwrap(), original);
 	}
+
+	let record = store.list().unwrap().into_iter().find(|record| !record.pinned).unwrap();
+	let output = fs::read(&target).unwrap();
+	let fingerprint = retype_core::safety::Fingerprint::of(&target).unwrap();
+	fs::write(&target, b"changed output").unwrap();
+	let mut client = retype_cli::client::connect(&state).unwrap();
+	let refusal = client.undo(&retype_ipc::UndoRequest {
+		id: Some(record.id.as_str().to_string()),
+		last: false,
+	});
+	match refusal {
+		Err(retype_ipc::ClientError::Rpc(error)) => assert_eq!(error.code, retype_core::error::Code::IoExists),
+		other => panic!("expected a changed-output refusal, got {other:?}"),
+	}
+	drop(client);
+	assert_daemon_reachable(&state);
+	assert_eq!(fs::read(&target).unwrap(), b"changed output");
+	if retype_core::fsx::supports_durable_cleanup() {
+		assert!(!source.exists());
+	} else {
+		assert_eq!(fs::read(&source).unwrap(), original);
+	}
+	assert_eq!(fs::read(store.source(&record.id).unwrap().unwrap()).unwrap(), original);
+	assert!(store.load(&record.id).unwrap().is_some());
+	fs::write(&target, output).unwrap();
+	assert!(fingerprint.matches(&target).unwrap());
+
 	let undo = retype()
 		.args(["--no-spawn", "undo", "--last"])
 		.arg("--state-dir")
@@ -148,9 +195,10 @@ fn a_watched_native_archive_conversion_restores_the_original_on_undo() {
 		.output()
 		.unwrap();
 	if !retype_core::fsx::supports_durable_cleanup() {
-		assert!(!undo.status.success());
+		assert_undo_refused_without_stopping_daemon(&undo, &state);
 		assert_eq!(fs::read(&source).unwrap(), original);
 		assert!(target.exists());
+		assert!(!store.list().unwrap().is_empty());
 		return;
 	}
 	assert!(undo.status.success(), "{}", String::from_utf8_lossy(&undo.stderr));
@@ -223,9 +271,10 @@ fn undo_puts_the_source_back_and_removes_the_output() {
 		.unwrap();
 
 	if !retype_core::fsx::supports_durable_cleanup() {
-		assert!(!undo.status.success());
+		assert_undo_refused_without_stopping_daemon(&undo, &state);
 		assert_eq!(fs::read(&source).unwrap(), b"pixels");
 		assert!(output.exists());
+		assert!(!retype_core::undo::Store::open(&state).list().unwrap().is_empty());
 		return;
 	}
 	assert!(undo.status.success(), "{}", String::from_utf8_lossy(&undo.stderr));

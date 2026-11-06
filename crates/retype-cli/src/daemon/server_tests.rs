@@ -89,6 +89,91 @@ fn cancel_request(id: &JobId) -> Request {
 	Request::new(1, "jobs.cancel").with_params(json!({"id": id})).unwrap()
 }
 
+fn replies_after_undo(server: &mut Server, undo: Request) -> Vec<Response> {
+	let hello = Request::new(1, "hello")
+		.with_params(retype_ipc::Hello {
+			ipc: retype_ipc::IPC_VERSION.to_string(),
+			client: "undo-test".to_string(),
+			features: Vec::new(),
+		})
+		.unwrap();
+	let mut input = Vec::new();
+	for request in [hello, undo, Request::new(3, "status")] {
+		retype_ipc::write_frame(&mut input, &request).unwrap();
+	}
+	let mut output = Vec::new();
+	server
+		.serve_connection(&mut std::io::Cursor::new(input), &mut output)
+		.expect("a failed undo must not end the daemon connection");
+	let mut output = std::io::Cursor::new(output);
+	(0..3)
+		.map(|_| serde_json::from_value(retype_ipc::read_frame(&mut output).unwrap().unwrap()).unwrap())
+		.collect()
+}
+
+#[test]
+fn a_failed_undo_reports_its_error_and_the_daemon_keeps_serving() {
+	let dir = tempfile::tempdir().unwrap();
+	let mut server = server(&dir.path().join("state"));
+	let job = partial_job(&server, dir.path());
+	fs::write(&job.outputs[0].path, b"changed output").unwrap();
+	let undo = Request::new(2, "undo").with_params(json!({"id": job.id})).unwrap();
+
+	let replies = replies_after_undo(&mut server, undo);
+	assert!(replies[0].ok);
+	assert_eq!(replies[1].error.as_ref().unwrap().code, Code::IoExists);
+	assert!(replies[2].ok);
+	assert_eq!(fs::read(&job.source.path).unwrap(), b"original bytes");
+	assert_eq!(fs::read(&job.outputs[0].path).unwrap(), b"changed output");
+	let store = retype_core::undo::Store::open(&server.shared.state_dir);
+	assert!(store.load(&job.id).unwrap().is_some());
+	assert!(store.source(&job.id).unwrap().is_some());
+	server.pool.stop();
+}
+
+#[test]
+fn an_unreadable_undo_manifest_does_not_stop_the_daemon() {
+	let dir = tempfile::tempdir().unwrap();
+	let mut server = server(&dir.path().join("state"));
+	let id = JobId::now().unwrap();
+	let record = retype_core::undo::Store::open(&server.shared.state_dir).directory(&id);
+	fs::create_dir_all(&record).unwrap();
+	fs::write(record.join("meta.toml"), b"not valid = [").unwrap();
+	let requests = [
+		Request::new(2, "undo").with_params(json!({"last": true})).unwrap(),
+		Request::new(2, "undo.list"),
+	];
+
+	for request in requests {
+		let replies = replies_after_undo(&mut server, request);
+		assert_eq!(replies[1].error.as_ref().unwrap().code, Code::CfgParse);
+		assert!(replies[2].ok);
+	}
+	assert!(record.join("meta.toml").exists());
+	server.pool.stop();
+}
+
+#[cfg(windows)]
+#[test]
+fn an_undo_without_directory_durability_reports_the_refusal() {
+	let dir = tempfile::tempdir().unwrap();
+	let mut server = server(&dir.path().join("state"));
+	let job = partial_job(&server, dir.path());
+	let undo = Request::new(2, "undo").with_params(json!({"id": job.id})).unwrap();
+
+	let replies = replies_after_undo(&mut server, undo);
+	let error = replies[1].error.as_ref().unwrap();
+	assert_eq!(error.code, Code::IoFailed);
+	assert!(error.message.contains("directory durability"));
+	assert!(replies[2].ok);
+	assert_eq!(fs::read(&job.source.path).unwrap(), b"original bytes");
+	assert_eq!(fs::read(&job.outputs[0].path).unwrap(), b"output");
+	let store = retype_core::undo::Store::open(&server.shared.state_dir);
+	assert!(store.load(&job.id).unwrap().is_some());
+	assert!(store.source(&job.id).unwrap().is_some());
+	server.pool.stop();
+}
+
 fn parked_job(server: &Server, directory: &Path, reason: &str, state: JobState) -> Job {
 	let source = directory.join(format!("{}.tar", JobId::now().unwrap()));
 	fs::write(&source, b"input bytes").unwrap();

@@ -1267,8 +1267,17 @@ impl Server {
 				let (watches, error) = self.watches();
 				Response::ok(request.id, json!({"watches": watches, "error": error}))?
 			}
-			"undo" => self.undo(request)?,
-			"undo.list" => self.undo_list(request)?,
+			"undo" | "undo.list" => {
+				let result = if request.method == "undo" {
+					self.undo(request)
+				} else {
+					self.undo_list(request)
+				};
+				match result {
+					Ok(response) => response,
+					Err(error) => Response::error(request.id, WireError::new(error.code(), error.to_string())),
+				}
+			}
 			"config.reload" => self.config_reload(request)?,
 			"why" => self.why(request)?,
 			"jobs.get" => self.get(request)?,

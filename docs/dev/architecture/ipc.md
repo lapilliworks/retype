@@ -106,6 +106,8 @@ The request timeout defaults to 5 s and covers both writing the request and read
 | Live | `events.subscribe` |
 | Config | `config.reload` |
 
+`undo` and `undo.list` return undo-store errors with their code and message without stopping the daemon.
+
 `shutdown` reads `force` and `now`. Without `force`, a daemon a supervisor started refuses with `E_IPC_SUPERVISED` and names the supervisor, §2. With `now`, running jobs are cancelled and waiting ones are recorded as cancelled, the runners are given a moment to write those records, and the answer carries how many were stopped.
 
 `status` reports `supervised`: `systemd`, `launchd`, or null, read from the environment of the process the supervisor actually runs rather than from the process tree. A daemon the CLI started itself has had those variables cleared, so it reports null.
