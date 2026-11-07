@@ -139,6 +139,60 @@ sub reap {
 	return 0;
 }
 
+sub process_snapshot {
+	my ($leader) = @_;
+	print STDERR "Command process snapshot for group $leader (PID PPID PGID STAT WCHAN COMMAND):\n";
+	# Bound ps with the same supervisor, without recursively inspecting ps itself.
+	local $ENV{_RETYPE_BOUNDED_INSPECTION} = 1;
+	my $pid = open(my $pipe, '-|', $^X, __FILE__, '2', '1',
+		'ps', '-ww', '-axo', 'pid=,ppid=,pgid=,stat=,wchan=,command=');
+	if (!$pid) {
+		print STDERR "Cannot start process snapshot: $!\n";
+		return;
+	}
+	my $selection = IO::Select->new($pipe);
+	my $deadline = now() + 5;
+	my ($buffer, $size, $matched, $forwarded) = ('', 0, 0, 0);
+	while (1) {
+		if ($interrupted && !$forwarded) {
+			kill('TERM', $pid);
+			$forwarded = 1;
+		}
+		my $remaining = $deadline - now();
+		if ($remaining <= 0) {
+			print STDERR "Process snapshot helper did not finish in time.\n";
+			kill('KILL', $pid);
+			last;
+		}
+		my @ready = $selection->can_read($remaining < 0.1 ? $remaining : 0.1);
+		next if !@ready;
+		my $read = sysread($pipe, my $chunk, 4096);
+		if (!defined($read)) {
+			next if $!{EINTR};
+			print STDERR "Cannot read process snapshot: $!\n";
+			last;
+		}
+		last if $read == 0;
+		$size += $read;
+		if ($size > 512 * 1024) {
+			print STDERR "Process snapshot exceeded its output limit.\n";
+			last;
+		}
+		$buffer .= $chunk;
+		while ($buffer =~ s/\A([^\n]*)\n//) {
+			my $line = $1;
+			next unless $line =~ /^\s*\d+\s+\d+\s+(\d+)\s+\S+\s+\S+\s+/ && $1 == $leader;
+			print STDERR "$line\n" if $matched < 64;
+			$matched++;
+		}
+	}
+	my $closed = close($pipe);
+	my $status = $?;
+	print STDERR "Process snapshot failed or timed out (exit ", exit_code($status), ").\n" unless $closed;
+	print STDERR "No processes from the command group were recorded.\n" unless $matched;
+	print STDERR "Additional command-group processes were omitted.\n" if $matched > 64;
+}
+
 sub monitor {
 	my ($reader, $control, $deadline) = @_;
 	my $selection = IO::Select->new($reader);
@@ -214,6 +268,10 @@ if ($result->{completed}) {
 	}
 } else {
 	if ($result->{ready}) {
+		if ($result->{code} == 124 && !$ENV{_RETYPE_BOUNDED_INSPECTION}) {
+			signal_group('TERM', $leader);
+			process_snapshot($leader);
+		}
 		stop_group($leader, $grace);
 	} else {
 		kill('TERM', $leader);

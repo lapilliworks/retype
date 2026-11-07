@@ -108,6 +108,7 @@ struct Run {
 	text: String,
 	invocations: String,
 	summary: String,
+	metadata: String,
 }
 
 fn executable(path: &Path, text: &str) {
@@ -260,17 +261,25 @@ fn run(platform: &str, host: &str, mode: &str, limit: u64) -> Run {
 		child_pid.assert_stopped();
 	}
 	let invocations = fs::read_to_string(record).unwrap_or_default();
-	let summary = fs::read_dir(dir.path().join("reports"))
+	let report = fs::read_dir(dir.path().join("reports"))
 		.ok()
 		.and_then(|mut entries| entries.next())
 		.and_then(Result::ok)
-		.and_then(|entry| fs::read_to_string(entry.path().join("summary.txt")).ok())
+		.map(|entry| entry.path());
+	let summary = report
+		.as_ref()
+		.and_then(|path| fs::read_to_string(path.join("summary.txt")).ok())
+		.unwrap_or_default();
+	let metadata = report
+		.as_ref()
+		.and_then(|path| fs::read_to_string(path.join("metadata.log")).ok())
 		.unwrap_or_default();
 	Run {
 		status,
 		text,
 		invocations,
 		summary,
+		metadata,
 	}
 }
 
@@ -366,7 +375,96 @@ fn a_timed_out_tool_probe_makes_the_runner_fail() {
 		"{}",
 		result.summary
 	);
+	assert!(
+		result.metadata.contains("Command process snapshot for group"),
+		"{}",
+		result.metadata
+	);
 	assert!(result.text.contains("Platform validation failed"), "{}", result.text);
+}
+
+fn timeout_with_fake_ps(bin: &Path, marker: &Path) -> (ExitStatus, String) {
+	let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+		.parent()
+		.unwrap()
+		.parent()
+		.unwrap();
+	let mut command = Command::new("/usr/bin/perl");
+	command
+		.arg(root.join("scripts/run-bounded.pl"))
+		.args(["1", "1", "/bin/sleep", "30"])
+		.env("PATH", bin)
+		.env("RETYPE_FAKE_PS_MARKER", marker);
+	capture(&mut command, Duration::from_secs(12))
+}
+
+#[test]
+fn the_macos_timeout_records_only_its_command_group() {
+	let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+		.parent()
+		.unwrap()
+		.parent()
+		.unwrap();
+	let dir = tempfile::tempdir().unwrap();
+	let marker = ChildMarker(dir.path().join("snapshot-child.pid"));
+	let mut unrelated = TestProcess(Command::new("sleep").arg("30").process_group(0).spawn().unwrap());
+	let unrelated_pid = unrelated.0.id();
+	let mut command = Command::new("/usr/bin/perl");
+	command
+		.arg(root.join("scripts/run-bounded.pl"))
+		.args([
+			"1",
+			"1",
+			"/bin/sh",
+			"-c",
+			"trap '' TERM; echo $$ > \"$1\"; while :; do /bin/sleep 0.1; done",
+			"sh",
+		])
+		.arg(&marker.0);
+	let (status, text) = capture(&mut command, Duration::from_secs(12));
+	assert_eq!(status.code(), Some(124), "{text}");
+	assert!(text.contains("Command process snapshot for group"), "{text}");
+	assert!(text.contains(&*marker.0.to_string_lossy()), "{text}");
+	assert!(
+		!text.lines().any(|line| {
+			line.split_whitespace()
+				.next()
+				.and_then(|field| field.parse::<u32>().ok())
+				== Some(unrelated_pid)
+		}),
+		"snapshot included an unrelated process: {text}"
+	);
+	assert!(
+		unrelated.0.try_wait().unwrap().is_none(),
+		"unrelated process was stopped"
+	);
+	marker.assert_stopped();
+}
+
+#[test]
+fn failed_and_stalled_macos_timeout_snapshots_are_bounded() {
+	let failed = tempfile::tempdir().unwrap();
+	executable(&failed.path().join("ps"), "#!/bin/sh\nexit 42\n");
+	let (status, text) = timeout_with_fake_ps(failed.path(), &failed.path().join("unused"));
+	assert_eq!(status.code(), Some(124), "{text}");
+	assert!(
+		text.contains("Process snapshot failed or timed out (exit 42)"),
+		"{text}"
+	);
+
+	let stalled = tempfile::tempdir().unwrap();
+	let marker = ChildMarker(stalled.path().join("ps-child.pid"));
+	executable(
+		&stalled.path().join("ps"),
+		"#!/bin/sh\nexec /bin/sh -c 'trap \"\" TERM; echo $$ > \"$1\"; while :; do /bin/sleep 0.1; done' sh \"$RETYPE_FAKE_PS_MARKER\"\n",
+	);
+	let (status, text) = timeout_with_fake_ps(stalled.path(), &marker.0);
+	assert_eq!(status.code(), Some(124), "{text}");
+	assert!(
+		text.contains("Process snapshot failed or timed out (exit 124)"),
+		"{text}"
+	);
+	marker.assert_stopped();
 }
 
 #[test]
