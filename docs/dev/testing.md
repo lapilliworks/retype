@@ -133,6 +133,7 @@ On native Windows, also run:
 ```sh
 cargo test -p retype-core --locked --lib execute::windows_tests -- --nocapture
 cargo test -p retype-core --locked --lib fsx::windows_tests::directory_flush_probe_is_not_durability_evidence -- --exact --nocapture
+cargo test -p retype-core --locked --lib fsx::windows_tests::write_through_handle_rename_probe_is_not_durability_evidence -- --exact --nocapture
 cargo test -p retype-core --locked --lib correlate::tests::a_hard_link -- --nocapture
 cargo test -p retype-cli --locked --test deferral --test video --no-fail-fast -- --nocapture
 ```
@@ -147,7 +148,7 @@ The `Natural` case records the first PID-marker bytes observed during the ordina
 
 The Windows process tests create controlled descendants, require the process tree to finish before accepting completion, and verify kill-on-close after a timeout. The `process_worker` entry point does nothing in an ordinary parent test run. The real FFmpeg target is a separate check of the installed executable and any wrapper it uses.
 
-The directory-flush probe logs the scratch filesystem name and flags when available, and whether a temporary directory can be opened and synced with read, write and combined access. The Windows runner includes it in `workspace-libraries` output. This is diagnostic only: a filesystem name or successful call does not prove directory-entry or power-loss durability and does not enable destructive cleanup.
+The directory-flush probe logs the scratch filesystem name and flags when available, and whether a temporary directory can be opened and synced with read, write and combined access. The handle-rename probe checks exclusive mutation access, collision refusal and identity preservation for a write-through rename of a synthetic file. The Windows runner includes both in `workspace-libraries` output. These are diagnostics only: a filesystem name or successful call does not prove directory-entry or power-loss durability and does not enable destructive cleanup.
 
 Twenty-five CLI archive/transaction safety tests now run on Windows instead of being excluded with their entire files. Twenty-eight cases in the three CLI safety binaries remain Unix-only: the main shell-based audit, two additional shell/symlink cases, and actual post-disposal crash recovery. Cross-platform ownership tests and Windows-specific process tests provide further coverage, not substitutes for the excluded cases.
 
