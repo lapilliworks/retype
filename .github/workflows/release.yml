@@ -13,6 +13,7 @@ jobs:
     name: verify tag
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - name: Tag matches the workspace version
@@ -33,6 +34,7 @@ jobs:
   build:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -174,14 +176,17 @@ jobs:
   checks:
     name: checks
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run release workspace tests
+        timeout-minutes: 10
+        run: cargo test --workspace --locked --no-fail-fast
       - run: bash -n packaging/install.sh
       - run: bash scripts/test-install.sh
       - run: timeout --kill-after=5s 30s bash scripts/test-assemble-release.sh
@@ -198,6 +203,7 @@ jobs:
     name: assemble release assets
     needs: [build]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -225,6 +231,7 @@ jobs:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: [verify, package, checks, native]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

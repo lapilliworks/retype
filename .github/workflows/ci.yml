@@ -32,6 +32,7 @@ jobs:
   msrv:
     name: msrv
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -39,11 +40,14 @@ jobs:
           toolchain: "1.85.0"
           components: clippy
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - name: Run MSRV workspace tests
+        timeout-minutes: 10
+        run: cargo test --workspace --locked --no-fail-fast
 
   cross:
     name: cross check (typecheck foreign targets)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -64,6 +68,7 @@ jobs:
   installer:
     name: installer
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: bash -n packaging/install.sh
@@ -85,6 +90,7 @@ jobs:
   site:
     name: site checks
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - run: node sites/lib/checks.mjs
