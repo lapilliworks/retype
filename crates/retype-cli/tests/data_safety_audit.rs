@@ -1,6 +1,9 @@
 //! Filesystem and runner regressions reproduced against the pre-fix data-safety baseline.
 #![cfg(unix)]
 
+#[path = "support/interrupted_runner.rs"]
+mod interrupted_runner;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -675,81 +678,19 @@ fn an_ordinary_output_failure_does_not_stop_independent_outputs() {
 
 #[test]
 fn interrupted_job_worker() {
-	let Some(root) = std::env::var_os("RETYPE_SAFETY_INTERRUPTED_ROOT") else {
-		return;
-	};
-	let fixture = Fixture::new(
-		"case \"$2\" in *.jpg) printf '%s' \"$$\" > \"$(dirname \"$0\")/second-started\"; sleep 30;; esac\ncp \"$1\" \"$2\"\n",
-		"enabled = true",
-	);
-	fs::write(
-		Path::new(&root).join("fixture-dir"),
-		fixture.dir.path().to_str().unwrap(),
-	)
-	.unwrap();
-	fixture.convert("webp,jpg", &Cancellation::default());
-	panic!("the parent should terminate this worker while the second output is running");
+	interrupted_runner::run_worker();
 }
 
 #[test]
 fn an_actual_interrupted_runner_recovers_its_first_output_instead_of_losing_resume_state() {
-	struct Worker(std::process::Child);
-	impl Drop for Worker {
-		fn drop(&mut self) {
-			let _ = self.0.kill();
-			let _ = self.0.wait();
-		}
-	}
-	let root = tempfile::tempdir().unwrap();
-	let mut worker = Worker(
-		std::process::Command::new(std::env::current_exe().unwrap())
-			.args(["--exact", "interrupted_job_worker", "--nocapture"])
-			.env("RETYPE_SAFETY_INTERRUPTED_ROOT", root.path())
-			.spawn()
-			.unwrap(),
-	);
-	let deadline = Instant::now() + Duration::from_secs(20);
-	let (directory, tool_pid) = loop {
-		if let Ok(directory) = fs::read_to_string(root.path().join("fixture-dir")) {
-			let directory = PathBuf::from(directory);
-			if let Ok(pid) = fs::read_to_string(directory.join("second-started")) {
-				break (directory, pid.parse::<i32>().unwrap());
-			}
-		}
-		assert!(
-			worker.0.try_wait().unwrap().is_none(),
-			"worker exited before the second output"
-		);
-		assert!(Instant::now() < deadline, "worker did not reach its second output");
-		std::thread::sleep(Duration::from_millis(10));
-	};
-	worker.0.kill().unwrap();
-	worker.0.wait().unwrap();
-	/* The marker is the PID of this test's still-sleeping, private tool process group. */
-	assert_eq!(
-		unsafe { libc::kill(-tool_pid, libc::SIGKILL) },
-		0,
-		"test tool group did not terminate"
-	);
-	let first = directory.join("photo.webp");
-	let identity = retype_core::job::FileIdentity::of(&first).unwrap();
-	let server = Server::open(&directory.join("state")).unwrap();
-	server.pool().stop();
-	let copy = Fixture::new("cp \"$1\" \"$2\"\n", "enabled = true");
-	server.shared().reload_registry(copy.shared.registry().as_ref().clone());
-	let job = server.shared().jobs.lock().unwrap()[0].clone();
-	assert_eq!(
-		job.state,
-		JobState::Partial,
-		"the committed first output must survive reconciliation"
-	);
-	assert_eq!(
-		resume::run(&server.shared(), "audit", &job, false).unwrap(),
-		JobState::Done
-	);
-	assert!(identity.matches(&retype_core::job::FileIdentity::of(&first).unwrap()));
-	assert_eq!(fs::read(directory.join("photo.jpg")).unwrap(), ORIGINAL);
-	assert!(Store::open(&directory.join("state")).source(&job.id).unwrap().is_some());
+	interrupted_runner::exercise(interrupted_runner::MarkerSchedule::Natural);
+}
+
+#[test]
+fn a_visible_empty_marker_is_diagnosed_before_interrupted_recovery() {
+	let observation = interrupted_runner::exercise(interrupted_runner::MarkerSchedule::HeldOpen);
+	assert!(observation.saw_empty);
+	assert!(observation.incomplete_reads > 0);
 }
 
 #[test]

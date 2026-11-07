@@ -137,6 +137,14 @@ cargo test -p retype-core --locked --lib correlate::tests::a_hard_link -- --noca
 cargo test -p retype-cli --locked --test deferral --test video --no-fail-fast -- --nocapture
 ```
 
+To diagnose the Unix interrupted-runner PID marker on macOS, run the focused probe after building the tests:
+
+```sh
+/usr/bin/perl scripts/run-bounded.pl 90 5 cargo test -p retype-cli --locked --test data_safety_audit interrupted -- --nocapture </dev/null
+```
+
+The `Natural` case records the first PID-marker bytes observed during the ordinary shell write. `HeldOpen` deliberately holds the marker between creation and writing so the parent must observe an empty file. Both cases interrupt the real test worker and verify recovery of its committed output. The controlled case proves the interleaving is possible, not that it occurred in an earlier run. The probe also tests cleanup after losing the control channel; timeouts and invalid marker contents fail rather than being retried as successful tests.
+
 The Windows process tests create controlled descendants, require the process tree to finish before accepting completion, and verify kill-on-close after a timeout. The `process_worker` entry point does nothing in an ordinary parent test run. The real FFmpeg target is a separate check of the installed executable and any wrapper it uses.
 
 The directory-flush probe logs whether a temporary directory can be opened and synced with read, write and combined access. The Windows runner includes it in `workspace-libraries` output. This is diagnostic only: a successful call does not prove directory-entry or power-loss durability and does not enable destructive cleanup. Record the scratch filesystem type with the results.
