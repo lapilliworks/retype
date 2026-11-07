@@ -139,6 +139,21 @@ impl Journal {
 	/// Write `jobs` to a temporary file and rename it into place, then reopen the
 	/// handle, which now points at the replacement.
 	fn rewrite(&mut self, jobs: &[Job]) -> Result<()> {
+		self.rewrite_with(jobs, |path| fs::OpenOptions::new().append(true).open(path))
+	}
+
+	fn rewrite_with(&mut self, jobs: &[Job], reopen: impl FnOnce(&Path) -> std::io::Result<fs::File>) -> Result<()> {
+		if self.failed {
+			return Err(journal_unavailable());
+		}
+		let result = self.rewrite_inner(jobs, reopen);
+		if result.is_err() {
+			self.failed = true;
+		}
+		result
+	}
+
+	fn rewrite_inner(&mut self, jobs: &[Job], reopen: impl FnOnce(&Path) -> std::io::Result<fs::File>) -> Result<()> {
 		let text = serialize_jobs(jobs)?;
 		self.file.sync_all()?;
 		crate::convert::write_atomically(&self.path, |temporary| {
@@ -148,7 +163,7 @@ impl Journal {
 			replacement.sync_all()?;
 			Ok(())
 		})?;
-		self.file = fs::OpenOptions::new().append(true).open(&self.path)?;
+		self.file = reopen(&self.path)?;
 		Ok(())
 	}
 
@@ -159,7 +174,7 @@ impl Journal {
 	/// Append and sync one snapshot. A failed write blocks further appends until reopen.
 	pub fn append(&mut self, job: &Job) -> Result<()> {
 		if self.failed {
-			return Err(std::io::Error::other("journal unavailable after a write failure; restart to recover").into());
+			return Err(journal_unavailable());
 		}
 		let result = self.append_inner(job);
 		if result.is_err() {
@@ -177,6 +192,10 @@ impl Journal {
 		crate::fsx::sync_directory(self.path.parent().unwrap_or(Path::new(".")))?;
 		Ok(())
 	}
+}
+
+fn journal_unavailable() -> Error {
+	std::io::Error::other("journal unavailable after a write failure; restart to recover").into()
 }
 
 fn quarantine_copy(path: &Path, destination: &Path) -> Result<()> {
@@ -625,6 +644,56 @@ mod tests {
 		let (mut reopened, _) = Journal::open(&path).unwrap();
 		reopened.append(&job()).unwrap();
 		assert!(!fs::read(&path).unwrap().is_empty());
+	}
+
+	#[test]
+	fn a_failed_rewrite_disables_appends_to_the_old_journal_handle() {
+		let (_dir, path) = path();
+		let (mut journal, _) = Journal::open(&path).unwrap();
+		let initial = job();
+		journal.append(&initial).unwrap();
+		let moved = path.with_extension("old");
+		fs::copy(&path, &moved).unwrap();
+		journal.file = fs::OpenOptions::new().append(true).open(&moved).unwrap();
+		fs::remove_file(&path).unwrap();
+		fs::create_dir(&path).unwrap();
+
+		assert!(journal.rewrite(std::slice::from_ref(&initial)).is_err());
+		let previous = fs::read(&moved).unwrap();
+		let error = journal.append(&initial).unwrap_err();
+		assert!(error.to_string().contains("journal unavailable"));
+		assert_eq!(fs::read(moved).unwrap(), previous);
+	}
+
+	#[test]
+	fn a_reopen_failure_after_replacement_blocks_appends_until_an_explicit_reopen() {
+		let (_dir, path) = path();
+		let (mut journal, _) = Journal::open(&path).unwrap();
+		let initial = job();
+		journal.append(&initial).unwrap();
+		let mut replacement = initial.clone();
+		replacement.set_state(JobState::Done);
+
+		let error = journal
+			.rewrite_with(std::slice::from_ref(&replacement), |_| {
+				Err(std::io::Error::other("injected reopen failure"))
+			})
+			.unwrap_err();
+		assert!(error.to_string().contains("injected reopen failure"));
+		assert!(
+			journal
+				.append(&initial)
+				.unwrap_err()
+				.to_string()
+				.contains("journal unavailable")
+		);
+		drop(journal);
+
+		let (mut reopened, replay) = Journal::open(&path).unwrap();
+		assert_eq!(replay.jobs.len(), 1);
+		assert_eq!(replay.jobs[0].state, JobState::Done);
+		reopened.append(&initial).unwrap();
+		assert_eq!(super::replay(&path).unwrap().jobs[0].state, JobState::Pending);
 	}
 
 	#[test]

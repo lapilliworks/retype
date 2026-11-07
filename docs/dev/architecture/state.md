@@ -98,7 +98,7 @@ Initial publication holds the job-list mutex across journal append, synchronizat
 
 - Records are appended, never edited in place
 - Sync every appended snapshot and its parent directory where supported, including running output checkpoints and partial outcomes
-- After a journal write or sync failure, refuse subsequent appends until reopening and recovery rather than extending a possibly torn record
+- After a journal write, sync or rewrite failure, refuse subsequent appends until reopening and recovery rather than extending a torn record or an old, replaced file
 - Require a durable recovery manifest and completion snapshot before source disposal
 - Line order defines time; wall-clock fields are informational
 - A trailing line that does not parse is a torn write and is dropped silently
