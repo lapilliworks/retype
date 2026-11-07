@@ -254,6 +254,58 @@ fn a_same_content_replacement_of_an_output_is_not_removed() {
 }
 
 #[test]
+fn changing_a_restored_original_during_cleanup_keeps_the_recovery_record() {
+	let fixture = Fixture::new(true);
+	let result = fixture.store.restore_with_cleanup(&fixture.record.id, |record| {
+		fs::remove_file(&fixture.output)?;
+		fs::write(&record.source_path, b"changed during cleanup")?;
+		Ok(())
+	});
+
+	assert!(result.is_err(), "changed original must keep recovery");
+	assert_eq!(
+		fs::read(&fixture.record.source_path).unwrap(),
+		b"changed during cleanup"
+	);
+	assert!(!fixture.output.exists());
+	fixture.assert_recovery_is_pinned();
+}
+
+#[test]
+fn replacing_the_restored_original_during_cleanup_keeps_the_recovery_record() {
+	let fixture = Fixture::new(true);
+	let saved = fixture.root.path().join("restored-original.heic");
+	let result = fixture.store.restore_with_cleanup(&fixture.record.id, |record| {
+		fs::remove_file(&fixture.output)?;
+		fs::rename(&record.source_path, &saved)?;
+		fs::copy(&saved, &record.source_path)?;
+		Ok(())
+	});
+
+	assert!(result.is_err(), "same-content replacement must keep recovery");
+	assert_eq!(fs::read(&fixture.record.source_path).unwrap(), ORIGINAL);
+	assert_eq!(fs::read(&saved).unwrap(), ORIGINAL);
+	assert!(!fixture.output.exists());
+	fixture.assert_recovery_is_pinned();
+}
+
+#[test]
+fn changing_a_kept_original_during_cleanup_keeps_the_recovery_record() {
+	let fixture = Fixture::new(false);
+	fs::write(&fixture.record.source_path, b"earlier user edits").unwrap();
+	let result = fixture.store.restore_with_cleanup(&fixture.record.id, |record| {
+		fs::remove_file(&fixture.output)?;
+		fs::write(&record.source_path, b"later user edits")?;
+		Ok(())
+	});
+
+	assert!(result.is_err(), "original edited during cleanup must keep recovery");
+	assert_eq!(fs::read(&fixture.record.source_path).unwrap(), b"later user edits");
+	assert!(!fixture.output.exists());
+	fixture.assert_recovery_is_pinned();
+}
+
+#[test]
 fn a_killed_keep_undo_does_not_overwrite_later_original_edits() {
 	let fixture = Fixture::new(false);
 	fixture.interrupt("started");

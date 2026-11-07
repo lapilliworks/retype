@@ -484,7 +484,17 @@ impl Store {
 			crate::fsx::sync_file(&record.source_path)?;
 			crate::fsx::sync_directory(record.source_path.parent().unwrap_or(Path::new(".")))?;
 		}
+		let source_before_cleanup = Fingerprint::of(&record.source_path)?;
+		if must_verify && !is_undo_fingerprint(&record, &source_before_cleanup) {
+			return Err(Error::Exists(record.source_path.clone()));
+		}
 		cleanup(&record)?;
+		if !source_before_cleanup.matches(&record.source_path)? {
+			return Err(Error::Io(std::io::Error::other(format!(
+				"{} changed during undo; recovery retained",
+				record.source_path.display()
+			))));
+		}
 		self.remove_locked(id)?;
 		Ok(record)
 	}
@@ -774,19 +784,19 @@ fn existing_source_policy(record: &Record) -> ExistingSource {
 }
 
 fn is_undo_source(record: &Record) -> Result<bool> {
-	if let Some(original) = &record.source_fingerprint {
-		if original.matches(&record.source_path)? {
-			return Ok(true);
-		}
-	}
-	match record
-		.undo_progress
+	Ok(is_undo_fingerprint(record, &Fingerprint::of(&record.source_path)?))
+}
+
+fn is_undo_fingerprint(record: &Record, actual: &Fingerprint) -> bool {
+	record
+		.source_fingerprint
 		.as_ref()
-		.and_then(|progress| progress.restore_intent.as_ref())
-	{
-		Some(restored) => restored.matches(&record.source_path),
-		None => Ok(false),
-	}
+		.is_some_and(|original| original.same_file_and_content(actual))
+		|| record
+			.undo_progress
+			.as_ref()
+			.and_then(|progress| progress.restore_intent.as_ref())
+			.is_some_and(|restored| restored.same_file_and_content(actual))
 }
 
 fn publish_restoration(staged: crate::convert::StagedOutput, fingerprint: &Fingerprint) -> Result<()> {
