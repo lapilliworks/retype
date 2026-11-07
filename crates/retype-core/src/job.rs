@@ -274,18 +274,28 @@ impl FileIdentity {
 		#[cfg(windows)]
 		{
 			let (volume, file, wide) = windows_file_id(path)?;
-			let width = if wide { 32 } else { 16 };
-
-			Some(Self::Windows {
-				volume,
-				file: format!("{file:0width$x}"),
-			})
+			Some(Self::from_windows_id(volume, file, wide))
 		}
 
 		#[cfg(not(any(unix, windows)))]
 		{
 			let _ = path;
 			None
+		}
+	}
+
+	#[cfg(windows)]
+	pub(crate) fn of_open_file(file: &std::fs::File) -> Option<Self> {
+		let info = windows_file_info_from_file(file)?;
+		Some(Self::from_windows_id(info.volume, info.file, info.wide))
+	}
+
+	#[cfg(windows)]
+	fn from_windows_id(volume: u64, file: u128, wide: bool) -> Self {
+		let width = if wide { 32 } else { 16 };
+		Self::Windows {
+			volume,
+			file: format!("{file:0width$x}"),
 		}
 	}
 
@@ -336,22 +346,29 @@ pub(crate) struct WindowsFileInfo {
 
 #[cfg(windows)]
 pub(crate) fn windows_file_info(path: &std::path::Path) -> Option<WindowsFileInfo> {
-	use std::ffi::c_void;
-	use std::mem::size_of;
 	use std::os::windows::fs::OpenOptionsExt;
-	use std::os::windows::io::AsRawHandle;
 
-	use windows_sys::Win32::Foundation::HANDLE;
-	use windows_sys::Win32::Storage::FileSystem::{
-		BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
-		GetFileInformationByHandle, GetFileInformationByHandleEx,
-	};
+	use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
 
 	let file = std::fs::OpenOptions::new()
 		.read(true)
 		.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
 		.open(path)
 		.ok()?;
+	windows_file_info_from_file(&file)
+}
+
+#[cfg(windows)]
+fn windows_file_info_from_file(file: &std::fs::File) -> Option<WindowsFileInfo> {
+	use std::ffi::c_void;
+	use std::mem::size_of;
+	use std::os::windows::io::AsRawHandle;
+
+	use windows_sys::Win32::Foundation::HANDLE;
+	use windows_sys::Win32::Storage::FileSystem::{
+		BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO, FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+	};
+
 	let handle = file.as_raw_handle() as HANDLE;
 
 	let mut basic: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };

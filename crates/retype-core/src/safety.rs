@@ -42,9 +42,13 @@ pub struct Fingerprint {
 impl Fingerprint {
 	pub fn of(path: &Path) -> Result<Self> {
 		let mut file = regular_file(path)?;
+		Self::of_open_file(path, &mut file)
+	}
+
+	fn of_open_file(path: &Path, file: &mut File) -> Result<Self> {
 		let before = file.metadata()?;
 		let mut hash = Sha256::new();
-		let bytes = io::copy(&mut file, &mut hash)?;
+		let bytes = io::copy(&mut *file, &mut hash)?;
 		let after = file.metadata()?;
 		if before.len() != bytes || before.modified()? != after.modified()? || after.len() != bytes {
 			return Err(changed(path));
@@ -58,7 +62,10 @@ impl Fingerprint {
 				birth_ns: None,
 			})
 		};
-		#[cfg(not(unix))]
+		/* The identity must describe the handle whose bytes were hashed. */
+		#[cfg(windows)]
+		let identity = FileIdentity::of_open_file(file);
+		#[cfg(not(any(unix, windows)))]
 		let identity = FileIdentity::of(path);
 		Ok(Self {
 			identity,
@@ -190,5 +197,28 @@ mod tests {
 		assert!(expected.same_content(&other));
 		assert!(!expected.same_file_and_content(&other));
 		assert!(expected.same_file_and_content(&Fingerprint::of(&first).unwrap()));
+	}
+
+	#[test]
+	#[cfg(any(unix, windows))]
+	fn a_fingerprint_identifies_the_open_file_after_its_path_is_replaced() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("original");
+		let moved = dir.path().join("opened-original");
+		let replacement = dir.path().join("replacement");
+		fs::write(&path, b"same bytes").unwrap();
+		fs::write(&replacement, b"same bytes").unwrap();
+		let mut opened = regular_file(&path).unwrap();
+		let original_id = FileIdentity::of(&path).unwrap();
+
+		crate::fsx::rename(&path, &moved).unwrap();
+		crate::fsx::rename(&replacement, &path).unwrap();
+		let fingerprint = Fingerprint::of_open_file(&path, &mut opened).unwrap();
+		let other = Fingerprint::of(&path).unwrap();
+		assert!(original_id.matches(fingerprint.identity.as_ref().unwrap()));
+		assert!(fingerprint.same_content(&other));
+		assert!(!fingerprint.same_file_and_content(&other));
+		assert!(fingerprint.matches(&moved).unwrap());
+		assert!(!fingerprint.matches(&path).unwrap());
 	}
 }
