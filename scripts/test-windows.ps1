@@ -149,9 +149,13 @@ function Invoke-Bounded {
 function Run-Step {
 	param([string]$Name, [int]$Seconds, [string]$Executable, [string[]]$Arguments)
 	Write-Host "`n== $Name (timeout ${Seconds}s) =="
+	$watch = [Diagnostics.Stopwatch]::StartNew()
 	$result = Invoke-Bounded -Name $Name -Executable $Executable -Arguments $Arguments -Seconds $Seconds
-	Write-Summary "${Name}: exit $($result.Code); stdout: $($result.Stdout); stderr: $($result.Stderr)"
-	if ($result.Code -ne 0) { $script:Failed = $true }
+	$elapsed = [Math]::Round($watch.Elapsed.TotalSeconds, 3)
+	$message = "${Name}: exit $($result.Code); timed out: $($result.TimedOut); limit: ${Seconds}s; elapsed: ${elapsed}s; "
+	$message += "stdout: $($result.Stdout); stderr: $($result.Stderr)"
+	Write-Summary $message
+	if ($result.Code -ne 0 -or $result.TimedOut) { $script:Failed = $true }
 	return $result
 }
 
@@ -163,7 +167,7 @@ function Run-SuiteStep {
 		$stderr = Join-Path $Report "$Name.stderr.log"
 		[IO.File]::WriteAllText($stdout, '')
 		[IO.File]::WriteAllText($stderr, "Not run: the ${Limit}s test-suite budget was exhausted.`n")
-		Write-Summary "${Name}: not run; test-suite budget exhausted; stderr: $stderr"
+		Write-Summary "${Name}: not run; shared ${Limit}s test-suite budget exhausted; stderr: $stderr"
 		$script:Failed = $true
 		return [pscustomobject]@{ Code = 124; Stdout = $stdout; Stderr = $stderr; TimedOut = $true }
 	}
@@ -281,6 +285,7 @@ try {
 		"Platform: $([Environment]::OSVersion.VersionString)",
 		"Architecture: $env:PROCESSOR_ARCHITECTURE",
 		"PowerShell: $($PSVersionTable.PSVersion)",
+		"Configured timeout seconds: $Limit",
 		"Scratch: $Scratch"
 	)
 	[IO.File]::WriteAllLines((Join-Path $Report 'host.txt'), [string[]]$hostInfo)

@@ -1,4 +1,4 @@
-//! Native checks for Windows platform-runner probe reporting.
+//! Native checks for Windows platform-runner reporting.
 #![cfg(windows)]
 
 #[path = "support/commands.rs"]
@@ -12,7 +12,7 @@ use std::process::Command;
 use std::time::Duration;
 
 #[test]
-fn windows_probe_failures_and_timeouts_are_reported() {
+fn windows_probe_and_phase_failures_are_reported() {
 	let root = Path::new(env!("CARGO_MANIFEST_DIR"))
 		.parent()
 		.unwrap()
@@ -31,13 +31,13 @@ fn windows_probe_failures_and_timeouts_are_reported() {
 			tools::unavailable("PowerShell 7: install pwsh on PATH");
 			return;
 		}
-		Err(error) => panic!("could not run the Windows probe checks: {error}"),
+		Err(error) => panic!("could not run the Windows runner checks: {error}"),
 	};
 	assert!(
 		result.status.success(),
-		"Windows probe checks failed: stdout: {}\nstderr: {}",
+		"Windows runner checks failed: stdout: {}\nstderr: {}",
 		result.stdout,
 		result.stderr
 	);
-	assert!(result.stdout.contains("Windows probe reporting checks passed."));
+	assert!(result.stdout.contains("Windows runner reporting checks passed."));
 }
