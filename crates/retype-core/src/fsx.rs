@@ -68,8 +68,12 @@ pub(crate) fn rename_open(
 	use std::mem::{align_of, offset_of, size_of};
 	use std::os::windows::ffi::OsStrExt;
 	use std::os::windows::io::AsRawHandle;
+	use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 	use windows_sys::Win32::Storage::FileSystem::{
-		FILE_RENAME_INFO, FILE_RENAME_INFO_0, FileRenameInfo, SetFileInformationByHandle,
+		FILE_RENAME_INFO, FILE_RENAME_INFO_0, FileRenameInfo, FileRenameInfoEx, SetFileInformationByHandle,
+	};
+	use windows_sys::Win32::System::WindowsProgramming::{
+		FILE_RENAME_FLAG_POSIX_SEMANTICS, FILE_RENAME_FLAG_REPLACE_IF_EXISTS,
 	};
 
 	let name: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -95,15 +99,26 @@ pub(crate) fn rename_open(
 		(&raw mut (*info).FileNameLength).write(name_length);
 		std::ptr::copy_nonoverlapping(name.as_ptr(), (&raw mut (*info).FileName).cast::<u16>(), name.len());
 	}
-	retry_sharing(|| {
-		if unsafe { SetFileInformationByHandle(file.as_raw_handle() as _, FileRenameInfo, info.cast(), size_in_bytes) }
-			!= 0
-		{
+	let set_info = move |class| {
+		if unsafe { SetFileInformationByHandle(file.as_raw_handle() as _, class, info.cast(), size_in_bytes) } != 0 {
 			Ok(())
 		} else {
 			Err(io::Error::last_os_error())
 		}
-	})
+	};
+	let result = retry_sharing(|| set_info(FileRenameInfo));
+	match result {
+		Err(error) if replace && error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+			/* POSIX replacement permits an existing delete-sharing handle to stay open. */
+			unsafe {
+				(&raw mut (*info).Anonymous).write(FILE_RENAME_INFO_0 {
+					Flags: FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS,
+				});
+			}
+			retry_sharing(|| set_info(FileRenameInfoEx))
+		}
+		result => result,
+	}
 }
 
 /// Flush file contents and metadata using a handle that permits Windows FlushFileBuffers.

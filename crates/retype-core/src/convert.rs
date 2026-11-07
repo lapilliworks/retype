@@ -400,6 +400,66 @@ mod tests {
 	}
 
 	#[test]
+	fn checked_replacement_preserves_an_open_append_handle_on_the_old_target() {
+		use std::io::{Read, Seek, Write};
+
+		let dir = tempdir();
+		let target = dir.path().join("open-journal.jsonl");
+		fs::write(&target, b"old").unwrap();
+		let mut old = fs::OpenOptions::new().read(true).append(true).open(&target).unwrap();
+		let staged = StagedOutput::replacing(&target).unwrap();
+		fs::write(staged.temp(), b"new").unwrap();
+		let fingerprint = crate::safety::Fingerprint::of(staged.temp()).unwrap();
+
+		staged.commit_checked(&fingerprint).unwrap();
+		assert!(fingerprint.matches(&target).unwrap());
+		assert_eq!(fs::read(&target).unwrap(), b"new");
+		old.write_all(b"-append").unwrap();
+		old.rewind().unwrap();
+		let mut previous = Vec::new();
+		old.read_to_end(&mut previous).unwrap();
+		assert_eq!(previous, b"old-append");
+		assert_eq!(fs::read(target).unwrap(), b"new");
+	}
+
+	#[test]
+	fn checked_create_never_replaces_an_open_target() {
+		let dir = tempdir();
+		let target = dir.path().join("open-target.jpg");
+		fs::write(&target, b"existing").unwrap();
+		let _open = fs::OpenOptions::new().append(true).open(&target).unwrap();
+		let staged = StagedOutput::new(&target).unwrap();
+		fs::write(staged.temp(), b"new").unwrap();
+		let fingerprint = crate::safety::Fingerprint::of(staged.temp()).unwrap();
+
+		assert!(staged.commit_checked(&fingerprint).is_err());
+		assert_eq!(fs::read(target).unwrap(), b"existing");
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn checked_replacement_does_not_override_a_target_without_delete_sharing() {
+		use std::os::windows::fs::OpenOptionsExt;
+		use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+		let dir = tempdir();
+		let target = dir.path().join("locked-target.jpg");
+		fs::write(&target, b"existing").unwrap();
+		let _open = fs::OpenOptions::new()
+			.read(true)
+			.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+			.open(&target)
+			.unwrap();
+		let staged = StagedOutput::replacing(&target).unwrap();
+		fs::write(staged.temp(), b"new").unwrap();
+		let fingerprint = crate::safety::Fingerprint::of(staged.temp()).unwrap();
+
+		let error = staged.commit_checked(&fingerprint).unwrap_err();
+		assert!(matches!(error, Error::Io(ref error) if matches!(error.raw_os_error(), Some(5 | 32 | 33))));
+		assert_eq!(fs::read(target).unwrap(), b"existing");
+	}
+
+	#[test]
 	#[cfg(windows)]
 	fn windows_publication_handle_blocks_stage_mutation_until_commit() {
 		use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
