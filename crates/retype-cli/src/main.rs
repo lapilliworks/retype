@@ -703,7 +703,7 @@ fn main() -> ExitCode {
 
 	let outcome = match &cli.command {
 		Command::Daemon { action, detached } => match action {
-			None => daemon::run(cli.state_dir.clone(), !detached).map(|()| ExitCode::SUCCESS),
+			None => run_daemon(cli.state_dir.clone(), *detached),
 			Some(action) => control(&cli, action),
 		},
 		Command::Uri { .. }
@@ -725,6 +725,17 @@ fn main() -> ExitCode {
 	};
 
 	finish(outcome)
+}
+
+fn run_daemon(state_dir: Option<PathBuf>, detached: bool) -> Result<ExitCode> {
+	#[cfg(unix)]
+	{
+		/* Disconnected IPC clients must not terminate the daemon. */
+		if unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) } == libc::SIG_ERR {
+			return Err(std::io::Error::last_os_error().into());
+		}
+	}
+	daemon::run(state_dir, !detached).map(|()| ExitCode::SUCCESS)
 }
 
 /// The parser's complaint without its usage block, so `--json` gets one sentence.
