@@ -21,25 +21,7 @@ mod windows_tests;
 pub fn rename(from: &Path, to: &Path) -> io::Result<()> {
 	#[cfg(windows)]
 	{
-		let delays = [
-			std::time::Duration::from_millis(10),
-			std::time::Duration::from_millis(50),
-			std::time::Duration::from_millis(150),
-			std::time::Duration::from_millis(400),
-		];
-
-		let mut attempt = 0;
-
-		loop {
-			match std::fs::rename(from, to) {
-				Ok(()) => return Ok(()),
-				Err(error) if attempt < delays.len() && is_transient(&error) => {
-					std::thread::sleep(delays[attempt]);
-					attempt += 1;
-				}
-				Err(error) => return Err(error),
-			}
-		}
+		retry_sharing(|| std::fs::rename(from, to))
 	}
 
 	#[cfg(not(windows))]
@@ -48,11 +30,80 @@ pub fn rename(from: &Path, to: &Path) -> io::Result<()> {
 	}
 }
 
+#[cfg(windows)]
+fn retry_sharing(mut operation: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+	let delays = [
+		std::time::Duration::from_millis(10),
+		std::time::Duration::from_millis(50),
+		std::time::Duration::from_millis(150),
+		std::time::Duration::from_millis(400),
+	];
+	let mut attempt = 0;
+	loop {
+		match operation() {
+			Ok(()) => return Ok(()),
+			Err(error) if attempt < delays.len() && is_transient(&error) => {
+				std::thread::sleep(delays[attempt]);
+				attempt += 1;
+			}
+			Err(error) => return Err(error),
+		}
+	}
+}
+
 /// Whether the failure is the platform saying "not now" rather than "no".
 #[cfg(windows)]
 fn is_transient(error: &io::Error) -> bool {
 	// 5 ERROR_ACCESS_DENIED, 32 ERROR_SHARING_VIOLATION, 33 ERROR_LOCK_VIOLATION.
 	matches!(error.raw_os_error(), Some(5 | 32 | 33))
+}
+
+/// Rename the already-open file, preserving the selected no-replace or replace policy.
+#[cfg(windows)]
+pub(crate) fn rename_open(
+	file: &std::fs::File,
+	destination: &Path,
+	policy: crate::convert::Publication,
+) -> io::Result<()> {
+	use std::mem::{align_of, offset_of, size_of};
+	use std::os::windows::ffi::OsStrExt;
+	use std::os::windows::io::AsRawHandle;
+	use windows_sys::Win32::Storage::FileSystem::{
+		FILE_RENAME_INFO, FILE_RENAME_INFO_0, FileRenameInfo, SetFileInformationByHandle,
+	};
+
+	let name: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
+	let name_bytes = name
+		.len()
+		.checked_mul(size_of::<u16>())
+		.ok_or_else(|| io::Error::other("rename path is too long"))?;
+	let size = offset_of!(FILE_RENAME_INFO, FileName)
+		.checked_add(name_bytes)
+		.ok_or_else(|| io::Error::other("rename buffer is too large"))?;
+	let name_length = u32::try_from(name_bytes - size_of::<u16>()).map_err(io::Error::other)?;
+	let size_in_bytes = u32::try_from(size).map_err(io::Error::other)?;
+	assert!(align_of::<usize>() >= align_of::<FILE_RENAME_INFO>());
+	let mut buffer = vec![0usize; size.div_ceil(size_of::<usize>())];
+	let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+	let replace = matches!(policy, crate::convert::Publication::Replace);
+	/* The aligned buffer includes the variable-length UTF-16 name and terminator. */
+	unsafe {
+		(&raw mut (*info).Anonymous).write(FILE_RENAME_INFO_0 {
+			ReplaceIfExists: u8::from(replace),
+		});
+		(&raw mut (*info).RootDirectory).write(std::ptr::null_mut());
+		(&raw mut (*info).FileNameLength).write(name_length);
+		std::ptr::copy_nonoverlapping(name.as_ptr(), (&raw mut (*info).FileName).cast::<u16>(), name.len());
+	}
+	retry_sharing(|| {
+		if unsafe { SetFileInformationByHandle(file.as_raw_handle() as _, FileRenameInfo, info.cast(), size_in_bytes) }
+			!= 0
+		{
+			Ok(())
+		} else {
+			Err(io::Error::last_os_error())
+		}
+	})
 }
 
 /// Flush file contents and metadata using a handle that permits Windows FlushFileBuffers.

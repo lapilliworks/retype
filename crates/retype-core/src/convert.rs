@@ -33,8 +33,8 @@ pub fn is_temp_file(path: &Path) -> bool {
 /// Write `target` atomically.
 ///
 /// `write` is handed a temporary path in the same directory as `target`. If it
-/// returns `Ok`, the temporary file is renamed onto `target`. If it returns
-/// `Err` or panics, the temporary file is removed and `target` is untouched.
+/// returns `Err` or panics, `target` is untouched. A publication or sync error may
+/// occur after the rename, so callers must not assume an error means no target exists.
 pub fn write_atomically(target: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
 	let staged = StagedOutput::replacing(target)?;
 	write(staged.temp())?;
@@ -47,7 +47,7 @@ pub enum Publication {
 	Replace,
 }
 
-/// A temporary file that becomes `target` on commit and disappears otherwise.
+/// A temporary file that becomes `target` on commit and is normally removed on drop.
 pub struct StagedOutput {
 	temp: PathBuf,
 	target: PathBuf,
@@ -94,8 +94,62 @@ impl StagedOutput {
 
 	/// Rename the temporary file onto the target.
 	pub fn commit(self) -> Result<()> {
+		self.commit_with_expected(None)
+	}
+
+	/// Publish only the file and bytes identified before the publication checkpoint.
+	pub(crate) fn commit_checked(self, expected: &crate::safety::Fingerprint) -> Result<()> {
+		self.commit_with_expected(Some(expected))
+	}
+
+	fn commit_with_expected(self, expected: Option<&crate::safety::Fingerprint>) -> Result<()> {
+		#[cfg(windows)]
+		{
+			self.commit_windows(expected)
+		}
+		#[cfg(not(windows))]
+		{
+			self.commit_path(expected)
+		}
+	}
+
+	#[cfg(windows)]
+	fn commit_windows(self, expected: Option<&crate::safety::Fingerprint>) -> Result<()> {
+		let mut file = open_publication_file(&self.temp)?;
+		if let Some(expected) = expected {
+			let actual = crate::safety::Fingerprint::of_open_file(&self.temp, &mut file)?;
+			if !expected.same_file_and_content(&actual) {
+				return Err(changed_staged(&self.temp));
+			}
+		}
+		file.sync_all()?;
+		crate::fsx::sync_directory(self._directory.path())?;
+		let policy = if self.should_replace {
+			Publication::Replace
+		} else {
+			Publication::Create
+		};
+		crate::fsx::rename_open(&file, &self.target, policy)?;
+		file.sync_all()?;
+		if let Some(expected) = expected {
+			if !expected.matches(&self.target)? {
+				return Err(changed_staged(&self.target));
+			}
+		}
+		drop(file);
+		crate::fsx::sync_directory(self.target.parent().expect("resolved parent"))?;
+		Ok(())
+	}
+
+	#[cfg(not(windows))]
+	fn commit_path(self, expected: Option<&crate::safety::Fingerprint>) -> Result<()> {
 		if !fs::symlink_metadata(&self.temp)?.file_type().is_file() {
 			return Err(Error::Io(std::io::Error::other("staged output is not a regular file")));
+		}
+		if let Some(expected) = expected {
+			if !expected.matches(&self.temp)? {
+				return Err(changed_staged(&self.temp));
+			}
 		}
 		crate::fsx::sync_file(&self.temp)?;
 		crate::fsx::sync_directory(self._directory.path())?;
@@ -105,8 +159,34 @@ impl StagedOutput {
 			crate::fsx::rename_noreplace(&self.temp, &self.target)?;
 		}
 		crate::fsx::sync_directory(self.target.parent().expect("resolved parent"))?;
+		if let Some(expected) = expected {
+			if !expected.matches(&self.target)? {
+				return Err(changed_staged(&self.target));
+			}
+		}
 		Ok(())
 	}
+}
+
+#[cfg(windows)]
+fn open_publication_file(path: &Path) -> Result<fs::File> {
+	use std::os::windows::fs::OpenOptionsExt;
+	use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+	use windows_sys::Win32::Storage::FileSystem::DELETE;
+
+	let mut options = fs::OpenOptions::new();
+	options
+		.read(true)
+		.write(true)
+		.access_mode(GENERIC_READ | GENERIC_WRITE | DELETE);
+	Ok(crate::safety::open_guarded_file(path, options)?)
+}
+
+fn changed_staged(path: &Path) -> Error {
+	Error::Io(std::io::Error::other(format!(
+		"{} changed during publication; recovery retained",
+		path.display()
+	)))
 }
 
 /// Where a converter should read from, and where the result belongs.
@@ -272,6 +352,72 @@ mod tests {
 		.unwrap();
 
 		assert_eq!(fs::read(&target).unwrap(), b"new");
+	}
+
+	#[test]
+	fn checked_publication_rejects_a_same_content_staged_replacement() {
+		let dir = tempdir();
+		let target = dir.path().join("out.jpg");
+		let staged = StagedOutput::new(&target).unwrap();
+		fs::write(staged.temp(), b"validated bytes").unwrap();
+		let fingerprint = crate::safety::Fingerprint::of(staged.temp()).unwrap();
+		let original = dir.path().join("original-stage.jpg");
+		fs::rename(staged.temp(), &original).unwrap();
+		fs::copy(&original, staged.temp()).unwrap();
+
+		let error = staged.commit_checked(&fingerprint).unwrap_err();
+		assert!(error.to_string().contains("changed during publication"));
+		assert!(!target.exists());
+		assert_eq!(fs::read(original).unwrap(), b"validated bytes");
+	}
+
+	#[test]
+	fn checked_publication_never_replaces_an_occupied_target() {
+		let dir = tempdir();
+		let target = dir.path().join("out.jpg");
+		fs::write(&target, b"unrelated").unwrap();
+		let staged = StagedOutput::new(&target).unwrap();
+		fs::write(staged.temp(), b"validated bytes").unwrap();
+		let fingerprint = crate::safety::Fingerprint::of(staged.temp()).unwrap();
+
+		let error = staged.commit_checked(&fingerprint).unwrap_err();
+		assert!(matches!(error, Error::Io(ref error) if error.kind() == std::io::ErrorKind::AlreadyExists));
+		assert_eq!(fs::read(target).unwrap(), b"unrelated");
+	}
+
+	#[test]
+	fn checked_publication_preserves_identity_for_explicit_replacement() {
+		let dir = tempdir();
+		let target = dir.path().join("out-\u{6f22}.jpg");
+		fs::write(&target, b"old").unwrap();
+		let staged = StagedOutput::replacing(&target).unwrap();
+		fs::write(staged.temp(), b"validated bytes").unwrap();
+		let fingerprint = crate::safety::Fingerprint::of(staged.temp()).unwrap();
+
+		staged.commit_checked(&fingerprint).unwrap();
+		assert!(fingerprint.matches(&target).unwrap());
+		assert_eq!(fs::read(target).unwrap(), b"validated bytes");
+	}
+
+	#[test]
+	#[cfg(windows)]
+	fn windows_publication_handle_blocks_stage_mutation_until_commit() {
+		use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+		let dir = tempdir();
+		let target = dir.path().join("out.jpg");
+		let staged = StagedOutput::new(&target).unwrap();
+		fs::write(staged.temp(), b"validated bytes").unwrap();
+		let fingerprint = crate::safety::Fingerprint::of(staged.temp()).unwrap();
+		let file = open_publication_file(staged.temp()).unwrap();
+		let moved = dir.path().join("other.jpg");
+		let write_error = fs::OpenOptions::new().write(true).open(staged.temp()).unwrap_err();
+		let rename_error = crate::fsx::rename_noreplace(staged.temp(), &moved).unwrap_err();
+		assert_eq!(write_error.raw_os_error(), Some(ERROR_SHARING_VIOLATION as i32));
+		assert_eq!(rename_error.raw_os_error(), Some(ERROR_SHARING_VIOLATION as i32));
+		assert!(!moved.exists());
+		drop(file);
+		staged.commit_checked(&fingerprint).unwrap();
+		assert!(fingerprint.matches(&target).unwrap());
 	}
 
 	#[test]

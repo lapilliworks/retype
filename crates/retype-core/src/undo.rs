@@ -811,7 +811,7 @@ fn is_undo_fingerprint(record: &Record, actual: &Fingerprint) -> bool {
 fn open_undo_backup(path: &Path) -> std::io::Result<fs::File> {
 	let mut options = fs::OpenOptions::new();
 	options.read(true);
-	open_undo_file(path, options)
+	crate::safety::open_guarded_file(path, options)
 }
 
 fn open_undo_source(path: &Path) -> std::io::Result<fs::File> {
@@ -819,45 +819,7 @@ fn open_undo_source(path: &Path) -> std::io::Result<fs::File> {
 	options.read(true);
 	#[cfg(not(unix))]
 	options.write(true);
-	open_undo_file(path, options)
-}
-
-fn open_undo_file(path: &Path, mut options: fs::OpenOptions) -> std::io::Result<fs::File> {
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::OpenOptionsExt;
-		options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-	}
-	#[cfg(windows)]
-	{
-		use std::os::windows::fs::OpenOptionsExt;
-		use windows_sys::Win32::Storage::FileSystem::{
-			FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_SHARE_READ,
-		};
-		options
-			.share_mode(FILE_SHARE_READ)
-			.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH);
-	}
-	let file = options.open(path)?;
-	let metadata = file.metadata()?;
-	if !metadata.file_type().is_file() {
-		return Err(std::io::Error::other(format!(
-			"{} is not a regular file",
-			path.display()
-		)));
-	}
-	#[cfg(windows)]
-	{
-		use std::os::windows::fs::MetadataExt;
-		use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-		if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-			return Err(std::io::Error::new(
-				std::io::ErrorKind::Unsupported,
-				format!("{} is a reparse point; undo requires a regular file", path.display()),
-			));
-		}
-	}
-	Ok(file)
+	crate::safety::open_guarded_file(path, options)
 }
 
 fn publish_restoration(staged: crate::convert::StagedOutput, fingerprint: &Fingerprint) -> Result<()> {
@@ -867,7 +829,7 @@ fn publish_restoration(staged: crate::convert::StagedOutput, fingerprint: &Finge
 			"staged original changed before publication",
 		)));
 	}
-	staged.commit()?;
+	staged.commit_checked(fingerprint)?;
 	if !fingerprint.matches(&target)? {
 		return Err(Error::Io(std::io::Error::other(
 			"restored original changed during publication",

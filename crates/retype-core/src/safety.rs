@@ -93,6 +93,42 @@ impl Fingerprint {
 	}
 }
 
+/// Open a regular file without following its final component; Windows excludes mutation sharing.
+pub(crate) fn open_guarded_file(path: &Path, mut options: OpenOptions) -> io::Result<File> {
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt;
+		options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::OpenOptionsExt;
+		use windows_sys::Win32::Storage::FileSystem::{
+			FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_SHARE_READ,
+		};
+		options
+			.share_mode(FILE_SHARE_READ)
+			.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH);
+	}
+	let file = options.open(path)?;
+	let metadata = file.metadata()?;
+	if !metadata.file_type().is_file() {
+		return Err(io::Error::other(format!("{} is not a regular file", path.display())));
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::MetadataExt;
+		use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+		if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+			return Err(io::Error::new(
+				io::ErrorKind::Unsupported,
+				format!("{} is a reparse point; a regular file is required", path.display()),
+			));
+		}
+	}
+	Ok(file)
+}
+
 fn regular_file(path: &Path) -> io::Result<File> {
 	if !fs::symlink_metadata(path)?.file_type().is_file() {
 		return Err(io::Error::other(format!("{} is not a regular file", path.display())));

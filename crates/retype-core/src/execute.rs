@@ -281,7 +281,10 @@ pub fn run_recorded(
 	cancellation.commit(|| {
 		before_commit(staged.temp(), &report)?;
 		report.verify_staged(staged.temp())?;
-		staged.commit()
+		match report.validation.fingerprint() {
+			Some(fingerprint) => staged.commit_checked(fingerprint),
+			None => staged.commit(),
+		}
 	})?;
 	Ok(report)
 }
