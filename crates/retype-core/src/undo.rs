@@ -894,6 +894,13 @@ pub struct JobLease {
 	_file: fs::File,
 }
 
+#[cfg(unix)]
+impl Drop for JobLease {
+	fn drop(&mut self) {
+		unlock_flock(&self._file);
+	}
+}
+
 fn leased(id: &JobId) -> Error {
 	Error::Diagnostic(Diagnostic::global(
 		Code::IoLocked,
@@ -904,6 +911,30 @@ fn leased(id: &JobId) -> Error {
 struct StoreLock {
 	_process: std::sync::MutexGuard<'static, ()>,
 	_file: fs::File,
+}
+
+#[cfg(unix)]
+impl Drop for StoreLock {
+	fn drop(&mut self) {
+		unlock_flock(&self._file);
+	}
+}
+
+#[cfg(unix)]
+fn unlock_flock(file: &fs::File) {
+	use std::os::fd::AsRawFd;
+
+	/* A fork can retain the open description until exec, even after its owner drops. */
+	loop {
+		if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == 0 {
+			return;
+		}
+		let error = std::io::Error::last_os_error();
+		if error.kind() != std::io::ErrorKind::Interrupted {
+			eprintln!("retype: cannot release undo lock: {error}");
+			return;
+		}
+	}
 }
 
 fn store_lock(root: &Path) -> Result<StoreLock> {
@@ -1111,6 +1142,75 @@ mod tests {
 			quota,
 			..Policy::default()
 		}
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn dropping_a_job_lease_unlocks_a_duplicated_open_description() {
+		use std::os::fd::AsRawFd;
+
+		let state = state();
+		let store = Store::open(state.path());
+		let job_id = id(1);
+		let lease = store.lease(&job_id).unwrap();
+		/* A fork inherits the same open description before close-on-exec. */
+		let duplicate = lease._file.try_clone().unwrap();
+		assert_eq!(store.lease(&job_id).err().unwrap().code(), Code::IoLocked);
+
+		drop(lease);
+		let next = store.lease(&job_id);
+		assert!(next.is_ok(), "a duplicate kept the dropped lease locked");
+		let next = next.unwrap();
+		assert_eq!(unsafe { libc::flock(duplicate.as_raw_fd(), libc::LOCK_UN) }, 0);
+		drop(duplicate);
+		assert_eq!(store.lease(&job_id).err().unwrap().code(), Code::IoLocked);
+		drop(next);
+		assert!(store.lease(&job_id).is_ok());
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn dropping_a_store_lock_unlocks_a_duplicated_open_description() {
+		use std::os::fd::AsRawFd;
+
+		let state = state();
+		let store = Store::open(state.path());
+		let guard = store_lock(&store.root).unwrap();
+		let duplicate = guard._file.try_clone().unwrap();
+		let probe = fs::OpenOptions::new()
+			.read(true)
+			.write(true)
+			.open(state.path().join("undo.lock"))
+			.unwrap();
+		assert_ne!(
+			unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+			0
+		);
+		assert_eq!(std::io::Error::last_os_error().kind(), std::io::ErrorKind::WouldBlock);
+
+		drop(guard);
+		assert_eq!(
+			unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+			0,
+			"a duplicate kept the dropped store lock held"
+		);
+		let second = fs::OpenOptions::new()
+			.read(true)
+			.write(true)
+			.open(state.path().join("undo.lock"))
+			.unwrap();
+		assert_eq!(unsafe { libc::flock(duplicate.as_raw_fd(), libc::LOCK_UN) }, 0);
+		drop(duplicate);
+		assert_ne!(
+			unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+			0
+		);
+		assert_eq!(std::io::Error::last_os_error().kind(), std::io::ErrorKind::WouldBlock);
+		drop(probe);
+		assert_eq!(
+			unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+			0
+		);
 	}
 
 	fn kept_record(store: &Store, directory: &Path) -> (Record, PathBuf) {
