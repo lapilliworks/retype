@@ -14,7 +14,11 @@ fixture() {
 	mkdir -p "$directory"
 	printf 'first synthetic archive\n' > "$directory/$first"
 	printf 'second synthetic archive\n' > "$directory/$second"
-	(cd "$directory" && sha256sum -- "$first" > "$first.sha256" && sha256sum -- "$second" > "$second.sha256")
+	(
+		cd "$directory"
+		sha256sum -- "$first" > "$first.sha256"
+		sha256sum --binary -- "$second" > "$second.sha256"
+	)
 }
 
 expect_failure() {

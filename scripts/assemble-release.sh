@@ -15,7 +15,8 @@ for archive in *.tar.gz; do
 		printf 'Missing release archive or checksum: %s\n' "$archive" >&2
 		exit 1
 	fi
-	if ! sha256sum -- "$archive" | cmp -s -- "$archive.sha256" -; then
+	if ! sha256sum -- "$archive" | cmp -s -- "$archive.sha256" - &&
+		! sha256sum --binary -- "$archive" | cmp -s -- "$archive.sha256" -; then
 		printf 'Build checksum does not match archive: %s\n' "$archive" >&2
 		exit 1
 	fi
