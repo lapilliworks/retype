@@ -36,9 +36,9 @@ bounded() {
 	local seconds=$1 grace=$2
 	shift 2
 	if [ "$platform" = Darwin ]; then
-		/usr/bin/perl "$script_dir/run-bounded.pl" "$seconds" "$grace" "$@"
+		/usr/bin/perl "$script_dir/run-bounded.pl" "$seconds" "$grace" "$@" </dev/null
 	else
-		timeout --kill-after="${grace}s" "${seconds}s" "$@"
+		timeout --kill-after="${grace}s" "${seconds}s" "$@" </dev/null
 	fi
 }
 

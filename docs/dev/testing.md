@@ -20,7 +20,7 @@ The runners print a report directory under `target/platform-test-reports/` with 
 
 `RETYPE_TEST_TIMEOUT_SECONDS` sets the per-step timeout for Clippy and the Unix installer and workspace tests from 1 to 3600 seconds; the default is 300. On Windows, the same limit is shared by the strict workflow, non-CLI workspace tests, doctests and CLI workspace tests. Windows uses cargo-nextest with four workers, no retries and a 60-second timeout for each test, so a hung test is reported without blocking the rest of the phase. It runs ignored tests rather than omitting them. The strict workflow is also included in the CLI workspace phase. A phase not reached before the shared deadline is reported as incomplete, and any timeout still fails the runner.
 
-Formatting has a 60-second timeout and version probes have a 10-second timeout. `RETYPE_TEST_REPORT_DIR` and `RETYPE_TEST_TEMP_DIR` may name absolute locations for reports and scratch data. On Unix, choose a short scratch parent so test daemon sockets stay within the platform's path limit. Use a disposable local filesystem rather than real originals.
+Formatting has a 60-second timeout and version probes have a 10-second timeout. Unix runner steps receive closed standard input; tests that need a terminal create their own. `RETYPE_TEST_REPORT_DIR` and `RETYPE_TEST_TEMP_DIR` may name absolute locations for reports and scratch data. On Unix, choose a short scratch parent so test daemon sockets stay within the platform's path limit. Use a disposable local filesystem rather than real originals.
 
 ## 1. Baseline tests
 
@@ -38,7 +38,7 @@ Make the programs available on `PATH` in the same terminal that runs Cargo. Reop
 |---|---|
 | `fidelity`, `fidelity_axes` | ImageMagick 7.1 or newer, with 16-bit image support such as a Q16 build; PNG, JPEG, GIF and TIFF support |
 | `keep` real watched workflow and core JPEG validation | ImageMagick 7.1 or newer with HEIC decoding and JPEG encoding; FFmpeg with MJPEG decoding |
-| `video` | FFmpeg 6 or newer and FFprobe, with `libx264`, `aac` and `libmp3lame` encoders |
+| `video` | FFmpeg 6 or newer and FFprobe, with `mpeg4`, `aac`, `libvpx-vp9`, `libopus` and `libmp3lame` encoders |
 | `documents` | Pandoc 3 or newer and at least one usable PDF engine: `typst`, `xelatex`, `lualatex`, `pdflatex`, `weasyprint` or `wkhtmltopdf` |
 | `archives` | Native ZIP/TAR cases need no external archiver; 7z cases require 7-Zip 23 or newer as `7zz`, `7z` or `7za` |
 | `data_safety_transactions`, `data_safety_audit_additional`, core `safety` | Native archive and filesystem cases need no external encoder; a few shell/symlink cases are Unix-only |
@@ -47,7 +47,7 @@ Make the programs available on `PATH` in the same terminal that runs Cargo. Reop
 
 Pandoc alone is insufficient for the document target. Typst is a straightforward standalone choice. TeX engines also need the packages and fonts used by Pandoc's template; an engine executable alone may not constitute a working installation. Keep Pandoc and the selected engine compatible. The default engine order is the order shown above.
 
-Fedora's restricted FFmpeg builds may lack the required encoders. Check capabilities instead of assuming that an installed `ffmpeg` is sufficient:
+The video tests exercise the shipped WebM and MP3 targets; they do not prove that the MP4, MKV or MOV defaults work without `libx264`. Check capabilities instead of assuming that an installed `ffmpeg` is sufficient:
 
 ```sh
 magick -version
@@ -59,7 +59,7 @@ typst --version
 7z i
 ```
 
-Use the PDF-engine and 7-Zip command names actually installed on the host. In the encoder listing, verify the three encoder names exactly. Native archive/cancellation/recovery tests do not require these programs.
+Use the PDF-engine and 7-Zip command names actually installed on the host. In the encoder listing, verify the five video-test encoder names exactly. Native archive/cancellation/recovery tests do not require these programs.
 
 ## 3. Strict tool verification
 

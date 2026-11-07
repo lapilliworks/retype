@@ -3,7 +3,9 @@
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -44,6 +46,7 @@ if [ "${1-}" = '-list' ] && [ "${2-}" = 'format' ]; then
     case "$MOCK_MODE" in
         probe-failure) echo 'synthetic probe failure' >&2; exit 42;;
         probe-hang) trap '' TERM; sleep 20; exit 42;;
+        probe-stdin) IFS= read -r ignored || :;;
     esac
 fi
 echo 'mock tool'
@@ -244,7 +247,15 @@ fn run(platform: &str, host: &str, mode: &str, limit: u64) -> Run {
 		.env("RETYPE_TEST_TIMEOUT_SECONDS", limit.to_string())
 		.env("RETYPE_STATE_DIR", dir.path().join("must-not-be-used"))
 		.env("RETYPE_NO_SPAWN", "1");
+	let stdin_writer = if mode == "probe-stdin" {
+		let (input, writer) = UnixStream::pair().unwrap();
+		command.stdin(Stdio::from(OwnedFd::from(input)));
+		Some(writer)
+	} else {
+		None
+	};
 	let (status, text) = capture(&mut command, Duration::from_secs(30));
+	drop(stdin_writer);
 	if matches!(mode, "stubborn" | "stubborn-leak") {
 		child_pid.assert_stopped();
 	}
@@ -321,6 +332,15 @@ fn the_macos_wrapper_uses_the_native_runner_contract() {
 	assert!(result.status.success(), "{}", result.text);
 	assert!(result.text.contains("Platform test: Darwin"));
 	assert!(result.text.contains("Platform validation passed."));
+}
+
+#[test]
+fn noninteractive_probes_do_not_wait_for_the_callers_stdin() {
+	for (platform, host) in [("test-linux.sh", "Linux"), ("test-macos.sh", "Darwin")] {
+		let result = run(platform, host, "probe-stdin", 5);
+		assert!(result.status.success(), "{}", result.text);
+		assert!(result.text.contains("Platform validation passed"), "{}", result.text);
+	}
 }
 
 #[test]
