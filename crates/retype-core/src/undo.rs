@@ -464,30 +464,40 @@ impl Store {
 			.is_some_and(|progress| progress.restore_intent.is_some());
 		let must_verify = policy == ExistingSource::Verify || !source_exists || has_restore_intent;
 		let held = if must_verify {
-			let held = self
+			let path = self
 				.source(id)?
 				.ok_or_else(|| Error::Io(std::io::Error::other("no verified original to restore")))?;
-			if source_exists && !is_undo_source(&record)? {
-				return Err(Error::Exists(record.source_path.clone()));
+			let mut file = open_undo_backup(&path)?;
+			let fingerprint = Fingerprint::of_open_file(&path, &mut file)?;
+			let expected = record.source_fingerprint.as_ref().expect("verified record");
+			if !expected.same_content(&fingerprint) {
+				return Err(Error::Io(std::io::Error::other(
+					"retained original changed before undo",
+				)));
 			}
-			Some(held)
+			Some((path, file))
 		} else {
 			None
 		};
 
-		if let Some(held) = held {
+		if let Some((path, _file)) = &held {
 			if !source_exists {
-				let (staged, fingerprint) = self.prepare_restoration(&mut record, &held)?;
+				let (staged, fingerprint) = self.prepare_restoration(&mut record, path)?;
 				publish_restoration(staged, &fingerprint)?;
 			}
-			restore_times(&record)?;
-			crate::fsx::sync_file(&record.source_path)?;
-			crate::fsx::sync_directory(record.source_path.parent().unwrap_or(Path::new(".")))?;
 		}
-		let source_before_cleanup = Fingerprint::of(&record.source_path)?;
-		if must_verify && !is_undo_fingerprint(&record, &source_before_cleanup) {
+		let mut source = open_undo_source(&record.source_path)?;
+		let source_before_cleanup = Fingerprint::of_open_file(&record.source_path, &mut source)?;
+		if (must_verify && !is_undo_fingerprint(&record, &source_before_cleanup))
+			|| !source_before_cleanup.matches(&record.source_path)?
+		{
 			return Err(Error::Exists(record.source_path.clone()));
 		}
+		if must_verify {
+			restore_times(&source, &record)?;
+		}
+		source.sync_all()?;
+		crate::fsx::sync_directory(record.source_path.parent().unwrap_or(Path::new(".")))?;
 		cleanup(&record)?;
 		if !source_before_cleanup.matches(&record.source_path)? {
 			return Err(Error::Io(std::io::Error::other(format!(
@@ -495,7 +505,10 @@ impl Store {
 				record.source_path.display()
 			))));
 		}
+		/* Windows cannot remove the backup while its non-delete-sharing handle is open. */
+		drop(held);
 		self.remove_locked(id)?;
+		drop(source);
 		Ok(record)
 	}
 
@@ -783,10 +796,6 @@ fn existing_source_policy(record: &Record) -> ExistingSource {
 	}
 }
 
-fn is_undo_source(record: &Record) -> Result<bool> {
-	Ok(is_undo_fingerprint(record, &Fingerprint::of(&record.source_path)?))
-}
-
 fn is_undo_fingerprint(record: &Record, actual: &Fingerprint) -> bool {
 	record
 		.source_fingerprint
@@ -797,6 +806,58 @@ fn is_undo_fingerprint(record: &Record, actual: &Fingerprint) -> bool {
 			.as_ref()
 			.and_then(|progress| progress.restore_intent.as_ref())
 			.is_some_and(|restored| restored.same_file_and_content(actual))
+}
+
+fn open_undo_backup(path: &Path) -> std::io::Result<fs::File> {
+	let mut options = fs::OpenOptions::new();
+	options.read(true);
+	open_undo_file(path, options)
+}
+
+fn open_undo_source(path: &Path) -> std::io::Result<fs::File> {
+	let mut options = fs::OpenOptions::new();
+	options.read(true);
+	#[cfg(not(unix))]
+	options.write(true);
+	open_undo_file(path, options)
+}
+
+fn open_undo_file(path: &Path, mut options: fs::OpenOptions) -> std::io::Result<fs::File> {
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt;
+		options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::OpenOptionsExt;
+		use windows_sys::Win32::Storage::FileSystem::{
+			FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_SHARE_READ,
+		};
+		options
+			.share_mode(FILE_SHARE_READ)
+			.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH);
+	}
+	let file = options.open(path)?;
+	let metadata = file.metadata()?;
+	if !metadata.file_type().is_file() {
+		return Err(std::io::Error::other(format!(
+			"{} is not a regular file",
+			path.display()
+		)));
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::MetadataExt;
+		use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+		if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+			return Err(std::io::Error::new(
+				std::io::ErrorKind::Unsupported,
+				format!("{} is a reparse point; undo requires a regular file", path.display()),
+			));
+		}
+	}
+	Ok(file)
 }
 
 fn publish_restoration(staged: crate::convert::StagedOutput, fingerprint: &Fingerprint) -> Result<()> {
@@ -915,16 +976,18 @@ fn write_manifest(directory: &Path, record: &Record) -> Result<()> {
 	Ok(())
 }
 
-fn restore_times(record: &Record) -> Result<()> {
-	set_mode(&record.source_path, record.source_mode)?;
-
-	if record.source_mtime_ns == 0 {
-		return Ok(());
+fn restore_times(file: &fs::File, record: &Record) -> Result<()> {
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		if record.source_mode != 0 {
+			file.set_permissions(fs::Permissions::from_mode(record.source_mode))?;
+		}
 	}
-
-	let modified = UNIX_EPOCH + Duration::from_nanos(record.source_mtime_ns.max(0) as u64);
-	let file = fs::OpenOptions::new().write(true).open(&record.source_path)?;
-	file.set_times(fs::FileTimes::new().set_modified(modified))?;
+	if record.source_mtime_ns != 0 {
+		let modified = UNIX_EPOCH + Duration::from_nanos(record.source_mtime_ns.max(0) as u64);
+		file.set_times(fs::FileTimes::new().set_modified(modified))?;
+	}
 	Ok(())
 }
 

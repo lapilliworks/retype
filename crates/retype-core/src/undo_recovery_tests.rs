@@ -262,11 +262,20 @@ fn changing_a_restored_original_during_cleanup_keeps_the_recovery_record() {
 		Ok(())
 	});
 
-	assert!(result.is_err(), "changed original must keep recovery");
-	assert_eq!(
-		fs::read(&fixture.record.source_path).unwrap(),
-		b"changed during cleanup"
-	);
+	let error = result.unwrap_err();
+	#[cfg(windows)]
+	{
+		assert_sharing_violation(&error);
+		assert_eq!(fs::read(&fixture.record.source_path).unwrap(), ORIGINAL);
+	}
+	#[cfg(not(windows))]
+	{
+		assert!(error.to_string().contains("changed during undo"));
+		assert_eq!(
+			fs::read(&fixture.record.source_path).unwrap(),
+			b"changed during cleanup"
+		);
+	}
 	assert!(!fixture.output.exists());
 	fixture.assert_recovery_is_pinned();
 }
@@ -277,14 +286,23 @@ fn replacing_the_restored_original_during_cleanup_keeps_the_recovery_record() {
 	let saved = fixture.root.path().join("restored-original.heic");
 	let result = fixture.store.restore_with_cleanup(&fixture.record.id, |record| {
 		fs::remove_file(&fixture.output)?;
-		fs::rename(&record.source_path, &saved)?;
+		crate::fsx::rename_noreplace(&record.source_path, &saved)?;
 		fs::copy(&saved, &record.source_path)?;
 		Ok(())
 	});
 
-	assert!(result.is_err(), "same-content replacement must keep recovery");
+	let error = result.unwrap_err();
+	#[cfg(windows)]
+	{
+		assert_sharing_violation(&error);
+		assert!(!saved.exists());
+	}
+	#[cfg(not(windows))]
+	{
+		assert!(error.to_string().contains("changed during undo"));
+		assert_eq!(fs::read(&saved).unwrap(), ORIGINAL);
+	}
 	assert_eq!(fs::read(&fixture.record.source_path).unwrap(), ORIGINAL);
-	assert_eq!(fs::read(&saved).unwrap(), ORIGINAL);
 	assert!(!fixture.output.exists());
 	fixture.assert_recovery_is_pinned();
 }
@@ -299,10 +317,104 @@ fn changing_a_kept_original_during_cleanup_keeps_the_recovery_record() {
 		Ok(())
 	});
 
-	assert!(result.is_err(), "original edited during cleanup must keep recovery");
-	assert_eq!(fs::read(&fixture.record.source_path).unwrap(), b"later user edits");
+	let error = result.unwrap_err();
+	#[cfg(windows)]
+	{
+		assert_sharing_violation(&error);
+		assert_eq!(fs::read(&fixture.record.source_path).unwrap(), b"earlier user edits");
+	}
+	#[cfg(not(windows))]
+	{
+		assert!(error.to_string().contains("changed during undo"));
+		assert_eq!(fs::read(&fixture.record.source_path).unwrap(), b"later user edits");
+	}
 	assert!(!fixture.output.exists());
 	fixture.assert_recovery_is_pinned();
+}
+
+#[cfg(windows)]
+fn assert_sharing_violation(error: &Error) {
+	use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+	match error {
+		Error::Io(error) => assert_eq!(error.raw_os_error(), Some(ERROR_SHARING_VIOLATION as i32)),
+		other => panic!("expected a sharing violation, got {other}"),
+	}
+}
+
+#[test]
+#[cfg(windows)]
+fn windows_undo_holds_source_and_backup_against_writes_and_renames() {
+	let fixture = Fixture::new(true);
+	let backup = fixture
+		.store
+		.directory(&fixture.record.id)
+		.join(fixture.record.source_file());
+	let moved_source = fixture.root.path().join("moved-source.heic");
+	let moved_backup = fixture.root.path().join("moved-backup.heic");
+	let result = fixture.store.restore_with_cleanup(&fixture.record.id, |record| {
+		for path in [&record.source_path, &backup] {
+			let error = fs::OpenOptions::new().write(true).open(path).unwrap_err();
+			assert_sharing_violation(&error.into());
+		}
+		for (path, target) in [(&record.source_path, &moved_source), (&backup, &moved_backup)] {
+			let error = crate::fsx::rename_noreplace(path, target).unwrap_err();
+			assert_sharing_violation(&error.into());
+		}
+		Err(std::io::Error::other("stop after checking undo handles").into())
+	});
+
+	assert!(
+		result
+			.unwrap_err()
+			.to_string()
+			.contains("stop after checking undo handles")
+	);
+	assert_eq!(fs::read(&fixture.record.source_path).unwrap(), ORIGINAL);
+	assert_eq!(fs::read(&backup).unwrap(), ORIGINAL);
+	assert_eq!(fs::read(&fixture.output).unwrap(), OUTPUT);
+	assert!(!moved_source.exists());
+	assert!(!moved_backup.exists());
+	fixture.assert_recovery_is_pinned();
+	/* The handles are released after a failed undo. */
+	crate::fsx::rename_noreplace(&fixture.record.source_path, &moved_source).unwrap();
+	crate::fsx::rename_noreplace(&backup, &moved_backup).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn a_read_only_restored_original_can_be_retried() {
+	use std::os::unix::fs::PermissionsExt;
+	let fixture = Fixture::new(true);
+	let mut record = fixture.store.load(&fixture.record.id).unwrap().unwrap();
+	record.source_mode = 0o400;
+	write_manifest(&fixture.store.directory(&record.id), &record).unwrap();
+	let first = fixture.store.restore_with_cleanup(&record.id, |_| {
+		Err(std::io::Error::other("injected output-removal failure").into())
+	});
+	assert!(first.is_err());
+	assert_eq!(
+		fs::metadata(&record.source_path).unwrap().permissions().mode() & 0o777,
+		0o400
+	);
+	fixture.assert_cleanup_outcome(fixture.store.restore(&record.id));
+	assert_eq!(
+		fs::metadata(&record.source_path).unwrap().permissions().mode() & 0o777,
+		0o400
+	);
+}
+
+#[test]
+#[cfg(unix)]
+fn undo_handles_refuse_a_final_component_symlink() {
+	use std::os::unix::fs::symlink;
+	let root = tempfile::tempdir().unwrap();
+	let target = root.path().join("target");
+	let link = root.path().join("link");
+	fs::write(&target, ORIGINAL).unwrap();
+	symlink(&target, &link).unwrap();
+	assert!(open_undo_backup(&link).is_err());
+	assert!(open_undo_source(&link).is_err());
+	assert_eq!(fs::read(target).unwrap(), ORIGINAL);
 }
 
 #[test]

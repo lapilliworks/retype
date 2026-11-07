@@ -1,7 +1,7 @@
 //! Stable input snapshots and preservation-first filesystem ownership.
 
 use std::fs::{self, File, OpenOptions};
-use std::io;
+use std::io::{self, Seek};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -45,8 +45,9 @@ impl Fingerprint {
 		Self::of_open_file(path, &mut file)
 	}
 
-	fn of_open_file(path: &Path, file: &mut File) -> Result<Self> {
+	pub(crate) fn of_open_file(path: &Path, file: &mut File) -> Result<Self> {
 		let before = file.metadata()?;
+		file.rewind()?;
 		let mut hash = Sha256::new();
 		let bytes = io::copy(&mut *file, &mut hash)?;
 		let after = file.metadata()?;
@@ -197,6 +198,18 @@ mod tests {
 		assert!(expected.same_content(&other));
 		assert!(!expected.same_file_and_content(&other));
 		assert!(expected.same_file_and_content(&Fingerprint::of(&first).unwrap()));
+	}
+
+	#[test]
+	fn fingerprinting_an_open_file_rewinds_it_before_each_read() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("original");
+		fs::write(&path, b"original bytes").unwrap();
+		let mut file = regular_file(&path).unwrap();
+		let first = Fingerprint::of_open_file(&path, &mut file).unwrap();
+		let second = Fingerprint::of_open_file(&path, &mut file).unwrap();
+		assert_eq!(first, second);
+		assert_eq!(first.bytes, b"original bytes".len() as u64);
 	}
 
 	#[test]
