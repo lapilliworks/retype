@@ -212,7 +212,7 @@ jobs:
           cp packaging/install.sh dist/install.sh
           cp packaging/install.ps1 dist/install.ps1
           cd dist
-          sha256sum *.tar.gz install.sh install.ps1 > SHA256SUMS
+          sha256sum -- *.tar.gz install.sh install.ps1 > SHA256SUMS
           for file in *.tar.gz install.sh install.ps1; do
             sha256sum "$file" > "$file.sha256"
           done
