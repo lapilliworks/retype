@@ -14,6 +14,13 @@ mod tool_support;
 use commands::bounded;
 
 const HEIC_FIXTURE: &[u8] = include_bytes!("../../../fixtures/native-watch/photo.heic");
+const ORIENTED_HEIC_FIXTURE: &[u8] = include_bytes!("../../../fixtures/native-watch/oriented-8bit.heic");
+const ORIENTED_PIXEL_CHANNELS: &str = concat!(
+	"%[fx:round(255*p{16,16}.r)] %[fx:round(255*p{16,16}.g)] %[fx:round(255*p{16,16}.b)] ",
+	"%[fx:round(255*p{48,16}.r)] %[fx:round(255*p{48,16}.g)] %[fx:round(255*p{48,16}.b)] ",
+	"%[fx:round(255*p{16,80}.r)] %[fx:round(255*p{16,80}.g)] %[fx:round(255*p{16,80}.b)] ",
+	"%[fx:round(255*p{48,80}.r)] %[fx:round(255*p{48,80}.g)] %[fx:round(255*p{48,80}.b)]",
+);
 
 struct Daemon {
 	child: Child,
@@ -468,6 +475,81 @@ fn assert_jpeg_dimensions(path: &Path) {
 	let image = bounded(&mut identify, Duration::from_secs(10)).unwrap();
 	assert!(image.status.success(), "{}", image.stderr);
 	assert_eq!(image.stdout, "JPEG 40x32");
+}
+
+fn assert_oriented_jpeg(path: &Path) {
+	let mut identify = Command::new("magick");
+	identify.args(["identify", "-format", "%m %wx%h"]).arg(path);
+	let image = bounded(&mut identify, Duration::from_secs(10)).unwrap();
+	assert!(image.status.success(), "{}", image.stderr);
+	assert_eq!(image.stdout, "JPEG 64x96");
+
+	let mut inspect = Command::new("magick");
+	inspect.arg(path).args(["-format", ORIENTED_PIXEL_CHANNELS, "info:"]);
+	let pixels = bounded(&mut inspect, Duration::from_secs(10)).unwrap();
+	assert!(pixels.status.success(), "{}", pixels.stderr);
+	let channels: Vec<u8> = pixels
+		.stdout
+		.split_whitespace()
+		.map(|value| value.parse().expect("an 8-bit color channel"))
+		.collect();
+	let [
+		green_r,
+		green_g,
+		green_b,
+		red_r,
+		red_g,
+		red_b,
+		yellow_r,
+		yellow_g,
+		yellow_b,
+		blue_r,
+		blue_g,
+		blue_b,
+	] = channels.as_slice()
+	else {
+		panic!("expected four RGB pixels, got: {}", pixels.stdout);
+	};
+	assert!(
+		*green_r < 60 && *green_g > 90 && *green_b < 60,
+		"green quadrant: {channels:?}"
+	);
+	assert!(*red_r > 180 && *red_g < 80 && *red_b < 80, "red quadrant: {channels:?}");
+	assert!(
+		*yellow_r > 180 && *yellow_g > 180 && *yellow_b < 80,
+		"yellow quadrant: {channels:?}"
+	);
+	assert!(
+		*blue_r < 80 && *blue_g < 80 && *blue_b > 180,
+		"blue quadrant: {channels:?}"
+	);
+}
+
+#[test]
+fn a_real_oriented_heic_conversion_preserves_display_orientation() {
+	if !has_heic_decoder_and_jpeg_encoder() {
+		return;
+	}
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let source = dir.path().join("oriented.heic");
+	let output = dir.path().join("oriented.jpg");
+	fs::write(&source, ORIENTED_HEIC_FIXTURE).unwrap();
+	let config = configuration(dir.path(), UndoPolicy::Enabled);
+	let _daemon = start_daemon(&state, &config);
+	let mut convert = Command::new(env!("CARGO_BIN_EXE_retype"));
+	convert
+		.arg("convert")
+		.arg(&source)
+		.args(["jpg+keep", "--json", "--no-spawn", "--state-dir"])
+		.arg(&state)
+		.env("RETYPE_CONFIG", &config);
+	let converted = bounded(&mut convert, Duration::from_secs(20)).unwrap();
+	assert!(converted.status.success(), "{}", converted.stderr);
+	let answer: serde_json::Value = serde_json::from_str(&converted.stdout).unwrap();
+	assert_eq!(answer["job"]["state"], "done");
+	assert_eq!(fs::read(&source).unwrap(), ORIENTED_HEIC_FIXTURE);
+	assert_oriented_jpeg(&output);
 }
 
 #[test]
