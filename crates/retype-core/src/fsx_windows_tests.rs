@@ -8,7 +8,7 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 
-use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+use windows_sys::Win32::Foundation::{ERROR_SHARING_VIOLATION, GENERIC_READ, GENERIC_WRITE};
 use windows_sys::Win32::Storage::FileSystem::{
 	DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_RENAME_INFO,
 	FILE_RENAME_INFO_0, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfo,
@@ -156,6 +156,21 @@ fn write_through_handle_rename_probe_is_not_durability_evidence() {
 	let write_error = OpenOptions::new().write(true).open(&source).unwrap_err();
 	let rename_error = super::rename_noreplace(&source, &unrelated).unwrap_err();
 	let collision_error = rename_open_file(&file, &occupied).unwrap_err();
+	assert_eq!(
+		write_error.raw_os_error(),
+		Some(ERROR_SHARING_VIOLATION as i32),
+		"competing write did not fail with a sharing violation: {write_error}"
+	);
+	assert_eq!(
+		rename_error.raw_os_error(),
+		Some(ERROR_SHARING_VIOLATION as i32),
+		"competing rename did not fail with a sharing violation: {rename_error}"
+	);
+	assert_eq!(
+		collision_error.kind(),
+		io::ErrorKind::AlreadyExists,
+		"occupied-target rename did not report a collision: {collision_error}"
+	);
 	assert_eq!(fs::read(&source).unwrap(), original);
 	assert_eq!(fs::read(&occupied).unwrap(), other);
 	assert!(occupied_before.same_file_and_content(&crate::safety::Fingerprint::of(&occupied).unwrap()));
