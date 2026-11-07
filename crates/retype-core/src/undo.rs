@@ -29,6 +29,21 @@ pub struct Commit {
 	pub validated: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ExistingSource {
+	Verify,
+	LeaveUntouched,
+}
+
+/// A pinned undo records the source policy and any restoration before publication.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UndoProgress {
+	existing_source: ExistingSource,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	restore_intent: Option<Fingerprint>,
+}
+
 /// Schema identifier, `docs/dev/architecture/state.md` §5.
 pub const UNDO_VERSION: &str = "retype-undo-1";
 
@@ -75,6 +90,9 @@ pub struct Record {
 	pub source_fingerprint: Option<Fingerprint>,
 	#[serde(default)]
 	pub pinned: bool,
+	/// Present while an undo has started but has not removed its recovery record.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub undo_progress: Option<UndoProgress>,
 	/// Whether undo may need to restore the source; not proof that disposal occurred.
 	/// Explicit keep requests leave an independently retained live source untouched.
 	#[serde(default = "consumed_default")]
@@ -104,6 +122,7 @@ impl Record {
 			commits: Vec::new(),
 			source_fingerprint: None,
 			pinned: true,
+			undo_progress: None,
 			consume_source: true,
 		}
 	}
@@ -414,54 +433,99 @@ impl Store {
 
 	/// Put the source back and remove what the job produced, `docs/dev/architecture/state.md` §5.
 	pub fn restore(&self, id: &JobId) -> Result<Record> {
+		self.restore_with_cleanup(id, |record| {
+			if !crate::fsx::supports_durable_cleanup() {
+				return Err(Error::Io(std::io::Error::new(
+					std::io::ErrorKind::Unsupported,
+					"original restored or retained; output removal requires directory durability",
+				)));
+			}
+			remove_outputs(record)
+		})
+	}
+
+	fn restore_with_cleanup(&self, id: &JobId, cleanup: impl FnOnce(&Record) -> Result<()>) -> Result<Record> {
 		let _guard = store_lock(&self.root)?;
 		let _lease = self.lease(id)?;
-		let Some(record) = self.load(id)? else {
+		let Some(mut record) = self.load(id)? else {
 			return Err(Error::Diagnostic(Diagnostic::global(
 				Code::JobNotFound,
 				format!("{id} has no undo record"),
 			)));
 		};
 
-		/* Refuse changed outputs before touching anything, including the original. */
-		for commit in &record.commits {
-			if fs::symlink_metadata(&commit.output.path).is_ok() && !commit.fingerprint.matches(&commit.output.path)? {
-				return Err(Error::Exists(commit.output.path.clone()));
-			}
-		}
-		let source = match fs::symlink_metadata(&record.source_path) {
-			Ok(metadata) if metadata.file_type().is_file() => true,
-			Ok(_) => return Err(Error::Exists(record.source_path.clone())),
-			Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-			Err(error) => return Err(error.into()),
-		};
-		if record.consume_source || record.pinned || !source {
+		let policy = existing_source_policy(&record);
+		self.begin_undo(&mut record, policy)?;
+		verify_undo_outputs(&record)?;
+		let source_exists = undo_source_exists(&record.source_path)?;
+		let has_restore_intent = record
+			.undo_progress
+			.as_ref()
+			.is_some_and(|progress| progress.restore_intent.is_some());
+		let must_verify = policy == ExistingSource::Verify || !source_exists || has_restore_intent;
+		let held = if must_verify {
 			let held = self
 				.source(id)?
 				.ok_or_else(|| Error::Io(std::io::Error::other("no verified original to restore")))?;
-			if source {
-				let expected = record.source_fingerprint.as_ref().expect("verified record");
-				if !expected.matches(&record.source_path)? {
-					return Err(Error::Exists(record.source_path.clone()));
-				}
-			} else {
-				let staged = crate::convert::StagedOutput::new(&record.source_path)?;
-				crate::safety::copy_snapshot(&held, staged.temp())?;
-				staged.commit()?;
+			if source_exists && !is_undo_source(&record)? {
+				return Err(Error::Exists(record.source_path.clone()));
+			}
+			Some(held)
+		} else {
+			None
+		};
+
+		if let Some(held) = held {
+			if !source_exists {
+				let (staged, fingerprint) = self.prepare_restoration(&mut record, &held)?;
+				publish_restoration(staged, &fingerprint)?;
 			}
 			restore_times(&record)?;
 			crate::fsx::sync_file(&record.source_path)?;
 			crate::fsx::sync_directory(record.source_path.parent().unwrap_or(Path::new(".")))?;
 		}
-		if !crate::fsx::supports_durable_cleanup() {
-			return Err(Error::Io(std::io::Error::new(
-				std::io::ErrorKind::Unsupported,
-				"original restored or retained; output removal requires directory durability",
-			)));
-		}
-		remove_outputs(&record)?;
+		cleanup(&record)?;
 		self.remove_locked(id)?;
 		Ok(record)
+	}
+
+	fn begin_undo(&self, record: &mut Record, policy: ExistingSource) -> Result<()> {
+		let needs_write = record.undo_progress.is_none() || !record.pinned;
+		if record.undo_progress.is_none() {
+			record.undo_progress = Some(UndoProgress {
+				existing_source: policy,
+				restore_intent: None,
+			});
+		}
+		record.pinned = true;
+		if needs_write {
+			write_manifest(&self.directory(&record.id), record)?;
+		}
+		Ok(())
+	}
+
+	fn prepare_restoration(
+		&self,
+		record: &mut Record,
+		held: &Path,
+	) -> Result<(crate::convert::StagedOutput, Fingerprint)> {
+		let staged = crate::convert::StagedOutput::new(&record.source_path)?;
+		let backup = crate::safety::copy_snapshot(held, staged.temp())?;
+		let expected = record.source_fingerprint.as_ref().expect("verified record");
+		if !expected.same_content(&backup) {
+			return Err(Error::Io(std::io::Error::other(
+				"retained original changed during restoration",
+			)));
+		}
+		let fingerprint = Fingerprint::of(staged.temp())?;
+		if !backup.same_content(&fingerprint) {
+			return Err(Error::Io(std::io::Error::other(
+				"staged original changed during restoration",
+			)));
+		}
+		record.undo_progress.as_mut().expect("undo started").restore_intent = Some(fingerprint.clone());
+		write_manifest(&self.directory(&record.id), record)?;
+		Ok((staged, fingerprint))
 	}
 
 	/// Forget a record after successful undo or explicit history removal.
@@ -642,6 +706,11 @@ impl Store {
 		let mut record = self
 			.load(id)?
 			.ok_or_else(|| Error::Io(std::io::Error::other("undo record disappeared")))?;
+		if record.undo_progress.is_some() {
+			return Err(Error::Io(std::io::Error::other(
+				"undo is incomplete; finish it before resuming or unpinning the record",
+			)));
+		}
 		if !pinned && (record.pinned || record.retention_started.is_none()) {
 			record.retention_started = Some(crate::job::now_ms());
 		}
@@ -671,6 +740,69 @@ impl Store {
 		}
 		Ok(Some(path))
 	}
+}
+
+fn verify_undo_outputs(record: &Record) -> Result<()> {
+	for commit in &record.commits {
+		match fs::symlink_metadata(&commit.output.path) {
+			Ok(_) if !commit.fingerprint.matches(&commit.output.path)? => {
+				return Err(Error::Exists(commit.output.path.clone()));
+			}
+			Ok(_) => {}
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+			Err(error) => return Err(error.into()),
+		}
+	}
+	Ok(())
+}
+
+fn undo_source_exists(path: &Path) -> Result<bool> {
+	match fs::symlink_metadata(path) {
+		Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+		Ok(_) => Err(Error::Exists(path.to_path_buf())),
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+		Err(error) => Err(error.into()),
+	}
+}
+
+fn existing_source_policy(record: &Record) -> ExistingSource {
+	match &record.undo_progress {
+		Some(progress) => progress.existing_source,
+		None if record.consume_source || record.pinned => ExistingSource::Verify,
+		None => ExistingSource::LeaveUntouched,
+	}
+}
+
+fn is_undo_source(record: &Record) -> Result<bool> {
+	if let Some(original) = &record.source_fingerprint {
+		if original.matches(&record.source_path)? {
+			return Ok(true);
+		}
+	}
+	match record
+		.undo_progress
+		.as_ref()
+		.and_then(|progress| progress.restore_intent.as_ref())
+	{
+		Some(restored) => restored.matches(&record.source_path),
+		None => Ok(false),
+	}
+}
+
+fn publish_restoration(staged: crate::convert::StagedOutput, fingerprint: &Fingerprint) -> Result<()> {
+	let target = staged.target().to_path_buf();
+	if !fingerprint.matches(staged.temp())? {
+		return Err(Error::Io(std::io::Error::other(
+			"staged original changed before publication",
+		)));
+	}
+	staged.commit()?;
+	if !fingerprint.matches(&target)? {
+		return Err(Error::Io(std::io::Error::other(
+			"restored original changed during publication",
+		)));
+	}
+	Ok(())
 }
 
 /// Remove every output a record says the job produced.
@@ -832,6 +964,10 @@ pub fn age(record: &Record, now: SystemTime) -> Option<Duration> {
 }
 
 #[cfg(test)]
+#[path = "undo_recovery_tests.rs"]
+mod recovery_tests;
+
+#[cfg(test)]
 mod tests {
 	use super::*;
 
@@ -949,6 +1085,58 @@ mod tests {
 			assert!(result.is_err());
 			assert!(output.exists());
 			assert!(store.source(&record.id).unwrap().is_some());
+		}
+	}
+
+	#[test]
+	fn undo_can_retry_after_the_original_was_restored_but_output_removal_failed() {
+		let root = state();
+		let input = root.path().join("input");
+		let output_directory = root.path().join("output");
+		fs::create_dir(&input).unwrap();
+		fs::create_dir(&output_directory).unwrap();
+		let store = Store::open(&root.path().join("state"));
+		let output = output_directory.join("photo.jpg");
+		fs::write(&output, b"converted bytes").unwrap();
+		let mut subject = subject(1, &input);
+		subject.outputs.push(Output {
+			path: output.clone(),
+			ext: "jpg".to_string(),
+		});
+		let record = store.save(subject).unwrap();
+		let produced = crate::job::Output::pending(output.clone(), "jpg", crate::job::Tier::Converted);
+		store.prepare_output(&record.id, produced, &output).unwrap();
+		store.finish(&record.id).unwrap();
+		fs::remove_file(&record.source_path).unwrap();
+
+		let first = store.restore_with_cleanup(&record.id, |_| {
+			Err(std::io::Error::other("injected output-removal failure").into())
+		});
+		assert!(
+			first
+				.unwrap_err()
+				.to_string()
+				.contains("injected output-removal failure")
+		);
+		assert_eq!(fs::read(&record.source_path).unwrap(), b"heic bytes");
+		assert!(output.exists());
+		let interrupted = store.load(&record.id).unwrap().unwrap();
+		assert!(interrupted.pinned);
+		assert!(interrupted.undo_progress.as_ref().unwrap().restore_intent.is_some());
+		assert!(store.finish(&record.id).is_err());
+		assert!(store.pin(&record.id).is_err());
+		assert!(store.sweep(Duration::ZERO).unwrap().is_empty());
+
+		let retry = store.restore(&record.id);
+		assert_eq!(fs::read(&record.source_path).unwrap(), b"heic bytes");
+		if crate::fsx::supports_durable_cleanup() {
+			retry.unwrap();
+			assert!(!output.exists());
+			assert!(store.load(&record.id).unwrap().is_none());
+		} else {
+			assert!(retry.unwrap_err().to_string().contains("directory durability"));
+			assert!(output.exists());
+			assert!(store.load(&record.id).unwrap().unwrap().pinned);
 		}
 	}
 
