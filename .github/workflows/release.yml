@@ -184,6 +184,7 @@ jobs:
       - run: cargo test --workspace
       - run: bash -n packaging/install.sh
       - run: bash scripts/test-install.sh
+      - run: timeout --kill-after=5s 30s bash scripts/test-assemble-release.sh
       - run: test -s packaging/install.ps1
       - name: Parse PowerShell installer
         shell: pwsh
@@ -193,30 +194,46 @@ jobs:
           [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'packaging/install.ps1').Path, [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
 
-  publish:
-    name: publish release
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [verify, build, checks, native]
+  package:
+    name: assemble release assets
+    needs: [build]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          pattern: retype-*
           path: dist
           merge-multiple: true
-      - name: Assemble release assets
-        run: |
-          set -euo pipefail
-          cp packaging/install.sh dist/install.sh
-          cp packaging/install.ps1 dist/install.ps1
-          cd dist
-          sha256sum -- *.tar.gz install.sh install.ps1 > SHA256SUMS
-          for file in *.tar.gz install.sh install.ps1; do
-            sha256sum "$file" > "$file.sha256"
-          done
-          sha256sum -c SHA256SUMS
+      - name: Verify and assemble release assets
+        run: bash scripts/assemble-release.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/install.sh
+            dist/install.ps1
+            dist/install.sh.sha256
+            dist/install.ps1.sha256
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [verify, package, checks, native]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+      - name: Verify release assets
+        run: cd dist && sha256sum --check SHA256SUMS
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -225,9 +242,11 @@ jobs:
           set -euo pipefail
           prerelease=''
           case "$TAG" in *-*) prerelease='--prerelease' ;; esac
+          assets=(dist/*.tar.gz dist/*.tar.gz.sha256 dist/install.sh dist/install.ps1
+            dist/install.sh.sha256 dist/install.ps1.sha256 dist/SHA256SUMS)
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
+            gh release upload "$TAG" "${assets[@]}" --clobber
           else
             # shellcheck disable=SC2086
-            gh release create "$TAG" dist/* --title "$TAG" --generate-notes $prerelease
+            gh release create "$TAG" "${assets[@]}" --title "$TAG" --generate-notes $prerelease
           fi
