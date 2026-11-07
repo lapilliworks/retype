@@ -22,6 +22,14 @@ The runners print a report directory under `target/platform-test-reports/` with 
 
 Formatting has a 60-second timeout and version probes have a 10-second timeout. Unix runner steps receive closed standard input; tests that need a terminal create their own. `RETYPE_TEST_REPORT_DIR` and `RETYPE_TEST_TEMP_DIR` may name absolute locations for reports and scratch data. On Unix, choose a short scratch parent so test daemon sockets stay within the platform's path limit. Use a disposable local filesystem rather than real originals.
 
+## GitHub Actions
+
+The CI workflow runs the strict platform runners on hosted Ubuntu x86-64, macOS Apple Silicon and Windows x86-64. It installs the required real tools, prebuilds workspace tests within a separate deadline and uploads each runner's report and filesystem-event probe, including after a test failure. Ubuntu uses distribution FFmpeg and Homebrew ImageMagick; Windows uses PowerShell 7 and cargo-nextest. A separate Fedora container runs the bounded video tests with Fedora's `ffmpeg-free` package. Its results cover that userspace and codec suite, not a native Fedora host or the complete platform workflow.
+
+The release workflow requires the same native CI jobs before publication. Windows source disposal and destructive undo remain disabled, so its strict HEIC gate currently fails; CI does not convert that failure into a pass. Download reports that need longer retention than the repository's Actions artifact policy provides.
+
+Hosted Windows Server runs as administrator with UAC disabled. Hosted macOS is not a user's interactive session. These jobs do not test physical power loss, real storage exhaustion, all advertised architectures, network or cloud filesystems, or client-session behavior. Use the separate disposable-VM and native-host tests where those properties matter.
+
 ## 1. Baseline tests
 
 ```sh

@@ -1,0 +1,216 @@
+name: native platform verification
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  platform:
+    name: native ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            architecture: x86_64
+          - platform: macos-arm64
+            runner: macos-15
+            architecture: arm64
+          - platform: windows-x86_64
+            runner: windows-2025
+            architecture: X64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Prepare report directory and verify architecture (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          report="$RUNNER_TEMP/retype-reports"
+          mkdir -p "$report"
+          printf 'RETYPE_TEST_REPORT_DIR=%s\n' "$report" >> "$GITHUB_ENV"
+          actual=$(uname -m)
+          printf 'Host architecture: %s\n' "$actual"
+          test "$actual" = "$EXPECTED_ARCHITECTURE"
+
+      - name: Prepare report directory and verify architecture (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP 'retype-reports'
+          [IO.Directory]::CreateDirectory($report) | Out-Null
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RETYPE_TEST_REPORT_DIR=$report" -Encoding utf8
+          $actual = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+          if ($actual -ne $env:EXPECTED_ARCHITECTURE) { throw "Unexpected OS architecture: $actual" }
+
+      - name: Add Linux Homebrew to PATH
+        if: runner.os == 'Linux'
+        shell: bash
+        run: echo '/home/linuxbrew/.linuxbrew/bin' >> "$GITHUB_PATH"
+
+      - name: Install Unix test tools
+        if: runner.os != 'Windows'
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          ./scripts/setup-ci-unix.sh 2>&1 | tee "$RETYPE_TEST_REPORT_DIR/setup.log"
+
+      - name: Install Windows test tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          $log = Join-Path $env:RETYPE_TEST_REPORT_DIR 'setup.log'
+          Start-Transcript -Path $log | Out-Null
+          try {
+            & ./scripts/setup-ci-windows.ps1
+          } finally {
+            Stop-Transcript | Out-Null
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install cargo-nextest
+        if: runner.os == 'Windows'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.151
+          fallback: none
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          save-if: ${{ github.event_name == 'push' && github.ref_type == 'branch' }}
+
+      - name: Prebuild workspace tests
+        id: prebuild
+        timeout-minutes: 10
+        run: cargo test --workspace --locked --no-run
+
+      - name: Run Linux platform suite
+        if: runner.os == 'Linux'
+        shell: bash
+        timeout-minutes: 20
+        run: ./scripts/test-linux.sh
+
+      - name: Run macOS platform suite
+        if: runner.os == 'macOS'
+        shell: bash
+        timeout-minutes: 20
+        run: ./scripts/test-macos.sh
+
+      - name: Run Windows platform suite
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          pwsh -NoProfile -File ./scripts/test-windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Record filesystem events (Unix)
+        if: ${{ always() && steps.prebuild.outcome == 'success' && runner.os != 'Windows' }}
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          cargo run --quiet --locked -p retype-watch --example probe_events 2>&1 |
+            tee "$RETYPE_TEST_REPORT_DIR/filesystem-events.log"
+
+      - name: Record filesystem events (Windows)
+        if: ${{ always() && steps.prebuild.outcome == 'success' && runner.os == 'Windows' }}
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $log = Join-Path $env:RETYPE_TEST_REPORT_DIR 'filesystem-events.log'
+          cargo run --quiet --locked -p retype-watch --example probe_events 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload native reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}
+          path: ${{ runner.temp }}/retype-reports
+          if-no-files-found: error
+
+  fedora-video:
+    name: Fedora stock FFmpeg (container)
+    runs-on: ubuntu-24.04
+    container: registry.fedoraproject.org/fedora:44
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      RETYPE_REQUIRE_TEST_TOOLS: '1'
+    steps:
+      - name: Install Fedora test tools
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/retype-fedora"
+          dnf -y install ca-certificates coreutils curl gcc git gzip perl procps-ng tar ffmpeg-free 2>&1 |
+            tee "$RUNNER_TEMP/retype-fedora/setup.log"
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Record Fedora and FFmpeg
+        run: |
+          set -euo pipefail
+          {
+            printf 'Revision: '; git rev-parse HEAD
+            printf '\nWorking tree:\n'; git status --short
+            printf '\nOS:\n'; cat /etc/os-release
+            printf '\nKernel:\n'; uname -a
+            printf '\nRepositories:\n'; dnf repolist
+            printf '\nFFmpeg package:\n'; rpm -q ffmpeg-free
+            rpm -qf "$(command -v ffmpeg)" "$(command -v ffprobe)"
+            printf '\nRust:\n'; rustc -vV; cargo --version
+            printf '\nFFmpeg:\n'; ffmpeg -version
+            printf '\nEncoders:\n'; ffmpeg -hide_banner -encoders
+            printf '\nFFprobe:\n'; ffprobe -version
+          } > "$RUNNER_TEMP/retype-fedora/metadata.log" 2>&1
+          test "$(rpm -qf --qf '%{NAME}' "$(command -v ffmpeg)")" = ffmpeg-free
+
+      - name: Prebuild Fedora video tests
+        timeout-minutes: 10
+        run: cargo test -p retype-cli --locked --test video --no-run
+
+      - name: Run Fedora video tests
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          set +e
+          timeout --kill-after=5s 300s cargo test -p retype-cli --locked --test video -- \
+            --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/retype-fedora/video.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          printf 'video: command exit %s, log exit %s\n' "${statuses[0]}" "${statuses[1]}" |
+            tee "$RUNNER_TEMP/retype-fedora/summary.txt"
+          test "${statuses[0]}" -eq 0 && test "${statuses[1]}" -eq 0
+
+      - name: Upload Fedora report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fedora-stock-ffmpeg
+          path: ${{ runner.temp }}/retype-fedora
+          if-no-files-found: error

@@ -2,25 +2,32 @@ name: ci
 
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  test:
-    name: test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  native:
+    name: native verification
+    uses: ./.github/workflows/native.yml
+
+  workflow-lint:
+    name: workflow lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+      - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - run: '"$(go env GOPATH)/bin/actionlint"'
 
   msrv:
     name: msrv
@@ -31,8 +38,8 @@ jobs:
         with:
           toolchain: "1.85.0"
           components: clippy
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
 
   cross:
     name: cross check (typecheck foreign targets)
@@ -52,7 +59,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - run: cargo check --workspace --all-targets --target ${{ matrix.target }}
+      - run: cargo check --workspace --all-targets --locked --target ${{ matrix.target }}
 
   installer:
     name: installer
@@ -64,7 +71,8 @@ jobs:
       - name: Parse PowerShell scripts
         shell: pwsh
         run: |
-          foreach ($path in @('packaging/install.ps1', 'scripts/test-windows.ps1')) {
+          foreach ($path in @('packaging/install.ps1', 'scripts/test-windows.ps1',
+              'scripts/setup-ci-windows.ps1', 'crates/retype-cli/tests/support/windows_runner_probe.ps1')) {
             $tokens = $null
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile(
@@ -88,20 +96,3 @@ jobs:
         env:
           SITE_RUNTIME: host
         run: sites/bin/bundle.sh
-
-  probe:
-    name: event probe (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Probe
-        shell: bash
-        run: |
-          set -o pipefail
-          cargo run -q -p retype-watch --example probe_events | tee "probe-${{ matrix.os }}.txt"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: probe-${{ matrix.os }}
-          path: probe-${{ matrix.os }}.txt
-          if-no-files-found: error
