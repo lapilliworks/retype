@@ -103,7 +103,7 @@ fn decide(job: &Job, completion: &Completion<'_>, cancellation: &Cancellation) -
 		return retained(path, fingerprint, Some(reason));
 	}
 	match cancellation.commit(|| {
-		completion.store.verify_disposal(&job.id, &job.outputs)?;
+		let _guard = completion.store.guard_disposal(&job.id, &job.outputs)?;
 		retype_core::safety::remove_owned(path, fingerprint)
 	}) {
 		Ok(()) => SourceDisposition::Removed,

@@ -381,6 +381,40 @@ fn windows_undo_holds_source_and_backup_against_writes_and_renames() {
 }
 
 #[test]
+#[cfg(windows)]
+fn windows_disposal_guard_blocks_output_and_backup_mutation() {
+	let fixture = Fixture::new(true);
+	let backup = fixture
+		.store
+		.directory(&fixture.record.id)
+		.join(fixture.record.source_file());
+	let mut output = crate::job::Output::pending(fixture.output.clone(), "jpg", crate::job::Tier::Converted);
+	output.state = crate::job::OutputState::Done;
+	output.bytes = Some(OUTPUT.len() as u64);
+	let checked = Fingerprint::of(&fixture.output).unwrap();
+	fixture
+		.store
+		.prepare_checked_output(&fixture.record.id, output.clone(), &fixture.output, Some(&checked))
+		.unwrap();
+
+	let guard = fixture.store.guard_disposal(&fixture.record.id, &[output]).unwrap();
+	for (path, target) in [
+		(&fixture.output, fixture.root.path().join("moved-output.jpg")),
+		(&backup, fixture.root.path().join("moved-backup.heic")),
+	] {
+		let error = fs::OpenOptions::new().write(true).open(path).unwrap_err();
+		assert_sharing_violation(&error.into());
+		let error = crate::fsx::rename_noreplace(path, &target).unwrap_err();
+		assert_sharing_violation(&error.into());
+		assert!(!target.exists());
+	}
+	assert!(!crate::fsx::supports_durable_cleanup());
+	drop(guard);
+	crate::fsx::rename_noreplace(&backup, &fixture.root.path().join("moved-backup.heic")).unwrap();
+	crate::fsx::rename_noreplace(&fixture.output, &fixture.root.path().join("moved-output.jpg")).unwrap();
+}
+
+#[test]
 #[cfg(unix)]
 fn a_read_only_restored_original_can_be_retried() {
 	use std::os::unix::fs::PermissionsExt;

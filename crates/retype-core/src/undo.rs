@@ -671,14 +671,32 @@ impl Store {
 
 	/// Recheck the retained input and complete published inventory before disposal.
 	pub fn verify_disposal(&self, id: &JobId, outputs: &[crate::job::Output]) -> Result<()> {
+		let _guard = self.guard_disposal(id, outputs)?;
+		Ok(())
+	}
+
+	/// Hold the verified backup and outputs through the source-disposition attempt.
+	pub fn guard_disposal(&self, id: &JobId, outputs: &[crate::job::Output]) -> Result<DisposalGuard> {
 		let record = self
 			.load(id)?
 			.ok_or_else(|| Error::Io(std::io::Error::other("recovery record disappeared")))?;
-		if self.source(id)?.is_none() || record.outputs.is_empty() || record.outputs.len() != outputs.len() {
+		let source = self.source(id)?;
+		if source.is_none() || record.outputs.is_empty() || record.outputs.len() != outputs.len() {
 			return Err(Error::Io(std::io::Error::other(
 				"no verified original or complete output inventory; source retained",
 			)));
 		}
+		let (backup, fingerprint) = guarded_fingerprint(source.as_ref().expect("verified source"))?;
+		if !record
+			.source_fingerprint
+			.as_ref()
+			.is_some_and(|expected| expected.same_content(&fingerprint))
+		{
+			return Err(Error::Io(std::io::Error::other(
+				"retained original changed before disposal",
+			)));
+		}
+		let mut files = vec![backup];
 		let mut seen = std::collections::BTreeSet::new();
 		for output in outputs {
 			let planned = record.outputs.iter().find(|planned| planned.path == output.path);
@@ -706,14 +724,16 @@ impl Store {
 					output.path.display()
 				))));
 			}
-			if !commit.fingerprint.matches(&output.path)? {
+			let (file, fingerprint) = guarded_fingerprint(&output.path)?;
+			if !commit.fingerprint.same_file_and_content(&fingerprint) {
 				return Err(Error::Io(std::io::Error::other(format!(
 					"{} changed after publication; source retained",
 					output.path.display()
 				))));
 			}
+			files.push(file);
 		}
-		Ok(())
+		Ok(DisposalGuard { _files: files })
 	}
 
 	pub fn pin(&self, id: &JobId) -> Result<()> {
@@ -763,6 +783,26 @@ impl Store {
 		}
 		Ok(Some(path))
 	}
+}
+
+/// Guards verified files but does not replace the per-job lease or durability checks.
+#[must_use = "keep the verified files guarded through source disposition"]
+pub struct DisposalGuard {
+	_files: Vec<fs::File>,
+}
+
+fn guarded_fingerprint(path: &Path) -> Result<(fs::File, Fingerprint)> {
+	let mut options = fs::OpenOptions::new();
+	options.read(true);
+	let mut file = crate::safety::open_guarded_file(path, options)?;
+	let fingerprint = Fingerprint::of_open_file(path, &mut file)?;
+	if !fingerprint.matches(path)? {
+		return Err(Error::Io(std::io::Error::other(format!(
+			"{} changed while being guarded; source retained",
+			path.display()
+		))));
+	}
+	Ok((file, fingerprint))
 }
 
 fn verify_undo_outputs(record: &Record) -> Result<()> {
