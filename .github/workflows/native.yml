@@ -176,8 +176,8 @@ jobs:
         run: |
           set -euo pipefail
           {
-            printf 'Revision: '; git rev-parse HEAD
-            printf '\nWorking tree:\n'; git status --short
+            printf 'Revision: '; git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD
+            printf '\nWorking tree:\n'; git -c safe.directory="$GITHUB_WORKSPACE" status --short
             printf '\nOS:\n'; cat /etc/os-release
             printf '\nKernel:\n'; uname -a
             printf '\nRepositories:\n'; dnf repolist
