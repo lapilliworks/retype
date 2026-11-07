@@ -186,7 +186,15 @@ function Test-NextestSummary {
 function Probe {
 	param([string]$Name, [string]$Executable, [string[]]$Arguments)
 	$result = Invoke-Bounded -Name "probe-$Name" -Executable $Executable -Arguments $Arguments -Seconds 10
-	if ($result.Code -ne 0) { Write-Host "Probe $Name unavailable or failed; see $($result.Stderr)" }
+	$message = "probe-${Name}: exit $($result.Code); timed out: $($result.TimedOut); "
+	$message += "stdout: $($result.Stdout); stderr: $($result.Stderr)"
+	Write-Summary $message
+	if ($result.Code -ne 0 -or $result.TimedOut) {
+		$script:Failed = $true
+	} elseif ($Name -eq 'magick-formats' -and (Get-Item -LiteralPath $result.Stdout).Length -eq 0) {
+		Write-Summary "probe-magick-formats: empty format listing; stdout: $($result.Stdout)"
+		$script:Failed = $true
+	}
 }
 
 function Test-InstallerSyntax {
@@ -290,7 +298,10 @@ try {
 	Probe -Name 'cargo' -Executable 'cargo' -Arguments @('--version')
 	$nextestVersion = Invoke-Bounded -Name 'probe-nextest' -Executable 'cargo' `
 		-Arguments @('nextest', '--version') -Seconds 10
-	if ($nextestVersion.Code -ne 0) {
+	$nextestMessage = "probe-nextest: exit $($nextestVersion.Code); timed out: $($nextestVersion.TimedOut); "
+	$nextestMessage += "stdout: $($nextestVersion.Stdout); stderr: $($nextestVersion.Stderr)"
+	Write-Summary $nextestMessage
+	if ($nextestVersion.Code -ne 0 -or $nextestVersion.TimedOut) {
 		throw "cargo-nextest is required; run 'cargo install cargo-nextest --locked'. See $($nextestVersion.Stderr)"
 	}
 	Probe -Name 'magick-version' -Executable 'magick' -Arguments @('-version')
@@ -307,8 +318,10 @@ try {
 		}
 	}
 	if (-not $engineFound) {
-		[IO.File]::WriteAllText((Join-Path $Report 'probe-pdf-engine.stderr.log'), "No PDF engine found.`n")
-		Write-Host 'No PDF engine found.'
+		$engineLog = Join-Path $Report 'probe-pdf-engine.stderr.log'
+		[IO.File]::WriteAllText($engineLog, "No PDF engine found.`n")
+		Write-Summary "probe-pdf-engine: not found; stderr: $engineLog"
+		$script:Failed = $true
 	}
 	$archiverFound = $false
 	foreach ($archiver in @('7zz', '7z', '7za')) {
@@ -319,8 +332,10 @@ try {
 		}
 	}
 	if (-not $archiverFound) {
-		[IO.File]::WriteAllText((Join-Path $Report 'probe-7zip.stderr.log'), "No 7-Zip executable found.`n")
-		Write-Host 'No 7-Zip executable found.'
+		$archiverLog = Join-Path $Report 'probe-7zip.stderr.log'
+		[IO.File]::WriteAllText($archiverLog, "No 7-Zip executable found.`n")
+		Write-Summary "probe-7zip: not found; stderr: $archiverLog"
+		$script:Failed = $true
 	}
 
 	Write-Host 'The strict native workflow is enabled; it fails where source disposition or undo is incomplete.'
