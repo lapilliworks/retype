@@ -36,17 +36,35 @@ fn have_tool(name: &str) -> bool {
 	}
 }
 
-/// The encoders the fixture and the targets under test ask for: `libx264` for the
-/// clip and the mkv target, `aac` for the clip, `libmp3lame` for the sound.
-const ENCODERS: [&str; 3] = ["libx264", "aac", "libmp3lame"];
+/// The fixture uses MPEG-4 and AAC; shipped WebM and MP3 targets use VP9, Opus and MP3.
+const ENCODERS: [&str; 5] = ["mpeg4", "aac", "libvpx-vp9", "libopus", "libmp3lame"];
+
+fn missing_encoder(listed: &str) -> Option<&'static str> {
+	ENCODERS.into_iter().find(|encoder| {
+		!listed
+			.lines()
+			.any(|line| line.split_whitespace().nth(1) == Some(*encoder))
+	})
+}
+
+#[test]
+fn a_distribution_encoder_list_does_not_need_libx264() {
+	let available = "\
+ V.S..D mpeg4         MPEG-4 part 2
+ A....D aac           AAC
+ V....D libvpx-vp9    VP9
+ A....D libopus       Opus
+ A....D libmp3lame    MP3
+";
+	assert_eq!(missing_encoder(available), None);
+	assert_eq!(missing_encoder(&available.replace("libopus", "other")), Some("libopus"));
+}
 
 /// What this host's FFmpeg cannot do, or nothing when it can do all of it.
 ///
-/// A distribution build is not the same FFmpeg everywhere: Fedora ships
-/// `ffmpeg-free`, which has no `libx264`, so the fixture clip cannot be made and
-/// the mkv, mp4 and mov targets have no encoder. A tool that is absent skips in
-/// this suite rather than failing, and a tool missing an encoder is the same thing
-/// for a target that names one, `docs/tools.md` §6.
+/// This exercises shipped WebM and MP3 defaults without requiring an FFmpeg build
+/// with `libx264`. A missing required encoder is reported, not silently skipped in
+/// strict tool mode.
 fn cannot_run() -> Option<String> {
 	if !have_tool("ffmpeg") {
 		return Some("no ffmpeg on this machine".to_string());
@@ -62,18 +80,7 @@ fn cannot_run() -> Option<String> {
 		return Some(format!("ffmpeg -encoders failed: {}", listed.stderr));
 	}
 
-	for encoder in ENCODERS {
-		let present = listed
-			.stdout
-			.lines()
-			.any(|line| line.split_whitespace().nth(1) == Some(encoder));
-
-		if !present {
-			return Some(format!("this ffmpeg has no {encoder} encoder"));
-		}
-	}
-
-	None
+	missing_encoder(&listed.stdout).map(|encoder| format!("this ffmpeg has no {encoder} encoder"))
 }
 
 /// Skip with a reason, which is how this suite treats a host that cannot run it.
@@ -101,7 +108,7 @@ fn sample(dir: &Path) -> PathBuf {
 		.args(["-v", "error", "-y", "-f", "lavfi", "-i"])
 		.arg("testsrc=size=320x240:rate=25:duration=3")
 		.args(["-f", "lavfi", "-i", "sine=frequency=440:duration=3"])
-		.args(["-c:v", "libx264", "-c:a", "aac", "-shortest"])
+		.args(["-c:v", "mpeg4", "-c:a", "aac", "-shortest"])
 		.arg(&path);
 	let made = checked(&mut ffmpeg, "ffmpeg sample generation", CONVERSION_TIMEOUT);
 	assert!(
@@ -161,10 +168,10 @@ fn a_container_comes_out_as_the_other_container() {
 	sample(dir.path());
 	let _cleanup = Cleanup(dir.path().join("state"));
 
-	let converted = convert(dir.path(), &config, "clip.mp4", "mkv");
+	let converted = convert(dir.path(), &config, "clip.mp4", "webm");
 	assert_eq!(converted.status.code(), Some(0), "{}", converted.stderr);
 
-	let output = dir.path().join("clip.mkv");
+	let output = dir.path().join("clip.webm");
 	assert!(output.exists());
 
 	let mut ffprobe = Command::new("ffprobe");
@@ -173,8 +180,8 @@ fn a_container_comes_out_as_the_other_container() {
 		.arg(&output);
 	let codecs = checked(&mut ffprobe, "ffprobe codec list", PROBE_TIMEOUT);
 	assert!(codecs.status.success(), "{}", codecs.stderr);
-	assert!(codecs.stdout.contains("h264"), "{}", codecs.stdout);
-	assert!(codecs.stdout.contains("aac"), "{}", codecs.stdout);
+	assert!(codecs.stdout.lines().any(|codec| codec == "vp9"), "{}", codecs.stdout);
+	assert!(codecs.stdout.lines().any(|codec| codec == "opus"), "{}", codecs.stdout);
 }
 
 #[test]
@@ -188,10 +195,10 @@ fn a_cap_scales_without_stretching_and_mute_removes_the_sound() {
 	sample(dir.path());
 	let _cleanup = Cleanup(dir.path().join("state"));
 
-	let converted = convert(dir.path(), &config, "clip.mp4", "mkv+cap120+mute");
+	let converted = convert(dir.path(), &config, "clip.mp4", "webm+cap120+mute");
 	assert_eq!(converted.status.code(), Some(0), "{}", converted.stderr);
 
-	let output = dir.path().join("clip-cap120-mute.mkv");
+	let output = dir.path().join("clip-cap120-mute.webm");
 	assert_eq!(
 		probe(&output, "stream=width,height"),
 		"120,90",
