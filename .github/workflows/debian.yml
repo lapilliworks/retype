@@ -64,9 +64,10 @@ jobs:
           RETYPE_TEST_TIMEOUT_SECONDS: '600'
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/retype-reports"
+          mkdir -p "$RUNNER_TEMP/retype-reports" "$RUNNER_TEMP/retype-fidelity"
           printf 'RETYPE_TEST_REPORT_DIR=%s\n' "$RUNNER_TEMP/retype-reports" >> "$GITHUB_ENV"
-          chown -R 1000:1000 "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$CARGO_HOME" "$RUSTUP_HOME"
+          chown -R 1000:1000 "$GITHUB_WORKSPACE" "$RUNNER_TEMP/retype-reports" \
+            "$RUNNER_TEMP/retype-fidelity" "$CARGO_HOME" "$RUSTUP_HOME"
           setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all \
             env RETYPE_TEST_REPORT_DIR="$RUNNER_TEMP/retype-reports" ./tests/run.sh
       - name: Build exact release executable and earn its claims

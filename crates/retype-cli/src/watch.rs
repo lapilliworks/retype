@@ -419,11 +419,11 @@ pub fn follow(state_dir: &Path, directories: &[String], json: bool, allow_spawn:
 				);
 			}
 			if interactive
+				&& job.parked.as_ref().is_none_or(|parked| parked.reason != "storage")
 				&& matches!(
 					job.state,
 					retype_core::job::JobState::Pending | retype_core::job::JobState::NeedsAttention
-				) && job.parked.as_ref().is_none_or(|parked| parked.reason != "storage")
-			{
+				) {
 				let state = state_dir.to_path_buf();
 				let (send, receive) = std::sync::mpsc::sync_channel(1);
 				std::thread::spawn(move || {
@@ -432,7 +432,7 @@ pub fn follow(state_dir: &Path, directories: &[String], json: bool, allow_spawn:
 				loop {
 					match receive.recv_timeout(Duration::from_millis(100)) {
 						Ok(result) => {
-							result?;
+							let _ = result?;
 							break;
 						}
 						Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {

@@ -499,12 +499,8 @@ mod tests {
 
 		let dir = tempfile::tempdir().unwrap();
 		machine_identity(dir.path()).unwrap();
-		let mode = fs::metadata(Calibration::path(dir.path()))
-			.unwrap()
-			.permissions()
-			.mode() & 0o777;
-
-		assert_eq!(mode, 0o600);
+		let permissions = fs::metadata(Calibration::path(dir.path())).unwrap().permissions();
+		assert_eq!(permissions.mode() & 0o777, 0o600);
 	}
 
 	#[test]
