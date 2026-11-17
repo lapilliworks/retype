@@ -1,7 +1,7 @@
 //! A rename chain that spans two batches, `docs/dev/architecture/state.md` §5.3: the second rename
 //! overtakes the job the first one started, and the chain becomes one conversion.
 //!
-//! Unix only, because the tool is a shell script that sleeps.
+//! Unix only, because the tool is a shell script controlled by fixture markers.
 #![cfg(unix)]
 
 use std::fs;
@@ -17,10 +17,14 @@ fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
 
-/// A tool slow enough that the second rename arrives while the first job runs.
+/// Hold conversion until the fixture observes supersession and releases the new job.
 fn slow_config(dir: &Path) -> PathBuf {
 	let script = dir.join("slow.sh");
-	fs::write(&script, "#!/bin/sh\nsleep 4\ncp \"$1\" \"$2\"\n").unwrap();
+	fs::write(
+		&script,
+		"#!/bin/sh\n[ \"$#\" -eq 2 ] || exit 0\n: > \"$0.started\"\nwhile [ ! -f \"$0.release\" ]; do sleep 0.05; done\ncp \"$1\" \"$2\"\n",
+	)
+	.unwrap();
 
 	{
 		use std::os::unix::fs::PermissionsExt;
@@ -126,16 +130,10 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 	support::ready(&state);
 	fs::rename(&source, photos.join("photo.webp")).unwrap();
 
-	// The first job is running and has not finished: the tool sleeps longer than
-	// this. While it runs the file shows its source name again, so that is the name
-	// a person renames, `docs/dev/architecture/state.md` §5.4.
+	// Running also includes snapshot preparation; wait for the actual backend before renaming.
 	let journal_path = state.join("jobs.jsonl");
 	let deadline = Instant::now() + Duration::from_secs(20);
-	while !fs::read_to_string(&journal_path)
-		.unwrap_or_default()
-		.contains("\"state\":\"running\"")
-		|| photos.join("photo.webp").exists()
-	{
+	while !photos.join("slow.sh.started").exists() {
 		assert!(
 			Instant::now() < deadline,
 			"the job never started\ndaemon: {}",
@@ -149,6 +147,10 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 	let deadline = Instant::now() + Duration::from_secs(30);
 	let journal = loop {
 		let recorded = fs::read_to_string(&journal_path).unwrap_or_default();
+		let release = photos.join("slow.sh.release");
+		if recorded.contains("\"state\":\"superseded\"") && !release.exists() {
+			fs::write(&release, b"").unwrap();
+		}
 
 		if supersession_finished(&recorded) {
 			break recorded;

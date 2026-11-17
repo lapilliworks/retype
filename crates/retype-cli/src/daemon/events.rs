@@ -178,11 +178,8 @@ mod tests {
 		let (first, cursor) = events.since(0).unwrap();
 		assert!(cursor < RETAINED as u64);
 		assert_eq!(first.len(), cursor as usize);
-		assert!(
-			serde_json::to_vec(&json!({"events": first, "seq": cursor}))
-				.unwrap()
-				.len() < retype_ipc::MAX_FRAME
-		);
+		let frame = serde_json::to_vec(&json!({"events": first, "seq": cursor})).unwrap();
+		assert!(frame.len() < retype_ipc::MAX_FRAME);
 		let (second, next) = events.since(cursor).unwrap();
 		assert_eq!(second[0]["seq"], cursor + 1);
 		assert!(next > cursor);
