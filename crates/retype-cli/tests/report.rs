@@ -67,6 +67,11 @@ fn the_report_carries_the_build_the_tools_and_what_happened() {
 
 	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
 
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		assert_eq!(fs::metadata(&report).unwrap().permissions().mode() & 0o777, 0o600);
+	}
 	let written = fs::read_to_string(&report).unwrap();
 
 	for section in ["## build", "## machine", "## configuration", "## tools", "## state"] {
@@ -111,6 +116,44 @@ fn the_report_lands_in_the_current_directory_when_no_path_is_given() {
 	let name = written[0].file_name().unwrap().to_string_lossy();
 	assert!(name.starts_with("retype-report-"), "{name}");
 	assert!(name.ends_with(".txt"), "{name}");
+}
+
+#[test]
+fn an_occupied_report_destination_is_not_overwritten() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = state(dir.path());
+	let report = dir.path().join("report.txt");
+	fs::write(&report, b"existing data").unwrap();
+	let ran = retype()
+		.args(["doctor", "--report"])
+		.arg(&report)
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+	assert!(!ran.status.success());
+	assert_eq!(fs::read(&report).unwrap(), b"existing data");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_report_destination_symlink_is_not_followed_or_replaced() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = state(dir.path());
+	let report = dir.path().join("report.txt");
+	let original = dir.path().join("original.txt");
+	fs::write(&original, b"existing data").unwrap();
+	std::os::unix::fs::symlink(&original, &report).unwrap();
+	let ran = retype()
+		.args(["doctor", "--report"])
+		.arg(&report)
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+	assert!(!ran.status.success());
+	assert!(fs::symlink_metadata(&report).unwrap().file_type().is_symlink());
+	assert_eq!(fs::read(&original).unwrap(), b"existing data");
 }
 
 #[test]

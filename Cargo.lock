@@ -497,6 +497,7 @@ dependencies = [
  "retype-core",
  "retype-ipc",
  "retype-watch",
+ "serde",
  "serde_json",
  "tar",
  "tempfile",
@@ -544,6 +545,7 @@ dependencies = [
  "thiserror",
  "toml",
  "windows-sys 0.59.0",
+ "xattr",
  "zip",
 ]
 

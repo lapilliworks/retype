@@ -33,7 +33,7 @@ pub fn submit(context: &Context, request: &JobSubmit) -> Result<JobSubmitted> {
 	Ok(client.jobs_submit(request)?)
 }
 
-/// Ask about one job until it reaches a state that will not change.
+/// Follow a job until it settles or needs an explicit decision.
 pub fn wait(context: &Context, id: &str, mut observed: impl FnMut(&Job)) -> Result<Job> {
 	loop {
 		let job = {
@@ -41,7 +41,7 @@ pub fn wait(context: &Context, id: &str, mut observed: impl FnMut(&Job)) -> Resu
 			client.jobs_get(id)?
 		};
 
-		if is_terminal(job.state) {
+		if is_terminal(job.state) || job.state == JobState::NeedsAttention {
 			return Ok(job);
 		}
 

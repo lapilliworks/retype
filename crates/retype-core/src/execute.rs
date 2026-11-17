@@ -35,9 +35,15 @@ pub struct Cancellation {
 	/// different outcome from a user cancelling: nothing failed, the work was
 	/// overtaken, `docs/dev/architecture/state.md` §5.3.
 	superseded: Arc<AtomicBool>,
+	deadline: Option<std::time::Instant>,
 }
 
 impl Cancellation {
+	/// Signal control requests without waiting for an already authorized commit to finish.
+	pub fn request_cancel(&self) {
+		self.cancelled.store(true, Ordering::SeqCst);
+	}
+
 	pub fn cancel(&self) {
 		let _guard = self.commit_gate.lock().unwrap_or_else(|error| error.into_inner());
 		self.cancelled.store(true, Ordering::SeqCst);
@@ -49,8 +55,18 @@ impl Cancellation {
 		self.cancel();
 	}
 
+	pub fn bounded(&self, timeout: Duration) -> Self {
+		let mut cancellation = self.clone();
+		let deadline = std::time::Instant::now() + timeout;
+		cancellation.deadline = Some(self.deadline.map_or(deadline, |current| current.min(deadline)));
+		cancellation
+	}
+
 	pub fn is_cancelled(&self) -> bool {
 		self.cancelled.load(Ordering::Relaxed)
+			|| self
+				.deadline
+				.is_some_and(|deadline| std::time::Instant::now() >= deadline)
 	}
 
 	pub fn is_superseded(&self) -> bool {
@@ -76,16 +92,169 @@ impl Cancellation {
 /// while succeeding, small enough to sit in a journal record.
 const STDERR_TAIL: usize = 4 * 1024;
 
+/// Whether output validation checked the exact bytes that will be published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Validation {
+	Verified(crate::safety::Fingerprint),
+	Unavailable(String),
+}
+
+impl Validation {
+	pub fn fingerprint(&self) -> Option<&crate::safety::Fingerprint> {
+		match self {
+			Self::Verified(fingerprint) => Some(fingerprint),
+			Self::Unavailable(_) => None,
+		}
+	}
+
+	pub fn reason(&self) -> Option<&str> {
+		match self {
+			Self::Verified(_) => None,
+			Self::Unavailable(reason) => Some(reason),
+		}
+	}
+}
+
 /// What a successful run produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
 	pub output: PathBuf,
 	pub bytes: u64,
-	/// Only independently validated outputs can authorize original disposal.
-	pub validated: bool,
+	/// The checked staged file, or why it could not authorize source disposal.
+	pub validation: Validation,
 	/// The tail of stderr, kept because a tool can succeed and still say
 	/// something worth reading, `docs/tools.md` §5.2.
 	pub stderr: String,
+}
+
+impl Report {
+	/// Refuse publication if the checked file has changed since validation.
+	pub fn verify_staged(&self, staged: &Path) -> Result<()> {
+		if let Some(expected) = self.validation.fingerprint() {
+			if !expected.matches(staged)? {
+				return Err(Error::Io(std::io::Error::other(format!(
+					"{} changed after output validation; original retained",
+					staged.display()
+				))));
+			}
+		}
+		Ok(())
+	}
+}
+
+/// An owned stage whose writer and validation have finished.
+///
+/// Checkpointing consumes the stage; it cannot be checkpointed twice.
+/// ```compile_fail
+/// use retype_core::execute::CheckedOutput;
+/// fn twice(output: CheckedOutput) {
+///     let _ = output.checkpoint(|_, _| Ok(()));
+///     let _ = output.checkpoint(|_, _| Ok(()));
+/// }
+/// ```
+pub struct CheckedOutput {
+	staged: StagedOutput,
+	report: Report,
+}
+
+impl CheckedOutput {
+	pub(crate) fn new(staged: StagedOutput, report: Report) -> Self {
+		Self { staged, report }
+	}
+
+	/// Persist the caller's recovery and publication checkpoint before transferring ownership.
+	pub fn checkpoint(self, record: impl FnOnce(&Path, &Report) -> Result<()>) -> Result<CheckpointedOutput> {
+		self.staged.restrict_access()?;
+		record(self.staged.temp(), &self.report)?;
+		Ok(CheckpointedOutput { output: self })
+	}
+}
+
+/// Publication authorization tied to the exact owned stage and its report.
+/// Only the runner publishes this value, while holding the cancellation gate.
+pub struct CheckpointedOutput {
+	output: CheckedOutput,
+}
+
+impl CheckpointedOutput {
+	pub(crate) fn publish(self, progress: &mut crate::convert::PublicationProgress) -> Result<Report> {
+		let CheckedOutput { staged, report } = self.output;
+		report.verify_staged(staged.temp())?;
+		staged.commit_observed(report.validation.fingerprint(), progress)?;
+		Ok(report)
+	}
+}
+
+/// Failure before publication, or after the target was renamed but completion could not be established.
+#[derive(Debug)]
+pub enum PublicationFailure {
+	BeforePublication(Error),
+	Uncertain { error: Error, output: Box<Path> },
+}
+
+impl PublicationFailure {
+	fn at_progress(error: Error, output: PathBuf, progress: crate::convert::PublicationProgress) -> Self {
+		match progress {
+			crate::convert::PublicationProgress::Private => Self::BeforePublication(error),
+			crate::convert::PublicationProgress::Published => Self::Uncertain {
+				error,
+				output: output.into_boxed_path(),
+			},
+		}
+	}
+
+	pub fn error(&self) -> &Error {
+		match self {
+			Self::BeforePublication(error) | Self::Uncertain { error, .. } => error,
+		}
+	}
+
+	pub fn into_error(self) -> Error {
+		match self {
+			Self::BeforePublication(error) | Self::Uncertain { error, .. } => error,
+		}
+	}
+}
+
+impl std::fmt::Display for PublicationFailure {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::BeforePublication(error) => std::fmt::Display::fmt(error, formatter),
+			Self::Uncertain { error, output } => {
+				write!(formatter, "publication of {} is uncertain: {error}", output.display())
+			}
+		}
+	}
+}
+
+impl std::error::Error for PublicationFailure {
+	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+		Some(self.error())
+	}
+}
+
+impl From<Error> for PublicationFailure {
+	fn from(error: Error) -> Self {
+		Self::BeforePublication(error)
+	}
+}
+
+impl From<std::io::Error> for PublicationFailure {
+	fn from(error: std::io::Error) -> Self {
+		Self::BeforePublication(error.into())
+	}
+}
+
+pub(crate) fn publish_output(
+	output: CheckedOutput,
+	cancellation: &Cancellation,
+	checkpoint: &dyn Fn(CheckedOutput) -> Result<CheckpointedOutput>,
+) -> std::result::Result<Report, PublicationFailure> {
+	let target = output.report.output.clone();
+	let mut progress = crate::convert::PublicationProgress::Private;
+	cancellation
+		.commit(|| checkpoint(output)?.publish(&mut progress))
+		.map_err(|error| PublicationFailure::at_progress(error, target, progress))
 }
 
 /// Run one plan, staging the output and committing it on success.
@@ -152,17 +321,32 @@ pub fn run_recorded(
 	publication: crate::convert::Publication,
 	before_commit: &dyn Fn(&Path, &Report) -> Result<()>,
 ) -> Result<Report> {
+	run_checkpointed(plan, input, output, cancellation, log, publication, &|output| {
+		output.checkpoint(before_commit)
+	})
+	.map_err(PublicationFailure::into_error)
+}
+
+/// Run a conversion whose checkpoint transfers the owned stage into publication authorization.
+#[allow(clippy::too_many_arguments)]
+pub fn run_checkpointed(
+	plan: &Plan,
+	input: &Path,
+	output: &Path,
+	cancellation: &Cancellation,
+	log: Option<&Path>,
+	publication: crate::convert::Publication,
+	checkpoint: &dyn Fn(CheckedOutput) -> Result<CheckpointedOutput>,
+) -> std::result::Result<Report, PublicationFailure> {
+	crate::fidelity::check(plan)?;
 	if crate::fsx::protects_input(input, output)? {
-		return Err(Error::Diagnostic(Diagnostic::global(
-			Code::UsageConflict,
-			"output aliases the input",
-		)));
+		return Err(Error::Diagnostic(Diagnostic::global(Code::UsageConflict, "output aliases the input")).into());
 	}
 	let original = crate::safety::Fingerprint::of(input)?;
 	// A format this build writes itself has nothing to run, so it goes to the
 	// archive writer rather than looking for a tool that was never planned.
 	if let Backend::Native { from, to } = &plan.backend {
-		return crate::archive::repack_published(
+		return crate::archive::repack_checkpointed(
 			None,
 			*from,
 			*to,
@@ -170,14 +354,14 @@ pub fn run_recorded(
 			output,
 			cancellation,
 			publication,
-			before_commit,
+			checkpoint,
 		);
 	}
 
 	// A container this build cannot write is still repacked by our rules, with the
 	// tool given a tree that has already been checked, `docs/tools.md` §7.
 	if let Backend::SevenZip { from, to, .. } = &plan.backend {
-		return crate::archive::repack_published(
+		return crate::archive::repack_checkpointed(
 			Some(&plan.command),
 			*from,
 			*to,
@@ -185,7 +369,7 @@ pub fn run_recorded(
 			output,
 			cancellation,
 			publication,
-			before_commit,
+			checkpoint,
 		);
 	}
 
@@ -193,7 +377,8 @@ pub fn run_recorded(
 		return Err(Error::Diagnostic(Diagnostic::global(
 			Code::InternalInvariant,
 			"a plan with no executable reached the runner",
-		)));
+		))
+		.into());
 	};
 
 	// The plan resolved this name at plan time, so running it is the same choice
@@ -215,7 +400,8 @@ pub fn run_recorded(
 		return Err(Error::Diagnostic(Diagnostic::global(
 			Code::ToolFailed,
 			format!("{command} exited successfully but wrote nothing"),
-		)));
+		))
+		.into());
 	}
 
 	let metadata = std::fs::symlink_metadata(staged.temp())?;
@@ -223,31 +409,30 @@ pub fn run_recorded(
 		return Err(Error::Diagnostic(Diagnostic::global(
 			Code::ToolFailed,
 			"tool produced no regular nonempty output",
-		)));
+		))
+		.into());
 	}
-	let validated = validate_output(plan, staged.temp(), cancellation)?;
+	let validation = validate_output(plan, staged.temp(), cancellation)?;
 	if !original.matches(input)? {
-		return Err(Error::Diagnostic(Diagnostic::global(
-			Code::ToolFailed,
-			"input changed during conversion",
-		)));
+		return Err(Error::Diagnostic(Diagnostic::global(Code::ToolFailed, "input changed during conversion")).into());
 	}
 	let report = Report {
 		output: staged.target().to_path_buf(),
-		bytes: metadata.len(),
-		validated,
+		bytes: validation
+			.fingerprint()
+			.map_or(metadata.len(), |fingerprint| fingerprint.bytes),
+		validation,
 		stderr,
 	};
-	cancellation.commit(|| {
-		before_commit(staged.temp(), &report)?;
-		staged.commit()
-	})?;
-	Ok(report)
+	publish_output(CheckedOutput::new(staged, report), cancellation, checkpoint)
 }
 
-/// Decode with the supported backend, rather than treating an exit status as format validation.
-/// Custom/document backends remain usable but cannot authorize source disposal.
-fn validate_output(plan: &Plan, output: &Path, cancellation: &Cancellation) -> Result<bool> {
+/// Check external output rather than treating the encoder's exit status as validation.
+fn validate_output(plan: &Plan, output: &Path, cancellation: &Cancellation) -> Result<Validation> {
+	if matches!(plan.backend.name(), "magick" | "ffmpeg") && matches!(plan.format.as_str(), "jpg" | "jpeg") {
+		return crate::validation::jpeg(output, cancellation);
+	}
+	let unavailable = || Validation::Unavailable(format!("independent {} validation is unavailable", plan.format));
 	let argv: Vec<OsString> = match plan.backend.name() {
 		"magick" => vec![output.into(), "null:".into()],
 		"ffmpeg" => vec![
@@ -262,7 +447,7 @@ fn validate_output(plan: &Plan, output: &Path, cancellation: &Cancellation) -> R
 			"null".into(),
 			"-".into(),
 		],
-		_ => return Ok(false),
+		_ => return Ok(unavailable()),
 	};
 	let path = executable(&plan.command).ok_or_else(|| Error::Io(std::io::Error::other("validator disappeared")))?;
 	run_child(&plan.command, &path, &argv, None, None, cancellation)?;
@@ -273,13 +458,12 @@ fn validate_output(plan: &Plan, output: &Path, cancellation: &Cancellation) -> R
 	let prefix = &prefix[..read];
 	let matches = match plan.format.as_str() {
 		"png" => prefix.starts_with(b"\x89PNG\r\n\x1a\n"),
-		"jpg" | "jpeg" => prefix.starts_with(b"\xff\xd8\xff"),
 		"webp" => prefix.starts_with(b"RIFF") && prefix.get(8..12) == Some(b"WEBP"),
 		"gif" => prefix.starts_with(b"GIF87a") || prefix.starts_with(b"GIF89a"),
 		"bmp" => prefix.starts_with(b"BM"),
 		"wav" => prefix.starts_with(b"RIFF") && prefix.get(8..12) == Some(b"WAVE"),
 		"flac" => prefix.starts_with(b"fLaC"),
-		_ => return Ok(false),
+		_ => return Ok(unavailable()),
 	};
 	if !matches {
 		return Err(Error::Diagnostic(Diagnostic::global(
@@ -287,8 +471,8 @@ fn validate_output(plan: &Plan, output: &Path, cancellation: &Cancellation) -> R
 			"output format does not match the request",
 		)));
 	}
-	/* Full source-to-output property coverage is not yet available for external encoders. */
-	Ok(false)
+	/* Other external formats do not yet have an independent validation check. */
+	Ok(unavailable())
 }
 
 /// The source a rename left under the target's name, prepared once for a whole
@@ -347,7 +531,7 @@ fn kill(child: &mut std::process::Child) {
 
 /// Where a resolved command name actually lives. An absolute path was pinned by
 /// the configuration, so it is used as written, `docs/config.md` §3.
-fn executable(command: &str) -> Option<PathBuf> {
+pub(crate) fn executable(command: &str) -> Option<PathBuf> {
 	if Path::new(command).is_absolute() {
 		return Path::new(command).is_file().then(|| PathBuf::from(command));
 	}
@@ -359,6 +543,52 @@ fn executable(command: &str) -> Option<PathBuf> {
 fn tail(stderr: &[u8]) -> String {
 	let start = stderr.len().saturating_sub(STDERR_TAIL);
 	String::from_utf8_lossy(&stderr[start..]).trim().to_string()
+}
+
+struct StderrCapture {
+	kept: Vec<u8>,
+	has_message: bool,
+}
+
+impl StderrCapture {
+	fn message(&self) -> String {
+		let message = tail(&self.kept);
+		if message.is_empty() && self.has_message {
+			"earlier stderr was omitted before trailing whitespace".to_string()
+		} else {
+			message
+		}
+	}
+}
+
+fn drain_stderr(pipe: &mut impl Read, mut log: Option<&mut std::fs::File>) -> std::io::Result<StderrCapture> {
+	let mut captured = StderrCapture {
+		kept: Vec::new(),
+		has_message: false,
+	};
+	let mut buffer = [0u8; 8 * 1024];
+	loop {
+		let read = match pipe.read(&mut buffer) {
+			Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+			result => result?,
+		};
+		if read == 0 {
+			break;
+		}
+		let bytes = &buffer[..read];
+		captured.has_message |= bytes.iter().any(|byte| !byte.is_ascii_whitespace());
+		captured.kept.extend_from_slice(bytes);
+		if captured.kept.len() > STDERR_TAIL * 4 {
+			let excess = captured.kept.len() - STDERR_TAIL * 4;
+			captured.kept.drain(..excess);
+		}
+		if let Some(file) = log.as_mut() {
+			use std::io::Write;
+			let _ = file.write_all(bytes);
+			let _ = file.flush();
+		}
+	}
+	Ok(captured)
 }
 
 /// Run a program to completion, killing it if the job is cancelled.
@@ -376,13 +606,63 @@ pub fn run_child(
 	log: Option<&Path>,
 	cancellation: &Cancellation,
 ) -> Result<String> {
+	Ok(run_child_captured(command, path, argv, cwd, log, cancellation, None)?.1)
+}
+
+/// Capture complete bounded stdout for machine-readable tool listings, never the stderr tail.
+pub fn run_child_output(
+	command: &str,
+	path: &Path,
+	argv: &[OsString],
+	cancellation: &Cancellation,
+	limit: usize,
+) -> Result<String> {
+	let (stdout, _) = run_child_captured(command, path, argv, None, None, cancellation, Some(limit))?;
+	String::from_utf8(stdout).map_err(|error| Error::Io(std::io::Error::other(error)))
+}
+
+pub(crate) fn probe_output(
+	path: &Path,
+	argv: &[String],
+	timeout: Duration,
+	cancellation: &Cancellation,
+) -> Result<String> {
+	let cancellation = cancellation.bounded(timeout);
+	let args = argv.iter().map(OsString::from).collect::<Vec<_>>();
+	let (stdout, stderr) = run_child_captured("probe", path, &args, None, None, &cancellation, Some(1024 * 1024))
+		.map_err(|error| {
+			if cancellation.is_cancelled() {
+				Error::Io(std::io::Error::new(
+					std::io::ErrorKind::TimedOut,
+					"tool probe timed out",
+				))
+			} else {
+				error
+			}
+		})?;
+	Ok(format!("{}{stderr}", String::from_utf8_lossy(&stdout)))
+}
+
+fn run_child_captured(
+	command: &str,
+	path: &Path,
+	argv: &[OsString],
+	cwd: Option<&Path>,
+	log: Option<&Path>,
+	cancellation: &Cancellation,
+	stdout_limit: Option<usize>,
+) -> Result<(Vec<u8>, String)> {
 	let mut child = {
 		let mut command_line = Command::new(path);
 		crate::process::hide_console(&mut command_line);
 		command_line
 			.args(argv)
 			.stdin(Stdio::null())
-			.stdout(Stdio::null())
+			.stdout(if stdout_limit.is_some() {
+				Stdio::piped()
+			} else {
+				Stdio::null()
+			})
 			.stderr(Stdio::piped());
 
 		if let Some(cwd) = cwd {
@@ -407,40 +687,41 @@ pub fn run_child(
 
 	// Drain stderr while the tool runs: a chatty tool would otherwise block on a
 	// full pipe, and we would be waiting for it to exit.
-	let stderr_pipe = child.stderr.take();
+	let Some(mut stderr_pipe) = child.stderr.take() else {
+		kill(&mut child);
+		return Err(Error::Io(std::io::Error::other("tool stderr pipe is unavailable")));
+	};
 	let journal = log.map(Path::to_path_buf);
 	let reader = thread::spawn(move || {
-		let mut kept = Vec::new();
-
 		// A log that cannot be opened is not a reason to fail a conversion; the tail
 		// in the journal is what a report depends on.
 		let mut file = journal.and_then(|path| std::fs::OpenOptions::new().create(true).append(true).open(path).ok());
+		drain_stderr(&mut stderr_pipe, file.as_mut())
+	});
 
-		if let Some(mut pipe) = stderr_pipe {
-			let mut buffer = [0u8; 8 * 1024];
-			while let Ok(read) = pipe.read(&mut buffer) {
-				if read == 0 {
-					break;
-				}
-
-				kept.extend_from_slice(&buffer[..read]);
-				if kept.len() > STDERR_TAIL * 4 {
-					let excess = kept.len() - STDERR_TAIL * 4;
-					kept.drain(..excess);
-				}
-
-				if let Some(file) = file.as_mut() {
-					use std::io::Write;
-					let _ = file.write_all(&buffer[..read]);
-					let _ = file.flush();
+	let mut stdout_reader = child.stdout.take().zip(stdout_limit).map(|(pipe, limit)| {
+		thread::spawn(move || {
+			let mut bytes = Vec::new();
+			pipe.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+			if bytes.len() > limit {
+				return Err(std::io::Error::other(format!(
+					"tool stdout exceeds the {limit} byte limit"
+				)));
+			}
+			Ok(bytes)
+		})
+	});
+	let mut stdout = Vec::new();
+	let status = loop {
+		if stdout_reader.as_ref().is_some_and(|reader| reader.is_finished()) {
+			match join_stdout(stdout_reader.take().expect("finished reader")) {
+				Ok(bytes) => stdout = bytes,
+				Err(error) => {
+					kill(&mut child);
+					return Err(error);
 				}
 			}
 		}
-
-		kept
-	});
-
-	let status = loop {
 		if cancellation.is_cancelled() {
 			kill(&mut child);
 			return Err(Error::Diagnostic(Diagnostic::global(
@@ -475,7 +756,7 @@ pub fn run_child(
 	}
 
 	let deadline = std::time::Instant::now() + Duration::from_secs(5);
-	while !reader.is_finished() {
+	while !reader.is_finished() || stdout_reader.as_ref().is_some_and(|reader| !reader.is_finished()) {
 		if cancellation.is_cancelled() || std::time::Instant::now() >= deadline {
 			kill(&mut child);
 			return Err(Error::Diagnostic(Diagnostic::global(
@@ -485,11 +766,13 @@ pub fn run_child(
 		}
 		thread::sleep(POLL);
 	}
-	let stderr = tail(
-		&reader
-			.join()
-			.map_err(|_| Error::Io(std::io::Error::other("stderr reader panicked")))?,
-	);
+	if let Some(reader) = stdout_reader {
+		stdout = join_stdout(reader)?;
+	}
+	let stderr = reader
+		.join()
+		.map_err(|_| Error::Io(std::io::Error::other("stderr reader panicked")))??
+		.message();
 	cancellation.commit(|| Ok(()))?;
 
 	if !status.success() {
@@ -502,7 +785,14 @@ pub fn run_child(
 		)));
 	}
 
-	Ok(stderr)
+	Ok((stdout, stderr))
+}
+
+fn join_stdout(reader: thread::JoinHandle<std::io::Result<Vec<u8>>>) -> Result<Vec<u8>> {
+	reader
+		.join()
+		.map_err(|_| Error::Io(std::io::Error::other("stdout reader panicked")))?
+		.map_err(|error| Error::Diagnostic(Diagnostic::global(Code::ToolFailed, error.to_string())))
 }
 
 fn wait_for_helpers(
@@ -537,11 +827,123 @@ mod tests {
 	use std::fs;
 
 	use super::*;
+
+	#[test]
+	fn publication_failures_stay_below_the_large_result_error_threshold() {
+		assert!(std::mem::size_of::<PublicationFailure>() < 128);
+	}
+
+	#[test]
+	fn a_failure_after_rename_records_the_target_path_and_original_error() {
+		let output = PathBuf::from("published.jpg");
+		let failure = PublicationFailure::at_progress(
+			std::io::Error::from(std::io::ErrorKind::StorageFull).into(),
+			output.clone(),
+			crate::convert::PublicationProgress::Published,
+		);
+		assert_eq!(failure.error().code(), Code::IoSpace);
+		assert!(matches!(
+			&failure,
+			PublicationFailure::Uncertain { output: target, .. } if target.as_ref() == output.as_path()
+		));
+		assert!(failure.to_string().contains("published.jpg"));
+		assert_eq!(failure.into_error().code(), Code::IoSpace);
+	}
+
+	fn checked_output(target: &Path) -> CheckedOutput {
+		let staged = StagedOutput::new(target).unwrap();
+		std::fs::write(staged.temp(), b"output bytes").unwrap();
+		let report = Report {
+			output: target.to_path_buf(),
+			bytes: 12,
+			validation: Validation::Unavailable("test validator unavailable".to_string()),
+			stderr: String::new(),
+		};
+		CheckedOutput::new(staged, report)
+	}
+
+	#[test]
+	fn a_failed_checkpoint_consumes_the_stage_without_publishing() {
+		let directory = tempfile::tempdir().unwrap();
+		let target = directory.path().join("output.bin");
+		let result = publish_output(checked_output(&target), &Cancellation::default(), &|output| {
+			output.checkpoint(|_, _| Err(std::io::Error::other("checkpoint failed").into()))
+		});
+		assert!(matches!(result, Err(PublicationFailure::BeforePublication(_))));
+		assert!(!target.exists());
+		assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+	}
+
+	#[test]
+	fn an_unavailable_validator_still_allows_checkpointed_publication() {
+		let directory = tempfile::tempdir().unwrap();
+		let target = directory.path().join("output.bin");
+		let report = publish_output(checked_output(&target), &Cancellation::default(), &|output| {
+			output.checkpoint(|staged, report| {
+				assert!(staged.exists());
+				assert_eq!(report.output, target);
+				Ok(())
+			})
+		})
+		.unwrap();
+		assert!(matches!(report.validation, Validation::Unavailable(_)));
+		assert_eq!(std::fs::read(&target).unwrap(), b"output bytes");
+	}
+
+	#[test]
+	fn cancellation_prevents_the_checkpoint_from_receiving_the_stage() {
+		let directory = tempfile::tempdir().unwrap();
+		let target = directory.path().join("output.bin");
+		let cancellation = Cancellation::default();
+		cancellation.cancel();
+		let result = publish_output(checked_output(&target), &cancellation, &|_| {
+			panic!("cancelled work must not checkpoint")
+		});
+		assert!(matches!(result, Err(PublicationFailure::BeforePublication(_))));
+		assert!(!target.exists());
+	}
 	use crate::intent;
 	use crate::plan::{self, Presence};
 	use crate::registry::Registry;
 	use crate::resolve::{self, Source};
 	use crate::tools::Tool;
+
+	#[test]
+	#[cfg(unix)]
+	fn captured_stdout_is_complete_separate_and_bounded() {
+		let cancellation = Cancellation::default();
+		let args = ["-c", "printf 'listing'; printf 'warning' >&2"].map(OsString::from);
+		assert_eq!(
+			run_child_output("sh", Path::new("/bin/sh"), &args, &cancellation, 7).unwrap(),
+			"listing"
+		);
+		let error = run_child_output("sh", Path::new("/bin/sh"), &args, &cancellation, 6).unwrap_err();
+		assert_eq!(error.code(), Code::ToolFailed);
+		assert!(error.to_string().contains("stdout exceeds"));
+		let args = ["-c", "yes listing"].map(OsString::from);
+		let started = std::time::Instant::now();
+		assert!(run_child_output("sh", Path::new("/bin/sh"), &args, &cancellation, 1024).is_err());
+		assert!(started.elapsed() < Duration::from_secs(5));
+	}
+
+	#[test]
+	fn stderr_warnings_are_not_lost_behind_a_long_whitespace_tail() {
+		let mut bytes = b"warning: corrupt JPEG\n".to_vec();
+		bytes.extend(vec![b' '; STDERR_TAIL * 8]);
+		let captured = drain_stderr(&mut std::io::Cursor::new(bytes), None).unwrap();
+		assert!(!captured.message().is_empty());
+	}
+
+	#[test]
+	fn stderr_read_errors_are_not_treated_as_silence() {
+		struct Broken;
+		impl Read for Broken {
+			fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+				Err(std::io::Error::other("pipe failed"))
+			}
+		}
+		assert!(drain_stderr(&mut Broken, None).is_err());
+	}
 
 	#[test]
 	fn process_completion_waits_for_accounting_to_reach_zero() {
@@ -619,6 +1021,35 @@ tier = 'converted'
 		.expect("the fixture loads")
 	}
 
+	/// A successful copier masquerading as an image encoder, to exercise output checks.
+	fn jpeg_copy_fixture() -> Registry {
+		let (command, layout) = match cfg!(windows) {
+			true => ("cmd", "layout = ['/c', 'copy', '{input}', '{ops}', '{output}']"),
+			false => ("cp", "layout = ['{input}', '{ops}', '{output}']"),
+		};
+		Registry::load(&format!(
+			"\
+version = 'retype-config-1'
+[backends]
+prefer = ['magick']
+[tools.magick]
+command = '{command}'
+{layout}
+[formats.png]
+family = 'image'
+lossy = false
+alpha = true
+tier = 'exact'
+[formats.jpg]
+family = 'image'
+lossy = true
+alpha = false
+tier = 'converted'
+"
+		))
+		.unwrap()
+	}
+
 	/// A fixture whose only tool writes nothing and succeeds, so the runner can be
 	/// told that a tool producing no output is a failure. `cmd /c rem` exits zero
 	/// and ignores its arguments on Windows; `true` does the same elsewhere.
@@ -690,6 +1121,20 @@ tier = 'converted'
 
 		assert_eq!(error.code(), Code::IoNotFound);
 		assert!(!output.exists(), "an output path is absent or correct, never empty");
+	}
+
+	#[test]
+	fn a_successful_encoder_cannot_publish_a_non_jpeg_as_jpeg() {
+		let plans = plans(&jpeg_copy_fixture(), "jpg");
+		let dir = tempfile::tempdir().unwrap();
+		let input = dir.path().join("a.png");
+		let output = dir.path().join("a.jpg");
+		fs::write(&input, b"not JPEG bytes").unwrap();
+
+		let error = run(&plans[0], &input, &output).unwrap_err();
+		assert_eq!(error.code(), Code::ToolFailed);
+		assert!(!output.exists());
+		assert_eq!(fs::read(input).unwrap(), b"not JPEG bytes");
 	}
 
 	#[test]

@@ -20,11 +20,42 @@ use retype_core::fidelity::{Claim, Manifest, State, render_into};
 use retype_core::job::Tier;
 use retype_core::plan::{self, Plan};
 use retype_core::registry::Registry;
-use retype_core::tools;
 
 use crate::error::Result;
 use crate::matrix::{PairError, Samples, Selection, plan_for};
 use crate::output;
+
+/// Plan executable work using the same evidence and refusal policy as inspection.
+pub fn plans(
+	registry: &Registry,
+	presence: &dyn plan::Presence,
+	resolved: &retype_core::resolve::Resolved,
+	state_dir: &Path,
+) -> std::result::Result<Vec<Plan>, retype_core::error::Diagnoses> {
+	plans_cancellable(
+		registry,
+		presence,
+		resolved,
+		state_dir,
+		&retype_core::execute::Cancellation::default(),
+	)
+}
+
+pub(crate) fn plans_cancellable(
+	registry: &Registry,
+	presence: &dyn plan::Presence,
+	resolved: &retype_core::resolve::Resolved,
+	state_dir: &Path,
+	cancellation: &retype_core::execute::Cancellation,
+) -> std::result::Result<Vec<Plan>, retype_core::error::Diagnoses> {
+	let manifest = retype_core::fidelity::open_for(Some(state_dir)).map_err(retype_core::error::Diagnoses::one)?;
+	let mut plans = plan::compile(registry, presence, resolved)?;
+	retype_core::fidelity::qualify_cancellable(&manifest, registry, &resolved.origin, &mut plans, cancellation);
+	for plan in &plans {
+		retype_core::fidelity::check(plan).map_err(retype_core::error::Diagnoses::one)?;
+	}
+	Ok(plans)
+}
 
 pub struct Request<'a> {
 	pub pairs: &'a [String],
@@ -133,11 +164,17 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 		}
 
 		let checks = check_axes(&fixtures, &directory, source, &plan, work);
-		let mut claim = claim_of(&plan, source, target, &samples);
+		let mut claim = claim_of(registry, &plan, source, target, &samples);
 		claim.axes = kept(&checks);
 		claim.lost = dropped(&checks);
-		let state = match manifest.get(source, target, plan.backend.name()) {
-			Some(previous) if previous.is_current(&claim.version, &claim.fingerprint) => State::Earned,
+		let state = match manifest.get(source, target, plan.backend.name(), claim.engine.as_deref()) {
+			Some(previous)
+				if previous.is_current(&claim.version, &claim.fingerprint)
+					&& previous.engine_version == claim.engine_version
+					&& previous.engine_fingerprint == claim.engine_fingerprint =>
+			{
+				State::Earned
+			}
 			Some(_) => State::Unverified,
 			None => State::New,
 		};
@@ -192,9 +229,8 @@ pub fn run(registry: &Registry, state_dir: &Path, request: &Request<'_>) -> Resu
 		println!("{earned} pair(s) checked");
 	}
 
-	// Nothing earned and a stale exact claim are the same answer to a script: this
-	// machine cannot stand behind the release's claims.
-	Ok(match stale_exact > 0 || earned == 0 {
+	// Every explicitly selected pair must earn evidence before this can be a release gate.
+	Ok(match stale_exact > 0 || earned != pairs.len() {
 		true => ExitCode::from(4),
 		false => ExitCode::SUCCESS,
 	})
@@ -310,28 +346,26 @@ fn names(axes: &[Axis]) -> Vec<&'static str> {
 }
 
 /// The claim one successful conversion earns.
-fn claim_of(plan: &Plan, source: &str, target: &str, samples: &Samples<'_>) -> Claim {
-	let (version, fingerprint) = match &plan.backend {
-		// This build is the backend, so the claim is earned by the release rather
-		// than by a tool on the machine.
-		plan::Backend::Native { .. } => (env!("CARGO_PKG_VERSION").to_string(), String::new()),
-		plan::Backend::SevenZip { tool, .. } | plan::Backend::Tool(tool) => {
-			let status = tools::probe(tool);
-			(
-				status.version.as_ref().map(ToString::to_string).unwrap_or_default(),
-				status.fingerprint().unwrap_or_default(),
-			)
-		}
-	};
-
+fn claim_of(registry: &Registry, plan: &Plan, source: &str, target: &str, samples: &Samples<'_>) -> Claim {
+	let manifest = Manifest::default();
+	let current = retype_core::fidelity::claim_for(
+		&manifest,
+		registry,
+		source,
+		target,
+		plan.backend.name(),
+		plan.engine.as_ref().map(|(_, candidate)| candidate.as_str()),
+	);
 	Claim {
 		source: source.to_string(),
 		target: target.to_string(),
 		backend: plan.backend.name().to_string(),
 		tier: plan.tier,
 		engine: plan.engine.as_ref().map(|(_, candidate)| candidate.clone()),
-		version,
-		fingerprint,
+		version: current.version,
+		fingerprint: current.fingerprint,
+		engine_version: current.engine_version,
+		engine_fingerprint: current.engine_fingerprint,
 		fixture: samples.describe(source),
 		axes: Vec::new(),
 		lost: Vec::new(),

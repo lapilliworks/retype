@@ -53,6 +53,7 @@ fn record(store: &Store, dir: &Path, index: usize, age_hours: i64) -> JobId {
 		.unwrap();
 
 	saved.created = retype_core::job::now_ms() - age_hours * 60 * 60 * 1_000;
+	saved.retention_started = Some(saved.created);
 	saved.pinned = false;
 	fs::write(
 		store.directory(&saved.id).join("meta.toml"),

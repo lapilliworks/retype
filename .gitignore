@@ -1,8 +1,5 @@
 /target
 /worktrees
-~syncthing~*.tmp
-.syncthing*
-*.sync-conflict-*
 /sites/*/node_modules
 /sites/*/dist
 /sites/*/.vitepress/cache

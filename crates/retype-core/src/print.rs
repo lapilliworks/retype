@@ -25,6 +25,9 @@ pub fn intent(resolved: &Resolved, registry: &Registry) -> String {
 		// the only place a trailing shorthand can be written is the end of a
 		// group, so they go on the first one.
 		if index == 0 {
+			if resolved.meta.keep {
+				text.push_str("+keep");
+			}
 			if resolved.meta.ask {
 				text.push_str("+ask");
 			}
@@ -80,6 +83,9 @@ pub fn sentence(resolved: &Resolved, registry: &Registry, source: &str) -> Strin
 		.collect::<Vec<String>>()
 		.join("; ");
 
+	if resolved.meta.keep && !resolved.groups.iter().any(|group| group.keep_source) {
+		text.push_str("; keep the original as it is");
+	}
 	if resolved.meta.ask {
 		text.push_str(", after asking");
 	}
@@ -438,6 +444,13 @@ param = { class = 'int', min = 1, max = 100 }
 	}
 
 	#[test]
+	fn keep_prints_as_a_job_wide_control() {
+		assert_eq!(canonical("webp,png+keep+ask"), "webp+keep+ask,png");
+		let (resolved, registry) = resolved("webp+keep");
+		assert!(sentence(&resolved, &registry, "heic").contains("keep the original"));
+	}
+
+	#[test]
 	fn the_shorthand_and_the_word_canonicalise_the_same_way() {
 		assert_eq!(canonical("webp+q80+"), canonical("webp+q80+ask"));
 		assert_eq!(canonical("webp+q80!"), canonical("webp+q80+now"));
@@ -456,6 +469,7 @@ param = { class = 'int', min = 1, max = 100 }
 			"webp+q80+",
 			"webp+q80!",
 			"webp+q60+now,avif+q90+ask",
+			"webp,png+keep+ask",
 		];
 
 		for written in corpus {

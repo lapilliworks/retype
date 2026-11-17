@@ -57,14 +57,26 @@ impl Events {
 			}
 		}
 
-		let events = self
+		let mut events = Vec::new();
+		let mut bytes = 0;
+		let mut newest = self.next;
+		for event in self
 			.retained
 			.iter()
-			.filter(|event| event.get("seq").and_then(Value::as_u64).is_none_or(|seq| seq > since))
-			.cloned()
-			.collect();
-
-		Some((events, self.next))
+			.filter(|event| event["seq"].as_u64().is_some_and(|seq| seq > since))
+		{
+			let size = serde_json::to_vec(event).expect("event values serialize").len() + 1;
+			if bytes + size > retype_ipc::MAX_FRAME - 1024 {
+				if events.is_empty() {
+					return None;
+				}
+				break;
+			}
+			bytes += size;
+			newest = event["seq"].as_u64().expect("numbered event");
+			events.push(event.clone());
+		}
+		Some((events, newest))
 	}
 }
 
@@ -83,6 +95,7 @@ mod tests {
 				format: "heic".to_string(),
 				size: 0,
 				mtime_ns: 0,
+				fingerprint: None,
 			},
 			intent: Some("jpg".to_string()),
 			outputs: Vec::new(),
@@ -93,6 +106,8 @@ mod tests {
 			error: None,
 			parked: None,
 			consume_source: false,
+			source_disposition: None,
+			admission: None,
 		}
 	}
 
@@ -135,6 +150,13 @@ mod tests {
 		// only up to three, has lost events it can never be handed.
 		assert!(events.since(0).is_none());
 		assert!(events.since(3).is_none());
+		let (cursor_events, cursor) = events.since(u64::MAX).unwrap();
+		assert!(cursor_events.is_empty());
+		assert_eq!(
+			cursor as usize,
+			RETAINED + 4,
+			"state refresh must recover a cursor after a gap"
+		);
 
 		// Four is the last sequence the window can answer for: five is next.
 		let (everything, _) = events.since(4).expect("the window starts at five");
@@ -143,6 +165,27 @@ mod tests {
 		let (replayed, newest) = events.since(5).unwrap();
 		assert_eq!(replayed.len(), RETAINED - 1);
 		assert_eq!(newest as usize, RETAINED + 4);
+	}
+
+	#[test]
+	fn large_events_are_replayed_in_bounded_batches_without_skipping() {
+		let mut events = Events::default();
+		let mut large = job(1);
+		large.intent = Some("x".repeat(2048));
+		for _ in 0..RETAINED {
+			events.push(&large);
+		}
+		let (first, cursor) = events.since(0).unwrap();
+		assert!(cursor < RETAINED as u64);
+		assert_eq!(first.len(), cursor as usize);
+		assert!(
+			serde_json::to_vec(&json!({"events": first, "seq": cursor}))
+				.unwrap()
+				.len() < retype_ipc::MAX_FRAME
+		);
+		let (second, next) = events.since(cursor).unwrap();
+		assert_eq!(second[0]["seq"], cursor + 1);
+		assert!(next > cursor);
 	}
 
 	#[test]

@@ -1,0 +1,16 @@
+nextest-version = '0.9.151'
+
+[profile.platform]
+test-threads = 4
+retries = 0
+fail-fast = false
+slow-timeout = { period = '30s', terminate-after = 2 }
+leak-timeout = { period = '3s', result = 'fail' }
+
+# Start the strict workflows first without running them twice.
+[[profile.platform.overrides]]
+filter = '''
+test(=a_real_watched_heic_conversion_and_undo_preserve_the_original) |
+test(=a_real_direct_heic_conversion_and_undo_follow_watched_disposition)
+'''
+priority = 100

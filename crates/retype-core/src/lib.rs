@@ -33,6 +33,7 @@ pub mod synced;
 mod tool_process;
 pub mod tools;
 pub mod undo;
+mod validation;
 pub mod value;
 pub mod watch;
 pub mod watches;

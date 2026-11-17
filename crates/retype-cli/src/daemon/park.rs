@@ -42,7 +42,7 @@ pub enum Verdict {
 pub fn decide(
 	shared: &Shared,
 	pool: &Pool,
-	root: &Path,
+	_root: &Path,
 	source: &Path,
 	target: &Path,
 	id: &JobId,
@@ -74,7 +74,7 @@ pub fn decide(
 			return park(
 				shared,
 				&stem,
-				root,
+				source,
 				&format,
 				target,
 				id,
@@ -103,7 +103,7 @@ pub fn decide(
 		Ok(resolved) => resolved,
 		Err(problems) => {
 			return uncarried(
-				shared, pool, root, &stem, &format, target, id, batch, &parsed, requested, problems, policy, None,
+				shared, pool, source, &stem, &format, target, id, batch, &parsed, requested, problems, policy, None,
 			);
 		}
 	};
@@ -115,7 +115,7 @@ pub fn decide(
 		return uncarried(
 			shared,
 			pool,
-			root,
+			source,
 			&stem,
 			&format,
 			target,
@@ -129,13 +129,18 @@ pub fn decide(
 		);
 	}
 
-	let plans = match plan::compile(&shared.registry(), &retype_core::tools::Machine, &resolved) {
+	let plans = match crate::fidelity::plans(
+		&shared.registry(),
+		&retype_core::tools::Machine,
+		&resolved,
+		&shared.state_dir,
+	) {
 		Ok(plans) => plans,
 		Err(problems) => {
 			return uncarried(
 				shared,
 				pool,
-				root,
+				source,
 				&stem,
 				&format,
 				target,
@@ -160,7 +165,7 @@ pub fn decide(
 		return park(
 			shared,
 			&stem,
-			root,
+			source,
 			&format,
 			target,
 			id,
@@ -182,7 +187,7 @@ pub fn decide(
 		return park(
 			shared,
 			&stem,
-			root,
+			source,
 			&format,
 			target,
 			id,
@@ -204,7 +209,7 @@ pub fn decide(
 		return park(
 			shared,
 			&stem,
-			root,
+			source,
 			&format,
 			target,
 			id,
@@ -230,7 +235,7 @@ pub fn decide(
 fn uncarried(
 	shared: &Shared,
 	pool: &Pool,
-	root: &Path,
+	source: &Path,
 	stem: &str,
 	format: &str,
 	target: &Path,
@@ -245,25 +250,27 @@ fn uncarried(
 	let reason = reason_of(&problems);
 	let corrected = corrected(&shared.registry(), parsed, format, policy);
 
-	if let Some(verdict) = repair(
-		shared,
-		pool,
-		stem,
-		format,
-		target,
-		id,
-		batch,
-		reason,
-		requested.as_deref(),
-		corrected.as_ref(),
-	) {
-		return verdict;
+	if !requests_confirmation(parsed, &shared.registry()) {
+		if let Some(verdict) = repair(
+			shared,
+			pool,
+			source,
+			format,
+			target,
+			id,
+			batch,
+			reason,
+			requested.as_deref(),
+			corrected.as_ref(),
+		) {
+			return verdict;
+		}
 	}
 
 	park(
 		shared,
 		stem,
-		root,
+		source,
 		format,
 		target,
 		id,
@@ -278,6 +285,16 @@ fn uncarried(
 			..Parking::default()
 		},
 	)
+}
+
+fn requests_confirmation(parsed: &intent::Intent, registry: &Registry) -> bool {
+	parsed.meta.ask
+		|| parsed.groups.iter().flat_map(|group| &group.tokens).any(|token| {
+			registry
+				.resolve(&token.name)
+				.and_then(|found| found.op())
+				.is_some_and(|op| op.key == "ask")
+		})
 }
 
 /// Whether the estimate crosses the threshold that applies, `docs/deferral.md` §3.
@@ -382,6 +399,14 @@ fn corrected(registry: &Registry, parsed: &intent::Intent, format: &str, policy:
 		text.push_str(target);
 
 		for token in &group.tokens {
+			if token.name == "keep" {
+				if token.value.is_some() {
+					return None;
+				}
+				text.push_str("+keep");
+				kept_any = true;
+				continue;
+			}
 			let found = registry.resolve(&token.name);
 			let op = found.as_ref().and_then(|found| found.op());
 
@@ -463,7 +488,7 @@ struct Correction {
 fn repair(
 	shared: &Shared,
 	pool: &Pool,
-	stem: &str,
+	source: &Path,
 	format: &str,
 	target: &Path,
 	id: &JobId,
@@ -498,11 +523,32 @@ fn repair(
 		return None;
 	}
 
-	// The bytes go back under the name their content fits before anything runs, so
-	// the file is not mislabelled while the conversion happens.
-	let source = retype_core::convert::restore_source_name(target, stem, format).ok()?;
-	shared.recent.note(&source, target);
-	let source_metadata = fs::metadata(&source).ok();
+	// Capture the renamed bytes before restoring their source name.
+	let input_fingerprint = match retype_core::safety::Fingerprint::of(target) {
+		Ok(fingerprint) => fingerprint,
+		Err(error) => {
+			eprintln!(
+				"retype: cannot verify {} for automatic repair: {error}",
+				target.display()
+			);
+			return Some(Verdict::Ignore);
+		}
+	};
+	if let Err(error) = watcher::restore_queued_source(shared, source, target) {
+		eprintln!(
+			"retype: cannot restore {} for automatic repair: {error}",
+			target.display()
+		);
+		return Some(Verdict::Ignore);
+	}
+	if !matches!(input_fingerprint.matches(source), Ok(true)) {
+		eprintln!(
+			"retype: {} changed during restoration; automatic repair did not start",
+			source.display()
+		);
+		return Some(Verdict::Ignore);
+	}
+	let source_metadata = fs::metadata(source).ok();
 
 	let job = Job {
 		id: id.clone(),
@@ -510,9 +556,10 @@ fn repair(
 		updated: now_ms(),
 		source: Source {
 			size: source_metadata.as_ref().map(|metadata| metadata.len()).unwrap_or(bytes),
-			path: source.clone(),
+			path: source.to_path_buf(),
 			format: format.to_string(),
 			mtime_ns: source_metadata.as_ref().map(mtime_ns).unwrap_or_default(),
+			fingerprint: None,
 		},
 		intent: Some(correction.text.clone()),
 		outputs: Vec::new(),
@@ -530,36 +577,40 @@ fn repair(
 			corrected: Some(correction.text.clone()),
 			dropped: correction.dropped.clone(),
 			consume: true,
+			force: false,
+			input_fingerprint: Some(input_fingerprint),
 		}),
 		consume_source: true,
+		source_disposition: None,
+		admission: None,
 	};
 
-	watcher::publish(shared, &job);
+	let work = crate::daemon::timer::work(&job, Some(&correction.text), false).expect("a corrected job has an intent");
+	match pool.submit_after(work, || watcher::publish_checked(shared, &job)) {
+		Ok(true) => Some(Verdict::Repaired),
+		Ok(false) => Some(park_repair_after_queue_full(shared, job)),
+		Err(error) => {
+			eprintln!(
+				"retype: repair {id} did not start because admission could not be recorded: {error}; \
+				 its outcome after restart is uncertain, so check the job before retrying"
+			);
+			Some(Verdict::Ignore)
+		}
+	}
+}
 
-	match crate::daemon::timer::start_job(pool, &job, Some(&correction.text), false) {
-		true => Some(Verdict::Repaired),
-		// The queue is full, so the record says nothing ran: park it instead, and the
-		// timer will try again later.
-		false => Some(park(
-			shared,
-			stem,
-			Path::new(""),
-			format,
-			&source,
-			id,
-			batch,
-			reason,
-			Parking {
-				requested: requested.map(str::to_string),
-				corrected: Some(Correction {
-					text: correction.text.clone(),
-					dropped: correction.dropped.clone(),
-				}),
-				estimate: Some(cost),
-				consume: true,
-				..Parking::default()
-			},
-		)),
+fn park_repair_after_queue_full(shared: &Shared, mut job: Job) -> Verdict {
+	job.set_state(JobState::NeedsAttention);
+	job.error = Some(JobError::new(
+		Code::JobState.to_string(),
+		"the queue was full; confirm the corrected request after capacity is available",
+	));
+	match watcher::publish_checked(shared, &job) {
+		Ok(()) => Verdict::Parked,
+		Err(error) => {
+			eprintln!("retype: cannot record the waiting repair {}: {error}", job.id);
+			Verdict::Ignore
+		}
 	}
 }
 
@@ -584,7 +635,13 @@ fn cost_of(shared: &Shared, format: &str, text: &str, bytes: u64) -> Option<Cost
 		&shared.registry(),
 	)
 	.ok()?;
-	let plans = plan::compile(&shared.registry(), &retype_core::tools::Machine, &resolved).ok()?;
+	let plans = crate::fidelity::plans(
+		&shared.registry(),
+		&retype_core::tools::Machine,
+		&resolved,
+		&shared.state_dir,
+	)
+	.ok()?;
 
 	cost(shared, format, &plans, bytes)
 }
@@ -607,7 +664,7 @@ struct Parking<'a> {
 fn park(
 	shared: &Shared,
 	stem: &str,
-	_root: &Path,
+	source: &Path,
 	format: &str,
 	target: &Path,
 	id: &JobId,
@@ -615,17 +672,37 @@ fn park(
 	reason: Reason,
 	parking: Parking<'_>,
 ) -> Verdict {
-	// A name that cannot be restored would be a mislabelled file for as long as the
-	// job waits, so the wait is not offered: the conversion runs and handles the
-	// fallback itself.
-	let Ok(source_path) = retype_core::convert::restore_source_name(target, stem, format) else {
-		return Verdict::Run;
+	let input_fingerprint = match retype_core::safety::Fingerprint::of(target) {
+		Ok(fingerprint) => fingerprint,
+		Err(error) => {
+			eprintln!("retype: cannot verify {} before parking: {error}", target.display());
+			return Verdict::Ignore;
+		}
 	};
-
-	// The restore is a rename of our own, and the watcher must not read it as the user
-	// asking for the inverse conversion: `a.webp` back to `a.png` is what parking looks
-	// like from outside, and without this it parks itself again, for ever.
-	shared.recent.note(&source_path, target);
+	if let Err(error) = watcher::restore_queued_source(shared, source, target) {
+		let asks = reason == Reason::Ask
+			|| parking
+				.requested
+				.as_deref()
+				.and_then(|text| intent::parse(text).ok())
+				.is_some_and(|intent| requests_confirmation(&intent, &shared.registry()));
+		if asks {
+			eprintln!(
+				"retype: cannot restore {} for confirmation: {error}; conversion did not start",
+				target.display()
+			);
+			return Verdict::Ignore;
+		}
+		return Verdict::Run;
+	}
+	let source_path = source.to_path_buf();
+	if !matches!(input_fingerprint.matches(&source_path), Ok(true)) {
+		eprintln!(
+			"retype: {} changed during restoration; the job was not parked",
+			source_path.display()
+		);
+		return Verdict::Ignore;
+	}
 
 	let state = reason.parked();
 	let deadline = match state {
@@ -635,9 +712,10 @@ fn park(
 		Parked::Attention => None,
 	};
 
+	let source_name = source.file_name().and_then(|name| name.to_str()).unwrap_or(stem);
 	let derived = parking
 		.resolved
-		.map(|resolved| output::derive(stem, format, &resolved.groups))
+		.map(|resolved| output::derive_with_source_name(stem, source_name, &resolved.groups))
 		.unwrap_or_default();
 
 	let outputs: Vec<Output> = parking
@@ -671,6 +749,7 @@ fn park(
 			path: source_path,
 			format: format.to_string(),
 			mtime_ns: source_metadata.as_ref().map(mtime_ns).unwrap_or_default(),
+			fingerprint: None,
 		},
 		intent: parking
 			.resolved
@@ -706,34 +785,78 @@ fn park(
 				.map(|correction| correction.dropped.clone())
 				.unwrap_or_default(),
 			consume: parking.consume,
+			force: false,
+			input_fingerprint: Some(input_fingerprint),
 		}),
 		consume_source: true,
+		source_disposition: None,
+		admission: None,
 	};
 
-	watcher::publish(shared, &job);
-	Verdict::Parked
+	match watcher::publish_checked(shared, &job) {
+		Ok(()) => Verdict::Parked,
+		Err(error) => {
+			eprintln!("retype: cannot record parked job {}: {error}", job.id);
+			Verdict::Ignore
+		}
+	}
 }
 
-/// Cancel a parked job that a later rename replaced.
-pub fn superseded(shared: &Shared, source: &Path) {
+/// Check admitted input identity and bytes against the working snapshot before any output is written.
+pub fn verify_input(job: &Job, actual: &retype_core::safety::Fingerprint) -> retype_core::error::Result<()> {
+	let expected = match (&job.source.fingerprint, &job.parked) {
+		(Some(expected), _) => expected,
+		(None, Some(parked)) => parked.input_fingerprint.as_ref().ok_or_else(|| {
+			retype_core::error::Error::Diagnostic(retype_core::error::Diagnostic::global(
+				Code::JobResumeUnavailable,
+				"the parked input has no recorded fingerprint; review the file and submit a new request",
+			))
+		})?,
+		(None, None) => return Ok(()),
+	};
+	if !expected.same_file_and_content(actual) {
+		return Err(retype_core::error::Error::Diagnostic(
+			retype_core::error::Diagnostic::global(
+				Code::JobInterrupted,
+				format!(
+					"{} changed or was replaced while the job waited; no output was written",
+					job.source.path.display()
+				),
+			),
+		));
+	}
+	Ok(())
+}
+
+/// Cancel a parked job that a later rename replaced while admission is locked.
+pub fn superseded(
+	shared: &Shared,
+	source: &Path,
+	_guard: &std::sync::MutexGuard<'_, ()>,
+) -> retype_core::error::Result<()> {
 	let replaced = {
-		let Ok(jobs) = shared.jobs.lock() else {
-			return;
-		};
+		let jobs = shared
+			.jobs
+			.lock()
+			.map_err(|_| retype_core::error::Error::Io(std::io::Error::other("job list lock poisoned")))?;
 
 		jobs.iter()
-			.find(|job| job.source.path == source && matches!(job.state, JobState::Pending | JobState::NeedsAttention))
+			.filter(|job| {
+				job.source.path == source && matches!(job.state, JobState::Pending | JobState::NeedsAttention)
+			})
 			.map(|job| {
 				let mut superseded = job.clone();
 				superseded.set_state(JobState::Superseded);
 				superseded
 			})
+			.collect::<Vec<_>>()
 	};
 
-	// Published after the lock is released: `publish` takes the same one.
-	if let Some(job) = replaced {
-		watcher::publish(shared, &job);
+	// Published after the job-list lock is released: publication takes it again.
+	for job in replaced {
+		watcher::publish_checked(shared, &job)?;
 	}
+	Ok(())
 }
 
 #[cfg(test)]
@@ -769,6 +892,19 @@ mod tests {
 		let dir = tempfile::tempdir().expect("a directory");
 		let policy = Policy::open(dir.path()).expect("a policy");
 		(dir, policy)
+	}
+
+	#[test]
+	fn a_repair_keeps_the_job_wide_original_control() {
+		let registry = registry();
+		let (_dir, policy) = nothing();
+		let parsed = intent::parse("zip+unknown+keep").unwrap();
+		let correction = corrected(&registry, &parsed, "tar", &policy).unwrap();
+		assert_eq!(correction.text, "zip+keep");
+		assert_eq!(correction.dropped, vec!["unknown".to_string()]);
+
+		let malformed = intent::parse("zip+unknown+keep=yes").unwrap();
+		assert!(corrected(&registry, &malformed, "tar", &policy).is_none());
 	}
 
 	#[test]

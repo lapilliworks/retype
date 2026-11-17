@@ -81,15 +81,15 @@ sha256_of() {
 	fi
 }
 
-# Ubuntu 20.04 and Debian 11 define the floor; reject a Linux host below it so
-# the failure is a sentence rather than a dynamic loader error.
+# Current Debian stable (trixie) defines the Linux floor. Report an older runtime
+# before attempting to execute the downloaded binary.
 check_glibc() {
 	local reported
 	reported=$(getconf GNU_LIBC_VERSION 2>/dev/null || true)
-	[ -n "$reported" ] || die 'retype needs glibc 2.31 or newer; this system does not report glibc'
+	[ -n "$reported" ] || die 'retype targets current Debian stable and needs glibc 2.41 or newer; this system does not report glibc'
 	reported=${reported#glibc }
-	if [ "$(printf '%s\n' 2.31 "$reported" | sort -V | head -n1)" != 2.31 ]; then
-		die "retype needs glibc 2.31 or newer; this system has $reported"
+	if [ "$(printf '%s\n' 2.41 "$reported" | sort -V | head -n1)" != 2.41 ]; then
+		die "retype targets current Debian stable and needs glibc 2.41 or newer; this system has $reported"
 	fi
 }
 
@@ -152,10 +152,11 @@ esac
 
 case $version in
 latest)
-	api=https://api.github.com/repos/$repo/releases/latest
-	release=$(download "$api") || die "could not read the latest release from $api"
-	tag=$(printf '%s\n' "$release" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
-	[ -n "$tag" ] || die "could not find a tag in the latest release response from $api"
+	api=https://api.github.com/repos/$repo/releases?per_page=100
+	release=$(download "$api") || die "could not read published releases from $api"
+	tag_pattern='"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)"'
+	[[ $release =~ $tag_pattern ]] || die "could not find a tag in the published release response from $api"
+	tag=${BASH_REMATCH[1]}
 	;;
 v*) tag=$version ;;
 *) tag=v$version ;;
@@ -167,7 +168,50 @@ name=retype-$tag-$target
 archive=$name.tar.gz
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/retype-install.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
+staged_bin=
+staged_share=
+backup=
+changed_bin=false
+changed_share=false
+had_share=false
+
+restore_installation() {
+	if $changed_bin; then
+		if [ -e "$backup/retype" ] || [ -L "$backup/retype" ]; then
+			cp -pP "$backup/retype" "$staged_bin" || return 1
+			mv -f "$staged_bin" "$bin_dir/retype" || return 1
+		else
+			rm -f "$bin_dir/retype" || return 1
+		fi
+	fi
+	if $changed_share; then
+		if [ -e "$backup/share" ] || [ -L "$backup/share" ]; then
+			rm -rf "$share_dir" || return 1
+			mv "$backup/share" "$share_dir" || return 1
+		elif ! $had_share; then
+			rm -rf "$share_dir" || return 1
+		fi
+	fi
+}
+
+cleanup() {
+	local status=$?
+	trap - EXIT
+	if [ "$status" -ne 0 ] && [ -n "$backup" ]; then
+		if restore_installation; then
+			printf 'install: previous installation preserved; backup: %s\n' "$backup" >&2
+		else
+			printf 'install: rollback failed; recover the previous installation from %s\n' "$backup" >&2
+		fi
+	fi
+	[ -z "$staged_bin" ] || rm -f "$staged_bin"
+	[ -z "$staged_share" ] || rm -rf "$staged_share"
+	rm -rf "$tmp"
+	exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 sums=$(download "$base/SHA256SUMS") || die "could not download checksums: $base/SHA256SUMS"
 expected=$(printf '%s\n' "$sums" | awk -v name="$archive" '$2 == name || $2 == "*" name { print $1; exit }')
@@ -187,26 +231,34 @@ share_dir=$prefix/share/retype
 mkdir -p "$bin_dir" "$prefix/share"
 [ -w "$bin_dir" ] || die "cannot write to $bin_dir; set RETYPE_PREFIX or fix the permissions"
 
-staged_bin=$bin_dir/.retype.$$
+staged_bin=$(mktemp "$bin_dir/.retype.XXXXXX")
 cp "$src/bin/retype" "$staged_bin"
 chmod 0755 "$staged_bin"
-mv -f "$staged_bin" "$bin_dir/retype"
-
-# Stage the shared tree before replacing the old one. Copying directly over a
-# live tree would expose a half-installed set of claims and packaging files.
-staged_share=$prefix/share/.retype.$$
-rm -rf "$staged_share"
-mkdir -p "$staged_share"
+staged_share=$(mktemp -d "$prefix/share/.retype.XXXXXX")
 if [ -d "$src/share/retype" ]; then
 	cp -R "$src/share/retype/." "$staged_share/"
 fi
-rm -rf "$share_dir"
-mv "$staged_share" "$share_dir"
+output=$("$staged_bin" --version 2>&1) || die "the staged binary does not run; installation unchanged: $output"
 
-output=$("$bin_dir/retype" --version 2>&1) || die "installed $bin_dir/retype, but it does not run: $output"
+# Keep the previous installation on the destination filesystem, including after success.
+backup=$(mktemp -d "$prefix/share/retype-backup.XXXXXX")
+if [ -e "$bin_dir/retype" ] || [ -L "$bin_dir/retype" ]; then
+	cp -pP "$bin_dir/retype" "$backup/retype"
+fi
+if [ -e "$share_dir" ] || [ -L "$share_dir" ]; then
+	had_share=true
+	changed_share=true
+	mv "$share_dir" "$backup/share"
+fi
+changed_share=true
+mv "$staged_share" "$share_dir"
+changed_bin=true
+mv -f "$staged_bin" "$bin_dir/retype"
+output=$("$bin_dir/retype" --version 2>&1) || die "the installed binary does not run: $output"
 
 printf 'retype installed at %s\n' "$bin_dir/retype"
 printf '  %s\n' "$output"
+printf 'Previous installation backup: %s\n' "$backup"
 case ":$PATH:" in
 *":$bin_dir:"*) ;;
 *) printf '\nAdd it to PATH:\n  export PATH="%s:$PATH"\n' "$bin_dir" ;;

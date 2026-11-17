@@ -5,8 +5,11 @@
 //! what followed the last sequence it saw rather than holding a stream open.
 
 pub mod batches;
+mod cancel;
+mod disposition;
 pub mod events;
 pub mod immediate;
+pub mod lifecycle;
 mod lock;
 pub mod machine;
 pub mod park;
@@ -16,12 +19,15 @@ pub mod peer;
 mod pipe;
 pub mod queue;
 pub mod reconcile;
+pub mod recovery;
 pub mod resume;
 mod server;
+pub mod session;
 pub mod signals;
 pub mod supervision;
 pub mod timer;
 mod transaction;
+mod watch_health;
 pub mod watcher;
 
 pub use server::Server;
@@ -33,7 +39,7 @@ use std::fs;
 
 use crate::error::Result;
 use crate::state;
-use lock::Lock;
+pub(crate) use lock::Lock;
 
 /// Run in the foreground, which is what a user unit or a launchd agent
 /// executes, `docs/dev/architecture/ipc.md` §1.
@@ -48,6 +54,8 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	retype_core::tools::use_managed(state_dir.join("tools").join("bin"));
 
 	let _lock = Lock::acquire(&state_dir.join("lock"), &state_dir)?;
+	lifecycle::begin(&state_dir)?;
+	let _lifecycle = lifecycle::Guard(&state_dir);
 	let socket = state::socket_path(&state_dir)?;
 
 	// The lock is held, so anything at the socket path is a corpse.
@@ -89,10 +97,13 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	}
 
 	pool.stop();
+	server.recoveries().stop();
 
 	// Graceful shutdown should not leave a path that looks like a live daemon.
 	let _ = fs::remove_file(&socket);
 	state::clear_endpoint(&state_dir);
+	server.finish_stop();
+	lifecycle::finish(&state_dir, result.as_ref().err().map(|error| error.code().to_string()))?;
 	result
 }
 
@@ -112,6 +123,8 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	retype_core::tools::use_managed(state_dir.join("tools").join("bin"));
 
 	let _lock = Lock::acquire(&state_dir.join("lock"), &state_dir)?;
+	lifecycle::begin(&state_dir)?;
+	let _lifecycle = lifecycle::Guard(&state_dir);
 	let mut server = Server::open(&state_dir)?;
 	server.set_supervisor(supervision::supervisor());
 	let shared = server.shared();
@@ -140,8 +153,11 @@ pub fn run(state_dir: Option<std::path::PathBuf>, banner: bool) -> Result<()> {
 	}
 
 	pool.stop();
+	server.recoveries().stop();
 
 	state::clear_endpoint(&state_dir);
+	server.finish_stop();
+	lifecycle::finish(&state_dir, result.as_ref().err().map(|error| error.code().to_string()))?;
 	if signals::stop_requested() { Ok(()) } else { result }
 }
 

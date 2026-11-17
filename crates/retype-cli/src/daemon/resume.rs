@@ -14,7 +14,6 @@ use std::path::PathBuf;
 
 use retype_core::error::{Code, Diagnostic, Error, Result};
 use retype_core::job::{FileIdentity, Job, JobError, JobState, Output, OutputState, now_ms};
-use retype_core::plan;
 use retype_core::resolve::{self, Source as Origin};
 use retype_core::undo::Store;
 use retype_core::{execute, intent};
@@ -23,6 +22,48 @@ use crate::daemon::watcher::Shared;
 
 /// Run the outputs a partial job did not produce, and report the state it ends in.
 pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<JobState> {
+	run_cancellable(shared, machine, job, force, &execute::Cancellation::default())
+}
+
+pub(super) fn run_queued(shared: &Shared, job: &Job, force: bool, cancellation: &execute::Cancellation) {
+	if let Err(error) = run_cancellable(shared, &shared.machine, job, force, cancellation) {
+		let current = shared
+			.jobs
+			.lock()
+			.ok()
+			.and_then(|jobs| jobs.iter().find(|current| current.id == job.id).cloned());
+		if let Some(mut current) =
+			current.filter(|current| matches!(current.state, JobState::Queued | JobState::Running))
+		{
+			current.set_state(if cancellation.is_cancelled() {
+				JobState::Cancelled
+			} else if current.outputs.iter().any(|output| output.state == OutputState::Done) {
+				JobState::Partial
+			} else {
+				JobState::Failed
+			});
+			current.error = Some(JobError::new(error.code().to_string(), error.to_string()));
+			if let Err(error) = super::watcher::publish_checked(shared, &current) {
+				super::watcher::report_unrecorded_completion(shared, &current, &error);
+			}
+		}
+	}
+}
+
+fn run_cancellable(
+	shared: &Shared,
+	machine: &str,
+	job: &Job,
+	force: bool,
+	cancellation: &execute::Cancellation,
+) -> Result<JobState> {
+	let mut running = job.clone();
+	running.set_state(JobState::Running);
+	if let Err(error) = super::watcher::publish_checked(shared, &running) {
+		super::watcher::report_unrecorded_failure(shared, &running, &error);
+		return Err(error);
+	}
+	let job = &running;
 	let Some(text) = &job.intent else {
 		return Err(unavailable("the job recorded no intent to run again"));
 	};
@@ -49,7 +90,13 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 		)
 	})?;
 
-	let plans = plan::compile(&shared.registry(), &retype_core::tools::Machine, &resolved).map_err(|problems| {
+	let plans = crate::fidelity::plans(
+		&shared.registry(),
+		&retype_core::tools::Machine,
+		&resolved,
+		&shared.state_dir,
+	)
+	.map_err(|problems| {
 		Diagnostic::global(
 			Code::ToolMissing,
 			format!("the recorded intent can no longer be planned: {problems}"),
@@ -63,15 +110,20 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 	let snapshot = retype_core::safety::Snapshot::open(&retained)?;
 	let input = snapshot.path.clone();
 	let ledger = store.load(&job.id)?.ok_or_else(|| unavailable("no recovery ledger"))?;
-	let cancellation = execute::Cancellation::default();
+	let recovery = store.retain(lease, Some(ledger))?;
+	let ledger = recovery
+		.retained()
+		.expect("resume has a recovery record")
+		.record_snapshot();
 	let mut outputs = Vec::with_capacity(plans.len());
+	let mut output_gate = super::transaction::OutputGate::default();
 
 	for (index, plan) in plans.iter().enumerate() {
 		let recorded = job.outputs.get(index);
+		let stopped = output_gate.skipped();
 
-		// An output that is still what the job produced needs no work; anything
-		// else, including a different file with the same name, is run again.
-		if !force {
+		// Once stopped, retain verified prior outputs even if this resume requested replacement.
+		if !force || stopped.is_some() {
 			if let Some(recorded) = recorded {
 				if still_produced(recorded)
 					&& ledger.commits.iter().any(|commit| {
@@ -88,6 +140,15 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 			.map(|output| output.path.clone())
 			.unwrap_or_else(|| output_path(&job.source.path, &resolved, index));
 
+		if let Some((code, message)) = stopped {
+			let mut skipped = Output::pending(path, &plan.format, plan.tier);
+			skipped.fidelity = plan.fidelity.clone();
+			skipped.state = OutputState::Skipped;
+			skipped.error = Some(JobError::new(code.to_string(), message));
+			outputs.push(skipped);
+			continue;
+		}
+
 		if blocked(recorded, &path, force) {
 			outputs.push(Output {
 				path,
@@ -95,6 +156,7 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 				state: OutputState::Failed,
 				bytes: None,
 				tier: plan.tier,
+				fidelity: plan.fidelity.clone(),
 				identity: None,
 				stderr: None,
 				error: Some(JobError {
@@ -117,15 +179,16 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 			job,
 			original: &job.source.path,
 			completed: &outputs,
-			store: Some(&store),
+			recovery: recovery.retained(),
 		};
-		match transaction.run(plan, &input, &path, &cancellation, publication) {
+		match transaction.run(plan, &input, &path, cancellation, publication) {
 			Ok(report) => outputs.push(Output {
 				path: path.clone(),
 				format: plan.format.clone(),
 				state: OutputState::Done,
 				bytes: Some(report.bytes),
 				tier: plan.tier,
+				fidelity: plan.fidelity.clone(),
 				identity: FileIdentity::of(&path),
 				stderr: match report.stderr.trim().is_empty() {
 					true => None,
@@ -133,29 +196,39 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 				},
 				error: None,
 			}),
-			Err(error) => outputs.push(Output {
-				path,
-				format: plan.format.clone(),
-				state: OutputState::Failed,
-				bytes: None,
-				tier: plan.tier,
-				identity: None,
-				stderr: None,
-				error: Some(JobError {
-					code: error.code().to_string(),
-					message: error.to_string(),
-				}),
-			}),
+			Err(error) => {
+				output_gate.observe(&error);
+				outputs.push(Output {
+					path,
+					format: plan.format.clone(),
+					state: OutputState::Failed,
+					bytes: None,
+					tier: plan.tier,
+					fidelity: plan.fidelity.clone(),
+					identity: None,
+					stderr: None,
+					error: Some(JobError {
+						code: error.code().to_string(),
+						message: error.to_string(),
+					}),
+				});
+			}
 		}
 	}
 
-	let state = match outputs.iter().all(|output| output.state == OutputState::Done) {
-		true => JobState::Done,
-		false if outputs.iter().any(|output| output.state == OutputState::Done) => JobState::Partial,
-		false => JobState::Failed,
+	let state = if cancellation.is_superseded() {
+		JobState::Superseded
+	} else if cancellation.is_cancelled() {
+		JobState::Cancelled
+	} else if outputs.iter().all(|output| output.state == OutputState::Done) {
+		JobState::Done
+	} else if outputs.iter().any(|output| output.state == OutputState::Done) {
+		JobState::Partial
+	} else {
+		JobState::Failed
 	};
 
-	let resumed = Job {
+	let mut resumed = Job {
 		id: job.id.clone(),
 		created: job.created,
 		updated: now_ms(),
@@ -172,13 +245,43 @@ pub fn run(shared: &Shared, machine: &str, job: &Job, force: bool) -> Result<Job
 		error: None,
 		parked: None,
 		consume_source: job.consume_source,
+		source_disposition: None,
+		admission: job.admission.clone(),
 	};
 
-	crate::daemon::watcher::persist(shared, &resumed)?;
 	if state == JobState::Done {
-		store.finish(&job.id)?;
+		let fingerprint = ledger
+			.source_fingerprint
+			.as_ref()
+			.ok_or_else(|| unavailable("no recorded source fingerprint"))?
+			.clone();
+		let completion = super::disposition::Completion {
+			source: super::disposition::Source::Live {
+				path: &job.source.path,
+				fingerprint: &fingerprint,
+			},
+			recovery,
+			requested_outputs: plans.len(),
+			validation_failure: None,
+		};
+		resumed = match super::disposition::finish_done(shared, resumed, completion, cancellation) {
+			Ok(recorded) => recorded.into_job(),
+			Err(failure) => {
+				super::watcher::report_unrecorded_completion(shared, &failure.job, &failure.error);
+				return Err(failure.error);
+			}
+		};
+	} else {
+		if let Err(error) = crate::daemon::watcher::persist(shared, &resumed) {
+			super::watcher::report_unrecorded_completion(shared, &resumed, &error);
+			return Err(error);
+		}
+		if state == JobState::Cancelled {
+			super::cancel::finish_after_persist(shared, Ok(recovery), &mut resumed);
+		} else {
+			drop(recovery);
+		}
 	}
-	drop(lease);
 	crate::daemon::watcher::publish_persisted(shared, &resumed);
 	Ok(state)
 }

@@ -3,9 +3,9 @@
 //! Rules are in `docs/dev/architecture/state.md` §4. The ones that shape this module: records are
 //! never edited, a snapshot is written per transition, replay is last wins per
 //! id, a torn trailing line is a write that was interrupted and is dropped,
-//! anything unparseable before the end is corruption and the file is moved
-//! aside, and a record from another schema version is skipped so a downgrade
-//! still starts.
+//! anything unparseable before the end is corruption and the file is copied
+//! aside before readable records replace it. A record from another schema version
+//! is skipped so a downgrade still starts.
 
 use std::collections::HashMap;
 use std::fs;
@@ -39,6 +39,13 @@ pub struct Compact {
 pub struct Journal {
 	path: PathBuf,
 	file: fs::File,
+	health: JournalHealth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JournalHealth {
+	Writable,
+	Unavailable,
 }
 
 /// What a replay found. Every flag here is something a caller should report
@@ -51,21 +58,21 @@ pub struct Replay {
 	pub torn: bool,
 	/// Records carrying a schema version this build does not read.
 	pub skipped_versions: usize,
-	/// Where the previous journal was moved after corruption was found.
+	/// Where the damaged journal was copied after corruption was found.
 	pub quarantined: Option<PathBuf>,
 }
 
 impl Journal {
 	/// Open the journal, replaying whatever is already there.
 	///
-	/// Corruption is handled here rather than by the caller because it changes
-	/// the file: the damaged journal is moved aside and a new one is started, so
-	/// the next append cannot extend a file that would fail to replay again.
+	/// Corruption is handled here rather than by the caller: the damaged journal is
+	/// copied aside before readable records replace it, so the next append cannot
+	/// extend a file that would fail to replay again.
 	pub fn open(path: &Path) -> Result<(Self, Replay)> {
 		let replay = replay(path)?;
 
 		if let Some(quarantined) = &replay.quarantined {
-			fs::rename(path, quarantined)?;
+			quarantine_copy(path, quarantined)?;
 		} else if replay.torn {
 			// Drop the partial line before opening for append. Leaving it would make
 			// it a non-trailing line as soon as the next record is written, which
@@ -81,13 +88,16 @@ impl Journal {
 		let file = fs::OpenOptions::new().create(true).append(true).open(path)?;
 		set_private_file(&file)?;
 
-		Ok((
-			Self {
-				path: path.to_path_buf(),
-				file,
-			},
-			replay,
-		))
+		let mut journal = Self {
+			path: path.to_path_buf(),
+			file,
+			health: JournalHealth::Writable,
+		};
+		if replay.quarantined.is_some() {
+			journal.rewrite(&replay.jobs)?;
+		}
+
+		Ok((journal, replay))
 	}
 
 	/// Rewrite the journal down to its live records, dropping those past the
@@ -110,7 +120,11 @@ impl Journal {
 		let cutoff = now_ms() - horizon.as_millis() as i64;
 		let total = replay.jobs.len();
 
-		let kept: Vec<Job> = replay.jobs.into_iter().filter(|job| job.updated >= cutoff).collect();
+		let kept: Vec<Job> = replay
+			.jobs
+			.into_iter()
+			.filter(|job| job.updated >= cutoff || is_unresolved(job))
+			.collect();
 		let dropped = total - kept.len();
 
 		self.rewrite(&kept)?;
@@ -131,29 +145,31 @@ impl Journal {
 	/// Write `jobs` to a temporary file and rename it into place, then reopen the
 	/// handle, which now points at the replacement.
 	fn rewrite(&mut self, jobs: &[Job]) -> Result<()> {
-		let temp = self.path.with_file_name(format!(
-			"{}.compact",
-			self.path.file_name().unwrap_or_default().to_string_lossy()
-		));
-		let mut text = String::new();
+		self.rewrite_with(jobs, |path| fs::OpenOptions::new().append(true).open(path))
+	}
 
-		for job in jobs {
-			text.push_str(&job.to_line()?);
-			text.push('\n');
+	fn rewrite_with(&mut self, jobs: &[Job], reopen: impl FnOnce(&Path) -> std::io::Result<fs::File>) -> Result<()> {
+		if self.health == JournalHealth::Unavailable {
+			return Err(journal_unavailable());
 		}
+		let result = self.rewrite_inner(jobs, reopen);
+		if result.is_err() {
+			self.health = JournalHealth::Unavailable;
+		}
+		result
+	}
 
-		let mut replacement = fs::OpenOptions::new()
-			.write(true)
-			.create(true)
-			.truncate(true)
-			.open(&temp)?;
-		set_private_file(&replacement)?;
-		replacement.write_all(text.as_bytes())?;
-		replacement.sync_data()?;
+	fn rewrite_inner(&mut self, jobs: &[Job], reopen: impl FnOnce(&Path) -> std::io::Result<fs::File>) -> Result<()> {
+		let text = serialize_jobs(jobs)?;
 		self.file.sync_all()?;
-
-		crate::fsx::rename(&temp, &self.path)?;
-		self.file = fs::OpenOptions::new().append(true).open(&self.path)?;
+		crate::convert::write_atomically(&self.path, |temporary| {
+			let mut replacement = fs::OpenOptions::new().write(true).create_new(true).open(temporary)?;
+			set_private_file(&replacement)?;
+			replacement.write_all(text.as_bytes())?;
+			replacement.sync_all()?;
+			Ok(())
+		})?;
+		self.file = reopen(&self.path)?;
 		Ok(())
 	}
 
@@ -161,19 +177,62 @@ impl Journal {
 		&self.path
 	}
 
-	/// Append one snapshot, syncing it when the transition is one the product
-	/// promises to survive a power loss.
+	/// Append and sync one snapshot. A failed write blocks further appends until reopen.
 	pub fn append(&mut self, job: &Job) -> Result<()> {
+		if self.health == JournalHealth::Unavailable {
+			return Err(journal_unavailable());
+		}
+		let result = self.append_inner(job);
+		if result.is_err() {
+			self.health = JournalHealth::Unavailable;
+		}
+		result
+	}
+
+	fn append_inner(&mut self, job: &Job) -> Result<()> {
 		let mut line = job.to_line()?;
 		line.push('\n');
 		self.file.write_all(line.as_bytes())?;
 		self.file.flush()?;
-
 		self.file.sync_all()?;
 		crate::fsx::sync_directory(self.path.parent().unwrap_or(Path::new(".")))?;
-
 		Ok(())
 	}
+}
+
+fn journal_unavailable() -> Error {
+	std::io::Error::other("journal unavailable after a write failure; restart to recover").into()
+}
+
+fn quarantine_copy(path: &Path, destination: &Path) -> Result<()> {
+	let mut source = fs::File::open(path)?;
+	let mut backup = fs::OpenOptions::new().write(true).create_new(true).open(destination)?;
+	set_private_file(&backup)?;
+	std::io::copy(&mut source, &mut backup)?;
+	backup.sync_all()?;
+	crate::fsx::sync_directory(destination.parent().unwrap_or(Path::new(".")))?;
+	Ok(())
+}
+
+fn serialize_jobs(jobs: &[Job]) -> Result<String> {
+	let mut text = String::new();
+	for job in jobs {
+		text.push_str(&job.to_line()?);
+		text.push('\n');
+	}
+	Ok(text)
+}
+
+fn is_unresolved(job: &Job) -> bool {
+	!matches!(
+		job.state,
+		crate::job::JobState::Done | crate::job::JobState::Cancelled | crate::job::JobState::Superseded
+	) || (job.state == crate::job::JobState::Cancelled
+		&& (job.error.is_some()
+			|| job
+				.outputs
+				.iter()
+				.any(|output| output.state == crate::job::OutputState::Done)))
 }
 
 /// Remove the incomplete line at the end of the journal.
@@ -304,6 +363,7 @@ mod tests {
 			format: "heic".to_string(),
 			size: 2_431_002,
 			mtime_ns: 1_690_000_000_000,
+			fingerprint: None,
 		};
 		let output = Output::pending(PathBuf::from("/home/u/Pictures/a.jpg"), "jpg", Tier::Converted);
 
@@ -321,6 +381,7 @@ mod tests {
 			// Four records for one job, plus an old job of its own: enough
 			// supersession to earn a rewrite, and one record old enough to drop.
 			let mut old = job();
+			old.state = JobState::Done;
 			old.updated = now_ms() - 20 * month;
 			journal.append(&old).unwrap();
 
@@ -344,6 +405,70 @@ mod tests {
 		let (_, replay) = Journal::open(&path).unwrap();
 		assert_eq!(replay.jobs.len(), 1);
 		assert!(journal.path().exists());
+	}
+
+	#[test]
+	fn compaction_keeps_unresolved_jobs_past_the_history_horizon() {
+		let (_dir, path) = path();
+		let (mut journal, _) = Journal::open(&path).unwrap();
+		let mut expected = Vec::new();
+		for state in [
+			JobState::Pending,
+			JobState::NeedsAttention,
+			JobState::Queued,
+			JobState::Running,
+			JobState::Partial,
+			JobState::Failed,
+		] {
+			let mut unresolved = job();
+			unresolved.state = state;
+			unresolved.updated = now_ms() - 60 * 24 * 60 * 60 * 1_000;
+			expected.push(unresolved.id.clone());
+			journal.append(&unresolved).unwrap();
+		}
+		let mut warned = job();
+		warned.state = JobState::Cancelled;
+		warned.updated = now_ms() - 60 * 24 * 60 * 60 * 1_000;
+		warned.error = Some(crate::job::JobError::new(
+			"E_JOB_RESUME_UNAVAILABLE",
+			"undo needs attention",
+		));
+		expected.push(warned.id.clone());
+		journal.append(&warned).unwrap();
+		let mut cancelled_with_output = job();
+		cancelled_with_output.state = JobState::Cancelled;
+		cancelled_with_output.updated = warned.updated;
+		let mut output = crate::job::Output::pending(PathBuf::from("result.zip"), "zip", crate::job::Tier::Converted);
+		output.state = crate::job::OutputState::Done;
+		cancelled_with_output.outputs.push(output);
+		expected.push(cancelled_with_output.id.clone());
+		journal.append(&cancelled_with_output).unwrap();
+		let current = job();
+		for _ in 0..12 {
+			journal.append(&current).unwrap();
+		}
+
+		let compact = journal.compact(Duration::from_secs(7 * 24 * 60 * 60)).unwrap();
+		let kept = compact.kept.expect("the file earned a rewrite");
+		assert_eq!(compact.dropped, 0);
+		for id in expected {
+			assert!(kept.iter().any(|job| job.id == id), "unresolved job {id} was dropped");
+		}
+	}
+
+	#[test]
+	fn compaction_does_not_overwrite_a_preexisting_fixed_temp_path() {
+		let (_dir, path) = path();
+		let (mut journal, _) = Journal::open(&path).unwrap();
+		let job = job();
+		for _ in 0..3 {
+			journal.append(&job).unwrap();
+		}
+		let existing = path.with_file_name("jobs.jsonl.compact");
+		fs::write(&existing, b"unrelated data").unwrap();
+
+		assert!(journal.compact(Duration::from_secs(60)).unwrap().kept.is_some());
+		assert_eq!(fs::read(existing).unwrap(), b"unrelated data");
 	}
 
 	#[test]
@@ -492,8 +617,90 @@ mod tests {
 
 		let (_journal, replay) = Journal::open(&path).unwrap();
 
-		assert_eq!(replay.jobs.len(), 1, "the new journal starts empty");
+		assert_eq!(replay.jobs.len(), 2, "readable records survive the quarantine");
+		assert_eq!(replay.jobs[0].id, first.id);
+		assert_eq!(replay.jobs[1].id, second.id);
 		assert!(replay.quarantined.is_none());
+	}
+
+	#[test]
+	fn quarantine_never_overwrites_an_existing_copy() {
+		let (_dir, path) = path();
+		fs::create_dir_all(path.parent().unwrap()).unwrap();
+		fs::write(&path, b"damaged journal").unwrap();
+		let backup = path.with_extension("corrupt");
+		fs::write(&backup, b"existing backup").unwrap();
+
+		assert!(quarantine_copy(&path, &backup).is_err());
+		assert_eq!(fs::read(&path).unwrap(), b"damaged journal");
+		assert_eq!(fs::read(&backup).unwrap(), b"existing backup");
+	}
+
+	#[test]
+	fn a_write_failure_disables_later_appends_until_reopen() {
+		let (_dir, path) = path();
+		let (mut journal, _) = Journal::open(&path).unwrap();
+		journal.file = fs::File::open(&path).unwrap();
+		assert!(journal.append(&job()).is_err());
+
+		journal.file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+		let error = journal.append(&job()).unwrap_err();
+		assert!(error.to_string().contains("journal unavailable"));
+		assert!(fs::read(&path).unwrap().is_empty());
+
+		let (mut reopened, _) = Journal::open(&path).unwrap();
+		reopened.append(&job()).unwrap();
+		assert!(!fs::read(&path).unwrap().is_empty());
+	}
+
+	#[test]
+	fn a_failed_rewrite_disables_appends_to_the_old_journal_handle() {
+		let (_dir, path) = path();
+		let (mut journal, _) = Journal::open(&path).unwrap();
+		let initial = job();
+		journal.append(&initial).unwrap();
+		let moved = path.with_extension("old");
+		fs::copy(&path, &moved).unwrap();
+		journal.file = fs::OpenOptions::new().append(true).open(&moved).unwrap();
+		fs::remove_file(&path).unwrap();
+		fs::create_dir(&path).unwrap();
+
+		assert!(journal.rewrite(std::slice::from_ref(&initial)).is_err());
+		let previous = fs::read(&moved).unwrap();
+		let error = journal.append(&initial).unwrap_err();
+		assert!(error.to_string().contains("journal unavailable"));
+		assert_eq!(fs::read(moved).unwrap(), previous);
+	}
+
+	#[test]
+	fn a_reopen_failure_after_replacement_blocks_appends_until_an_explicit_reopen() {
+		let (_dir, path) = path();
+		let (mut journal, _) = Journal::open(&path).unwrap();
+		let initial = job();
+		journal.append(&initial).unwrap();
+		let mut replacement = initial.clone();
+		replacement.set_state(JobState::Done);
+
+		let error = journal
+			.rewrite_with(std::slice::from_ref(&replacement), |_| {
+				Err(std::io::Error::other("injected reopen failure"))
+			})
+			.unwrap_err();
+		assert!(error.to_string().contains("injected reopen failure"));
+		assert!(
+			journal
+				.append(&initial)
+				.unwrap_err()
+				.to_string()
+				.contains("journal unavailable")
+		);
+		drop(journal);
+
+		let (mut reopened, replay) = Journal::open(&path).unwrap();
+		assert_eq!(replay.jobs.len(), 1);
+		assert_eq!(replay.jobs[0].state, JobState::Done);
+		reopened.append(&initial).unwrap();
+		assert_eq!(super::replay(&path).unwrap().jobs[0].state, JobState::Pending);
 	}
 
 	#[test]

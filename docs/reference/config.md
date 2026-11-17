@@ -51,7 +51,8 @@ Merge rules per key type:
 | Table | Merged key by key, recursively |
 | Array | Replaced whole, never concatenated |
 | Scalar | Replaced |
-| Entry with `enabled = false` | Removed from the merged result |
+| Nested entry with `enabled = false` | Removed from the merged result |
+| Top-level `[undo]` or `[notify]` with `enabled = false` | The policy is disabled |
 
 So a user who redefines one operation's `argv` keeps that operation's slot, parameter class and format applicability, because those keys are not present in the override. To change them is to define a different operation under a name that is already taken, which is rejected as `E_CFG_VALIDATION`.
 
@@ -293,6 +294,7 @@ Host-level, never per-directory: a `.retype.toml` committed to a repository must
 enabled = true
 retention = '1w'
 quota = '5gb'
+admission = 'stop-after'
 on_overflow = 'ask'
 ```
 
@@ -300,16 +302,21 @@ on_overflow = 'ask'
 |---|---|---|
 | `enabled` | `true` | Keep records at all. Taking effect for future jobs, because a record has to exist at conversion time |
 | `retention` | `1w` | Age after which a record is dropped |
-| `quota` | `5gb` | Upper bound for the store, counted in source bytes |
-| `on_overflow` | `ask` | `ask`, `evict` or `skip`, `docs/dev/architecture/state.md` §5.5 |
+| `quota` | `5gb` | Soft goal counted in retained and reserved source bytes |
+| `admission` | `stop-after` | Admit the crossing job, then hold new work; `stop-before` holds any job that would cross the goal |
+| `on_overflow` | `ask` | `ask` and legacy `evict` hold work at the goal without early eviction. Explicit `skip` retains the live original and omits a new backup when it would not fit |
 
 `retention` is read as the grammar's duration class, so it is spelled the way an intent spells one: `w`, `d`, `h`, `m` and `s`, in that order, and a unit may be skipped. Months are not a unit, because a month is not a fixed number of seconds. `quota` is read as the size class, so `gb` is decimal and `gib` binary, `docs/reference/intents.md` §7.
 
-Retention expires completed, unpinned undo records. Unfinished recovery records remain pinned against both expiry and quota eviction, including across restart. A record also stays pinned when a failed disposal cannot prove the live source is still the original, because the backup may then be the only copy. A successful resume releases the pin but retains its backup. Disabling undo, insufficient quota, or unexpected backup failure retains the live original rather than silently permitting permanent removal, `docs/dev/architecture/state.md` §5.
+Time-based retention starts when a job completes, including after a successful resume. An older record without a known retention start is not assumed expired. Unfinished recovery records remain pinned against both expiry and quota eviction, including across restart. A record also stays pinned when a failed disposal cannot prove the live source is still the original, because the backup may then be the only copy. Disabling undo or insufficient quota retains the live original rather than permitting permanent removal. An input-snapshot or undo-storage error stops the job before conversion, `docs/dev/architecture/state.md` §5.
 
-The quota is a second, independent bound: retention bounds records by age and the quota bounds them by size. `ask` is the intended answer and behaves as `evict` until notifications exist to ask with.
+With `stop-after`, a store holding 4.8 GB can admit a 400 MB job at a 5 GB goal. That job keeps its backup; the store reports 5.2 GB held and subsequent work waits. `stop-before` holds that job before conversion. Reservations are durable and counted once with retained records, so concurrent admissions cannot each claim the same remaining room. Incomplete reservations stay protected after interruption rather than being assumed redundant.
 
-The journal outlives them. It is compacted at startup when it earns it, dropping records past twice the retention with a floor of thirty days, `docs/dev/architecture/state.md` §4.
+Waiting jobs report `needs-attention` with reason `storage` and no deadline. Safely expired records, an explicit cleanup, or a larger quota can make room; the daemon rechecks the recorded input before retrying. `jobs resolve --now` retries admission and does not bypass the goal. `status` reports retained bytes, reservations, the goal and overage; status, cancel, undo and resume remain available. No overflow setting permits automatic early eviction. `quota = '0kb'` holds new backup-requiring work; `enabled = false` remains a deliberate no-undo choice.
+
+The goal counts original source bytes, not temporary snapshots, output stages or converter workspace. Actual storage exhaustion is `E_IO_SPACE` and stops safely; it never authorizes eviction or skipping a required backup. Interactive early-eviction prompts are not implemented.
+
+The journal outlives them. It is compacted at startup when it earns it, dropping resolved records past twice the retention with a floor of thirty days. Unresolved jobs remain in the journal beyond that horizon, `docs/dev/architecture/state.md` §4.
 
 ## 10. Deferral
 

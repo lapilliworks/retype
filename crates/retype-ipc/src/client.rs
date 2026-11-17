@@ -5,9 +5,8 @@
 //! above this module is transport independent.
 
 use std::io::BufReader;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -16,26 +15,28 @@ use serde_json::Value;
 
 use retype_core::error::Code;
 
-use crate::{FrameError, Hello, HelloResult, IPC_VERSION, Request, Response, WireError, read_frame, write_frame};
+use crate::{Hello, HelloResult, IPC_VERSION, Request, Response, WireError};
+
+#[cfg(test)]
+mod tests;
+mod transport;
 
 /// How long a request waits for its answer, `docs/dev/architecture/ipc.md` §5.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[cfg(unix)]
-type Stream = std::os::unix::net::UnixStream;
-
-#[cfg(windows)]
-type Stream = std::fs::File;
-
 #[derive(Debug)]
 pub struct Client {
-	writer: Stream,
-	/// A clone kept only so a timed-out or dropped client can unblock its reader.
-	cancel: Stream,
-	frames: Receiver<Result<Option<Value>, FrameError>>,
+	connection: Connection,
 	next_id: u64,
 	daemon: Option<HelloResult>,
-	timed_out: bool,
+	endpoint: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+enum Connection {
+	Ready(BufReader<transport::Stream>),
+	Unavailable,
+	TimedOut,
 }
 
 /// A line of wire detail for `-vv`, set once by the CLI. A function pointer
@@ -52,47 +53,26 @@ fn trace(line: String) {
 	}
 }
 
+fn local_path(path: &Path) -> Result<PathBuf, ClientError> {
+	std::path::absolute(path).map_err(ClientError::LocalPath)
+}
+
 impl Client {
 	/// Connect to a socket path or a pipe name. No greeting is sent yet.
-	///
-	/// Reading happens on a small thread so a request can time out on every
-	/// transport. A Windows named pipe has no read timeout, and a client that
-	/// blocks its caller for ever is worse than one that closes the connection.
 	pub fn connect(endpoint: &Path) -> Result<Self, ClientError> {
-		let stream = open(endpoint).map_err(ClientError::Connect)?;
-		let reader = stream.try_clone().map_err(ClientError::Connect)?;
-		let cancel = stream.try_clone().map_err(ClientError::Connect)?;
-		let (sender, frames) = mpsc::channel();
+		let stream = transport::open(endpoint).map_err(ClientError::Connect)?;
+		let mut client = Self::from_stream(stream);
+		client.endpoint = Some(endpoint.to_path_buf());
+		Ok(client)
+	}
 
-		std::thread::spawn(move || {
-			let mut reader = BufReader::new(reader);
-			loop {
-				match read_frame(&mut reader) {
-					Ok(Some(frame)) => {
-						if sender.send(Ok(Some(frame))).is_err() {
-							return;
-						}
-					}
-					Ok(None) => {
-						let _ = sender.send(Ok(None));
-						return;
-					}
-					Err(error) => {
-						let _ = sender.send(Err(error));
-						return;
-					}
-				}
-			}
-		});
-
-		Ok(Self {
-			writer: stream,
-			cancel,
-			frames,
+	fn from_stream(stream: transport::Stream) -> Self {
+		Self {
+			connection: Connection::Ready(BufReader::new(stream)),
 			next_id: 1,
 			daemon: None,
-			timed_out: false,
-		})
+			endpoint: None,
+		}
 	}
 
 	/// Greet the daemon and keep what it says about itself.
@@ -142,10 +122,14 @@ impl Client {
 	}
 
 	pub fn watch_add(&mut self, request: &crate::WatchAdd) -> Result<crate::Watch, ClientError> {
+		let mut request = request.clone();
+		request.path = local_path(&request.path)?;
 		self.typed("watch.add", request)
 	}
 
 	pub fn watch_remove(&mut self, request: &crate::WatchRemove) -> Result<crate::WatchRemoved, ClientError> {
+		let mut request = request.clone();
+		request.path = local_path(&request.path)?;
 		self.typed("watch.remove", request)
 	}
 
@@ -153,8 +137,25 @@ impl Client {
 		self.typed_without_params("watch.list")
 	}
 
+	/// Read every bounded page without changing the caller's listing order.
 	pub fn jobs_list(&mut self) -> Result<crate::JobList, ClientError> {
-		self.typed_without_params("jobs.list")
+		let mut listing = crate::JobList::default();
+		let mut offset = 0;
+		loop {
+			let page = self.jobs_list_page(&crate::JobListRequest { offset, limit: None })?;
+			listing.jobs.extend(page.jobs);
+			let Some(next) = page.next_offset else {
+				return Ok(listing);
+			};
+			if next <= offset {
+				return Err(ClientError::Protocol("job pagination did not advance".to_string()));
+			}
+			offset = next;
+		}
+	}
+
+	pub fn jobs_list_page(&mut self, request: &crate::JobListRequest) -> Result<crate::JobList, ClientError> {
+		self.typed("jobs.list", request)
 	}
 
 	pub fn jobs_get(&mut self, id: &str) -> Result<retype_core::job::Job, ClientError> {
@@ -163,7 +164,33 @@ impl Client {
 	}
 
 	pub fn jobs_submit(&mut self, request: &crate::JobSubmit) -> Result<crate::JobSubmitted, ClientError> {
-		self.typed("jobs.submit", request)
+		let mut request = request.clone();
+		request.input = local_path(&request.input)?;
+		request.output = request.output.as_deref().map(local_path).transpose()?;
+		if !self
+			.daemon
+			.as_ref()
+			.is_some_and(|daemon| daemon.features.iter().any(|feature| feature == "jobs.submit.id"))
+		{
+			return self.typed("jobs.submit", request);
+		}
+		let id = retype_core::job::JobId::now().map_err(|error| ClientError::Protocol(error.to_string()))?;
+		let mut params = serde_json::to_value(request).map_err(|error| ClientError::Protocol(error.to_string()))?;
+		params["job_id"] = serde_json::json!(id);
+		match self.typed("jobs.submit", params) {
+			Ok(submitted) => Ok(submitted),
+			Err(error @ ClientError::Rpc(_)) => Err(error),
+			Err(error) => {
+				let mut response = WireError::new(
+					Code::IpcUnavailable,
+					format!(
+						"submission acknowledgement for {id} was lost: {error}; check `retype jobs get {id}` before retrying"
+					),
+				);
+				response.detail = Some(Box::new(serde_json::json!({"id": id, "admission": "unknown"})));
+				Err(ClientError::Rpc(Box::new(response)))
+			}
+		}
 	}
 
 	pub fn jobs_cancel(&mut self, id: &str) -> Result<crate::JobCancelled, ClientError> {
@@ -197,7 +224,60 @@ impl Client {
 	}
 
 	pub fn undo(&mut self, request: &crate::UndoRequest) -> Result<crate::Undone, ClientError> {
-		self.typed("undo", request)
+		if !self
+			.daemon
+			.as_ref()
+			.is_some_and(|daemon| daemon.features.iter().any(|feature| feature == "recovery"))
+		{
+			return self.typed("undo", request);
+		}
+		let id = retype_core::job::JobId::now().map_err(|error| ClientError::Protocol(error.to_string()))?;
+		let operation: crate::RecoveryOperation = self
+			.typed(
+				"recovery.undo",
+				serde_json::json!({"id": request.id, "last": request.last, "operation_id": id}),
+			)
+			.map_err(|error| recovery_error(error, &id))?;
+		let endpoint = self
+			.endpoint
+			.clone()
+			.ok_or_else(|| ClientError::Protocol("recovery polling requires a known endpoint".into()))?;
+		self.connection = Connection::Unavailable;
+		loop {
+			let mut client = Self::connect(&endpoint).map_err(|error| recovery_error(error, &operation.id))?;
+			client
+				.hello("retype-recovery")
+				.map_err(|error| recovery_error(error, &operation.id))?;
+			let current = client
+				.recovery_get(operation.id.as_str())
+				.map_err(|error| recovery_error(error, &operation.id))?;
+			match current.state {
+				crate::RecoveryState::Done => {
+					*self = client;
+					return current
+						.result
+						.ok_or_else(|| ClientError::Protocol("undo completed without a result".into()));
+				}
+				crate::RecoveryState::Failed | crate::RecoveryState::Cancelled => {
+					*self = client;
+					return Err(ClientError::Rpc(Box::new(current.error.unwrap_or_else(|| {
+						WireError::new(Code::JobInterrupted, "recovery did not complete")
+					}))));
+				}
+				_ => {
+					drop(client);
+					std::thread::sleep(Duration::from_millis(50));
+				}
+			}
+		}
+	}
+
+	pub fn recovery_get(&mut self, id: &str) -> Result<crate::RecoveryOperation, ClientError> {
+		self.typed("recovery.get", serde_json::json!({"id": id}))
+	}
+
+	pub fn recovery_cancel(&mut self, id: &str) -> Result<crate::RecoveryOperation, ClientError> {
+		self.typed("recovery.cancel", serde_json::json!({"id": id}))
 	}
 
 	pub fn undo_list(&mut self) -> Result<crate::UndoRecords, ClientError> {
@@ -226,35 +306,36 @@ impl Client {
 	}
 
 	fn request(&mut self, method: &str, params: Value) -> Result<Value, ClientError> {
-		if self.timed_out {
-			return Err(ClientError::Timeout(REQUEST_TIMEOUT));
+		self.request_with_timeout(method, params, REQUEST_TIMEOUT)
+	}
+
+	fn request_with_timeout(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value, ClientError> {
+		if matches!(self.connection, Connection::TimedOut) {
+			return Err(ClientError::Timeout(timeout));
 		}
 
 		let id = self.next_id;
 		self.next_id += 1;
-
 		let request = Request::new(id, method).with_params(params)?;
+		let Connection::Ready(stream) = std::mem::replace(&mut self.connection, Connection::Unavailable) else {
+			return Err(ClientError::Protocol(
+				"the connection is no longer available".to_string(),
+			));
+		};
 
 		trace(format!("request {method} #{id}"));
-		write_frame(&mut self.writer, &request)?;
-
-		let frame = match self.frames.recv_timeout(REQUEST_TIMEOUT) {
-			Ok(Ok(Some(frame))) => frame,
-			Ok(Ok(None)) => {
-				return Err(ClientError::Protocol(format!(
-					"the daemon closed the connection during '{method}'"
-				)));
-			}
-			Ok(Err(error)) => return Err(ClientError::Frame(error)),
-			Err(RecvTimeoutError::Timeout) => {
-				self.timed_out = true;
-				abort(&self.cancel);
-				return Err(ClientError::Timeout(REQUEST_TIMEOUT));
-			}
-			Err(RecvTimeoutError::Disconnected) => {
-				return Err(ClientError::Protocol("the reader stopped".to_string()));
+		let (stream, frame) = match transport::exchange(stream, request, timeout) {
+			Ok(result) => result,
+			Err(error) => {
+				if matches!(error, ClientError::Timeout(_)) {
+					self.connection = Connection::TimedOut;
+				}
+				return Err(error);
 			}
 		};
+		self.connection = Connection::Ready(stream);
+		let frame = frame?
+			.ok_or_else(|| ClientError::Protocol(format!("the daemon closed the connection during '{method}'")))?;
 
 		let response: Response =
 			serde_json::from_value(frame).map_err(|error| ClientError::Protocol(error.to_string()))?;
@@ -282,43 +363,13 @@ impl Client {
 	}
 }
 
-impl Drop for Client {
-	fn drop(&mut self) {
-		abort(&self.cancel);
-	}
-}
-
-#[cfg(unix)]
-fn abort(stream: &Stream) {
-	use std::net::Shutdown;
-	let _ = stream.shutdown(Shutdown::Both);
-}
-
-#[cfg(windows)]
-fn abort(stream: &Stream) {
-	use std::os::windows::io::AsRawHandle;
-	use windows_sys::Win32::System::IO::CancelIoEx;
-
-	unsafe {
-		CancelIoEx(stream.as_raw_handle() as _, std::ptr::null());
-	}
-}
-
-#[cfg(unix)]
-fn open(endpoint: &Path) -> std::io::Result<Stream> {
-	Stream::connect(endpoint)
-}
-
-#[cfg(windows)]
-fn open(endpoint: &Path) -> std::io::Result<Stream> {
-	std::fs::OpenOptions::new().read(true).write(true).open(endpoint)
-}
-
 #[derive(Debug)]
 pub enum ClientError {
 	/// The endpoint could not be reached, which is the answer that makes a
 	/// caller consider spawning a daemon.
 	Connect(std::io::Error),
+	/// A request path could not be resolved in the client process.
+	LocalPath(std::io::Error),
 	Frame(crate::FrameError),
 	/// The daemon answered with a code, `docs/dev/architecture/ipc.md` §8.
 	Rpc(Box<WireError>),
@@ -331,6 +382,7 @@ impl std::fmt::Display for ClientError {
 	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			Self::Connect(error) => write!(formatter, "cannot reach the daemon: {error}"),
+			Self::LocalPath(error) => write!(formatter, "cannot resolve request path: {error}"),
 			Self::Frame(error) => write!(formatter, "{error}"),
 			Self::Rpc(error) => write!(formatter, "{}: {}", error.code, error.message),
 			Self::Timeout(timeout) => write!(formatter, "the daemon did not answer within {} ms", timeout.as_millis()),
@@ -348,9 +400,21 @@ impl From<crate::FrameError> for ClientError {
 }
 
 impl ClientError {
-	/// Whether the daemon is simply not there, as opposed to broken.
+	/// Whether the daemon's connection slot remained busy after the bounded wait.
+	pub fn is_connection_busy(&self) -> bool {
+		matches!(self, Self::Connect(error) if transport::is_connection_busy(error))
+	}
+
+	/// Whether connection failed or timed out, excluding an explicitly busy slot.
+	pub fn is_disconnected(&self) -> bool {
+		self.is_unavailable()
+			|| matches!(self, Self::Frame(crate::FrameError::Closed | crate::FrameError::Io(_)))
+			|| matches!(self, Self::Protocol(message) if message.starts_with("the daemon closed the connection"))
+	}
+
 	pub fn is_unavailable(&self) -> bool {
-		matches!(self, Self::Connect(_) | Self::Timeout(_))
+		matches!(self, Self::Connect(error) if !transport::is_connection_busy(error))
+			|| matches!(self, Self::Timeout(_))
 	}
 
 	pub fn code(&self) -> Option<&Code> {
@@ -359,6 +423,18 @@ impl ClientError {
 			_ => None,
 		}
 	}
+}
+
+fn recovery_error(error: ClientError, id: &retype_core::job::JobId) -> ClientError {
+	if matches!(error, ClientError::Rpc(_)) {
+		return error;
+	}
+	let mut response = WireError::new(
+		Code::IpcUnavailable,
+		format!("recovery {id}: {error}; inspect `retype recovery {id}` before retrying"),
+	);
+	response.detail = Some(Box::new(serde_json::json!({"recovery": id, "outcome": "unknown"})));
+	ClientError::Rpc(Box::new(response))
 }
 
 /// The version refusal is worth recognising on its own, because a client that

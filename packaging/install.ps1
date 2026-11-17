@@ -41,10 +41,11 @@
 	}
 
 	if ($Version -eq 'latest') {
-		$api = "https://api.github.com/repos/$Repo/releases/latest"
-		$release = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'retype-installer' }
+		$api = "https://api.github.com/repos/$Repo/releases?per_page=100"
+		$releases = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'retype-installer' }
+		$release = $releases | Where-Object { -not $_.draft } | Select-Object -First 1
 		$Tag = $release.tag_name
-		if (-not $Tag) { throw "Could not find a tag in the latest release response from $api" }
+		if (-not $Tag) { throw "Could not find a tag in the published release response from $api" }
 	} elseif ($Version.StartsWith('v')) {
 		$Tag = $Version
 	} else {
@@ -67,6 +68,12 @@
 	$temp = Join-Path ([System.IO.Path]::GetTempPath()) ("retype-install-" + [guid]::NewGuid().ToString('N'))
 	New-Item -ItemType Directory -Path $temp | Out-Null
 
+	$stagedBin = $null
+	$stagedShare = $null
+	$backup = $null
+	$changedBin = $false
+	$changedShare = $false
+	$hadShare = $false
 	try {
 		$sumsPath = Join-Path $temp 'SHA256SUMS'
 		Invoke-WebRequest -UseBasicParsing -Uri "$Base/SHA256SUMS" -OutFile $sumsPath
@@ -111,24 +118,32 @@
 			if ($running) { throw 'retype is running. Stop the daemon before updating.' }
 		}
 
-		$stagedBin = Join-Path $binDir ".retype.$PID.tmp"
-		Copy-Item -LiteralPath $sourceBinary -Destination $stagedBin -Force
-		Move-Item -LiteralPath $stagedBin -Destination $targetBinary -Force
-
-		$stagedShare = Join-Path $shareParent ".retype.$PID"
-		if (Test-Path -LiteralPath $stagedShare) { Remove-Item -Recurse -Force -LiteralPath $stagedShare }
+		$stageId = [guid]::NewGuid().ToString('N')
+		$stagedBin = Join-Path $binDir ".retype.$stageId.exe"
+		Copy-Item -LiteralPath $sourceBinary -Destination $stagedBin
+		$stagedShare = Join-Path $shareParent ".retype.$stageId"
 		New-Item -ItemType Directory -Path $stagedShare | Out-Null
 		$sourceShare = Join-Path $source 'share\retype'
 		if (Test-Path -LiteralPath $sourceShare -PathType Container) {
 			Copy-Item -Path (Join-Path $sourceShare '*') -Destination $stagedShare -Recurse -Force
 		}
-		if (Test-Path -LiteralPath $shareDir) { Remove-Item -Recurse -Force -LiteralPath $shareDir }
-		Move-Item -LiteralPath $stagedShare -Destination $shareDir
+		$output = & $stagedBin --version 2>&1
+		if ($LASTEXITCODE -ne 0) { throw "The staged binary does not run; installation unchanged: $output" }
 
-		$output = & $targetBinary --version 2>&1
-		if ($LASTEXITCODE -ne 0) {
-			throw "Installed $targetBinary, but it does not run: $output"
+		# Retain the previous installation on the destination filesystem after success.
+		$backup = Join-Path $shareParent "retype-backup-$stageId"
+		New-Item -ItemType Directory -Path $backup | Out-Null
+		if (Test-Path -LiteralPath $targetBinary) {
+			Copy-Item -LiteralPath $targetBinary -Destination (Join-Path $backup 'retype.exe')
 		}
+		$hadShare = Test-Path -LiteralPath $shareDir
+		$changedShare = $true
+		if ($hadShare) { Move-Item -LiteralPath $shareDir -Destination (Join-Path $backup 'share') }
+		Move-Item -LiteralPath $stagedShare -Destination $shareDir
+		$changedBin = $true
+		Move-Item -LiteralPath $stagedBin -Destination $targetBinary -Force
+		$output = & $targetBinary --version 2>&1
+		if ($LASTEXITCODE -ne 0) { throw "The installed binary does not run: $output" }
 
 		$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 		$entries = @()
@@ -146,8 +161,37 @@
 
 		Write-Host "retype installed at $targetBinary"
 		Write-Host "  $output"
+		Write-Host "Previous installation backup: $backup"
 		Write-Host ''
 		Write-Host 'Next: retype doctor'
+	} catch {
+		$failure = $_
+		if ($backup) {
+			try {
+				if ($changedBin) {
+					$previousBinary = Join-Path $backup 'retype.exe'
+					if (Test-Path -LiteralPath $previousBinary) {
+						Copy-Item -LiteralPath $previousBinary -Destination $stagedBin -Force
+						Move-Item -LiteralPath $stagedBin -Destination $targetBinary -Force
+					} elseif (Test-Path -LiteralPath $targetBinary) {
+						Remove-Item -LiteralPath $targetBinary -Force
+					}
+				}
+				if ($changedShare) {
+					$previousShare = Join-Path $backup 'share'
+					if (Test-Path -LiteralPath $previousShare) {
+						if (Test-Path -LiteralPath $shareDir) { Remove-Item -LiteralPath $shareDir -Recurse -Force }
+						Move-Item -LiteralPath $previousShare -Destination $shareDir
+					} elseif (-not $hadShare -and (Test-Path -LiteralPath $shareDir)) {
+						Remove-Item -LiteralPath $shareDir -Recurse -Force
+					}
+				}
+			} catch {
+				throw "Install failed: $failure. Rollback failed: $_. Recover the previous installation from $backup"
+			}
+			Write-Warning "Previous installation preserved; backup: $backup"
+		}
+		throw $failure
 	} finally {
 		foreach ($path in @($stagedBin, $stagedShare)) {
 			if ($path -and (Test-Path -LiteralPath $path)) {

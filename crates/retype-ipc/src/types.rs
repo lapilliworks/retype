@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use retype_core::error::Diagnostic;
-use retype_core::job::{Engine, Job, JobError, JobId, JobState, Output, Tier};
+use retype_core::job::{Engine, Job, JobError, JobId, JobState, Output, SourceDisposition, Tier};
 use retype_core::undo::Output as UndoOutput;
 use serde::{Deserialize, Serialize};
 
@@ -27,12 +27,19 @@ pub struct Watch {
 	pub available: bool,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub patterns: Vec<String>,
+	/// Installed watcher state, not just registration; absent on older daemons.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub status: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub problem: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchList {
 	#[serde(default)]
 	pub watches: Vec<Watch>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,9 +85,19 @@ pub struct Status {
 	#[serde(default)]
 	pub watches: Vec<Watch>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub watch_error: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub endpoint: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub supervised: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub undo: Option<retype_core::undo::Usage>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub undo_error: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub session: Option<serde_json::Value>,
+	#[serde(default)]
+	pub recovery_active: bool,
 }
 
 /// One row of `jobs.list`. `jobs.get` remains the full record.
@@ -109,6 +126,16 @@ pub struct JobSummary {
 pub struct JobList {
 	#[serde(default)]
 	pub jobs: Vec<JobSummary>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub next_offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobListRequest {
+	#[serde(default)]
+	pub offset: usize,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub limit: Option<usize>,
 }
 
 /// The journal record as `jobs.get` returns it, with its own schema marker.
@@ -167,6 +194,10 @@ pub struct JobCancelled {
 	pub cancelled: bool,
 	/// `cancelled` or `cancelling`; a running tool is stopped asynchronously.
 	pub state: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub warning: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub recovery: Option<JobId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +211,8 @@ pub struct JobResume {
 pub struct JobResumed {
 	pub id: JobId,
 	pub state: JobState,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub source_disposition: Option<SourceDisposition>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,6 +253,38 @@ pub struct Undone {
 	pub removed: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecoveryAction {
+	Undo,
+	Cancel,
+	Cleanup,
+	Reconcile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecoveryState {
+	Queued,
+	Running,
+	Done,
+	Failed,
+	Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecoveryOperation {
+	pub id: JobId,
+	pub job: JobId,
+	pub action: RecoveryAction,
+	pub state: RecoveryState,
+	pub updated: i64,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub result: Option<Undone>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub error: Option<crate::WireError>,
+}
+
 /// A retained record as the GUI's undo list needs it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UndoSummary {
@@ -235,6 +300,10 @@ pub struct UndoSummary {
 	pub pinned: bool,
 	#[serde(default)]
 	pub consume_source: bool,
+	#[serde(default)]
+	pub reserved: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub protection_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -370,6 +439,24 @@ mod tests {
 		assert_eq!(records.records.len(), 1);
 		assert_eq!(records.records[0].outputs[0].ext, "webp");
 		assert!(records.records[0].consume_source);
+	}
+
+	#[test]
+	fn cancellation_warnings_are_preserved_and_optional() {
+		let mut answer: JobCancelled = serde_json::from_value(json!({
+			"id": "01m6a4rararx3wrttkrgpp1783",
+			"cancelled": true,
+			"state": "cancelled",
+			"warning": "undo remains protected"
+		}))
+		.unwrap();
+		assert_eq!(answer.warning.as_deref(), Some("undo remains protected"));
+		assert_eq!(
+			serde_json::to_value(&answer).unwrap()["warning"],
+			"undo remains protected"
+		);
+		answer.warning = None;
+		assert!(serde_json::to_value(answer).unwrap().get("warning").is_none());
 	}
 
 	#[test]

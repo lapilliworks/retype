@@ -293,6 +293,7 @@ pub struct Plan {
 	/// The layout with `{ops}` expanded.
 	pub argv: Vec<Arg>,
 	pub tier: Tier,
+	pub fidelity: Option<crate::fidelity::Evidence>,
 	/// The engine that made it in: its name and the candidate that resolved it,
 	/// which is recorded with the job because the same intent with a different
 	/// engine is a different result.
@@ -414,6 +415,7 @@ fn plan_group(
 				command,
 				argv: Vec::new(),
 				tier: tier_of(registry, &group.format),
+				fidelity: None,
 				engine: None,
 			});
 		}
@@ -427,6 +429,7 @@ fn plan_group(
 			command: String::new(),
 			argv: Vec::new(),
 			tier: tier_of(registry, &group.format),
+			fidelity: None,
 			engine: None,
 		});
 	}
@@ -595,6 +598,7 @@ fn assemble<'a>(
 		command,
 		argv,
 		tier: tier_of(registry, &group.format),
+		fidelity: None,
 		engine,
 	})
 }

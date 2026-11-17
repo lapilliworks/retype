@@ -25,6 +25,7 @@ const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 pub struct Meta {
 	pub ask: bool,
 	pub now: bool,
+	pub keep: bool,
 }
 
 /// One output: a format, and the transformations asked of it.
@@ -496,15 +497,36 @@ mod tests {
 
 	#[test]
 	fn the_meta_suffixes_are_read_from_the_end() {
-		assert_eq!(parse("jpg!").unwrap().meta, Meta { ask: false, now: true });
-		assert_eq!(parse("jpg+").unwrap().meta, Meta { ask: true, now: false });
+		assert_eq!(
+			parse("jpg!").unwrap().meta,
+			Meta {
+				ask: false,
+				now: true,
+				keep: false
+			}
+		);
+		assert_eq!(
+			parse("jpg+").unwrap().meta,
+			Meta {
+				ask: true,
+				now: false,
+				keep: false
+			}
+		);
 	}
 
 	#[test]
 	fn asking_wins_over_demanding_now() {
 		let intent = parse("jpg+!").unwrap();
 
-		assert_eq!(intent.meta, Meta { ask: true, now: false });
+		assert_eq!(
+			intent.meta,
+			Meta {
+				ask: true,
+				now: false,
+				keep: false
+			}
+		);
 		assert_eq!(intent.warnings.len(), 1);
 		assert_eq!(intent.warnings[0].code, Code::MetaConflict);
 		assert_eq!(intent.warnings[0].span, Some(Span::new(3, 5)));

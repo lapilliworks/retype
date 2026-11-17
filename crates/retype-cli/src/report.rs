@@ -33,7 +33,19 @@ pub fn write(registry: &Registry, state_dir: &Path, output: Option<&Path>) -> Re
 	};
 
 	let text = render(registry, state_dir)?;
-	fs::write(&path, text)?;
+	let staged = retype_core::convert::StagedOutput::new(&path)?;
+	let mut options = fs::OpenOptions::new();
+	options.write(true).create_new(true);
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt;
+		options.mode(0o600);
+	}
+	let mut file = options.open(staged.temp())?;
+	std::io::Write::write_all(&mut file, text.as_bytes())?;
+	file.sync_all()?;
+	drop(file);
+	staged.commit()?;
 	Ok(path)
 }
 

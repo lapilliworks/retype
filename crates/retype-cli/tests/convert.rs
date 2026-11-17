@@ -92,6 +92,7 @@ impl Fixture {
 	fn convert(&self, args: &[&str]) -> std::process::Output {
 		retype()
 			.args(args)
+			.current_dir(self.dir.path())
 			.arg("--state-dir")
 			.arg(&self.state)
 			.env("RETYPE_CONFIG", &self.config)
@@ -115,6 +116,96 @@ fn converts_and_writes_beside_the_input() {
 	);
 	assert_eq!(fs::read(fixture.dir.path().join("photo.webp")).unwrap(), b"pixels");
 	assert!(String::from_utf8_lossy(&output.stdout).contains("photo.webp"));
+}
+
+#[test]
+fn a_noninteractive_explicit_ask_stays_pending_until_a_person_confirms() {
+	let fixture = Fixture::new();
+	let input = fixture.input();
+	let config = fs::read_to_string(&fixture.config).unwrap();
+	fs::write(&fixture.config, format!("{config}\n[deferral]\npause = '1s'\n")).unwrap();
+
+	let output = fixture.convert(&["convert", input.to_str().unwrap(), "webp+ask", "--json"]);
+	assert_eq!(
+		output.status.code(),
+		Some(7),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+	assert_eq!(answer["ok"], false);
+	assert_eq!(answer["error"]["detail"]["state"], "needs-attention");
+	let id = answer["error"]["detail"]["id"].as_str().unwrap();
+	std::thread::sleep(std::time::Duration::from_millis(2_200));
+	assert!(!fixture.dir.path().join("photo.webp").exists());
+	assert_eq!(fs::read(&input).unwrap(), b"pixels");
+
+	let confirmed = fixture.convert(&["jobs", "resolve", id, "--now"]);
+	assert!(
+		confirmed.status.success(),
+		"{}",
+		String::from_utf8_lossy(&confirmed.stderr)
+	);
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+	let output = fixture.dir.path().join("photo.webp");
+	while !output.exists() {
+		assert!(std::time::Instant::now() < deadline, "the confirmed job did not run");
+		std::thread::sleep(std::time::Duration::from_millis(50));
+	}
+	assert_eq!(fs::read(output).unwrap(), b"pixels");
+	loop {
+		let result = fixture.convert(&["jobs", "get", id]);
+		let job: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+		if job["state"] == "done" {
+			assert_eq!(job["parked"]["reason"], "ask");
+			break;
+		}
+		assert!(
+			std::time::Instant::now() < deadline,
+			"the confirmed job did not finish: {job}"
+		);
+		std::thread::sleep(std::time::Duration::from_millis(50));
+	}
+}
+
+#[test]
+fn an_explicit_ask_refuses_a_same_size_source_changed_while_waiting() {
+	let fixture = Fixture::new();
+	let input = fixture.input();
+	let output = fixture.convert(&["convert", input.to_str().unwrap(), "webp+ask", "--json"]);
+	assert_eq!(output.status.code(), Some(7));
+	let answer: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+	let id = answer["error"]["detail"]["id"].as_str().unwrap();
+	let modified = fs::metadata(&input).unwrap().modified().unwrap();
+	fs::write(&input, b"change").unwrap();
+	fs::OpenOptions::new()
+		.write(true)
+		.open(&input)
+		.unwrap()
+		.set_times(fs::FileTimes::new().set_modified(modified))
+		.unwrap();
+	let confirmed = fixture.convert(&["jobs", "resolve", id, "--now"]);
+	assert!(
+		confirmed.status.success(),
+		"{}",
+		String::from_utf8_lossy(&confirmed.stderr)
+	);
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+	loop {
+		let result = fixture.convert(&["jobs", "get", id]);
+		let job: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+		if job["state"] == "failed" {
+			assert_eq!(job["error"]["code"], "E_JOB_INTERRUPTED");
+			break;
+		}
+		assert!(
+			std::time::Instant::now() < deadline,
+			"the changed source was not refused: {job}"
+		);
+		std::thread::sleep(std::time::Duration::from_millis(50));
+	}
+	assert_eq!(fs::read(input).unwrap(), b"change");
+	assert!(!fixture.dir.path().join("photo.webp").exists());
 }
 
 #[test]
@@ -404,6 +495,7 @@ fn a_dry_run_honours_the_output_path_and_checks_the_source() {
 	assert_eq!(named.status.code(), Some(0));
 	assert!(stdout.contains("holiday.webp"), "{stdout}");
 	assert!(!fixture.dir.path().join("holiday.webp").exists());
+	assert!(!fixture.state.join("jobs.jsonl").exists(), "a dry run journals nothing");
 
 	let missing = fixture.convert(&["convert", "absent.png", "webp", "--dry-run"]);
 	assert_eq!(missing.status.code(), Some(5));
@@ -482,14 +574,10 @@ fn jobs_list_since_filters_older_records() {
 		Some(0)
 	);
 
-	// `jobs list` prints the shortest handle; `--since` takes the full id.
-	let first = String::from_utf8_lossy(&fixture.convert(&["jobs", "list", "--json"]).stdout)
-		.lines()
-		.filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-		.find(|job| job["source"].as_str().is_some_and(|path| path.contains("photo.png")))
-		.and_then(|job| job["id"].as_str().map(str::to_string))
-		.unwrap_or_default();
-	assert!(!first.is_empty());
+	let listed = fixture.convert(&["jobs", "list", "--json"]);
+	assert!(listed.status.success());
+	let first: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+	let first_id = first["id"].as_str().unwrap();
 
 	assert_eq!(
 		fixture
@@ -499,12 +587,19 @@ fn jobs_list_since_filters_older_records() {
 		Some(0)
 	);
 
-	let listed = fixture.convert(&["jobs", "list", "--since", &first]);
-	let stdout = String::from_utf8_lossy(&listed.stdout);
+	let listed = fixture.convert(&["jobs", "list", "--json"]);
+	assert!(listed.status.success());
+	let jobs: Vec<serde_json::Value> = String::from_utf8_lossy(&listed.stdout)
+		.lines()
+		.map(|line| serde_json::from_str(line).unwrap())
+		.collect();
+	assert_eq!(jobs.len(), 2);
+	let second = jobs.iter().find(|job| job["id"] != first_id).unwrap();
 
-	assert_eq!(listed.status.code(), Some(0));
-	assert!(!stdout.contains(&first), "since {first}: {stdout}");
-	assert_eq!(stdout.lines().count(), 1, "since {first}: {stdout}");
+	let listed = fixture.convert(&["jobs", "list", "--since", first_id, "--json"]);
+	assert!(listed.status.success());
+	let remaining: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+	assert_eq!(&remaining, second, "only the newer job remains");
 }
 
 #[test]

@@ -281,9 +281,10 @@ impl Channel {
 		{
 			let _ = actions;
 			if has_command("osascript") {
-				return Self::Plain;
+				Self::Plain
+			} else {
+				Self::Log
 			}
-			return Self::Log;
 		}
 
 		// Windows has a notifier wherever the shell does: the toast API is part of the
@@ -359,7 +360,7 @@ fn plain(message: &Message) -> Option<String> {
 			.output()
 			.ok()?;
 
-		return output.status.success().then(String::new);
+		output.status.success().then(String::new)
 	}
 
 	#[cfg(target_os = "windows")]
@@ -537,6 +538,7 @@ mod tests {
 				format: "heic".to_string(),
 				size: 0,
 				mtime_ns: 0,
+				fingerprint: None,
 			},
 			Some("jpg".to_string()),
 			vec![Output::pending(
@@ -571,6 +573,8 @@ mod tests {
 			corrected: None,
 			dropped: Vec::new(),
 			consume: true,
+			force: false,
+			input_fingerprint: None,
 		});
 
 		job

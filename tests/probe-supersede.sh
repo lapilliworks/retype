@@ -9,7 +9,7 @@
 #   holder     a running job holds the source name
 #   cancel     the job was stopped and recorded as superseded
 #
-# Usage: scripts/probe-supersede.sh [--keep] [trial ...]
+# Usage: tests/probe-supersede.sh [--keep] [trial ...]
 # Trials: renames supersede canonical (default: all three)
 #
 # --keep leaves the trees and their daemon logs in place and prints where.
@@ -225,7 +225,7 @@ CONFIG
 
 start() {
 	local tree=$1 deadline
-	RETYPE_CONFIG="$tree/retype.toml" "$bin" watch "$tree/photos" --state-dir "$tree/state" \
+	RETYPE_CONFIG="$tree/retype.toml" "$bin" watch --register "$tree/photos" --state-dir "$tree/state" \
 		>>"$tree/daemon.log" 2>&1 || return 1
 	RETYPE_CONFIG="$tree/retype.toml" RETYPE_LOG=debug "$bin" daemon --detached --state-dir "$tree/state" \
 		>>"$tree/daemon.log" 2>&1 &
@@ -259,7 +259,7 @@ enabled = false
 ignore = ['**']
 CONFIG
 
-	RETYPE_CONFIG="$tree/shadow.toml" "$bin" watch "$tree/photos" --state-dir "$tree/shadow-state" \
+	RETYPE_CONFIG="$tree/shadow.toml" "$bin" watch --register "$tree/photos" --state-dir "$tree/shadow-state" \
 		>>"$tree/shadow.log" 2>&1 || return 1
 	RETYPE_CONFIG="$tree/shadow.toml" RETYPE_LOG=debug "$bin" daemon --detached --state-dir "$tree/shadow-state" \
 		>>"$tree/shadow.log" 2>&1 &

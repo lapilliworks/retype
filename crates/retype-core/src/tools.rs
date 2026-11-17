@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::OnceLock;
 
 /// Where the GUI installs managed artifacts, set once by the CLI so bare
@@ -216,10 +215,21 @@ pub fn probe(tool: &Tool) -> ToolStatus<'_> {
 }
 
 fn probe_with<'a>(tool: &'a Tool, path_env: &OsStr) -> ToolStatus<'a> {
+	probe_using(tool, path_env, &crate::execute::Cancellation::default())
+}
+
+pub fn probe_cancellable<'a>(tool: &'a Tool, cancellation: &crate::execute::Cancellation) -> ToolStatus<'a> {
+	probe_using(tool, &std::env::var_os("PATH").unwrap_or_default(), cancellation)
+}
+
+fn probe_using<'a>(tool: &'a Tool, path_env: &OsStr, cancellation: &crate::execute::Cancellation) -> ToolStatus<'a> {
 	let mut fallback = None;
 
 	for command in tool.commands() {
-		let status = probe_command(tool, command, path_env);
+		if cancellation.is_cancelled() {
+			break;
+		}
+		let status = probe_command(tool, command, path_env, cancellation);
 		if status.is_usable() {
 			return status;
 		}
@@ -231,7 +241,12 @@ fn probe_with<'a>(tool: &'a Tool, path_env: &OsStr) -> ToolStatus<'a> {
 	fallback.unwrap_or_else(|| not_found(tool))
 }
 
-fn probe_command<'a>(tool: &'a Tool, command: &str, path_env: &OsStr) -> ToolStatus<'a> {
+fn probe_command<'a>(
+	tool: &'a Tool,
+	command: &str,
+	path_env: &OsStr,
+	cancellation: &crate::execute::Cancellation,
+) -> ToolStatus<'a> {
 	let Some(path) = find_command(path_env, command) else {
 		return ToolStatus {
 			tool,
@@ -262,15 +277,8 @@ fn probe_command<'a>(tool: &'a Tool, command: &str, path_env: &OsStr) -> ToolSta
 		};
 	}
 
-	let mut probe = Command::new(&path);
-	crate::process::hide_console(&mut probe);
-
-	match probe.args(&tool.probe).output() {
-		Ok(output) => {
-			let stdout = String::from_utf8_lossy(&output.stdout);
-			let stderr = String::from_utf8_lossy(&output.stderr);
-			let text = format!("{stdout}{stderr}");
-
+	match crate::execute::probe_output(&path, &tool.probe, std::time::Duration::from_secs(3), cancellation) {
+		Ok(text) => {
 			// The version line is not always first: `7zz` prints a blank line
 			// and a banner before it.
 			let version = text.lines().find_map(Version::parse);
@@ -351,6 +359,17 @@ fn fnv1a_128(text: &str) -> String {
 /// This machine, as the planner sees it: presence and engine resolution through
 /// the declared probes.
 pub struct Machine;
+
+pub struct CancellableMachine<'a>(pub &'a crate::execute::Cancellation);
+
+impl crate::plan::Presence for CancellableMachine<'_> {
+	fn command(&self, tool: &Tool) -> Option<String> {
+		probe_cancellable(tool, self.0).executable().map(str::to_string)
+	}
+	fn engine(&self, tool: &Tool, name: &str) -> Option<String> {
+		resolve_engine(tool, name).map(str::to_string)
+	}
+}
 
 pub fn probe_all(tools: &[Tool]) -> Vec<ToolStatus<'_>> {
 	tools.iter().map(probe).collect()
@@ -435,6 +454,37 @@ mod tests {
 			layout: vec!["{input}".to_string(), "{ops}".to_string(), "{output}".to_string()],
 			engines: BTreeMap::new(),
 		}
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_failed_probe_cannot_authorize_a_version_or_fidelity_claim() {
+		use std::os::unix::fs::PermissionsExt;
+		let dir = tempfile::tempdir().unwrap();
+		let script = dir.path().join("failed-probe");
+		std::fs::write(&script, "#!/bin/sh\necho 'version 9.0 heic'\nexit 1\n").unwrap();
+		std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+		let tool = tool(script.to_str().unwrap(), None);
+		let status = probe(&tool);
+		assert!(!status.is_usable());
+		assert!(status.error.as_ref().unwrap().contains("probe exited"));
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn a_stalled_probe_is_bounded_and_cannot_earn_a_claim() {
+		let mut tool = tool("sh", None);
+		tool.probe = vec!["-c".to_string(), "echo 'version 9.0 heic'; exec sleep 30".to_string()];
+		let started = std::time::Instant::now();
+		let status = probe(&tool);
+		assert!(started.elapsed() < std::time::Duration::from_secs(5));
+		assert!(!status.is_usable());
+		assert!(
+			status.error.as_ref().unwrap().contains("timed out"),
+			"{:?}",
+			status.error
+		);
+		assert!(status.fingerprint().is_none());
 	}
 
 	#[test]

@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "support/journal.rs"]
+mod journal;
 mod support;
 
 fn retype() -> Command {
@@ -92,10 +94,11 @@ struct Fixture {
 }
 
 impl Fixture {
-	fn new(answer: &str) -> Self {
+	fn new(answer: &str, source_name: &str) -> Self {
 		let dir = tempfile::tempdir().unwrap();
 		let photos = dir.path().join("photos");
 		fs::create_dir(&photos).unwrap();
+		fs::write(photos.join(source_name), b"pixels").unwrap();
 		let state = dir.path().join("state");
 		let record = dir.path().join("notified");
 		let bin = fake_notifier(dir.path());
@@ -104,7 +107,7 @@ impl Fixture {
 		let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
 
 		retype()
-			.args(["watch", photos.to_str().unwrap()])
+			.args(["watch", "--register", photos.to_str().unwrap()])
 			.arg("--state-dir")
 			.arg(&state)
 			.output()
@@ -133,6 +136,8 @@ impl Fixture {
 			std::thread::sleep(Duration::from_millis(50));
 		}
 
+		support::ready(&state);
+
 		Self {
 			_dir: dir,
 			photos,
@@ -144,9 +149,6 @@ impl Fixture {
 
 	fn rename(&self, from: &str, to: &str) {
 		let source = self.photos.join(from);
-		let before = support::observed(&self.state);
-		fs::write(&source, b"pixels").unwrap();
-		support::observe(&self.state, before);
 		fs::rename(&source, self.photos.join(to)).unwrap();
 	}
 
@@ -171,7 +173,7 @@ impl Fixture {
 
 #[test]
 fn a_batch_that_converted_a_file_is_one_notification_with_an_undo_button() {
-	let fixture = Fixture::new("");
+	let fixture = Fixture::new("", "a.png");
 	fixture.rename("a.png", "a.webp");
 
 	let recorded = fixture.wait_for_notification();
@@ -185,40 +187,48 @@ fn a_batch_that_converted_a_file_is_one_notification_with_an_undo_button() {
 
 #[test]
 fn the_undo_button_puts_the_source_back() {
-	let fixture = Fixture::new("undo");
+	let fixture = Fixture::new("undo", "b.png");
 	fixture.rename("b.png", "b.webp");
 
 	let recorded = fixture.wait_for_notification();
 	assert!(recorded.contains("undo=Undo"), "{recorded}");
 
-	// The action was answered, so the daemon undid the batch: the source is back and the
-	// output is gone.
+	// The source can already be visible before undo, so wait for the output and record to go.
 	let deadline = Instant::now() + Duration::from_secs(20);
-	while !fixture.photos.join("b.png").exists() {
+	loop {
+		let source = fixture.photos.join("b.png");
+		let output = fixture.photos.join("b.webp");
+		let records = retype_core::undo::Store::open(&fixture.state).list();
+		if source.is_file() && !output.exists() && matches!(records, Ok(ref records) if records.is_empty()) {
+			assert_eq!(fs::read(source).unwrap(), b"pixels");
+			break;
+		}
 		assert!(
 			Instant::now() < deadline,
-			"the undo did not happen: {:?}",
+			"the undo did not finish: {:?}",
 			fs::read_to_string(fixture.state.join("jobs.jsonl"))
 		);
 		std::thread::sleep(Duration::from_millis(50));
 	}
-
-	assert!(!fixture.photos.join("b.webp").exists(), "the output is removed");
 }
 
 #[test]
-fn nothing_is_said_when_the_platform_has_no_notifier() {
-	// No `notify-send` on PATH and no session: the daemon falls back to its own log, and
-	// the job still happens.
+fn a_conversion_without_a_session_uses_the_log_instead_of_the_notifier() {
+	// The fake notifier is available, but without a session it must not be called.
 	let dir = tempfile::tempdir().unwrap();
 	let photos = dir.path().join("photos");
 	fs::create_dir(&photos).unwrap();
 	let state = dir.path().join("state");
 	let config = config(dir.path());
 	let record = dir.path().join("notified");
+	let bin = fake_notifier(dir.path());
+	let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+	let log = dir.path().join("daemon.err");
+	let source = photos.join("c.png");
+	fs::write(&source, b"pixels").unwrap();
 
 	retype()
-		.args(["watch", photos.to_str().unwrap()])
+		.args(["watch", "--register", photos.to_str().unwrap()])
 		.arg("--state-dir")
 		.arg(&state)
 		.output()
@@ -230,12 +240,13 @@ fn nothing_is_said_when_the_platform_has_no_notifier() {
 			.arg("--state-dir")
 			.arg(&state)
 			.env("RETYPE_CONFIG", &config)
+			.env("PATH", path)
 			.env_remove("DBUS_SESSION_BUS_ADDRESS")
 			.env_remove("DISPLAY")
 			.env_remove("WAYLAND_DISPLAY")
 			.env("RECORD", &record)
 			.stdout(Stdio::null())
-			.stderr(Stdio::null())
+			.stderr(Stdio::from(fs::File::create(&log).unwrap()))
 			.spawn()
 			.unwrap(),
 	);
@@ -247,18 +258,31 @@ fn nothing_is_said_when_the_platform_has_no_notifier() {
 		std::thread::sleep(Duration::from_millis(50));
 	}
 
-	let source = photos.join("c.png");
-	let before = support::observed(&state);
-	fs::write(&source, b"pixels").unwrap();
-	support::observe(&state, before);
+	support::ready(&state);
 	fs::rename(&source, photos.join("c.webp")).unwrap();
 
-	let output = photos.join("c.webp");
 	let deadline = Instant::now() + Duration::from_secs(20);
-	while !output.exists() {
-		assert!(Instant::now() < deadline, "the conversion did not happen");
+	loop {
+		let contents = fs::read_to_string(state.join("jobs.jsonl")).unwrap_or_default();
+		let jobs = journal::latest(&contents);
+		let logged = fs::read_to_string(&log).unwrap();
+		if jobs.len() == 1
+			&& jobs[0]["state"] == "done"
+			&& jobs[0]["source_disposition"]["state"] == "retained"
+			&& logged.contains("retype: 1 converted (c.png → c.webp)")
+		{
+			assert_eq!(
+				jobs[0]["source"]["path"],
+				source.canonicalize().unwrap().to_str().unwrap()
+			);
+			break;
+		}
+		assert!(
+			Instant::now() < deadline,
+			"conversion was not announced: {contents}\n{logged}"
+		);
 		std::thread::sleep(Duration::from_millis(50));
 	}
-
+	assert_eq!(fs::read(photos.join("c.webp")).unwrap(), b"pixels");
 	assert!(!record.exists(), "no notifier was run");
 }

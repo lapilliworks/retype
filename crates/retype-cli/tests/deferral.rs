@@ -92,19 +92,20 @@ struct Fixture {
 }
 
 impl Fixture {
-	fn new(pause: &str) -> Self {
-		Self::with(pause, "ask")
+	fn new(pause: &str, source_name: &str) -> Self {
+		Self::with(pause, "ask", source_name)
 	}
 
-	fn with(pause: &str, repair: &str) -> Self {
+	fn with(pause: &str, repair: &str, source_name: &str) -> Self {
 		let dir = tempfile::tempdir().unwrap();
 		let photos = dir.path().join("photos");
 		fs::create_dir(&photos).unwrap();
+		fs::write(photos.join(source_name), b"pixels").unwrap();
 		let state = dir.path().join("state");
 		let config = config(dir.path(), pause, repair);
 
 		retype()
-			.args(["watch", photos.to_str().unwrap()])
+			.args(["watch", "--register", photos.to_str().unwrap()])
 			.arg("--state-dir")
 			.arg(&state)
 			.output()
@@ -130,6 +131,8 @@ impl Fixture {
 			std::thread::sleep(Duration::from_millis(50));
 		}
 
+		support::ready(&state);
+
 		Self {
 			dir,
 			photos,
@@ -143,9 +146,7 @@ impl Fixture {
 	/// Rename a file into an intent and answer with the job the daemon recorded.
 	fn rename(&self, from: &str, to: &str) -> serde_json::Value {
 		let source = self.photos.join(from);
-		let before = support::observed(&self.state);
 		big_file(&source);
-		support::observe(&self.state, before);
 		fs::rename(&source, self.photos.join(to)).unwrap();
 
 		self.wait_for(|record| record["state"] != "running")
@@ -159,7 +160,8 @@ impl Fixture {
 
 	/// The newest record at or after `from` that satisfies `done`.
 	fn wait_for(&self, done: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
-		let deadline = Instant::now() + Duration::from_secs(20);
+		// Four strict workers can concurrently verify several independent 8 MiB snapshots in debug builds.
+		let deadline = Instant::now() + Duration::from_secs(40);
 
 		loop {
 			if let Some(record) = self.records().into_iter().rev().find(|record| done(record)) {
@@ -192,7 +194,7 @@ impl Fixture {
 
 #[test]
 fn an_expensive_rename_is_parked_under_its_own_name_and_runs_when_the_timer_fires() {
-	let fixture = Fixture::new("1s");
+	let fixture = Fixture::new("1s", "a.png");
 	let parked = fixture.rename("a.png", "a.webp");
 
 	assert_eq!(parked["state"], "pending", "{parked}");
@@ -215,16 +217,37 @@ fn an_expensive_rename_is_parked_under_its_own_name_and_runs_when_the_timer_fire
 }
 
 #[test]
-fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
-	let fixture = Fixture::new("1h");
+fn a_timed_job_refuses_changed_bytes_even_when_size_and_time_match() {
+	let fixture = Fixture::new("3s", "timed.png");
+	let parked = fixture.rename("timed.png", "timed.webp");
+	assert_eq!(parked["state"], "pending");
+	let source = fixture.photos.join("timed.png");
+	let modified = fs::metadata(&source).unwrap().modified().unwrap();
+	let mut file = fs::OpenOptions::new().write(true).open(&source).unwrap();
+	file.write_all(b"q").unwrap();
+	file.set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+	drop(file);
+
+	let failed = fixture.wait_for(|record| record["state"] == "failed" && Fixture::id(record) == Fixture::id(&parked));
+	assert_eq!(failed["error"]["code"], "E_JOB_INTERRUPTED");
+	assert_eq!(fs::read(&source).unwrap()[0], b'q');
+	assert!(!fixture.photos.join("timed.webp").exists());
+}
+
+#[test]
+fn ask_waits_without_a_timeout_and_explicit_confirmation_runs_it() {
+	let fixture = Fixture::new("1s", "b.png");
 	let small = fixture.photos.join("b.png");
-	let before = support::observed(&fixture.state);
-	fs::write(&small, b"pixels").unwrap();
-	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("b.webp+ask")).unwrap();
 
 	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");
-	assert_eq!(parked["state"], "pending", "{parked}");
+	assert_eq!(parked["state"], "needs-attention", "{parked}");
+	assert!(parked["parked"]["deadline"].is_null());
+	std::thread::sleep(Duration::from_millis(2_200));
+	assert!(
+		!fixture.photos.join("b.webp").exists(),
+		"an unanswered ask must not time out"
+	);
 
 	let ran = fixture
 		.command()
@@ -233,14 +256,29 @@ fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
 		.unwrap();
 	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
 
-	let done = fixture.wait_for(|record| record["state"] == "done" && Fixture::id(record) == Fixture::id(&parked));
-	assert_eq!(done["state"], "done");
+	let done = fixture.wait_for(|record| {
+		record["state"] == "done"
+			&& record["source_disposition"]["state"] == "retained"
+			&& Fixture::id(record) == Fixture::id(&parked)
+	});
 	assert!(fixture.photos.join("b.webp").exists());
+
+	// A durable checkpoint can precede publication to IPC readers.
+	let id = Fixture::id(&done);
+	let deadline = Instant::now() + Duration::from_secs(20);
+	loop {
+		let mut client = retype_cli::client::connect(&fixture.state).unwrap();
+		let published = client.jobs_get(&id).unwrap();
+		if published.state == retype_core::job::JobState::Done {
+			break;
+		}
+		assert!(Instant::now() < deadline, "completion was not published: {published:?}");
+		std::thread::sleep(Duration::from_millis(25));
+	}
 
 	// The resolved job had a parked record before it ran. Its running snapshot must
 	// replace that record rather than becoming a second one, or `jobs get` keeps
 	// answering from a job that has already finished.
-	let id = Fixture::id(&done);
 	let asked = fixture.command().args(["jobs", "get", &id]).output().unwrap();
 	assert!(asked.status.success(), "{}", String::from_utf8_lossy(&asked.stderr));
 	let record: serde_json::Value = serde_json::from_slice(&asked.stdout).unwrap();
@@ -264,11 +302,8 @@ fn ask_parks_a_job_whatever_the_estimate_says_and_now_runs_it() {
 
 #[test]
 fn an_intent_that_cannot_be_carried_waits_with_a_string_to_fix() {
-	let fixture = Fixture::new("1h");
+	let fixture = Fixture::new("1h", "c.png");
 	let small = fixture.photos.join("c.png");
-	let before = support::observed(&fixture.state);
-	fs::write(&small, b"pixels").unwrap();
-	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("c.webp+zzz")).unwrap();
 
 	let parked = fixture.wait_for(|record| record["state"] == "needs-attention");
@@ -300,7 +335,7 @@ fn an_intent_that_cannot_be_carried_waits_with_a_string_to_fix() {
 
 #[test]
 fn a_parked_job_can_be_refused_before_its_time_comes() {
-	let fixture = Fixture::new("1h");
+	let fixture = Fixture::new("1h", "d.png");
 	let parked = fixture.rename("d.png", "d.webp");
 	assert_eq!(parked["state"], "pending", "{parked}");
 
@@ -324,11 +359,8 @@ fn a_parked_job_can_be_refused_before_its_time_comes() {
 
 #[test]
 fn repair_converts_without_the_token_it_could_not_carry_and_says_what_it_dropped() {
-	let fixture = Fixture::with("1h", "convert");
+	let fixture = Fixture::with("1h", "convert", "e.png");
 	let small = fixture.photos.join("e.png");
-	let before = support::observed(&fixture.state);
-	fs::write(&small, b"pixels").unwrap();
-	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("e.webp+zzz")).unwrap();
 
 	let done = fixture.wait_for(|record| record["state"] == "done");
@@ -342,6 +374,53 @@ fn repair_converts_without_the_token_it_could_not_carry_and_says_what_it_dropped
 		fixture.photos.join("e.png").exists(),
 		"an unvalidated copy backend retains its source"
 	);
+}
+
+#[test]
+fn an_ask_does_not_run_if_its_source_name_cannot_be_restored() {
+	let fixture = Fixture::new("1s", "occupied.png");
+	let source = fixture.photos.join("occupied.png");
+	let target = fixture.photos.join("occupied.webp+ask");
+	fs::write(&source, b"original pixels").unwrap();
+	fs::rename(&source, &target).unwrap();
+	fs::write(&source, b"unrelated occupant").unwrap();
+	std::thread::sleep(Duration::from_millis(1_500));
+
+	assert_eq!(fs::read(&target).unwrap(), b"original pixels");
+	assert_eq!(fs::read(&source).unwrap(), b"unrelated occupant");
+	assert!(
+		!fixture.photos.join("occupied.webp").exists(),
+		"conversion bypassed confirmation"
+	);
+}
+
+#[test]
+fn an_explicit_ask_prevents_automatic_repair() {
+	let fixture = Fixture::with("1s", "convert", "asked.png");
+	let source = fixture.photos.join("asked.png");
+	fs::rename(&source, fixture.photos.join("asked.webp+zzz+ask")).unwrap();
+
+	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "intent");
+	assert_eq!(parked["state"], "needs-attention", "{parked}");
+	assert_eq!(parked["parked"]["corrected"], "webp+ask");
+	std::thread::sleep(Duration::from_millis(2_200));
+	assert!(
+		!fixture.photos.join("asked.webp").exists(),
+		"repair ran without confirmation"
+	);
+
+	let confirmed = fixture
+		.command()
+		.args(["jobs", "resolve", &Fixture::id(&parked), "--convert"])
+		.output()
+		.unwrap();
+	assert!(
+		confirmed.status.success(),
+		"{}",
+		String::from_utf8_lossy(&confirmed.stderr)
+	);
+	fixture.wait_for(|record| record["state"] == "done" && Fixture::id(record) == Fixture::id(&parked));
+	assert!(fixture.photos.join("asked.webp").exists());
 }
 
 #[test]
@@ -365,12 +444,40 @@ fn the_interactive_walk_refuses_a_pipe_rather_than_reading_a_script() {
 }
 
 #[test]
+fn a_watched_ask_refuses_a_same_size_source_changed_while_waiting() {
+	let fixture = Fixture::new("1h", "changed.png");
+	let source = fixture.photos.join("changed.png");
+	fs::rename(&source, fixture.photos.join("changed.webp+ask")).unwrap();
+	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");
+	let modified = fs::metadata(&source).unwrap().modified().unwrap();
+	fs::write(&source, b"change").unwrap();
+	fs::OpenOptions::new()
+		.write(true)
+		.open(&source)
+		.unwrap()
+		.set_times(fs::FileTimes::new().set_modified(modified))
+		.unwrap();
+
+	let confirmed = fixture
+		.command()
+		.args(["jobs", "resolve", &Fixture::id(&parked), "--now"])
+		.output()
+		.unwrap();
+	assert!(
+		confirmed.status.success(),
+		"{}",
+		String::from_utf8_lossy(&confirmed.stderr)
+	);
+	let failed = fixture.wait_for(|record| record["state"] == "failed" && Fixture::id(record) == Fixture::id(&parked));
+	assert_eq!(failed["error"]["code"], "E_JOB_INTERRUPTED");
+	assert_eq!(fs::read(source).unwrap(), b"change");
+	assert!(!fixture.photos.join("changed.webp").exists());
+}
+
+#[test]
 fn a_file_that_appeared_during_the_pause_is_not_overwritten() {
-	let fixture = Fixture::new("1h");
+	let fixture = Fixture::new("1h", "d.png");
 	let small = fixture.photos.join("d.png");
-	let before = support::observed(&fixture.state);
-	fs::write(&small, b"pixels").unwrap();
-	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("d.webp+ask")).unwrap();
 
 	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");
@@ -386,9 +493,7 @@ fn a_file_that_appeared_during_the_pause_is_not_overwritten() {
 		.unwrap();
 	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
 
-	let ended = fixture.wait_for(|record| {
-		Fixture::id(record) == Fixture::id(&parked) && record["state"] != "running" && record["state"] != "pending"
-	});
+	let ended = fixture.wait_for(|record| Fixture::id(record) == Fixture::id(&parked) && record["state"] == "failed");
 
 	assert_eq!(ended["state"], "failed", "{ended}");
 	assert_eq!(ended["outputs"][0]["error"]["code"], "E_IO_EXISTS", "{ended}");
@@ -400,11 +505,8 @@ fn a_file_that_appeared_during_the_pause_is_not_overwritten() {
 
 #[test]
 fn force_replaces_a_file_that_appeared_during_the_pause() {
-	let fixture = Fixture::new("1h");
+	let fixture = Fixture::new("1h", "e.png");
 	let small = fixture.photos.join("e.png");
-	let before = support::observed(&fixture.state);
-	fs::write(&small, b"pixels").unwrap();
-	support::observe(&fixture.state, before);
 	fs::rename(&small, fixture.photos.join("e.webp+ask")).unwrap();
 
 	let parked = fixture.wait_for(|record| record["parked"]["reason"] == "ask");
@@ -420,6 +522,10 @@ fn force_replaces_a_file_that_appeared_during_the_pause() {
 
 	let done = fixture.wait_for(|record| record["state"] == "done" && Fixture::id(record) == Fixture::id(&parked));
 	assert_eq!(done["state"], "done");
+	assert_eq!(
+		done["parked"]["force"], true,
+		"overwrite consent remains in the job history"
+	);
 	assert_eq!(fs::read(&theirs).unwrap(), b"pixels", "the output replaced it");
 	assert!(
 		fixture.photos.join("e.png").exists(),

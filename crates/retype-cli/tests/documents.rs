@@ -69,6 +69,7 @@ fn convert(dir: &Path, state: &Path, target: &str) -> (std::process::Output, std
 		.args(["convert"])
 		.arg(&source)
 		.arg(target)
+		.arg("--json")
 		.arg("--state-dir")
 		.arg(state)
 		.output()
@@ -101,7 +102,9 @@ fn markdown_becomes_a_readable_document_in_every_declared_target() {
 
 		assert!(
 			ran.status.success(),
-			"{target}: {}",
+			"{target}: {}; stdout: {}; stderr: {}",
+			ran.status,
+			String::from_utf8_lossy(&ran.stdout),
 			String::from_utf8_lossy(&ran.stderr)
 		);
 
@@ -111,45 +114,19 @@ fn markdown_becomes_a_readable_document_in_every_declared_target() {
 			"{target} does not start with {:?}",
 			String::from_utf8_lossy(magic)
 		);
+		if target == "pdf" {
+			let registry = retype_core::registry::Registry::builtin().unwrap();
+			let tool = registry.tools().find(|tool| tool.name == "pandoc").unwrap();
+			let expected = retype_core::tools::resolve_engine(tool, "pdf").expect("a PDF engine");
+			let answer: serde_json::Value = serde_json::from_slice(&ran.stdout).unwrap();
+			assert_eq!(answer["job"]["engine"]["name"], "pdf");
+			assert_eq!(answer["job"]["engine"]["candidate"], expected);
+			let journal = fs::read_to_string(state.join("jobs.jsonl")).unwrap();
+			let recorded: serde_json::Value = serde_json::from_str(journal.lines().last().unwrap()).unwrap();
+			assert_eq!(recorded["id"], answer["job"]["id"]);
+			assert_eq!(recorded["engine"], answer["job"]["engine"]);
+		}
 	}
-}
-
-#[test]
-fn the_pdf_engine_is_recorded_with_the_job() {
-	if !pandoc() {
-		tool_support::unavailable("Pandoc on PATH");
-		return;
-	}
-
-	let dir = tempfile::tempdir().unwrap();
-	let state = dir.path().join("state");
-	let _daemon = Autostarted { state: state.clone() };
-	let source = dir.path().join("report.md");
-	fs::write(&source, SOURCE).unwrap();
-
-	let explained = retype()
-		.args(["convert"])
-		.arg(&source)
-		.arg("pdf")
-		.arg("--dry-run")
-		.arg("--json")
-		.arg("--state-dir")
-		.arg(&state)
-		.output()
-		.unwrap();
-
-	assert!(
-		explained.status.success(),
-		"stdout: {}\nstderr: {}",
-		String::from_utf8_lossy(&explained.stdout),
-		String::from_utf8_lossy(&explained.stderr)
-	);
-
-	let printed = String::from_utf8_lossy(&explained.stdout);
-	assert!(
-		printed.contains("\"name\":\"pdf\"") && printed.contains("\"resolved\":"),
-		"the engine is part of the plan: {printed}"
-	);
 }
 
 #[test]

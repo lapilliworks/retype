@@ -91,13 +91,16 @@ fn a_transparent_fixture_told_the_truth_about_jpeg() {
 	let alpha = Probe::read(&directory.join("alpha.png")).expect("a readable fixture");
 
 	let work = tempfile::tempdir().unwrap();
+	let input = work.path().join("alpha.png");
+	let original = fs::read(directory.join("alpha.png")).unwrap();
+	fs::write(&input, &original).unwrap();
 	let flat = work.path().join("flat.jpg");
 	let state = work.path().join("state");
 	let _daemon = Autostarted { state: state.clone() };
 
 	let ran = retype()
 		.arg("convert")
-		.arg(directory.join("alpha.png"))
+		.arg(&input)
 		.arg("jpg")
 		.arg("--output")
 		.arg(&flat)
@@ -107,6 +110,7 @@ fn a_transparent_fixture_told_the_truth_about_jpeg() {
 		.unwrap();
 
 	assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+	assert_eq!(fs::read(directory.join("alpha.png")).unwrap(), original);
 
 	let output = Probe::read(&flat).expect("a readable output");
 	let fixture = Fixtures::open(&directory).unwrap();
@@ -201,7 +205,7 @@ fn an_exact_pair_with_fixtures_records_what_it_kept() {
 	// The manifest is the release artifact, so the properties have to survive a round
 	// trip through it, not just the run.
 	let manifest = retype_core::fidelity::Manifest::open(&state.join("fidelity.toml")).expect("a manifest");
-	let claim = manifest.get("png", "tiff", "magick").expect("the claim");
+	let claim = manifest.get("png", "tiff", "magick", None).expect("the claim");
 
 	assert!(claim.axes.contains(&Axis::Alpha), "{:?}", claim.axes);
 	assert!(claim.lost.is_empty(), "{:?}", claim.lost);

@@ -2,7 +2,7 @@
 
 A watched rename does not always convert immediately. Sometimes it waits for a timer, and sometimes it waits for a person. This page explains when that happens, what the job is waiting for, and how to answer it.
 
-An explicit `retype convert` is not affected by cost or size: the command is the consent. It can still wait when the intent cannot be carried out as written or when the intent asks to be asked.
+An explicit `retype convert` is not affected by cost or size: the command is the consent. When its intent carries `+ask` or a trailing `+`, it waits for explicit confirmation. An interactive terminal can answer immediately; a non-interactive invocation reports the job id and leaves the decision pending.
 
 ## 1. Two parked states
 
@@ -13,7 +13,7 @@ A parked job has written nothing: no tool started, no output staged, no source b
 | `pending` | The job can run as asked, once the timer expires or the user says so | The deadline, `jobs resolve --now`, `jobs cancel`, or the source being renamed or removed |
 | `needs-attention` | The job cannot run as asked, or may run only with explicit consent; only the user can decide | `jobs resolve --now` where the job can run as asked, `jobs resolve --convert` where it cannot, `jobs cancel`, or the source being renamed or removed |
 
-`needs-attention` has no deadline: there is nothing to expire into.
+`needs-attention` has no deadline. A `storage` job is reconsidered when capacity permits admission, with its recorded input rechecked; this does not authorize early eviction or resolve an explicit ask.
 
 ## 2. The reason
 
@@ -21,14 +21,15 @@ One reason per parked job, recorded with it and shown by `jobs get` and `jobs li
 
 | Reason | State | Meaning |
 |---|---|---|
-| `ask` | `pending` | The name carried `+ask`, so the user asked to be asked |
+| `ask` | `needs-attention` | The intent carried `+ask` or a trailing `+`, so the user asked to be asked |
 | `cost` | `pending` | The estimate is above the threshold that applies to this job |
 | `size` | `needs-attention` | The source is above `watch.max_source_size` |
 | `intent` | `needs-attention` | The intent in the new name does not parse |
 | `inapplicable` | `needs-attention` | An operation does not apply to the target format |
 | `backend` | `needs-attention` | No usable tool carries the pair, or the tool is missing |
+| `storage` | `needs-attention` | The undo storage goal prevents a new backup. Capacity can make it eligible again; `--now` retries without bypassing the goal |
 
-A `needs-attention` job that cannot run as asked keeps the diagnosis it was given: the code, the message, and the span of the offending part where there is one. A `size` job has no diagnosis, because nothing is wrong with the request; what it waits for is consent.
+A `needs-attention` job that cannot run as asked keeps the diagnosis it was given: the code, the message, and the span of the offending part where there is one. An `ask` or `size` job has no diagnosis, because nothing is wrong with the request; what it waits for is consent.
 
 A job that cannot run as asked also keeps two strings, and the report of the job shows both:
 
@@ -42,17 +43,17 @@ Nothing is carried out on a guess. An intent that says `png+quality80` does not 
 The first trigger that applies decides. A later trigger never overrides an earlier one, so a string that cannot be carried is never quietly run because it happened to be cheap.
 
 1. The job cannot run as asked:
-   - `[deferral] repair = 'convert'`, the source is within `watch.max_source_size`, the job would keep an undo record, the estimate is at or below `above`, and the target format survives dropping the tokens that could not be carried: run it, record the dropped tokens, and notify with what happened, §6
+   - `[deferral] repair = 'convert'`, the intent does not explicitly ask for confirmation, the source is within `watch.max_source_size`, the job would keep an undo record, the estimate is at or below `above`, and the target format survives dropping the tokens that could not be carried: run it, record the dropped tokens, and notify with what happened, §6
    - otherwise: `needs-attention`
 2. The source is above `watch.max_source_size` and the intent does not carry `+now`: `needs-attention`, reason `size`
-3. The intent carries `+ask`: `pending`, reason `ask`
+3. The intent carries `+ask` or a trailing `+`: `needs-attention`, reason `ask`, with no deadline
 4. The job comes from a watched rename, no undo record can be kept for it, the estimate exceeds `above_without_undo`, and neither `+now` nor `mode = 'now'` suppresses deferral: `pending`, reason `cost`
 5. The job comes from a watched rename, the estimate exceeds `above`, and none of `+now`, `mode = 'now'` or the directory's `confirm = false` suppresses deferral: `pending`, reason `cost`
 6. Otherwise the job runs
 
 Two rules follow from the list rather than from a special case:
 
-- An explicit `retype convert` is never parked by cost or size. It still parks on the `needs-attention` reasons, under the repair policy like everything else, and it still parks when the intent says `ask`
+- An explicit `retype convert` is never parked by cost or size. An explicit `ask` still waits for a person
 - "No undo record can be kept" is decided before the job is parked: `[undo] enabled = false`, `on_overflow = 'skip'` with a full quota, or a source larger than the whole quota. Consuming a source with no way back is why the threshold is lower in that case
 
 ## 4. Thresholds and the repair policy
@@ -71,7 +72,7 @@ Durations are the grammar's time class, so they are spelled the way an intent sp
 
 The size ceiling is not a deferral threshold: it is `[watch] max_source_size`, it is compared against the source alone, and `mode = 'now'` does not skip it.
 
-`repair = 'convert'` is a convenience the user opts into, and the job it repairs keeps what it dropped in its own record. It is deliberately not the default, it never applies without an undo record, and it is bounded by `above` and by the size ceiling: a dropped token is a small cut on a job that takes a second, and a guess that spends minutes on work nobody asked for is not.
+`repair = 'convert'` is a convenience the user opts into, and the job it repairs keeps what it dropped in its own record. It is deliberately not the default, it never applies without an undo record or when the intent explicitly asks for confirmation, and it is bounded by `above` and by the size ceiling: a dropped token is a small cut on a job that takes a second, and a guess that spends minutes on work nobody asked for is not.
 
 An estimate that does not exist is not a reason to park. A family with no constant and no measurement has an unknown cost, and turning "unknown" into "you must answer" is worse than running. Deferral is a courtesy for expensive jobs, never a gate.
 
@@ -110,11 +111,11 @@ A repaired job adds what it dropped and reaches the user through the same notifi
 
 ## 7. The timer
 
-A `pending` job carries a `deadline`, and expiry runs the job. Expiry is unconditional: it does not depend on a notification, a client, a terminal or a window.
+An ordinary `pending` job carries a `deadline`. Expiry attempts to queue it without requiring a notification, client or terminal. The job starts only after admission is recorded and its input still matches the recorded fingerprint.
 
 - The deadline is `parked + pause`, stored with the job
 - The daemon owns the timer. Nothing else has to be running for it to fire
-- At startup, a `pending` job whose deadline has passed runs immediately, and one whose deadline is ahead has its timer re-armed
+- At startup, a `pending` job whose deadline has passed is eligible for queueing, and one whose deadline is ahead has its timer re-armed. An older record without an input fingerprint waits for review and resubmission
 - `pause = '0s'` is refused at load rather than read as "never" or "at once"
 - The timer is a chance to regret and to act first. It is not a promise that the job will be wanted: refusing it with `jobs cancel` before the deadline is the whole point of having one
 
@@ -129,24 +130,25 @@ retype jobs cancel <id|prefix>
 
 | Command | Effect |
 |---|---|
-| `--now` | Run it as asked, ignoring the deferral. `--force` overwrites an output that appeared during the pause, exactly as it does for `convert`. A `needs-attention` job whose reason is not `size` is a state error here: it cannot run as asked. A `size` job runs, because this is the confirmation it waits for |
+| `--now` | Run it as asked, ignoring the deferral. `--force` overwrites an output that appeared during the pause, exactly as it does for `convert`. An `ask` or `size` job runs after this explicit confirmation; other `needs-attention` reasons cannot run as asked |
 | `--convert` | Run it with the tokens that could not be carried dropped, from the `corrected` string. Only for `needs-attention`, and only when a corrected string exists; a `pending` job is a usage error, and so is a job whose target format did not survive |
 | `--interactive` | Walk the parked jobs oldest first and read one key each: now, convert where it applies, refuse, skip, quit. Without a terminal it refuses rather than reading a script's stdin |
 | `jobs cancel` | Refuse it. Nothing was written, so nothing is undone |
 
-All four accept a unique prefix. A job that is no longer parked answers `E_JOB_STATE`, so a second `--now` on the same id is an error rather than a second conversion.
+All four accept a unique prefix. A job that is no longer parked answers `E_JOB_STATE`, so a second `--now` on the same id is an error rather than a second conversion. Timer admission, confirmation, cancellation and supersession are coordinated; a queued snapshot is recorded before a worker can take it. The selected correction and any `--force` confirmation are kept in the job record.
 
 ## 9. The file while it is parked
 
-The source name is restored before the job is parked. A path never holds a format its name denies, and that rule does not bend because a decision is pending.
+The source name is normally restored before the job is parked. Rename `a.heic` to `a.jpg`, and the file shows `a.heic` again until the job runs. The requested target and intent are recorded in the journal.
 
-The consequence is worth stating: rename `a.heic` to `a.jpg`, and the file shows `a.heic` again until the job runs. The rename is not lost, it is remembered as the job's requested target, and the journal says so.
+If the original name is occupied or restoration otherwise fails for an explicit ask, the conversion does not start. The original bytes may remain under the renamed path; check the daemon log and the paths named there. A watcher cannot intercept the initial rename before the operating system performs it.
 
 - The requested target name and the intent are recorded with the job, and the derived outputs are worked out again when it runs, because the request is read from the record rather than from a file name that has since changed
-- An output whose name appeared during the pause is not overwritten for the job. It fails that output with `E_IO_EXISTS` and the source stays under its own name, because a file the person put there is theirs. `jobs resolve --now --force` is the deliberate override and the only one. A rename-derived job still overwrites an output of the same name
+- An output whose name appeared during the pause is not overwritten for the job. It fails that output with `E_IO_EXISTS` and the source stays under its own name, because a file the person put there is theirs. `jobs resolve --now --force` is the deliberate override and the only one. A rename-derived job also refuses an unrelated occupied output
 - A second rename of the same source supersedes the parked job: the chain continues and the park is replaced rather than run later against a file that has moved on
 - A source that is gone when the timer fires ends the job `cancelled` with `E_IO_NOT_FOUND` and the message "the source is gone". Nothing was done and there is nothing left to do
-- A source whose bytes changed during the pause is converted as it is then, not as it was. The job converts a file, not a version of one, and matching a timestamp to decide otherwise would be a guess about what the user meant
+- A source that changed or was replaced during the pause is not converted. Identity and content are checked against the fingerprint recorded before parking; review the file and submit a new request
+- Fingerprinting reads the source before parking and again when work starts. CLI preparation runs in the worker pool; watcher-side decision hashing can still delay that watcher's activity. Slow synchronous recovery checks remain a separate responsiveness limit
 
 ## 10. Batches
 

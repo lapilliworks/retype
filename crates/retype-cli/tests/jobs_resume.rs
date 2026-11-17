@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "support/journal.rs"]
+mod journal;
 mod support;
 
 fn retype() -> Command {
@@ -72,15 +74,112 @@ impl Drop for Daemon {
 }
 
 #[test]
+fn cancelling_a_settled_partial_job_keeps_its_successful_output_and_undo() {
+	let dir = tempfile::tempdir().unwrap();
+	let photos = dir.path().join("photos");
+	fs::create_dir(&photos).unwrap();
+	let source = photos.join("photo.png");
+	fs::write(&source, b"pixels").unwrap();
+	let state = dir.path().join("state");
+	let config = copy_config(dir.path());
+	retype()
+		.args(["watch", "--register", photos.to_str().unwrap()])
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+	let _daemon = Daemon(
+		retype()
+			.args(["daemon", "--detached"])
+			.arg("--state-dir")
+			.arg(&state)
+			.env("RETYPE_CONFIG", &config)
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.spawn()
+			.unwrap(),
+	);
+	let deadline = Instant::now() + Duration::from_secs(20);
+	while !state.join("endpoint").exists() {
+		assert!(Instant::now() < deadline, "the daemon did not start");
+		std::thread::sleep(Duration::from_millis(50));
+	}
+
+	support::ready(&state);
+	let blocked = photos.join("photo-flipv.png");
+	fs::create_dir(&blocked).unwrap();
+	fs::rename(&source, photos.join("photo.webp+fliph,png+flipv")).unwrap();
+	let journal_path = state.join("jobs.jsonl");
+	let deadline = Instant::now() + Duration::from_secs(20);
+	let partial = loop {
+		let contents = fs::read_to_string(&journal_path).unwrap_or_default();
+		let jobs = journal::latest(&contents);
+		if jobs.len() == 1 && jobs[0]["state"] == "partial" {
+			assert_eq!(
+				jobs[0]["source"]["path"],
+				source.canonicalize().unwrap().to_str().unwrap()
+			);
+			break jobs.into_iter().next().unwrap();
+		}
+		assert!(Instant::now() < deadline, "no partial job: {contents}");
+		std::thread::sleep(Duration::from_millis(100));
+	};
+	let id = partial["id"].as_str().unwrap();
+	let produced = photos.join("photo-fliph.webp");
+
+	let cancelled = retype()
+		.args(["jobs", "cancel", id, "--json"])
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+	assert!(
+		cancelled.status.success(),
+		"{}",
+		String::from_utf8_lossy(&cancelled.stderr)
+	);
+	let answer: serde_json::Value = serde_json::from_slice(&cancelled.stdout).unwrap();
+	assert_eq!(answer["state"], "cancelled");
+	assert!(answer.get("warning").is_none(), "{answer}");
+	assert_eq!(fs::read(&source).unwrap(), b"pixels");
+	assert_eq!(fs::read(&produced).unwrap(), b"pixels");
+	assert!(blocked.is_dir());
+	let record = retype_core::undo::Store::open(&state)
+		.load(&retype_core::job::JobId::parse(id).unwrap())
+		.unwrap()
+		.unwrap();
+	assert!(!record.pinned);
+	assert!(record.retention_started.is_some());
+
+	let undone = retype()
+		.args(["undo", id])
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+	if retype_core::fsx::supports_durable_cleanup() {
+		assert!(undone.status.success(), "{}", String::from_utf8_lossy(&undone.stderr));
+		assert!(!produced.exists());
+	} else {
+		assert!(!undone.status.success());
+		assert!(produced.exists());
+	}
+	assert_eq!(fs::read(source).unwrap(), b"pixels");
+	assert!(blocked.is_dir(), "undo does not remove a path the job did not produce");
+}
+
+#[test]
 fn a_partial_job_resumes_and_skips_what_it_already_produced() {
 	let dir = tempfile::tempdir().unwrap();
 	let photos = dir.path().join("photos");
 	fs::create_dir(&photos).unwrap();
+	let source = photos.join("photo.png");
+	fs::write(&source, b"pixels").unwrap();
 	let state = dir.path().join("state");
 	let config = copy_config(dir.path());
 
 	retype()
-		.args(["watch", photos.to_str().unwrap()])
+		.args(["watch", "--register", photos.to_str().unwrap()])
 		.arg("--state-dir")
 		.arg(&state)
 		.output()
@@ -104,45 +203,57 @@ fn a_partial_job_resumes_and_skips_what_it_already_produced() {
 		std::thread::sleep(Duration::from_millis(50));
 	}
 
+	support::ready(&state);
 	// One output is blocked by a directory in its place, so the job ends partial.
 	let blocked = photos.join("photo-flipv.png");
 	fs::create_dir(&blocked).unwrap();
 
-	let source = photos.join("photo.png");
-	let before = support::observed(&state);
-	fs::write(&source, b"pixels").unwrap();
-	support::observe(&state, before);
 	fs::rename(&source, photos.join("photo.webp+fliph,png+flipv")).unwrap();
 
 	let journal_path = state.join("jobs.jsonl");
 	let deadline = Instant::now() + Duration::from_secs(20);
-	let journal = loop {
-		let recorded = fs::read_to_string(&journal_path).unwrap_or_default();
-		if recorded.contains("\"state\":\"partial\"") {
-			break recorded;
+	let partial = loop {
+		let contents = fs::read_to_string(&journal_path).unwrap_or_default();
+		let jobs = journal::latest(&contents);
+		if jobs.len() == 1 && jobs[0]["state"] == "partial" {
+			assert_eq!(
+				jobs[0]["source"]["path"],
+				source.canonicalize().unwrap().to_str().unwrap()
+			);
+			break jobs.into_iter().next().unwrap();
 		}
 
-		assert!(Instant::now() < deadline, "no partial job: {recorded}");
+		assert!(Instant::now() < deadline, "no partial job: {contents}");
 		std::thread::sleep(Duration::from_millis(100));
 	};
 
 	let produced = photos.join("photo-fliph.webp");
 	assert_eq!(fs::read(&produced).unwrap(), b"pixels", "the first output was written");
 
-	let id = journal
-		.rsplit("\"id\":\"")
-		.next()
-		.and_then(|rest| rest.split('"').next())
-		.expect("a job id")
-		.to_string();
+	let id = partial["id"].as_str().unwrap();
+
+	let still_blocked = retype()
+		.args(["jobs", "resume", id, "--json"])
+		.arg("--state-dir")
+		.arg(&state)
+		.output()
+		.unwrap();
+	assert!(!still_blocked.status.success(), "an incomplete resume is not success");
+	let answer: serde_json::Value = serde_json::from_slice(&still_blocked.stdout).unwrap();
+	assert_eq!(answer["ok"], false);
+	assert_eq!(answer["error"]["code"], "E_IO_EXISTS");
+	assert_eq!(answer["error"]["detail"]["resume_state"], "partial");
+	assert_eq!(answer["error"]["detail"]["job"]["state"], "partial");
+	assert!(blocked.is_dir());
+	assert_eq!(fs::read(&produced).unwrap(), b"pixels");
 
 	// Clear the obstruction; resume should now finish, and should not rewrite the
 	// output that is already what the job produced.
 	fs::remove_dir(&blocked).unwrap();
-	let before = fs::metadata(&produced).unwrap().modified().unwrap();
+	let before = retype_core::job::FileIdentity::of(&produced).unwrap();
 
 	let resumed = retype()
-		.args(["jobs", "resume", &id])
+		.args(["jobs", "resume", id])
 		.arg("--state-dir")
 		.arg(&state)
 		.output()
@@ -154,20 +265,18 @@ fn a_partial_job_resumes_and_skips_what_it_already_produced() {
 		String::from_utf8_lossy(&resumed.stdout)
 	);
 	assert!(String::from_utf8_lossy(&resumed.stdout).contains("done"));
+	assert!(
+		String::from_utf8_lossy(&resumed.stderr).contains("original retained"),
+		"{}",
+		String::from_utf8_lossy(&resumed.stderr)
+	);
 
 	assert_eq!(fs::read(&blocked).unwrap(), b"pixels", "the missing output is written");
 
-	// Skipping an output needs a file identity, which the stable Windows metadata
-	// API does not expose, so there a resume runs it again.
-	#[cfg(unix)]
-	assert_eq!(
-		fs::metadata(&produced).unwrap().modified().unwrap(),
-		before,
-		"the output that was already correct was not rewritten"
+	assert!(
+		before.matches(&retype_core::job::FileIdentity::of(&produced).unwrap()),
+		"the output that was already correct was not replaced"
 	);
-
-	#[cfg(not(unix))]
-	let _ = before;
 	assert!(
 		state
 			.join("undo")

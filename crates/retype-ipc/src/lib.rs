@@ -158,14 +158,7 @@ pub struct HelloResult {
 /// Whether two protocol identifiers can talk. Only the major differs in
 /// meaning, and only a different major is refused, `docs/dev/architecture/ipc.md` §5.
 pub fn same_major(left: &str, right: &str) -> bool {
-	major(left) == major(right)
-}
-
-fn major(version: &str) -> &str {
-	match version.rsplit_once('-') {
-		Some((head, _)) => head,
-		None => version,
-	}
+	left == right
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -247,6 +240,7 @@ fn check_size(size: usize) -> Result<(), FrameError> {
 /// Write one frame, including its newline, and make it visible to the peer.
 pub fn write_frame<W: Write>(writer: &mut W, frame: &impl Serialize) -> Result<(), FrameError> {
 	let mut line = serde_json::to_vec(frame).map_err(|error| FrameError::Encode(error.to_string()))?;
+	check_size(line.len())?;
 	line.push(b'\n');
 
 	writer
@@ -337,6 +331,16 @@ mod tests {
 	}
 
 	#[test]
+	fn an_oversized_outgoing_frame_writes_nothing() {
+		let mut output = Vec::new();
+		assert!(matches!(
+			write_frame(&mut output, &"x".repeat(MAX_FRAME)),
+			Err(FrameError::TooLarge(_))
+		));
+		assert!(output.is_empty());
+	}
+
+	#[test]
 	fn two_frames_in_one_packet_both_survive() {
 		let mut buffer = encode(&Request::new(1, "status"));
 		buffer.extend(encode(&Request::new(2, "hello")));
@@ -361,7 +365,8 @@ mod tests {
 	#[test]
 	fn only_the_major_version_has_to_match() {
 		assert!(same_major(IPC_VERSION, "retype-ipc-1"));
-		assert!(same_major(IPC_VERSION, "retype-ipc-2"));
+		assert!(!same_major(IPC_VERSION, "retype-ipc-2"));
+		assert!(!same_major(IPC_VERSION, "retype-ipc-"));
 		assert!(!same_major(IPC_VERSION, "retype-ipc2"));
 		assert!(!same_major("retype-ipc-1", "other-ipc-1"));
 	}

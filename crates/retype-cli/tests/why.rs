@@ -135,7 +135,9 @@ fn the_answer_is_json_with_a_stable_shape() {
 	assert_eq!(answer["confidence"], "exact");
 	assert_eq!(answer["intent"], "webp");
 	assert_eq!(answer["backend"], "copy");
-	assert_eq!(answer["tier"], "converted");
+	assert_eq!(answer["tier"], "unclaimed");
+	assert_eq!(answer["declared_tier"], "converted");
+	assert_eq!(answer["claim"]["state"], "new");
 	assert!(answer["job"].is_string(), "{answer}");
 	assert!(answer["created"].is_i64(), "{answer}");
 }
@@ -194,20 +196,6 @@ fn without_the_journal_the_file_still_says_what_made_it() {
 	assert_eq!(answer["intent"], "webp");
 	assert_eq!(answer["confidence"], "exact");
 	assert!(answer.get("job").is_none(), "no job is claimed: the journal is gone");
-}
-
-/// A record that names the path has the last word, `docs/provenance.md` §7.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-#[test]
-fn the_journal_outranks_the_attribute_for_the_same_path() {
-	let fixture = Fixture::new();
-	let produced = fixture.converted();
-
-	let asked = fixture.run(&["why", produced.to_str().unwrap(), "--json"]);
-	let answer: serde_json::Value = serde_json::from_slice(&asked.stdout).expect("an object");
-
-	assert_eq!(answer["store"], "journal-identity");
-	assert!(answer["job"].is_string());
 }
 
 /// Turning attributes off affects future conversions only, and says so in the

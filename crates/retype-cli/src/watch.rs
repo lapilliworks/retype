@@ -1,8 +1,7 @@
 //! `retype watch`, `retype watching` and `retype unwatch`, `docs/cli.md` §4.
 //!
-//! Registration only: the file a directory is recorded in is the daemon's, and
-//! the daemon's watcher is what acts on it. Nothing here starts a process, so a
-//! command that registers is a command that can be scripted.
+//! Registration is shared by the foreground command and its explicit `--register` route.
+//! Following uses short-lived connections so detaching never stops the daemon.
 //!
 //! When a daemon is already reachable the mutation goes through it; otherwise the
 //! command writes the registry itself. That is the one writer rule with an
@@ -263,6 +262,194 @@ fn summary(registration: &watches::Registration) -> String {
 		Ok(policy) if policy.patterns.is_empty() => "all files".to_string(),
 		Ok(policy) => policy.patterns.join(" "),
 		Err(error) => format!("unreadable policy: {error}"),
+	}
+}
+
+/// Wait for readiness and follow only activity inside the requested roots.
+pub fn follow(state_dir: &Path, directories: &[String], json: bool, allow_spawn: bool) -> Result<ExitCode> {
+	use std::io::IsTerminal;
+	use std::time::Duration;
+	let requested: Vec<PathBuf> = if directories.is_empty() {
+		vec![std::env::current_dir()?.canonicalize()?]
+	} else {
+		directories
+			.iter()
+			.map(|path| Path::new(path).canonicalize())
+			.collect::<std::io::Result<_>>()?
+	};
+	let mut pid = 0;
+	let mut since = 0;
+	let interactive = !json && std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+	let mut states = std::collections::BTreeMap::new();
+	let mut resync = true;
+	let mut stopped = crate::daemon::signals::Seen::now();
+	crate::daemon::signals::install();
+	loop {
+		let (signal, next) = stopped.asked();
+		stopped = next;
+		if signal != crate::daemon::signals::Asked::Nothing {
+			return Ok(ExitCode::SUCCESS);
+		}
+		let mut client = match crate::client::connect(state_dir) {
+			Ok(client) => client,
+			Err(error) => {
+				if !allow_spawn {
+					return Err(error);
+				}
+				crate::daemon::lifecycle::permit_restart(state_dir)?;
+				eprintln!(
+					"retype: daemon connection lost; reconnecting within the persisted restart budget; checking job state"
+				);
+				let previous_boot = crate::daemon::lifecycle::read(state_dir)?.boot;
+				match crate::client::connect_or_spawn(state_dir, true) {
+					Ok(client) => client,
+					Err(error) if crate::daemon::lifecycle::read(state_dir)?.boot != previous_boot => {
+						eprintln!("retype: replacement daemon stopped before connection: {error}");
+						continue;
+					}
+					Err(error) => return Err(error),
+				}
+			}
+		};
+		let status = match client.status() {
+			Ok(status) => status,
+			Err(error) if error.is_disconnected() => {
+				drop(client);
+				continue;
+			}
+			Err(error) => return Err(error.into()),
+		};
+		if status.pid != pid {
+			if pid != 0 {
+				eprintln!("retype: daemon restarted; filesystem events during downtime may have been missed");
+			}
+			pid = status.pid;
+			since = 0;
+			resync = true;
+		}
+		let mut missing = false;
+		for path in &requested {
+			let watch = status.watches.iter().find(|watch| Path::new(&watch.path) == path);
+			let phase = watch
+				.and_then(|watch| watch.status.as_deref())
+				.unwrap_or("unregistered");
+			let error = watch.and_then(|watch| watch.problem.as_deref());
+			let summary = format!("{phase}{}", error.map(|error| format!(": {error}")).unwrap_or_default());
+			if states.get(path) != Some(&summary) {
+				if json {
+					output::success(json!({"kind": "watch-status", "path": path, "status": phase, "error": error}));
+				} else {
+					eprintln!("retype: {}: {summary}", path.display());
+				}
+				states.insert(path.clone(), summary);
+			}
+			missing |= watch.is_none();
+		}
+		if let Some(error) = &status.watch_error {
+			eprintln!("retype: watcher: {error}");
+		}
+		if missing {
+			return Err(std::io::Error::other("requested watch registration was removed").into());
+		}
+		let jobs = if resync {
+			let refreshed = (|| -> std::result::Result<_, retype_ipc::ClientError> {
+				let cursor = client.events(u64::MAX)?.seq;
+				let summaries = client.jobs_list()?.jobs;
+				let jobs = summaries
+					.into_iter()
+					.map(|job| client.jobs_get(job.id.as_str()))
+					.collect::<std::result::Result<Vec<_>, _>>()?;
+				Ok((cursor, jobs))
+			})();
+			match refreshed {
+				Ok((cursor, jobs)) => {
+					since = cursor;
+					resync = false;
+					jobs
+				}
+				Err(error) if error.is_disconnected() => {
+					drop(client);
+					continue;
+				}
+				Err(error) => return Err(error.into()),
+			}
+		} else {
+			match client.events(since) {
+				Ok(batch) => {
+					since = batch.seq;
+					batch.events.into_iter().map(|event| event.job).collect::<Vec<_>>()
+				}
+				Err(retype_ipc::ClientError::Rpc(error)) if error.code == Code::IpcResync => {
+					eprintln!("retype: activity history has a gap; refreshing current jobs");
+					resync = true;
+					continue;
+				}
+				Err(error) if error.is_disconnected() => {
+					drop(client);
+					resync = true;
+					continue;
+				}
+				Err(error) => return Err(error.into()),
+			}
+		};
+		drop(client);
+		for job in jobs {
+			if !requested.iter().any(|root| {
+				job.source.path.parent() == Some(root.as_path())
+					|| (job.source.path.starts_with(root)
+						&& status
+							.watches
+							.iter()
+							.any(|watch| Path::new(&watch.path) == root && watch.recursive))
+			}) {
+				continue;
+			}
+			if json {
+				output::success(json!({"kind": "watch-job", "job": job}));
+			} else {
+				eprintln!(
+					"retype: {} {:?}: {}{}",
+					job.id,
+					job.state,
+					job.source.path.display(),
+					job.error
+						.as_ref()
+						.map(|error| format!("; {}: {}", error.code, error.message))
+						.unwrap_or_default()
+				);
+			}
+			if interactive
+				&& matches!(
+					job.state,
+					retype_core::job::JobState::Pending | retype_core::job::JobState::NeedsAttention
+				) && job.parked.as_ref().is_none_or(|parked| parked.reason != "storage")
+			{
+				let state = state_dir.to_path_buf();
+				let (send, receive) = std::sync::mpsc::sync_channel(1);
+				std::thread::spawn(move || {
+					let _ = send.send(crate::jobs::interactive_jobs(&state, &[job.id], false, false));
+				});
+				loop {
+					match receive.recv_timeout(Duration::from_millis(100)) {
+						Ok(result) => {
+							result?;
+							break;
+						}
+						Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+							return Err(std::io::Error::other("watch prompt stopped unexpectedly").into());
+						}
+						Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+							let (signal, next) = stopped.asked();
+							stopped = next;
+							if signal != crate::daemon::signals::Asked::Nothing {
+								return Ok(ExitCode::SUCCESS);
+							}
+						}
+					}
+				}
+			}
+		}
+		std::thread::sleep(Duration::from_millis(200));
 	}
 }
 

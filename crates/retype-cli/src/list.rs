@@ -5,11 +5,11 @@
 //! adds the pairwise view, because "what can this installation do" is a question
 //! about a pair of formats rather than about one.
 //!
-//! Claims are declared, not earned. Fixture runs earn them, `docs/fidelity.md`
-//! §4, and until a run has happened the honest report is the declared tier next
-//! to the engine that is installed.
+//! Pair tiers are qualified by release evidence; absent or stale claims are not
+//! presented as earned fidelity.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::process::ExitCode;
 
 use retype_core::job::Tier;
@@ -20,7 +20,7 @@ use retype_core::{intent, plan, resolve};
 
 use crate::error::Result;
 
-pub fn run(registry: &Registry, tiers: bool, json: bool) -> Result<ExitCode> {
+pub fn run(registry: &Registry, state_dir: Option<&Path>, tiers: bool, json: bool) -> Result<ExitCode> {
 	let probes: BTreeMap<&str, ToolStatus<'_>> = registry
 		.tools()
 		.map(|tool| (tool.name.as_str(), tools::probe(tool)))
@@ -28,7 +28,7 @@ pub fn run(registry: &Registry, tiers: bool, json: bool) -> Result<ExitCode> {
 
 	match tiers {
 		false => describe(registry, &probes, json),
-		true => pairs(registry, &probes, json),
+		true => pairs(registry, &retype_core::fidelity::open_for(state_dir)?, json),
 	}
 
 	Ok(ExitCode::SUCCESS)
@@ -166,14 +166,14 @@ fn describe(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: 
 	}
 }
 
-/// One line per pair: the tier it declares, and the backend that would carry it.
-fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: bool) {
+/// One line per pair: release evidence and the backend that would carry it.
+fn pairs(registry: &Registry, manifest: &retype_core::fidelity::Manifest, json: bool) {
 	let names: Vec<&str> = registry.formats().map(|(name, _)| name.as_str()).collect();
 
 	if !json {
 		println!(
-			"{:<8}{:<8}{:<12}{:<10}{:<12}{:<10}fingerprint",
-			"from", "to", "tier", "backend", "engine", "version"
+			"{:<8}{:<8}{:<12}{:<10}{:<12}{:<10}{:<34}{:<14}engine fingerprint",
+			"from", "to", "tier", "backend", "engine", "version", "fingerprint", "engine version"
 		);
 	}
 
@@ -183,7 +183,7 @@ fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: boo
 				continue;
 			}
 
-			let (tier, backend, error, engine, version, fingerprint) = claim(registry, probes, from, to);
+			let (tier, backend, error, engine, evidence) = claim(registry, manifest, from, to);
 
 			if json {
 				println!(
@@ -193,16 +193,18 @@ fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: boo
 						"from": from,
 						"to": to,
 						"tier": tier,
+						"declared_tier": registry.format(to).map(|format| format.tier),
 						"backend": backend,
 						"error": error,
 						"engine": engine,
-						"version": version,
-						"fingerprint": fingerprint,
+						"version": evidence.as_ref().map(|evidence| &evidence.version),
+						"fingerprint": evidence.as_ref().map(|evidence| &evidence.fingerprint),
+						"fidelity": evidence,
 					})
 				);
 			} else {
 				println!(
-					"{:<8}{:<8}{:<12}{:<10}{:<12}{:<10}{}",
+					"{:<8}{:<8}{:<12}{:<10}{:<12}{:<10}{:<34}{:<14}{}",
 					from,
 					to,
 					tier,
@@ -210,8 +212,22 @@ fn pairs(registry: &Registry, probes: &BTreeMap<&str, ToolStatus<'_>>, json: boo
 						.or_else(|| error.map(|code| format!("({code})")))
 						.unwrap_or_default(),
 					engine.unwrap_or_default(),
-					version.unwrap_or_default(),
-					fingerprint.unwrap_or_default()
+					evidence
+						.as_ref()
+						.map(|evidence| evidence.version.as_str())
+						.unwrap_or_default(),
+					evidence
+						.as_ref()
+						.map(|evidence| evidence.fingerprint.as_str())
+						.unwrap_or_default(),
+					evidence
+						.as_ref()
+						.map(|evidence| evidence.engine_version.as_str())
+						.unwrap_or_default(),
+					evidence
+						.as_ref()
+						.map(|evidence| evidence.engine_fingerprint.as_str())
+						.unwrap_or_default()
 				);
 			}
 		}
@@ -225,17 +241,16 @@ type PairClaim = (
 	Option<String>,
 	Option<String>,
 	Option<String>,
-	Option<String>,
-	Option<String>,
+	Option<retype_core::fidelity::Evidence>,
 );
 
 /// The tier a pair declares and the backend that would produce it, which is the
 /// same plan a bare intent compiles to.
-fn claim<'a>(registry: &'a Registry, probes: &BTreeMap<&str, ToolStatus<'a>>, from: &str, to: &str) -> PairClaim {
+fn claim(registry: &Registry, manifest: &retype_core::fidelity::Manifest, from: &str, to: &str) -> PairClaim {
 	let unclaimed = "unclaimed".to_string();
 
 	let Ok(parsed) = intent::parse(to) else {
-		return (unclaimed, None, None, None, None, None);
+		return (unclaimed, None, None, None, None);
 	};
 
 	// A pair refused before any backend is chosen, such as a source that cannot be
@@ -249,36 +264,33 @@ fn claim<'a>(registry: &'a Registry, probes: &BTreeMap<&str, ToolStatus<'a>>, fr
 		registry,
 	) {
 		Ok(resolved) => resolved,
-		Err(problems) => return (unclaimed, None, Some(refusal(&problems)), None, None, None),
+		Err(problems) => return (unclaimed, None, Some(refusal(&problems)), None, None),
 	};
 
 	match plan::compile(registry, &tools::Machine, &resolved) {
-		Ok(plans) => {
+		Ok(mut plans) => {
+			retype_core::fidelity::qualify(manifest, registry, from, &mut plans);
 			let Some(first) = plans.first() else {
-				return (unclaimed, None, None, None, None, None);
+				return (unclaimed, None, None, None, None);
 			};
 
 			let name = first.backend.name().to_string();
-			let status = probes.get(name.as_str());
+			let evidence = first.fidelity.as_ref().expect("qualified plan");
 			let engine = first.engine.as_ref().map(|(_, candidate)| candidate.clone());
-			let version = status
-				.and_then(|status| status.version.as_ref())
-				.map(ToString::to_string);
-			let fingerprint = status.and_then(ToolStatus::fingerprint);
-
 			(
-				tier_name(first.tier).to_string(),
+				evidence.reported_tier(first.tier).to_string(),
 				Some(name),
-				None,
+				retype_core::fidelity::check(first)
+					.err()
+					.map(|error| error.code().to_string()),
 				engine,
-				version,
-				fingerprint,
+				Some(evidence.clone()),
 			)
 		}
 		// A pair nothing can carry is worth saying out loud rather than leaving
 		// blank, because it is the pair a user will try. The code is bracketed so
 		// it cannot be mistaken for a backend name.
-		Err(problems) => (unclaimed, None, Some(refusal(&problems)), None, None, None),
+		Err(problems) => (unclaimed, None, Some(refusal(&problems)), None, None),
 	}
 }
 

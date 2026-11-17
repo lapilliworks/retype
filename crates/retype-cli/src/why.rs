@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use retype_core::fidelity::{self, Claim, Manifest};
+use retype_core::fidelity::{self, State};
 use retype_core::registry::Registry;
 use serde_json::Value;
 
@@ -27,7 +27,9 @@ pub fn run(
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 	let mut answer = serde_json::to_value(client.why(Path::new(path))?)?;
 
-	if let Some(claim) = claim(registry, state_dir, &answer) {
+	if let Some(claim) = claim(registry, state_dir, &answer)? {
+		answer["declared_tier"] = answer["tier"].clone();
+		answer["tier"] = claim["tier"].clone();
 		answer["claim"] = claim;
 	}
 
@@ -98,60 +100,39 @@ pub fn run(
 
 /// The claim the release makes for this pair, and whether the installed build is
 /// the one it was earned with, `docs/fidelity.md` §5.
-fn claim(registry: &Registry, state_dir: &Path, answer: &Value) -> Option<Value> {
-	let source = answer.get("source").and_then(Value::as_str)?;
-	let target = answer.get("target").and_then(Value::as_str)?;
-	let backend = answer.get("backend").and_then(Value::as_str)?;
-	let manifest = find_manifest(state_dir).and_then(|path| Manifest::open(&path).ok())?;
-	let claim = fidelity::claim_for(&manifest, registry, source, target, backend);
-	let recorded: &Claim = claim.claim?;
-
-	Some(serde_json::json!({
-		"tier": tier(recorded),
-		"state": claim.state.as_str(),
-		"earned": recorded.earned,
-		"version": recorded.version,
-		"fingerprint": recorded.fingerprint,
-		"engine": recorded.engine,
-	}))
-}
-
-fn tier(claim: &Claim) -> &'static str {
-	match claim.tier {
-		retype_core::job::Tier::Exact => "exact",
-		retype_core::job::Tier::Converted => "converted",
-		retype_core::job::Tier::Delegated => "delegated",
-	}
-}
-
-/// The release manifest, when this installation has one.
-fn find_manifest(state_dir: &Path) -> Option<std::path::PathBuf> {
-	if let Some(configured) = std::env::var_os("RETYPE_FIDELITY_MANIFEST") {
-		let path = std::path::PathBuf::from(configured);
-		if path.is_file() {
-			return Some(path);
-		}
-	}
-
-	for candidate in [
-		state_dir.join("fidelity.toml"),
-		std::path::PathBuf::from("fidelity.toml"),
-	] {
-		if candidate.is_file() {
-			return Some(candidate);
-		}
-	}
-
-	if let Ok(executable) = std::env::current_exe() {
-		for ancestor in executable.ancestors().skip(1) {
-			let candidate = ancestor.join("share/retype/fidelity.toml");
-			if candidate.is_file() {
-				return Some(candidate);
-			}
-		}
-	}
-
-	None
+fn claim(registry: &Registry, state_dir: &Path, answer: &Value) -> Result<Option<Value>> {
+	let (Some(source), Some(target), Some(backend)) = (
+		answer.get("source").and_then(Value::as_str),
+		answer.get("target").and_then(Value::as_str),
+		answer.get("backend").and_then(Value::as_str),
+	) else {
+		return Ok(None);
+	};
+	let manifest = fidelity::open_for(Some(state_dir))?;
+	let engine = answer
+		.get("engine")
+		.and_then(|engine| engine.get("candidate"))
+		.and_then(Value::as_str);
+	let current = fidelity::claim_for(&manifest, registry, source, target, backend, engine);
+	let tier = match current.state {
+		State::New => "unclaimed".to_string(),
+		State::Unverified => "unverified".to_string(),
+		State::Earned => answer
+			.get("tier")
+			.and_then(Value::as_str)
+			.unwrap_or("unclaimed")
+			.to_string(),
+	};
+	Ok(Some(serde_json::json!({
+		"tier": tier,
+		"state": current.state.as_str(),
+		"recorded": current.claim,
+		"version": current.version,
+		"fingerprint": current.fingerprint,
+		"engine_version": current.engine_version,
+		"engine_fingerprint": current.engine_fingerprint,
+		"engine": engine,
+	})))
 }
 
 /// How long ago a record was written, in the units a person reads. A date

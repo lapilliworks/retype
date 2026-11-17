@@ -15,7 +15,7 @@ fn slow_config(dir: &Path) -> PathBuf {
 	let (command, layout) = match cfg!(windows) {
 		true => (
 			"cmd",
-			"layout = ['/c', 'ping -n 30 127.0.0.1', '{input}', '{ops}', '{output}']",
+			"layout = ['/c', 'ping', '-n', '30', '127.0.0.1', '&', 'rem', '{input}', '{ops}', '{output}']",
 		),
 		false => ("sh", "layout = ['-c', 'sleep 30', '{input}', '{ops}', '{output}']"),
 	};
@@ -157,13 +157,15 @@ fn a_stop_now_cancels_a_running_job_and_records_it() {
 	let dir = tempfile::tempdir().unwrap();
 	let photos = dir.path().join("photos");
 	fs::create_dir(&photos).unwrap();
+	let source = photos.join("photo.png");
+	fs::write(&source, b"pixels").unwrap();
 	let state = dir.path().join("state");
 	let config = slow_config(dir.path());
 
 	// Registration first: the daemon reads the file when it starts, so a rename
 	// before that is a rename in a directory nobody is watching.
 	retype()
-		.args(["watch", photos.to_str().unwrap()])
+		.args(["watch", "--register", photos.to_str().unwrap()])
 		.arg("--state-dir")
 		.arg(&state)
 		.output()
@@ -171,10 +173,7 @@ fn a_stop_now_cancels_a_running_job_and_records_it() {
 
 	let _daemon = start(&state, &config, false);
 
-	let source = photos.join("photo.png");
-	let before = support::observed(&state);
-	fs::write(&source, b"pixels").unwrap();
-	support::observe(&state, before);
+	support::ready(&state);
 	fs::rename(&source, photos.join("photo.webp")).unwrap();
 
 	// Wait until the job is running rather than merely queued, so the cancel has a

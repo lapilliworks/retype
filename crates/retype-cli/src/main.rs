@@ -73,10 +73,24 @@ enum Command {
 		interactive: bool,
 	},
 
+	/// Inspect recovery operations or clean a proven redundant backup
+	Recovery {
+		/// Operation id, or full job id with --cleanup
+		id: Option<String>,
+		#[arg(long, requires = "id", conflicts_with = "cleanup")]
+		cancel: bool,
+		#[arg(long, requires = "id")]
+		cleanup: bool,
+	},
+
 	/// Watch directories, defaulting to the current one
 	Watch {
 		/// Directories to watch. With none, the current directory
 		directories: Vec<String>,
+
+		/// Register and return without starting or following the daemon
+		#[arg(long = "register", conflicts_with_all = ["pause", "resume"])]
+		register: bool,
 
 		/// Watch this directory only, not its subdirectories
 		#[arg(long = "non-recursive")]
@@ -356,6 +370,29 @@ fn main() -> ExitCode {
 		return finish(code);
 	}
 
+	if let Command::Recovery { id, cancel, cleanup } = &cli.command {
+		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state| {
+			let mut client = retype_cli::client::connect_or_spawn(&state, !cli.no_spawn)?;
+			let method = if *cleanup {
+				"recovery.cleanup"
+			} else if *cancel {
+				"recovery.cancel"
+			} else if id.is_some() {
+				"recovery.get"
+			} else {
+				"recovery.list"
+			};
+			let result = client.call(method, serde_json::json!({"id": id}))?;
+			if cli.json {
+				output::success(result);
+			} else {
+				println!("{}", serde_json::to_string_pretty(&result)?);
+			}
+			Ok(ExitCode::SUCCESS)
+		});
+		return finish(code);
+	}
+
 	if let Command::Undo { job, last } = &cli.command {
 		let code = retype_cli::state::resolve(cli.state_dir.clone())
 			.and_then(|state_dir| retype_cli::undo::run(&state_dir, job.as_deref(), *last, cli.json));
@@ -436,13 +473,17 @@ fn main() -> ExitCode {
 		non_recursive,
 		pause,
 		resume,
+		register,
 	} = &cli.command
 	{
 		let code = retype_cli::state::resolve(cli.state_dir.clone()).and_then(|state_dir| {
 			tools::use_managed(state_dir.join("tools").join("bin"));
 
 			config::load().and_then(|registry| {
-				retype_cli::watch::run(
+				if !register && !pause && !resume {
+					drop(retype_cli::client::connect_or_spawn(&state_dir, !cli.no_spawn)?);
+				}
+				let result = retype_cli::watch::run(
 					&state_dir,
 					directories,
 					!non_recursive,
@@ -450,7 +491,11 @@ fn main() -> ExitCode {
 					registry.watch().allow_synced,
 					*pause,
 					*resume,
-				)
+				)?;
+				if result != ExitCode::SUCCESS || *register || *pause || *resume {
+					return Ok(result);
+				}
+				retype_cli::watch::follow(&state_dir, directories, cli.json, !cli.no_spawn)
 			})
 		});
 
@@ -600,13 +645,14 @@ fn main() -> ExitCode {
 	}
 
 	if let Command::List { tiers } = &cli.command {
-		if let Ok(state_dir) = state::resolve(cli.state_dir.clone()) {
+		let state_dir = state::resolve(cli.state_dir.clone()).ok();
+		if let Some(state_dir) = &state_dir {
 			tools::use_managed(state_dir.join("tools").join("bin"));
 		}
 
 		let code = config::load().and_then(|registry| {
 			config::report_warnings(&registry);
-			list::run(&registry, *tiers, cli.json)
+			list::run(&registry, state_dir.as_deref(), *tiers, cli.json)
 		});
 
 		return finish(code);
@@ -703,7 +749,7 @@ fn main() -> ExitCode {
 
 	let outcome = match &cli.command {
 		Command::Daemon { action, detached } => match action {
-			None => daemon::run(cli.state_dir.clone(), !detached).map(|()| ExitCode::SUCCESS),
+			None => run_daemon(cli.state_dir.clone(), *detached),
 			Some(action) => control(&cli, action),
 		},
 		Command::Uri { .. }
@@ -711,6 +757,7 @@ fn main() -> ExitCode {
 		| Command::Jobs { .. }
 		| Command::Watch { .. }
 		| Command::Watching
+		| Command::Recovery { .. }
 		| Command::Unwatch { .. }
 		| Command::Convert { .. }
 		| Command::Explain { .. }
@@ -725,6 +772,17 @@ fn main() -> ExitCode {
 	};
 
 	finish(outcome)
+}
+
+fn run_daemon(state_dir: Option<PathBuf>, detached: bool) -> Result<ExitCode> {
+	#[cfg(unix)]
+	{
+		/* Disconnected IPC clients must not terminate the daemon. */
+		if unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) } == libc::SIG_ERR {
+			return Err(std::io::Error::last_os_error().into());
+		}
+	}
+	daemon::run(state_dir, !detached).map(|()| ExitCode::SUCCESS)
 }
 
 /// The parser's complaint without its usage block, so `--json` gets one sentence.
@@ -825,6 +883,7 @@ fn control(cli: &Cli, action: &DaemonAction) -> Result<ExitCode> {
 				return Ok(ExitCode::SUCCESS);
 			}
 
+			retype_cli::daemon::lifecycle::reset(&state_dir)?;
 			let log = client::spawn_detached(&state_dir)?;
 			let mut client = client::wait_for(&state_dir, &log)?;
 			let status = client.call_without_params("status")?;

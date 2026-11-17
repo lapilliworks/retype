@@ -98,11 +98,12 @@ impl Fixture {
 		let dir = tempfile::tempdir().unwrap();
 		let photos = dir.path().join("photos");
 		fs::create_dir(&photos).unwrap();
+		fs::write(photos.join("slow.png"), b"pixels").unwrap();
 		let state = dir.path().join("state");
 		let config = slow_config(dir.path(), seconds);
 
 		retype()
-			.args(["watch", photos.to_str().unwrap()])
+			.args(["watch", "--register", photos.to_str().unwrap()])
 			.arg("--state-dir")
 			.arg(&state)
 			.output()
@@ -128,6 +129,8 @@ impl Fixture {
 			std::thread::sleep(Duration::from_millis(50));
 		}
 
+		support::ready(&state);
+
 		Self {
 			_dir: dir,
 			photos,
@@ -139,9 +142,6 @@ impl Fixture {
 	/// Start a job and wait until it is running, so the signal arrives mid-flight.
 	fn start_job(&self) {
 		let source = self.photos.join("slow.png");
-		let before = support::observed(&self.state);
-		fs::write(&source, b"pixels").unwrap();
-		support::observe(&self.state, before);
 		fs::rename(&source, self.photos.join("slow.webp")).unwrap();
 
 		let deadline = Instant::now() + Duration::from_secs(20);

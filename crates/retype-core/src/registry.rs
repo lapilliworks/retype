@@ -382,6 +382,7 @@ impl Registry {
 			Some(_) => {}
 		}
 
+		problems.extend(reserved_keep_declarations(&over, label));
 		problems.extend(shadowing(&base, &over, label, &mut warnings));
 
 		if problems.is_empty() {
@@ -501,6 +502,16 @@ impl Registry {
 		for (key, entry) in &document.ops {
 			let op = entry.view(key);
 
+			if key.eq_ignore_ascii_case("keep")
+				|| op.name.eq_ignore_ascii_case("keep")
+				|| op.aliases.iter().any(|alias| alias.eq_ignore_ascii_case("keep"))
+			{
+				problems.push(fail(
+					Code::CfgNameClash,
+					format!("{label}: 'keep' is reserved for the job-wide keep-original control"),
+				));
+			}
+
 			if !is_name(&op.name) || !op.aliases.iter().all(|alias| is_name(alias)) {
 				problems.push(fail(
 					Code::CfgValidation,
@@ -582,6 +593,13 @@ impl Registry {
 		for (key, entry) in &document.presets {
 			let preset = entry.view(key);
 
+			if key.eq_ignore_ascii_case("keep") || preset.name.eq_ignore_ascii_case("keep") {
+				problems.push(fail(
+					Code::CfgNameClash,
+					format!("{label}: 'keep' is reserved for the job-wide keep-original control"),
+				));
+			}
+
 			if !is_name(&preset.name) {
 				problems.push(fail(
 					Code::CfgValidation,
@@ -636,6 +654,16 @@ impl Registry {
 					Err(fault) => problems.push(fail(
 						fault.code,
 						format!("{label}: [undo] quota '{quota}': {}", fault.message),
+					)),
+				}
+			}
+
+			if let Some(admission) = &entry.admission {
+				match crate::undo::Admission::parse(admission) {
+					Some(read) => undo.admission = read,
+					None => problems.push(fail(
+						Code::CfgValidation,
+						format!("{label}: [undo] admission '{admission}' is not stop-after or stop-before"),
 					)),
 				}
 			}
@@ -988,6 +1016,16 @@ impl Registry {
 					}
 				};
 
+				if token.name == "keep" {
+					problems.push(fail(
+						Code::CfgValidation,
+						format!(
+							"{label}: preset '{}' uses 'keep', which is control rather than conversion",
+							preset.key
+						),
+					));
+					continue;
+				}
 				match self.resolve(&token.name) {
 					None => problems.push(fail(
 						Code::CfgValidation,
@@ -1438,8 +1476,40 @@ fn collect_format_names(formats: &BTreeMap<String, Format>) -> Vec<(String, Stri
 /// disagree about the same intent string, `docs/config.md` §2.
 const OPERATION_BEHAVIOUR: &[&str] = &["argv", "say"];
 
-/// What a user file may not do: redefine an operation's identity, or replace a
-/// shipped preset without being told.
+/// Reserve the job-wide control before removed entries are pruned.
+fn reserved_keep_declarations(document: &toml::Value, label: &str) -> Vec<Error> {
+	let mut problems = Vec::new();
+	for section in ["ops", "presets"] {
+		let Some(entries) = document.get(section).and_then(toml::Value::as_table) else {
+			continue;
+		};
+		for (key, entry) in entries {
+			let reserved = key.eq_ignore_ascii_case("keep")
+				|| entry
+					.get("name")
+					.and_then(toml::Value::as_str)
+					.is_some_and(|name| name.eq_ignore_ascii_case("keep"))
+				|| entry
+					.get("aliases")
+					.and_then(toml::Value::as_array)
+					.is_some_and(|aliases| {
+						aliases
+							.iter()
+							.filter_map(toml::Value::as_str)
+							.any(|alias| alias.eq_ignore_ascii_case("keep"))
+					});
+			if reserved {
+				problems.push(fail(
+					Code::CfgNameClash,
+					format!("{label}: 'keep' is reserved for the job-wide keep-original control"),
+				));
+			}
+		}
+	}
+	problems
+}
+
+/// Check operation identity changes and replacements of shipped presets.
 fn shadowing(base: &toml::Value, over: &toml::Value, label: &str, warnings: &mut Vec<Diagnostic>) -> Vec<Error> {
 	let mut problems = Vec::new();
 
@@ -1629,16 +1699,21 @@ fn split_compounds(
 	(entry, compounds)
 }
 
-/// Merge `over` into `base`, key by key for tables, whole for arrays and scalars,
-/// with `enabled = false` removing an entry, `docs/config.md` §2.
+/// Merge tables key by key and arrays or scalars whole. Nested entries with
+/// `enabled = false` are removed; top-level policy switches are preserved.
 fn merge(base: &mut toml::Value, over: &toml::Value) {
+	merge_layer(base, over, false);
+}
+
+fn merge_layer(base: &mut toml::Value, over: &toml::Value, can_remove_entries: bool) {
 	match (base, over) {
 		(toml::Value::Table(base), toml::Value::Table(over)) => {
 			for (key, value) in over {
-				let disables = value
-					.get("enabled")
-					.and_then(toml::Value::as_bool)
-					.is_some_and(|enabled| !enabled);
+				let disables = can_remove_entries
+					&& value
+						.get("enabled")
+						.and_then(toml::Value::as_bool)
+						.is_some_and(|enabled| !enabled);
 
 				if disables {
 					base.remove(key);
@@ -1646,7 +1721,7 @@ fn merge(base: &mut toml::Value, over: &toml::Value) {
 				}
 
 				match base.get_mut(key) {
-					Some(existing) => merge(existing, value),
+					Some(existing) => merge_layer(existing, value, true),
 					None => {
 						base.insert(key.clone(), value.clone());
 					}
@@ -1831,6 +1906,8 @@ struct UndoEntry {
 	quota: Option<String>,
 	#[serde(default)]
 	on_overflow: Option<String>,
+	#[serde(default)]
+	admission: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2029,6 +2106,14 @@ mod tests {
 		assert_eq!(registry.undo().retention, std::time::Duration::from_secs(720 * 60 * 60));
 		assert_eq!(registry.undo().quota, 5_000_000_000, "five gigabytes, decimal");
 		assert_eq!(registry.undo().on_overflow, crate::undo::Overflow::Ask);
+		assert_eq!(registry.undo().admission, crate::undo::Admission::StopAfter);
+	}
+
+	#[test]
+	fn undo_admission_is_validated_and_stop_before_is_explicit() {
+		let registry = Registry::load(&format!("{HEADER}\n[undo]\nadmission = 'stop-before'\n")).unwrap();
+		assert_eq!(registry.undo().admission, crate::undo::Admission::StopBefore);
+		assert!(codes(&format!("{HEADER}\n[undo]\nadmission = 'discard'\n")).contains(&Code::CfgValidation));
 	}
 
 	#[test]
@@ -3075,6 +3160,33 @@ tokens = ['cap={value}', 'quality90']
 	fn a_preset_may_not_smuggle_a_control_token() {
 		let text = [WEBP, "[presets.look]\ntokens = ['ask']\n"].concat();
 		assert_eq!(config(&text).unwrap_err(), [Code::CfgValidation]);
+	}
+
+	#[test]
+	fn keep_cannot_be_redeclared_as_an_operation_or_preset() {
+		for declaration in [
+			"[ops.keep]\nslot = 1\nformats = ['*']\n",
+			"[ops.other]\nname = 'keep'\nslot = 1\nformats = ['*']\n",
+			"[ops.other]\naliases = ['keep']\nslot = 1\nformats = ['*']\n",
+			"[presets.keep]\ntokens = ['quality80']\n",
+			"[presets.other]\nname = 'keep'\ntokens = ['quality80']\n",
+		] {
+			let text = [HEADER, declaration].concat();
+			assert!(codes(&text).contains(&Code::CfgNameClash), "{declaration}");
+		}
+		let disabled = "version = 'retype-config-1'\n[ops.keep]\nenabled = false\n";
+		assert!(
+			Registry::with_user(disabled, "user.toml")
+				.unwrap_err()
+				.codes()
+				.contains(&Code::CfgNameClash)
+		);
+	}
+
+	#[test]
+	fn a_preset_cannot_hide_the_keep_control() {
+		let text = [WEBP, "[presets.look]\ntokens = ['keep']\n"].concat();
+		assert!(config(&text).unwrap_err().contains(&Code::CfgValidation));
 	}
 
 	#[test]

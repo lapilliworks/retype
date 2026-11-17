@@ -1,18 +1,26 @@
 # Watching a folder
 
-A registered folder converts a file whenever its extension changes, from any program that renames it. This page is the working guide; [Watch scope](../reference/watch.md) is the exhaustive specification of what is watched, ignored and done at startup.
+An active daemon can observe renames in a registered folder and request conversions. This page is the working guide; [Watch scope](../reference/watch.md) describes what is watched, ignored and done at startup.
 
 ## Registering
 
 ```
-retype watch                            # register the current folder, recursively
-retype watch ~/Pictures                 # register another, recursively
+retype watch                            # start and follow the current folder, recursively
+retype watch ~/Pictures                 # start and follow another folder
 retype watch ~/Pictures --non-recursive # this folder only
+retype watch ~/Pictures --register      # register and return, without starting a daemon
+retype --no-spawn daemon status         # check the daemon from another terminal
 retype watching                         # list what is registered
 retype unwatch ~/Pictures               # stop watching it
 ```
 
-Registration is idempotent and immediate: a running daemon re-reads the file within a second, so registering twice is not an error and does not convert twice. Registrations are remembered across restarts. Every flag these commands take is in [Command line](../reference/cli.md).
+`retype watch` starts or reaches the daemon, registers the folders and follows their readiness and activity in the foreground. Wait until each folder says `ready`: the filesystem watcher is installed and its initial identity scan completed. `pending`, `starting`, `stopping`, `paused`, `unavailable`, `degraded` and `error` are not readiness; errors name the problem. Readiness does not guarantee delivery of every later filesystem event. Test with a disposable copy.
+
+`Ctrl+C` detaches the client; watching and pending decisions continue in the daemon. A terminal can answer parked decisions; scripts and JSON output do not read stdin. The follower refreshes job state on connection and after event gaps and reports daemon restarts. Restart budgets are persisted by daemon boot and shared across followers: stop at three crashes with the same identified cause, or three consecutive unknown causes. Transport interruption alone does not invent a crash cause. Clean shutdown and explicit-stop intent prevent automatic restart, even while an endpoint is still present. `retype daemon start` explicitly resets the budget. `--no-spawn` and `RETYPE_NO_SPAWN` suppress startup and recovery. Watching requires a verified interactive login for the daemon user. Linux queries logind, macOS checks the console owner and terminal logins, and Windows checks active user sessions. An unavailable query reports `inactive`; environment names alone do not establish a login. Real logout behavior still requires native desktop qualification.
+
+`--register` is the explicit registration-only route for scripts. It returns without starting a daemon or claiming readiness. Start the daemon explicitly and check status before relying on registered watching. Pause and resume also return immediately.
+
+Registration is idempotent: a running daemon re-reads the file within a second, so registering twice is not an error and does not convert twice. Registrations are remembered across restarts. Every flag these commands take is in [Command line](../reference/cli.md).
 
 A folder registered inside another is allowed, and its own policy applies to its subtree. Symlinks are resolved, and the resolved path is the identity: registering the same folder by another name is the same registration.
 
@@ -22,7 +30,7 @@ A registration whose folder is later deleted stays in the list, marked unavailab
 
 Registering a folder does not inspect the names of the files in it. A file that already carried intent syntax before registration keeps it.
 
-What does happen is a scan: the daemon walks the folder once to learn which files it has, so that renaming an existing file can be recognised afterwards. The scan reads no file contents and writes nothing. It runs in the background, reports its progress in `daemon status`, and stops if the registration is removed. A folder of a million files delays what it can recognise, never its start.
+The daemon scans the folder to learn the identities of existing files, so it can recognise their renames. The scan reads no file contents and writes nothing. It runs in the background and stops if the registration is removed; `daemon status` reports an aggregate count and the readiness of each folder. Renames before readiness can be missed. If the scan cannot inspect the folder, the watcher stops, reports the error and retries later.
 
 ## What is ignored
 
@@ -87,7 +95,7 @@ retype watch ~/Pictures --resume
 
 A paused folder keeps its registration and converts nothing. `paused = true` in the folder's own configuration is stronger: it survives a resume, and resuming it is refused, naming the file to edit. A committed project setting should not be undone by a client that resumed once and left.
 
-Pausing is also what happens by itself when a folder produces more renames than a queue should absorb, for example a build system writing through a watched tree. Above 256 queued jobs, new automatic jobs are dropped with a warning and a count, and the notification says conversion is paused rather than pretending it worked.
+When a folder produces more renames than the queue can absorb, new automatic jobs are rejected above 256 queued jobs. The source name is restored when possible, and the daemon log and dropped counter report the rejection; notification delivery is not guaranteed.
 
 ## Batching
 
@@ -103,7 +111,7 @@ One batch produces one notification, when its last job settles.
 retype daemon status
 ```
 
-That reports whether the daemon is running, what it is doing, and the counters behind the answers above: converted, parked, failed, and placeholders. A parked job is one waiting for an answer, and [Jobs, undo and history](jobs.md) is where it is answered or refused.
+That reports whether the daemon is running, each registered watcher's state, and its job and event counters. A `degraded` watcher has reported lost events; rescanning may not recover every rename. A parked job is one waiting for an answer, and [Jobs, undo and history](jobs.md) is where it is answered or refused. The foreground follower reports watch states and scoped jobs; it cannot recover unobserved filesystem events. With no verified interactive login, automatic watching is inactive. Existing work may finish. A graphical logout pauses queued automatic work until graphical login returns; terminal-only logout may leave accepted automatic work eligible under a supervisor. Explicit CLI conversions and recovery remain available. Debug test binaries can use controlled session fixtures; those tests do not establish real-login behavior.
 
 Notifications say what a batch produced rather than what it attempted: three converted, or one converted and one failed with the reason, or one parked. The button on the notification is Undo, and it reverses every job of that batch that has a record, which is the same record [Jobs, undo and history](jobs.md) describes.
 

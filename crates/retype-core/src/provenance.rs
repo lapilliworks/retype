@@ -221,6 +221,7 @@ mod tests {
 				format: "png".to_string(),
 				size: 6,
 				mtime_ns: 0,
+				fingerprint: None,
 			},
 			Some("webp".to_string()),
 			vec![output],

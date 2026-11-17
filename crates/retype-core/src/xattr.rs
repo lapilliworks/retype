@@ -143,6 +143,65 @@ pub fn read_intent(path: &Path) -> io::Result<Option<String>> {
 	}
 }
 
+/// Read all accessible attributes for preservation, never treating access failures as absence.
+pub(crate) fn attributes(file: &std::fs::File) -> io::Result<std::collections::BTreeMap<std::ffi::OsString, Vec<u8>>> {
+	#[cfg(unix)]
+	{
+		use ::xattr::FileExt;
+		let names = match file.list_xattr() {
+			Ok(names) => names,
+			Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => return Ok(Default::default()),
+			Err(error) => return Err(error),
+		};
+		names
+			.map(|name| {
+				let value = file
+					.get_xattr(&name)?
+					.ok_or_else(|| io::Error::other("file attributes changed while read"))?;
+				Ok((name, value))
+			})
+			.collect()
+	}
+	#[cfg(not(unix))]
+	{
+		let _ = file;
+		Ok(Default::default())
+	}
+}
+
+/// Copy attributes through the already-open snapshot handles.
+pub(crate) fn copy_attributes(
+	attributes: &std::collections::BTreeMap<std::ffi::OsString, Vec<u8>>,
+	target: &std::fs::File,
+) -> io::Result<()> {
+	#[cfg(unix)]
+	{
+		use ::xattr::FileExt;
+		for (name, value) in attributes {
+			if target.get_xattr(name)?.as_ref() != Some(value) {
+				target.set_xattr(name, value)?;
+			}
+		}
+	}
+	#[cfg(not(unix))]
+	let _ = (attributes, target);
+	Ok(())
+}
+
+/// Attribute integrity is separate from output fingerprints: provenance can be added after publication.
+pub(crate) fn fingerprint(file: &std::fs::File) -> io::Result<String> {
+	use sha2::{Digest, Sha256};
+	let mut hash = Sha256::new();
+	for (name, value) in attributes(file)? {
+		let name = name.as_encoded_bytes();
+		hash.update((name.len() as u64).to_le_bytes());
+		hash.update(name);
+		hash.update((value.len() as u64).to_le_bytes());
+		hash.update(value);
+	}
+	Ok(format!("{:x}", hash.finalize()))
+}
+
 /// Whether the failure is the platform saying "not here" rather than something
 /// going wrong.
 #[cfg(any(target_os = "linux", target_os = "macos"))]

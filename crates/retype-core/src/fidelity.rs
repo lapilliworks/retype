@@ -36,6 +36,10 @@ pub struct Claim {
 	/// The build identity: the probe output hashed, `docs/tools.md` §2.3.
 	#[serde(default)]
 	pub fingerprint: String,
+	#[serde(default, skip_serializing_if = "String::is_empty")]
+	pub engine_version: String,
+	#[serde(default, skip_serializing_if = "String::is_empty")]
+	pub engine_fingerprint: String,
 	/// What the conversion was run on, so the claim can be reproduced.
 	pub fixture: String,
 	/// The properties the fixtures carried and the output kept, `docs/fidelity.md` §4.
@@ -50,8 +54,8 @@ pub struct Claim {
 }
 
 impl Claim {
-	pub fn matches(&self, source: &str, target: &str, backend: &str) -> bool {
-		self.source == source && self.target == target && self.backend == backend
+	pub fn matches(&self, source: &str, target: &str, backend: &str, engine: Option<&str>) -> bool {
+		self.source == source && self.target == target && self.backend == backend && self.engine.as_deref() == engine
 	}
 
 	/// Whether the installed build is the one this claim was earned with,
@@ -62,7 +66,8 @@ impl Claim {
 }
 
 /// What a claim looks like against this machine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum State {
 	/// No claim existed for the pair.
 	New,
@@ -89,6 +94,30 @@ pub struct PairClaim<'a> {
 	pub state: State,
 	pub version: String,
 	pub fingerprint: String,
+	pub engine_version: String,
+	pub engine_fingerprint: String,
+}
+
+/// Evidence persisted with a planned output, separate from its declared tier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Evidence {
+	pub state: State,
+	pub version: String,
+	pub fingerprint: String,
+	pub engine_version: String,
+	pub engine_fingerprint: String,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub claim: Option<Claim>,
+}
+
+impl Evidence {
+	pub fn reported_tier(&self, declared: Tier) -> &'static str {
+		match self.state {
+			State::New => "unclaimed",
+			State::Unverified => "unverified",
+			State::Earned => tier(declared),
+		}
+	}
 }
 
 /// What the release says about a pair and whether this machine still matches it.
@@ -102,22 +131,81 @@ pub fn claim_for<'a>(
 	source: &str,
 	target: &str,
 	backend: &str,
+	engine: Option<&str>,
 ) -> PairClaim<'a> {
-	let (version, fingerprint) = match registry.tool(backend) {
+	claim_for_cancellable(
+		manifest,
+		registry,
+		source,
+		target,
+		backend,
+		engine,
+		&crate::execute::Cancellation::default(),
+	)
+}
+
+pub fn claim_for_cancellable<'a>(
+	manifest: &'a Manifest,
+	registry: &crate::registry::Registry,
+	source: &str,
+	target: &str,
+	backend: &str,
+	engine: Option<&str>,
+	cancellation: &crate::execute::Cancellation,
+) -> PairClaim<'a> {
+	let archive_tool = registry
+		.format(source)
+		.and_then(|format| format.native)
+		.zip(registry.format(target).and_then(|format| format.native))
+		.filter(|(from, to)| from.needs_tool() || to.needs_tool())
+		.and_then(|_| registry.tool(crate::tools::SEVEN_ZIP));
+	let tool = registry.tool(backend).or(archive_tool);
+	let (version, fingerprint, is_usable) = match tool {
 		Some(tool) => {
-			let status = crate::tools::probe(tool);
+			let status = crate::tools::probe_cancellable(tool, cancellation);
 			(
 				status.version.as_ref().map(ToString::to_string).unwrap_or_default(),
 				status.fingerprint().unwrap_or_default(),
+				status.is_usable() && status.version.is_some() && status.fingerprint().is_some(),
 			)
 		}
-		None => (env!("CARGO_PKG_VERSION").to_string(), String::new()),
+		None => (env!("CARGO_PKG_VERSION").to_string(), String::new(), true),
 	};
 
-	let claim = manifest.get(source, target, backend);
+	let (engine_version, engine_fingerprint) = match (tool, engine) {
+		(Some(tool), Some(candidate)) => {
+			let mut engine_tool = tool.clone();
+			engine_tool.command = candidate.to_string();
+			engine_tool.aliases.clear();
+			engine_tool.probe = vec!["--version".to_string()];
+			engine_tool.version_min = None;
+			engine_tool.components.clear();
+			let status = crate::tools::probe_cancellable(&engine_tool, cancellation);
+			if status.is_usable() {
+				(
+					status.version.as_ref().map(ToString::to_string).unwrap_or_default(),
+					status.fingerprint().unwrap_or_default(),
+				)
+			} else {
+				(String::new(), String::new())
+			}
+		}
+		_ => (String::new(), String::new()),
+	};
+	let claim = manifest.get(source, target, backend, engine);
 	let state = match claim {
 		None => State::New,
-		Some(claim) if claim.is_current(&version, &fingerprint) => State::Earned,
+		Some(claim)
+			if is_usable
+				&& claim.is_current(&version, &fingerprint)
+				&& registry.format(target).is_some_and(|format| format.tier == claim.tier)
+				&& (claim.tier != Tier::Exact || (!claim.axes.is_empty() && claim.lost.is_empty()))
+				&& claim.engine_version == engine_version
+				&& claim.engine_fingerprint == engine_fingerprint
+				&& (engine.is_none() || (!engine_version.is_empty() && !engine_fingerprint.is_empty())) =>
+		{
+			State::Earned
+		}
 		Some(_) => State::Unverified,
 	};
 
@@ -126,7 +214,113 @@ pub fn claim_for<'a>(
 		state,
 		version,
 		fingerprint,
+		engine_version,
+		engine_fingerprint,
 	}
+}
+
+/// Attach the same evidence used by inspection to every output plan.
+pub fn qualify(
+	manifest: &Manifest,
+	registry: &crate::registry::Registry,
+	source: &str,
+	plans: &mut [crate::plan::Plan],
+) {
+	qualify_cancellable(
+		manifest,
+		registry,
+		source,
+		plans,
+		&crate::execute::Cancellation::default(),
+	);
+}
+
+pub fn qualify_cancellable(
+	manifest: &Manifest,
+	registry: &crate::registry::Registry,
+	source: &str,
+	plans: &mut [crate::plan::Plan],
+	cancellation: &crate::execute::Cancellation,
+) {
+	for plan in plans {
+		let current = claim_for_cancellable(
+			manifest,
+			registry,
+			source,
+			&plan.format,
+			plan.backend.name(),
+			plan.engine.as_ref().map(|(_, candidate)| candidate.as_str()),
+			cancellation,
+		);
+		plan.fidelity = Some(Evidence {
+			state: current.state,
+			version: current.version,
+			fingerprint: current.fingerprint,
+			engine_version: current.engine_version,
+			engine_fingerprint: current.engine_fingerprint,
+			claim: current.claim.cloned(),
+		});
+	}
+}
+
+/// Refuse a stale exact promise before execution or output publication.
+pub fn check(plan: &crate::plan::Plan) -> Result<()> {
+	if let Some(evidence) = &plan.fidelity {
+		if plan.tier == Tier::Exact && evidence.state == State::Unverified {
+			let Some(claim) = &evidence.claim else {
+				return Err(Diagnostic::global(Code::Unsupported, "exact output has no verified claim").into());
+			};
+			return Err(Diagnostic::global(
+				Code::Unsupported,
+				format!(
+					"{} to {}: exact claim for {} is stale; recorded version {} fingerprint {}, \
+					 installed version {} fingerprint {}; engine {:?}: recorded {} {}, installed {} {}; \
+					 rerun fidelity or relax [formats.{}] tier",
+					claim.source,
+					claim.target,
+					claim.backend,
+					claim.version,
+					claim.fingerprint,
+					evidence.version,
+					evidence.fingerprint,
+					claim.engine,
+					claim.engine_version,
+					claim.engine_fingerprint,
+					evidence.engine_version,
+					evidence.engine_fingerprint,
+					plan.format,
+				),
+			)
+			.into());
+		}
+	}
+	Ok(())
+}
+
+/// Locate release evidence consistently for conversion and inspection.
+pub fn open_for(state_dir: Option<&Path>) -> Result<Manifest> {
+	if let Some(path) = std::env::var_os("RETYPE_FIDELITY_MANIFEST") {
+		return Manifest::open(Path::new(&path));
+	}
+	if let Some(state_dir) = state_dir {
+		let path = state_dir.join("fidelity.toml");
+		if path.try_exists()? {
+			return Manifest::open(&path);
+		}
+	}
+	let local = Path::new("fidelity.toml");
+	if local.try_exists()? {
+		return Manifest::open(local);
+	}
+	if let Ok(executable) = std::env::current_exe() {
+		for ancestor in executable.ancestors().skip(1) {
+			let path = ancestor.join("share/retype/fidelity.toml");
+			if path.try_exists()? {
+				return Manifest::open(&path);
+			}
+		}
+	}
+	Ok(Manifest::default())
 }
 
 /// `fidelity.toml`: every claim the release ships.
@@ -198,23 +392,30 @@ impl Manifest {
 		Ok(())
 	}
 
-	pub fn get(&self, source: &str, target: &str, backend: &str) -> Option<&Claim> {
-		self.claim.iter().find(|claim| claim.matches(source, target, backend))
+	pub fn get(&self, source: &str, target: &str, backend: &str, engine: Option<&str>) -> Option<&Claim> {
+		self.claim
+			.iter()
+			.find(|claim| claim.matches(source, target, backend, engine))
 	}
 
-	/// Record a claim, replacing the one for the same pair and backend.
+	/// Record a claim, replacing the one for the same pair, backend and resolved engine.
 	pub fn record(&mut self, claim: Claim) {
 		match self
 			.claim
 			.iter_mut()
-			.find(|existing| existing.matches(&claim.source, &claim.target, &claim.backend))
+			.find(|existing| existing.matches(&claim.source, &claim.target, &claim.backend, claim.engine.as_deref()))
 		{
 			Some(existing) => *existing = claim,
 			None => self.claim.push(claim),
 		}
 
 		self.claim.sort_by(|left, right| {
-			(&left.source, &left.target, &left.backend).cmp(&(&right.source, &right.target, &right.backend))
+			(&left.source, &left.target, &left.backend, &left.engine).cmp(&(
+				&right.source,
+				&right.target,
+				&right.backend,
+				&right.engine,
+			))
 		});
 	}
 
@@ -323,6 +524,8 @@ mod tests {
 			engine: None,
 			version: "7.1.2-34".to_string(),
 			fingerprint: "0123456789abcdef0123456789abcdef".to_string(),
+			engine_version: String::new(),
+			engine_fingerprint: String::new(),
 			fixture: "image sample".to_string(),
 			axes: vec![crate::axis::Axis::Alpha],
 			lost: Vec::new(),
@@ -355,23 +558,117 @@ mod tests {
 	}
 
 	#[test]
+	fn resolved_engines_have_independent_claims() {
+		let mut manifest = Manifest::default();
+		let mut typst = claim("md", "pdf");
+		typst.engine = Some("typst".to_string());
+		let mut weasyprint = typst.clone();
+		weasyprint.engine = Some("weasyprint".to_string());
+		manifest.record(weasyprint.clone());
+		manifest.record(typst.clone());
+
+		assert_eq!(manifest.get("md", "pdf", "magick", Some("typst")), Some(&typst));
+		assert_eq!(
+			manifest.get("md", "pdf", "magick", Some("weasyprint")),
+			Some(&weasyprint)
+		);
+		assert!(manifest.get("md", "pdf", "magick", None).is_none());
+		assert!(manifest.get("md", "pdf", "magick", Some("xelatex")).is_none());
+		typst.version = "new build".to_string();
+		manifest.record(typst.clone());
+		assert_eq!(manifest.claim, vec![typst, weasyprint]);
+	}
+
+	#[test]
 	fn a_native_claim_is_measured_against_this_build() {
 		let registry = crate::registry::Registry::builtin().expect("the shipped table loads");
 		let mut native = claim("tar", "zip");
 		native.backend = "zip".to_string();
+		native.tier = registry.format("zip").unwrap().tier;
 		native.version = env!("CARGO_PKG_VERSION").to_string();
 		native.fingerprint = String::new();
 
 		let mut manifest = Manifest::default();
 		manifest.record(native);
 
-		let current = claim_for(&manifest, &registry, "tar", "zip", "zip");
+		let current = claim_for(&manifest, &registry, "tar", "zip", "zip", None);
 		assert_eq!(current.state, State::Earned);
 
 		let mut stale = manifest;
 		stale.claim[0].fingerprint = "not-this-build".to_string();
-		let stale = claim_for(&stale, &registry, "tar", "zip", "zip");
+		let stale = claim_for(&stale, &registry, "tar", "zip", "zip", None);
 		assert_eq!(stale.state, State::Unverified);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn an_engine_build_change_invalidates_only_its_claim() {
+		use std::os::unix::fs::PermissionsExt;
+		let dir = tempfile::tempdir().unwrap();
+		let backend = dir.path().join("backend");
+		let engine = dir.path().join("engine");
+		for path in [&backend, &engine] {
+			fs::write(path, "#!/bin/sh\necho 'version 1.0 build A'\n").unwrap();
+			fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+		}
+		let registry = crate::registry::Registry::load(&format!(
+			"version = 'retype-config-1'\n[tools.copy]\ncommand = {:?}\nprobe = ['--version']\nlayout = ['{{input}}', '{{ops}}', '{{output}}']\n\n[formats.pdf]\nfamily = 'document'\nlossy = false\nalpha = false\ntier = 'converted'\n",
+			backend.to_str().unwrap(),
+		)).unwrap();
+		let candidate = engine.to_str().unwrap();
+		let mut manifest = Manifest::default();
+		let current = claim_for(&manifest, &registry, "md", "pdf", "copy", Some(candidate));
+		let mut earned = claim("md", "pdf");
+		earned.backend = "copy".to_string();
+		earned.engine = Some(candidate.to_string());
+		earned.version = current.version;
+		earned.fingerprint = current.fingerprint;
+		earned.engine_version = current.engine_version;
+		earned.engine_fingerprint = current.engine_fingerprint;
+		manifest.record(earned);
+		assert_eq!(
+			claim_for(&manifest, &registry, "md", "pdf", "copy", Some(candidate)).state,
+			State::Earned
+		);
+		fs::write(&engine, "#!/bin/sh\necho 'version 1.0 build B'\n").unwrap();
+		assert_eq!(
+			claim_for(&manifest, &registry, "md", "pdf", "copy", Some(candidate)).state,
+			State::Unverified
+		);
+		assert_eq!(
+			claim_for(&manifest, &registry, "md", "pdf", "copy", None).state,
+			State::New
+		);
+	}
+
+	#[test]
+	fn a_stale_exact_plan_fails_before_creating_an_output() {
+		let registry = crate::registry::Registry::builtin().unwrap();
+		let parsed = crate::intent::parse("zip").unwrap();
+		let resolved = crate::resolve::resolve(
+			&parsed,
+			crate::resolve::Source {
+				format: "tar",
+				is_directory: false,
+			},
+			&registry,
+		)
+		.unwrap();
+		let mut plans = crate::plan::compile(&registry, &crate::plan::Nothing, &resolved).unwrap();
+		let mut manifest = Manifest::default();
+		let mut stale = claim("tar", "zip");
+		stale.backend = "zip".to_string();
+		stale.tier = Tier::Exact;
+		manifest.record(stale);
+		qualify(&manifest, &registry, "tar", &mut plans);
+		let dir = tempfile::tempdir().unwrap();
+		let source = dir.path().join("source.tar");
+		let output = dir.path().join("output.zip");
+		fs::write(&source, "not read by a refused plan").unwrap();
+		let error = crate::execute::run(&plans[0], &source, &output).unwrap_err();
+		assert_eq!(error.code(), Code::Unsupported);
+		assert_eq!(fs::read_to_string(source).unwrap(), "not read by a refused plan");
+		assert!(!output.exists());
 	}
 
 	#[test]
@@ -379,7 +676,7 @@ mod tests {
 		let registry = crate::registry::Registry::builtin().expect("the shipped table loads");
 		let manifest = Manifest::default();
 
-		let answer = claim_for(&manifest, &registry, "tar", "zip", "zip");
+		let answer = claim_for(&manifest, &registry, "tar", "zip", "zip", None);
 		assert_eq!(answer.state, State::New);
 		assert!(answer.claim.is_none());
 	}

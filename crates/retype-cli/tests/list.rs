@@ -84,7 +84,7 @@ fn tiers_claims_one_line_per_pair() {
 		.find(|line| line.starts_with("png") && line.contains("webp"))
 		.unwrap_or_default();
 
-	assert!(pair.contains("converted"), "{pair}");
+	assert!(pair.contains("unclaimed"), "{pair}");
 	assert!(pair.contains("copy"), "{pair}");
 }
 
@@ -192,20 +192,19 @@ fn retype_log_sets_the_same_level() {
 fn a_pair_that_no_single_tool_carries_is_not_offered() {
 	// The shipped table says which families each tool handles, so an image encoder
 	// is not offered for a video container even though it carries the operations.
-	let installed = std::process::Command::new("ffmpeg")
-		.arg("-version")
-		.stdout(std::process::Stdio::null())
-		.stderr(std::process::Stdio::null())
-		.status()
-		.map(|status| status.success())
-		.unwrap_or(false);
-
-	if !installed {
-		return;
-	}
-
-	let output = retype().args(["list", "--tiers"]).output().unwrap();
-	let stdout = String::from_utf8_lossy(&output.stdout);
+	let dir = tempfile::tempdir().unwrap();
+	let config = dir.path().join("ffmpeg.toml");
+	let (command, probe) = if cfg!(windows) {
+		("cmd", "['/c', 'echo ffmpeg version 6.0']")
+	} else {
+		("sh", "['-c', 'echo ffmpeg version 6.0']")
+	};
+	fs::write(
+		&config,
+		format!("version = 'retype-config-1'\n[tools.ffmpeg]\ncommand = '{command}'\nprobe = {probe}\n"),
+	)
+	.unwrap();
+	let stdout = run(&config, &["list", "--tiers"]);
 
 	let pair = |from: &str, to: &str| {
 		stdout

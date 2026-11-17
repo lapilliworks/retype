@@ -2,7 +2,7 @@
 
 Rename the extension, the file converts.
 
-Status: alpha. The manual marks which behaviour has landed.
+Status: pre-alpha. The manual marks which behaviour has landed.
 
 ## What it will be
 
@@ -10,7 +10,7 @@ A file watcher and a command line tool that convert a file when you rename its
 extension. `photo.heic` becomes `photo.jpg`, and the bytes follow the name.
 Transformations ride on the same gesture: `photo.heic` becomes `photo.webp+q80`.
 
-- Cross platform: Linux, macOS, Windows
+- Cross platform: current Debian stable on Linux, macOS, Windows
 - Local only: no upload, no account, no telemetry
 - Scriptable, with the same intent string accepted by the filename, the command
   line and the editor
@@ -44,15 +44,17 @@ Windows, in PowerShell:
 irm https://retype.name/install.ps1 | iex
 ```
 
-The scripts verify the release checksum, install the CLI, daemon and shared
-release assets under `~/.local` on Unix or `%LOCALAPPDATA%\Programs\retype` on
-Windows, and update that installation when run again. The Windows installer adds
-its `bin` directory to the user `PATH`. They do not install a service, register a
-URI scheme or ship the notifier, and they are not code-signed.
+The scripts verify the release checksum, install the CLI, daemon and shared release assets under `~/.local` on Unix or `%LOCALAPPDATA%\Programs\retype` on Windows, and update that installation when run again. The Windows installer adds its `bin` directory to the user `PATH`. The default release selection includes prereleases. They do not install a service, register a URI scheme or ship the notifier, and they are not code-signed.
+
+Updates validate the staged binary before publication, retain the previous installation in a `share/retype-backup.*` or `share/retype-backup-*` directory under the prefix, and restore it on installation failure. The scripts print the backup path; old backups are not automatically pruned.
 
 Tool acquisition follows the interface. The CLI does not install or manage tools: a
 CLI user uses the platform's package manager or installs them by hand. The GUI manages
 the signed toolchain for users who should not need to know what a package manager is.
+
+## Tests
+
+See the [native test harness](tests/README.md) for preparation, `./tests/run.sh` on Linux/macOS, the Windows runner, and report locations. The strict runner requires real tools; ordinary `cargo test --workspace` is a contributor baseline, not release evidence.
 
 ## Licence
 

@@ -1,0 +1,114 @@
+name: Debian stable qualification
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    name: Debian stable (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    container: debian:trixie
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            typst_target: x86_64-unknown-linux-musl
+            evidence: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            typst_target: aarch64-unknown-linux-musl
+            evidence: linux-arm64
+    steps:
+      - name: Prepare stable build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config procps util-linux xz-utils python3
+          mkdir -p /opt/retype-cargo /opt/retype-rustup
+          printf 'CARGO_HOME=/opt/retype-cargo\nRUSTUP_HOME=/opt/retype-rustup\n' >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install converters and compatible Typst
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          ./tests/prepare.sh
+          typst_dir="$RUNNER_TEMP/typst-0.11.1"
+          mkdir -p "$typst_dir"
+          curl --fail --location --retry 3 --connect-timeout 10 --max-time 120 \
+            "https://github.com/typst/typst/releases/download/v0.11.1/typst-${{ matrix.typst_target }}.tar.xz" \
+            -o "$typst_dir/typst.tar.xz"
+          tar -xJf "$typst_dir/typst.tar.xz" -C "$typst_dir"
+          printf '%s\n' "$typst_dir/typst-${{ matrix.typst_target }}" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.151
+          fallback: none
+      - name: Strict native userspace suite
+        shell: bash
+        timeout-minutes: 20
+        env:
+          RETYPE_TEST_TIMEOUT_SECONDS: '600'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/retype-reports"
+          printf 'RETYPE_TEST_REPORT_DIR=%s\n' "$RUNNER_TEMP/retype-reports" >> "$GITHUB_ENV"
+          chown -R 1000:1000 "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$CARGO_HOME" "$RUSTUP_HOME"
+          setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all \
+            env RETYPE_TEST_REPORT_DIR="$RUNNER_TEMP/retype-reports" ./tests/run.sh
+      - name: Build exact release executable and earn its claims
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all \
+            cargo build --release --locked -p retype-cli --bin retype
+          setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all \
+            target/release/retype fidelity --pair png:jpg --pair png:webp \
+            --state-dir "$RUNNER_TEMP/retype-fidelity" --write "$RETYPE_TEST_REPORT_DIR/fidelity.toml" \
+            --fixtures fixtures/fidelity > "$RETYPE_TEST_REPORT_DIR/fidelity.log" 2>&1
+      - name: Package and check installed archive
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version=$GITHUB_REF_NAME; else version=v0.1.0-dev-${GITHUB_SHA:0:7}; fi
+          name="retype-$version-${{ matrix.target }}"
+          mkdir -p "dist/$name/bin" "dist/$name/share/retype/fixtures"
+          cp target/release/retype "dist/$name/bin/"
+          cp "$RETYPE_TEST_REPORT_DIR/fidelity.toml" "dist/$name/share/retype/"
+          cp -R fixtures/fidelity "dist/$name/share/retype/fixtures/"
+          cp -R packaging "dist/$name/share/retype/"
+          cp README.md LICENSE "dist/$name/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all \
+            python3 tests/installed.py "dist/$name.tar.gz" --report "$RETYPE_TEST_REPORT_DIR/installed"
+          readelf --version-info target/release/retype > "$RETYPE_TEST_REPORT_DIR/symbols.log"
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.evidence }}
+          path: ${{ runner.temp }}/retype-reports
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: retype-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error

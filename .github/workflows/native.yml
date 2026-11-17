@@ -1,0 +1,112 @@
+name: Native macOS and Windows verification
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  platform:
+    name: native ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-15
+            architecture: arm64
+          - platform: windows-x86_64
+            runner: windows-2025
+            architecture: X64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare report directory (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/retype-reports"
+          printf 'RETYPE_TEST_REPORT_DIR=%s\n' "$RUNNER_TEMP/retype-reports" >> "$GITHUB_ENV"
+          test "$(uname -m)" = '${{ matrix.architecture }}'
+      - name: Prepare report directory (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP 'retype-reports'
+          [IO.Directory]::CreateDirectory($report) | Out-Null
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RETYPE_TEST_REPORT_DIR=$report" -Encoding utf8
+          if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne '${{ matrix.architecture }}') { throw 'Unexpected architecture' }
+      - name: Install macOS tools
+        if: runner.os == 'macOS'
+        shell: bash
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          ./tests/prepare.sh 2>&1 | tee "$RETYPE_TEST_REPORT_DIR/setup.log"
+      - name: Install Windows tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          Start-Transcript -Path (Join-Path $env:RETYPE_TEST_REPORT_DIR 'setup.log') | Out-Null
+          try { & ./tests/prepare.ps1 } finally { Stop-Transcript | Out-Null }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.151
+          fallback: none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          save-if: ${{ github.event_name == 'push' && github.ref_type == 'branch' }}
+      - name: Run macOS suite
+        if: runner.os == 'macOS'
+        shell: bash
+        timeout-minutes: 20
+        run: ./tests/run.sh
+      - name: Run Windows suite
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          pwsh -NoProfile -NonInteractive -File ./tests/run.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Earn macOS fidelity evidence
+        if: runner.os == 'macOS'
+        shell: bash
+        timeout-minutes: 5
+        run: target/debug/retype fidelity --pair png:jpg --pair png:webp --state-dir "$RUNNER_TEMP/retype-fidelity" --write "$RETYPE_TEST_REPORT_DIR/fidelity.toml" --fixtures fixtures/fidelity > "$RETYPE_TEST_REPORT_DIR/fidelity.log" 2>&1
+      - name: Earn Windows fidelity evidence
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          & target/debug/retype.exe fidelity --pair png:jpg --pair png:webp --state-dir "$env:RUNNER_TEMP/retype-fidelity" --write (Join-Path $env:RETYPE_TEST_REPORT_DIR 'fidelity.toml') --fixtures fixtures/fidelity *> (Join-Path $env:RETYPE_TEST_REPORT_DIR 'fidelity.log')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Record macOS filesystem events
+        if: ${{ always() && runner.os == 'macOS' }}
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          cargo run --quiet --locked -p retype-watch --example probe_events 2>&1 | tee "$RETYPE_TEST_REPORT_DIR/filesystem-events.log"
+      - name: Record Windows filesystem events
+        if: ${{ always() && runner.os == 'Windows' }}
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          cargo run --quiet --locked -p retype-watch --example probe_events 2>&1 | Tee-Object -FilePath (Join-Path $env:RETYPE_TEST_REPORT_DIR 'filesystem-events.log')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload native reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}
+          path: ${{ runner.temp }}/retype-reports
+          if-no-files-found: error

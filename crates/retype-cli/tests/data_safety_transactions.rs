@@ -171,6 +171,10 @@ impl Fixture {
 			id,
 			&Cancellation::default(),
 		);
+		self.job(id)
+	}
+
+	fn job(&self, id: &JobId) -> Job {
 		self.server
 			.shared()
 			.jobs
@@ -187,6 +191,139 @@ impl Drop for Fixture {
 	fn drop(&mut self) {
 		self.server.pool().stop();
 	}
+}
+
+#[test]
+fn a_watched_conversion_stops_and_reports_an_undo_storage_error() {
+	let fixture = Fixture::new();
+	fs::write(fixture.path("state/undo"), b"not a directory").unwrap();
+	let job = fixture.convert("zip", &JobId::now().unwrap());
+	assert_eq!(job.state, JobState::Failed);
+	assert!(job.error.as_ref().unwrap().message.contains("undo"));
+	assert!(job.outputs.is_empty());
+	assert!(fixture.path("bundle.tar").is_file());
+	assert!(!fixture.path("bundle.zip").exists());
+	let mut tar = tar::Archive::new(fs::File::open(fixture.path("bundle.tar")).unwrap());
+	assert_eq!(tar.entries().unwrap().count(), 2);
+}
+
+#[test]
+fn an_occupied_source_name_does_not_make_a_temporary_input_a_disposed_original() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	fs::write(&source, b"unrelated occupant").unwrap();
+	let id = JobId::now().unwrap();
+	let job = fixture.convert("zip,tar.gz", &id);
+
+	assert_eq!(job.state, JobState::Done);
+	assert_eq!(fs::read(&source).unwrap(), b"unrelated occupant");
+	let original_location = fixture.path("bundle.zip,tar.gz");
+	let mut original = tar::Archive::new(fs::File::open(original_location).unwrap());
+	assert_eq!(original.entries().unwrap().count(), 2);
+	check_zip(&fixture.path("bundle.zip"));
+	check_tar_gzip(&fixture.path("bundle.tar.gz"));
+	let record = fixture.store().load(&id).unwrap().unwrap();
+	assert!(record.pinned, "ambiguous original location must keep recovery pinned");
+	assert!(fixture.store().source(&id).unwrap().is_some());
+}
+
+#[test]
+fn a_direct_conversion_stops_and_reports_an_undo_storage_error() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	archive(&source);
+	let original = fs::read(&source).unwrap();
+	fs::write(fixture.path("state/undo"), b"not a directory").unwrap();
+	let id = JobId::now().unwrap();
+	let request = retype_cli::daemon::immediate::Request {
+		input: source.clone(),
+		intent: "zip".to_string(),
+		output: None,
+		force: false,
+	};
+	retype_cli::daemon::immediate::run(&fixture.server.shared(), &request, &id, &Cancellation::default());
+	let job = fixture
+		.server
+		.shared()
+		.jobs
+		.lock()
+		.unwrap()
+		.iter()
+		.find(|job| job.id == id)
+		.unwrap()
+		.clone();
+	assert_eq!(job.state, JobState::Failed);
+	assert!(job.error.as_ref().unwrap().message.contains("undo"));
+	assert!(job.outputs.is_empty());
+	assert_eq!(fs::read(source).unwrap(), original);
+	assert!(!fixture.path("bundle.zip").exists());
+}
+
+#[test]
+fn a_direct_native_conversion_and_undo_use_the_watched_disposition() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	archive(&source);
+	let original = fs::read(&source).unwrap();
+	let id = JobId::now().unwrap();
+	let request = retype_cli::daemon::immediate::Request {
+		input: source.clone(),
+		intent: "zip".to_string(),
+		output: None,
+		force: false,
+	};
+	retype_cli::daemon::immediate::run(&fixture.server.shared(), &request, &id, &Cancellation::default());
+	let job = fixture.job(&id);
+	assert_eq!(job.state, JobState::Done);
+	check_zip(&fixture.path("bundle.zip"));
+	assert!(fixture.store().source(&id).unwrap().is_some());
+	if retype_core::fsx::supports_durable_cleanup() {
+		assert_eq!(
+			job.source_disposition,
+			Some(retype_core::job::SourceDisposition::Removed)
+		);
+		assert!(!source.exists());
+		fixture.store().restore(&id).unwrap();
+		assert_eq!(fs::read(&source).unwrap(), original);
+		assert!(!fixture.path("bundle.zip").exists());
+	} else {
+		assert!(matches!(
+			job.source_disposition,
+			Some(retype_core::job::SourceDisposition::Retained { .. })
+		));
+		assert_eq!(fs::read(&source).unwrap(), original);
+		assert!(fixture.store().restore(&id).is_err());
+		check_zip(&fixture.path("bundle.zip"));
+	}
+}
+
+#[test]
+fn a_direct_conversion_without_an_undo_record_reports_the_retained_source() {
+	let fixture = Fixture::new();
+	fixture
+		.server
+		.shared()
+		.reload_registry(Registry::load(&format!("{CONFIG}\n[undo]\nenabled = false\n")).unwrap());
+	let source = fixture.path("bundle.tar");
+	archive(&source);
+	let original = fs::read(&source).unwrap();
+	let id = JobId::now().unwrap();
+	let request = retype_cli::daemon::immediate::Request {
+		input: source.clone(),
+		intent: "zip".to_string(),
+		output: None,
+		force: false,
+	};
+	retype_cli::daemon::immediate::run(&fixture.server.shared(), &request, &id, &Cancellation::default());
+	let job = fixture.job(&id);
+	assert_eq!(job.state, JobState::Done);
+	assert!(
+		matches!(job.source_disposition, Some(retype_core::job::SourceDisposition::Retained { ref reason })
+		if reason.contains("undo backup is unavailable"))
+	);
+	assert_eq!(fs::read(source).unwrap(), original);
+	check_zip(&fixture.path("bundle.zip"));
+	assert!(fixture.store().load(&id).unwrap().is_none());
 }
 
 #[test]
@@ -241,6 +378,7 @@ fn forcing_a_native_output_cannot_overwrite_a_hard_link_to_the_input() {
 			output: Some(alias.to_string_lossy().into_owned()),
 			force: true,
 		},
+		fixture.dir.path(),
 	);
 	assert!(prepared.is_err(), "force does not override input identity protection");
 	assert_eq!(fs::read(source).unwrap(), original);
@@ -257,6 +395,120 @@ fn a_partial_native_conversion_retains_the_original_even_with_a_valid_first_outp
 	check_zip(&fixture.path("bundle.zip"));
 	assert!(fixture.path("bundle.tar").exists());
 	assert!(fixture.store().load(&id).unwrap().unwrap().pinned);
+}
+
+#[test]
+fn a_resumed_verified_job_uses_the_original_source_disposition() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	let blocked = fixture.path("bundle.tar.gz");
+	fs::create_dir(&blocked).unwrap();
+	let job = fixture.convert("zip,tar.gz", &JobId::now().unwrap());
+	assert_eq!(job.state, JobState::Partial);
+	let original = fs::read(&source).unwrap();
+	fs::remove_dir(&blocked).unwrap();
+
+	assert_eq!(
+		resume::run(&fixture.server.shared(), "safety", &job, false).unwrap(),
+		JobState::Done
+	);
+	let resumed = fixture.job(&job.id);
+	check_zip(&fixture.path("bundle.zip"));
+	check_tar_gzip(&blocked);
+	assert!(fixture.store().source(&job.id).unwrap().is_some());
+	if retype_core::fsx::supports_durable_cleanup() {
+		assert_eq!(
+			resumed.source_disposition,
+			Some(retype_core::job::SourceDisposition::Removed)
+		);
+		assert!(!source.exists());
+		fixture.store().restore(&job.id).unwrap();
+		assert_eq!(fs::read(source).unwrap(), original);
+	} else {
+		assert!(matches!(
+			resumed.source_disposition,
+			Some(retype_core::job::SourceDisposition::Retained { .. })
+		));
+		assert_eq!(fs::read(source).unwrap(), original);
+	}
+}
+
+#[test]
+fn a_resumed_legacy_output_without_validation_keeps_the_source() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	let blocked = fixture.path("bundle.tar.gz");
+	fs::create_dir(&blocked).unwrap();
+	let job = fixture.convert("zip,tar.gz", &JobId::now().unwrap());
+	assert_eq!(job.state, JobState::Partial);
+	let original = fs::read(&source).unwrap();
+	let meta = fixture.store().directory(&job.id).join("meta.toml");
+	let text = fs::read_to_string(&meta).unwrap();
+	assert!(text.contains("validated = true\n"));
+	fs::write(&meta, text.replace("validated = true\n", "")).unwrap();
+	fs::remove_dir(&blocked).unwrap();
+
+	assert_eq!(
+		resume::run(&fixture.server.shared(), "safety", &job, false).unwrap(),
+		JobState::Done
+	);
+	let resumed = fixture.job(&job.id);
+	assert!(
+		matches!(resumed.source_disposition, Some(retype_core::job::SourceDisposition::Retained { ref reason })
+		if reason.contains("no recorded output validation"))
+	);
+	assert_eq!(fs::read(source).unwrap(), original);
+	assert!(fixture.store().source(&job.id).unwrap().is_some());
+}
+
+#[test]
+fn a_resumed_job_with_a_changed_source_reports_unresolved_and_keeps_recovery() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	let blocked = fixture.path("bundle.tar.gz");
+	fs::create_dir(&blocked).unwrap();
+	let job = fixture.convert("zip,tar.gz", &JobId::now().unwrap());
+	assert_eq!(job.state, JobState::Partial);
+	fs::write(&source, b"new unrelated content").unwrap();
+	fs::remove_dir(&blocked).unwrap();
+
+	assert_eq!(
+		resume::run(&fixture.server.shared(), "safety", &job, false).unwrap(),
+		JobState::Done
+	);
+	let resumed = fixture.job(&job.id);
+	assert!(matches!(
+		resumed.source_disposition,
+		Some(retype_core::job::SourceDisposition::Unresolved { .. })
+	));
+	assert_eq!(
+		retype_cli::output::job_failure(&resumed).unwrap().0,
+		retype_core::error::Code::IoFailed
+	);
+	assert_eq!(fs::read(source).unwrap(), b"new unrelated content");
+	assert!(fixture.store().load(&job.id).unwrap().unwrap().pinned);
+	assert!(fixture.store().source(&job.id).unwrap().is_some());
+	check_zip(&fixture.path("bundle.zip"));
+	check_tar_gzip(&blocked);
+}
+
+#[test]
+fn a_watched_keep_undo_leaves_later_source_edits_alone() {
+	let fixture = Fixture::new();
+	let job = fixture.convert("zip+keep", &JobId::now().unwrap());
+	assert_eq!(job.state, JobState::Done);
+	assert_eq!(job.source_disposition, Some(retype_core::job::SourceDisposition::Kept));
+	let source = fixture.path("bundle.tar");
+	fs::write(&source, b"later edit").unwrap();
+	let restored = fixture.store().restore(&job.id);
+	assert_eq!(fs::read(source).unwrap(), b"later edit");
+	if retype_core::fsx::supports_durable_cleanup() {
+		restored.unwrap();
+		assert!(!fixture.path("bundle.zip").exists());
+	} else {
+		assert!(restored.is_err());
+		check_zip(&fixture.path("bundle.zip"));
+	}
 }
 
 #[test]
@@ -280,14 +532,18 @@ fn a_native_keep_source_group_prevents_disposal() {
 }
 
 #[test]
-fn failed_backup_creation_cannot_authorize_even_a_valid_native_conversion_to_delete() {
+fn failed_backup_creation_stops_a_native_conversion_without_replacing_existing_data() {
 	let fixture = Fixture::new();
 	let id = JobId::now().unwrap();
-	fs::create_dir_all(fixture.store().directory(&id).join("source.tar")).unwrap();
+	let occupied = fixture.store().directory(&id).join("source.tar");
+	fs::create_dir_all(&occupied).unwrap();
+	fs::write(occupied.join("existing"), b"unrelated").unwrap();
 	let job = fixture.convert("zip", &id);
-	assert_eq!(job.state, JobState::Done);
-	check_zip(&fixture.path("bundle.zip"));
+	assert_eq!(job.state, JobState::Failed);
+	assert!(job.error.as_ref().unwrap().message.contains("undo"));
+	assert!(!fixture.path("bundle.zip").exists());
 	assert!(fixture.path("bundle.tar").exists());
+	assert_eq!(fs::read(occupied.join("existing")).unwrap(), b"unrelated");
 	assert!(fixture.store().source(&id).unwrap().is_none());
 }
 
@@ -325,7 +581,7 @@ fn valid_native_output_does_not_authorize_removing_a_replacement_source() {
 		},
 	)
 	.unwrap();
-	assert!(report.validated);
+	assert!(report.validation.fingerprint().is_some());
 	check_zip(&output);
 	assert!(remove_owned(&source, &snapshot.original).is_err());
 	assert_eq!(fs::read(&source).unwrap(), b"a new unrelated file at the old name");
@@ -390,23 +646,90 @@ fn a_published_output_that_changes_cannot_authorize_source_disposal() {
 			let mut produced = Output::pending(output.clone(), "zip", Tier::Exact);
 			produced.state = OutputState::Done;
 			produced.bytes = Some(report.bytes);
-			store.prepare_output(&id, produced, staged)
+			store.prepare_checked_output(&id, produced, staged, report.validation.fingerprint())
 		},
 	)
 	.unwrap();
-	store.verify_disposal(&id).unwrap();
+	let finished = store.load(&id).unwrap().unwrap().commits[0].output.clone();
+	store.verify_disposal(&id, std::slice::from_ref(&finished)).unwrap();
 	fs::rename(&output, fixture.path("moved-output.zip")).unwrap();
 	fs::write(&output, b"a replacement created after publication").unwrap();
 	assert!(
 		Cancellation::default()
 			.commit(|| {
-				store.verify_disposal(&id)?;
+				store.verify_disposal(&id, std::slice::from_ref(&finished))?;
 				remove_owned(&source, &snapshot.original)
 			})
 			.is_err()
 	);
 	assert!(source.exists());
 	assert_eq!(fs::read(output).unwrap(), b"a replacement created after publication");
+}
+
+#[test]
+fn a_replaced_staged_output_cannot_be_recorded_as_validated() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	archive(&source);
+	let output = fixture.path("bundle.zip");
+	let id = JobId::now().unwrap();
+	let store = fixture.store();
+	store.save(subject(id.clone(), &source, Vec::new())).unwrap();
+
+	let result = execute::run_recorded(
+		&plans("zip")[0],
+		&source,
+		&output,
+		&Cancellation::default(),
+		None,
+		Publication::Create,
+		&|staged, report| {
+			let validated = report.validation.fingerprint().expect("archive was validated");
+			let moved = staged.with_extension("validated");
+			fs::rename(staged, &moved)?;
+			fs::copy(&moved, staged)?;
+			let produced = Output::pending(output.clone(), "zip", Tier::Exact);
+			store.prepare_checked_output(&id, produced, staged, Some(validated))
+		},
+	);
+
+	assert!(result.is_err());
+	assert!(!output.exists());
+	assert!(source.exists());
+	assert!(store.load(&id).unwrap().unwrap().commits.is_empty());
+	assert!(store.source(&id).unwrap().is_some());
+}
+
+#[test]
+fn a_staged_output_changed_after_its_checkpoint_is_not_published() {
+	let fixture = Fixture::new();
+	let source = fixture.path("bundle.tar");
+	archive(&source);
+	let output = fixture.path("bundle.zip");
+	let id = JobId::now().unwrap();
+	let store = fixture.store();
+	store.save(subject(id.clone(), &source, Vec::new())).unwrap();
+
+	let result = execute::run_recorded(
+		&plans("zip")[0],
+		&source,
+		&output,
+		&Cancellation::default(),
+		None,
+		Publication::Create,
+		&|staged, report| {
+			let produced = Output::pending(output.clone(), "zip", Tier::Exact);
+			store.prepare_checked_output(&id, produced, staged, report.validation.fingerprint())?;
+			fs::write(staged, b"changed after the checkpoint")?;
+			Ok(())
+		},
+	);
+
+	assert!(result.is_err());
+	assert!(!output.exists());
+	assert!(source.exists());
+	assert_eq!(store.load(&id).unwrap().unwrap().commits.len(), 1);
+	assert!(store.source(&id).unwrap().is_some());
 }
 
 #[test]
@@ -521,16 +844,17 @@ fn competing_runners_cannot_evict_each_others_newly_reserved_snapshots() {
 		let barrier = Arc::clone(&barrier);
 		workers.push(std::thread::spawn(move || {
 			barrier.wait();
-			Store::open(&state)
-				.save_with_policy(
-					subject(JobId::now().unwrap(), &input, Vec::new()),
-					&Policy {
-						quota,
-						..Policy::default()
-					},
-				)
-				.unwrap()
-				.is_some()
+			match Store::open(&state).save_with_policy(
+				subject(JobId::now().unwrap(), &input, Vec::new()),
+				&Policy {
+					quota,
+					..Policy::default()
+				},
+			) {
+				Ok(Some(_)) => true,
+				Err(error) if error.code() == retype_core::error::Code::UndoLimit => false,
+				other => panic!("unexpected reservation outcome: {other:?}"),
+			}
 		}));
 	}
 	assert_eq!(
@@ -651,9 +975,13 @@ fn a_changed_source_keeps_the_original_backup_pinned() {
 		);
 	});
 
-	let meta = fixture.store().directory(&id).join("meta.toml");
 	let deadline = Instant::now() + Duration::from_secs(10);
-	while !meta.exists() {
+	while fixture
+		.store()
+		.load(&id)
+		.unwrap()
+		.is_none_or(|record| record.source_fingerprint.is_none())
+	{
 		assert!(Instant::now() < deadline, "the recovery record did not appear");
 		std::thread::sleep(Duration::from_millis(1));
 	}
@@ -728,6 +1056,7 @@ fn crash_worker() {
 			format: "tar".to_string(),
 			size: fs::metadata(&source).unwrap().len(),
 			mtime_ns: 0,
+			fingerprint: None,
 		},
 		Some("zip,tar.gz".to_string()),
 		outputs,
@@ -752,7 +1081,7 @@ fn crash_worker() {
 				output.state = OutputState::Done;
 				output.bytes = Some(report.bytes);
 				output.identity = FileIdentity::of(staged);
-				store.prepare_output(&id, output, staged)?;
+				store.prepare_checked_output(&id, output, staged, report.validation.fingerprint())?;
 				if phase == "before_publish" {
 					std::process::exit(81);
 				}
@@ -760,7 +1089,7 @@ fn crash_worker() {
 			},
 		)
 		.unwrap();
-		assert!(report.validated);
+		assert!(report.validation.fingerprint().is_some());
 		job.outputs[index].state = OutputState::Done;
 		job.outputs[index].identity = FileIdentity::of(&report.output);
 		job.outputs[index].bytes = Some(report.bytes);
@@ -776,6 +1105,11 @@ fn crash_worker() {
 
 fn restart(root: &Path) -> Server {
 	let server = Server::open(&root.join("state")).unwrap();
+	let deadline = Instant::now() + Duration::from_secs(10);
+	while !server.recoveries().idle() {
+		assert!(Instant::now() < deadline, "startup recovery did not finish");
+		std::thread::sleep(Duration::from_millis(5));
+	}
 	server.pool().stop();
 	server.shared().reload_registry(Registry::load(CONFIG).unwrap());
 	server

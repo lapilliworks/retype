@@ -87,6 +87,7 @@ pub enum Code {
 	JobResumeUnavailable,
 	JobNotFound,
 	JobAmbiguous,
+	UndoLimit,
 
 	// Transport, `docs/dev/architecture/ipc.md` §8.
 	IpcVersion,
@@ -190,6 +191,7 @@ impl Code {
 			Self::IoLocked
 			| Self::JobAmbiguous
 			| Self::JobState
+			| Self::UndoLimit
 			| Self::JobCancelled
 			| Self::JobInterrupted
 			| Self::JobResumeUnavailable => Category::State,
@@ -366,7 +368,7 @@ pub fn code_for_io(error: &std::io::Error) -> Code {
 		std::io::ErrorKind::PermissionDenied => Code::IoPermission,
 		std::io::ErrorKind::NotFound => Code::IoNotFound,
 		std::io::ErrorKind::AlreadyExists => Code::IoExists,
-		std::io::ErrorKind::StorageFull => Code::IoSpace,
+		std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded => Code::IoSpace,
 		_ => Code::IoFailed,
 	}
 }
@@ -442,6 +444,13 @@ mod tests {
 
 		assert_eq!(denied.code(), Code::IoPermission);
 		assert_eq!(denied.category(), Category::Transient);
+	}
+
+	#[test]
+	fn full_storage_and_filesystem_quota_share_the_space_code() {
+		for kind in [std::io::ErrorKind::StorageFull, std::io::ErrorKind::QuotaExceeded] {
+			assert_eq!(code_for_io(&std::io::Error::from(kind)), Code::IoSpace);
+		}
 	}
 
 	#[test]

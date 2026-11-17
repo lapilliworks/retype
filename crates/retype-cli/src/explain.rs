@@ -11,7 +11,6 @@ use std::process::ExitCode;
 use retype_core::error::{Code, Diagnostic};
 use retype_core::estimate::{Calibration, Estimate, Query};
 use retype_core::intent;
-use retype_core::job::Tier;
 use retype_core::output::{self as names, Derived};
 use retype_core::plan::{self, Arg, Plan, Presence};
 use retype_core::print;
@@ -77,7 +76,7 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	// A plan that cannot be built because a tool is missing still has an
 	// explanation worth printing, so the second attempt assumes what the file
 	// declares and the report says what the machine has.
-	let (plans, failure) = match plan::compile(registry, &available, &resolved) {
+	let (mut plans, mut failure) = match plan::compile(registry, &available, &resolved) {
 		Ok(plans) => (plans, None),
 		Err(problems) if matches!(problems.codes().as_slice(), [Code::ToolMissing] | [Code::ToolVersion]) => (
 			plan::compile(registry, &Declared, &resolved).unwrap_or_default(),
@@ -86,8 +85,30 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 		Err(problems) => return Ok(ExitCode::from(output::fail_diagnoses(&problems))),
 	};
 	let installed = failure.is_none();
+	let manifest = retype_core::fidelity::open_for(request.state_dir)?;
+	retype_core::fidelity::qualify(&manifest, registry, &source.format, &mut plans);
+	if failure.is_none() {
+		if let Some(error) = plans.iter().find_map(|plan| retype_core::fidelity::check(plan).err()) {
+			if !request.json {
+				eprintln!("retype: {}: {error}", error.code());
+			}
+			failure = Some(error.code());
+		}
+	}
 
-	let mut derived = names::derive(&source.stem, &source.format, &resolved.groups);
+	let source_name = source.original_name();
+	let mut derived = names::derive_with_source_name(&source.stem, &source_name, &resolved.groups);
+	if resolved.meta.keep && !derived.iter().any(|entry| entry.keep_source) {
+		derived.insert(
+			0,
+			Derived {
+				group: resolved.groups.len(),
+				path: PathBuf::from(&source_name),
+				format: source.format.clone(),
+				keep_source: true,
+			},
+		);
+	}
 
 	if request.output.is_some() && plans.len() != 1 {
 		return Ok(ExitCode::from(output::fail(
@@ -227,6 +248,15 @@ struct Named {
 impl Named {
 	fn display(&self) -> String {
 		self.written.clone()
+	}
+
+	fn original_name(&self) -> String {
+		let name = self.written.rsplit(['/', '\\']).next().unwrap_or(&self.written);
+		if !self.is_directory && self.stem == DEFAULT_STEM && !name.contains('.') {
+			format!("{}.{}", self.stem, name)
+		} else {
+			name.to_string()
+		}
 	}
 }
 
@@ -409,6 +439,8 @@ fn print_json(
 					false => json!(render(&plan.command, plan)),
 				},
 				"tier": tier(plan),
+				"declared_tier": plan.tier,
+				"fidelity": plan.fidelity,
 				"engine": plan.engine.as_ref().map(|(name, candidate)| json!({"name": name, "resolved": candidate})),
 				"estimate": estimates.get(index).copied().flatten().map(|estimate| json!({
 					"seconds": (estimate.time.as_secs_f64() * 10.0).round() / 10.0,
@@ -447,7 +479,8 @@ fn print_json(
 		object["error"] = json!({
 			"code": code,
 			"category": output::category_name(code),
-			"message": "the backend this plan needs is not installed",
+			"message": plans.iter().find_map(|plan| retype_core::fidelity::check(plan).err())
+				.map(|error| error.to_string()).unwrap_or_else(|| "the backend this plan needs is not installed".to_string()),
 		});
 	}
 
@@ -470,16 +503,15 @@ fn render(command: &str, plan: &Plan) -> String {
 }
 
 fn tier(plan: &Plan) -> &'static str {
-	match plan.tier {
-		Tier::Exact => "exact",
-		Tier::Converted => "converted",
-		Tier::Delegated => "delegated",
-	}
+	plan.fidelity
+		.as_ref()
+		.map(|evidence| evidence.reported_tier(plan.tier))
+		.unwrap_or("unclaimed")
 }
 
 /// Every declared tool, present. Used only when the real machine cannot build
 /// the plan, so that the explanation still describes what the file declares.
-struct Declared;
+pub(crate) struct Declared;
 
 impl Presence for Declared {
 	fn command(&self, tool: &Tool) -> Option<String> {

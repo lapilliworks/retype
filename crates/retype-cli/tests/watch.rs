@@ -9,17 +9,21 @@ fn retype() -> Command {
 }
 
 fn run(state: &Path, args: &[&str]) -> std::process::Output {
-	retype().args(args).arg("--state-dir").arg(state).output().unwrap()
+	let mut command = retype();
+	command.args(args);
+	if args.first() == Some(&"watch") && !args.contains(&"--pause") && !args.contains(&"--resume") {
+		command.arg("--register");
+	}
+	command.arg("--state-dir").arg(state).output().unwrap()
 }
 
 fn run_in(state: &Path, directory: &Path, args: &[&str]) -> std::process::Output {
-	retype()
-		.current_dir(directory)
-		.args(args)
-		.arg("--state-dir")
-		.arg(state)
-		.output()
-		.unwrap()
+	let mut command = retype();
+	command.current_dir(directory).args(args);
+	if args.first() == Some(&"watch") {
+		command.arg("--register");
+	}
+	command.arg("--state-dir").arg(state).output().unwrap()
 }
 
 #[test]
@@ -193,7 +197,7 @@ fn a_cloud_mirror_is_refused_unless_allowed() {
 	let state = dir.path().join("state");
 
 	let refused = retype()
-		.args(["watch", photos.to_str().unwrap()])
+		.args(["watch", "--register", photos.to_str().unwrap()])
 		.arg("--state-dir")
 		.arg(&state)
 		.env("HOME", &home)
@@ -215,7 +219,7 @@ fn a_cloud_mirror_is_refused_unless_allowed() {
 	fs::write(&config, "version = 'retype-config-1'\n\n[watch]\nallow_synced = true\n").unwrap();
 
 	let allowed = retype()
-		.args(["watch", photos.to_str().unwrap()])
+		.args(["watch", "--register", photos.to_str().unwrap()])
 		.arg("--state-dir")
 		.arg(&state)
 		.env("HOME", &home)

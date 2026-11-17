@@ -1,0 +1,732 @@
+//! The native shell runners' orchestration, using fake commands rather than codecs.
+#![cfg(unix)]
+
+use std::fs;
+use std::io::{Read, Seek, SeekFrom};
+use std::os::fd::OwnedFd;
+use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
+
+const CARGO: &str = r#"#!/bin/sh
+printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$*" "${RETYPE_REQUIRE_TEST_TOOLS-}" \
+    "${RETYPE_REQUIRE_NATIVE_WORKFLOW-}" "${RETYPE_STATE_DIR-unset}" "${RETYPE_NO_SPAWN-unset}" \
+    "${RETYPE_DAEMON-unset}" "${RETYPE_FIDELITY_MANIFEST-unset}" "${NEXTEST_RETRIES-unset}" >> "$MOCK_CARGO_RECORD"
+case "$RETYPE_CONFIG" in "$TMPDIR"/*) ;; *) echo 'configuration is not isolated' >&2; exit 3;; esac
+case "$XDG_STATE_HOME" in "$TMPDIR"/*) ;; *) echo 'state is not isolated' >&2; exit 3;; esac
+grep -q '^enabled = false$' "$RETYPE_CONFIG" || exit 3
+case "$1" in
+    --version) echo 'cargo mock';;
+    fmt|clippy) echo "mock $1";;
+    test)
+        case "$*" in
+            *--no-run*)
+                [ "$MOCK_MODE" != build-failure ] || exit 101
+                echo 'mock build';;
+            *--doc*)
+                [ "$MOCK_MODE" != missing-doc ] || exit 0
+                echo 'Doc-tests retype_core'
+                echo 'test result: ok. 1 passed; 0 failed; 0 ignored;';;
+            *) exit 2;;
+        esac;;
+    nextest)
+        if [ "$2" = show-config ]; then echo 'nextest configuration OK'; exit 0; fi
+        case "$MOCK_MODE" in
+            empty) exit 0;;
+            hang) sleep 15;;
+            stubborn|stubborn-leak)
+                /bin/sh -c 'trap "" TERM; echo $$ > "$1"; while :; do sleep 0.1; done' sh "$MOCK_CHILD_PID" &
+                if [ "$MOCK_MODE" = stubborn ]; then wait; else sleep 0.15; fi;;
+            leak) "$MOCK_RETYPE" "$TMPDIR/leak-state" >/dev/null 2>&1 & sleep 0.15;;
+            skip) echo 'SKIPPED: mock missing prerequisite';;
+            falsepass) echo 'FAIL [0.01s] mocked_failed_test';;
+            noisy) echo 'full test details stay in the workspace log';;
+        esac
+        echo 'PASS [0.01s] retype-cli::keep a_real_watched_heic_conversion_and_undo_preserve_the_original'
+        if [ "$MOCK_MODE" != missing-direct ]; then
+            echo 'PASS [0.01s] retype-cli::keep a_real_direct_heic_conversion_and_undo_follow_watched_disposition'
+        fi
+        echo 'Summary [0.01s] 2 tests run: 2 passed'
+        if [ "$MOCK_MODE" = fail ]; then exit 101; fi;;
+    *) exit 2;;
+esac
+"#;
+
+const MAGICK: &str = r#"#!/bin/sh
+if [ "${1-}" = 'fixtures/native-watch/photo.heic' ]; then
+    [ -r "$1" ] && [ "${2-}" = 'null:' ] || exit 2
+    if [ "$MOCK_MODE" = probe-heic-unavailable ]; then
+        echo 'no decode delegate for this image format' >&2
+        exit 1
+    fi
+fi
+if [ "${1-}" = '-list' ] && [ "${2-}" = 'format' ]; then
+    case "$MOCK_MODE" in
+        probe-failure) echo 'synthetic probe failure' >&2; exit 42;;
+        probe-empty) printf ' \n\t'; exit 0;;
+        probe-hang) trap '' TERM; sleep 20; exit 42;;
+        probe-stdin) IFS= read -r ignored || :;;
+    esac
+fi
+echo 'mock tool'
+"#;
+
+const TIMEOUT_SHIM: &str = r#"#!/bin/sh
+grace=${1#--kill-after=}
+grace=${grace%s}
+seconds=${2%s}
+shift 2
+exec /usr/bin/perl "$MOCK_BOUNDED" "$seconds" "$grace" "$@"
+"#;
+
+const GIT: &str = r#"#!/bin/sh
+case "$1" in
+    rev-parse) echo '0123456789012345678901234567890123456789';;
+    status) :;;
+    diff) echo 'synthetic tracked diff';;
+    *) exit 2;;
+esac
+"#;
+
+const UNAME: &str = r#"#!/bin/sh
+case "$1" in
+    -s) echo "$MOCK_OS";;
+    -m) echo x86_64;;
+    -a) echo "$MOCK_OS mock host";;
+    *) exit 2;;
+esac
+"#;
+
+struct TestProcess(Child);
+
+impl Drop for TestProcess {
+	fn drop(&mut self) {
+		if self.0.try_wait().ok().flatten().is_some() {
+			return;
+		}
+		unsafe { libc::kill(self.0.id() as i32, libc::SIGTERM) };
+		let deadline = Instant::now() + Duration::from_secs(2);
+		while Instant::now() < deadline {
+			if self.0.try_wait().ok().flatten().is_some() {
+				return;
+			}
+			std::thread::sleep(Duration::from_millis(25));
+		}
+		let _ = self.0.kill();
+		let deadline = Instant::now() + Duration::from_secs(2);
+		while Instant::now() < deadline {
+			if self.0.try_wait().ok().flatten().is_some() {
+				return;
+			}
+			std::thread::sleep(Duration::from_millis(25));
+		}
+	}
+}
+
+struct Run {
+	status: ExitStatus,
+	text: String,
+	invocations: String,
+	summary: String,
+	metadata: String,
+	workspace: String,
+}
+
+fn executable(path: &Path, text: &str) {
+	fs::write(path, text).unwrap();
+	fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn capture(command: &mut Command, limit: Duration) -> (ExitStatus, String) {
+	let mut output = tempfile::tempfile().unwrap();
+	command
+		.stdout(Stdio::from(output.try_clone().unwrap()))
+		.stderr(Stdio::from(output.try_clone().unwrap()));
+	let mut child = TestProcess(command.spawn().unwrap());
+	let deadline = Instant::now() + limit;
+	let status = loop {
+		if let Some(status) = child.0.try_wait().unwrap() {
+			break status;
+		}
+		assert!(Instant::now() < deadline, "test command did not stop");
+		std::thread::sleep(Duration::from_millis(25));
+	};
+	output.seek(SeekFrom::Start(0)).unwrap();
+	let mut text = String::new();
+	output.read_to_string(&mut text).unwrap();
+	(status, text)
+}
+
+struct ChildMarker(PathBuf);
+
+impl ChildMarker {
+	fn running(&self) -> Result<Option<(i32, String)>, String> {
+		let contents = match fs::read_to_string(&self.0) {
+			Ok(contents) => contents,
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+			Err(error) => return Err(error.to_string()),
+		};
+		let pid = contents.trim().parse::<i32>().map_err(|error| error.to_string())?;
+		let inspection = Command::new("ps")
+			.args(["-ww", "-p", &pid.to_string(), "-o", "stat=,command="])
+			.output()
+			.map_err(|error| error.to_string())?;
+		if !inspection.status.success() && !inspection.stderr.is_empty() {
+			return Err(String::from_utf8_lossy(&inspection.stderr).into_owned());
+		}
+		let description = String::from_utf8_lossy(&inspection.stdout).into_owned();
+		let state = description.split_whitespace().next().unwrap_or_default();
+		if state.is_empty() || state.starts_with('Z') || !description.contains(&*self.0.to_string_lossy()) {
+			return Ok(None);
+		}
+		Ok(Some((pid, description)))
+	}
+
+	fn assert_stopped(&self) {
+		assert!(self.0.exists(), "the test child did not start");
+		let running = self.running().expect("cannot inspect the test child");
+		assert!(running.is_none(), "test child was left running: {running:?}");
+	}
+}
+
+impl Drop for ChildMarker {
+	fn drop(&mut self) {
+		match self.running() {
+			Ok(Some((pid, _))) => {
+				/* Stop only a process whose command line contains this test's marker. */
+				unsafe { libc::kill(pid, libc::SIGKILL) };
+			}
+			Ok(None) => {}
+			Err(error) => eprintln!("could not inspect the test child during cleanup: {error}"),
+		}
+	}
+}
+
+fn run(host: &str, mode: &str, limit: u64) -> Run {
+	run_with_args(host, mode, limit, &[])
+}
+
+fn run_with_args(host: &str, mode: &str, limit: u64, args: &[&str]) -> Run {
+	let dir = tempfile::Builder::new().prefix("rt.").tempdir_in("/tmp").unwrap();
+	let scratch = fs::canonicalize(dir.path()).unwrap().join("retype-test.XXXXXXXX");
+	assert!(
+		scratch.as_os_str().len() <= 56,
+		"test scratch path is too long: {scratch:?}"
+	);
+	let bin = dir.path().join("bin");
+	fs::create_dir(&bin).unwrap();
+	executable(&bin.join("cargo"), CARGO);
+	executable(&bin.join("git"), GIT);
+	executable(&bin.join("uname"), UNAME);
+	executable(&bin.join("getconf"), "#!/bin/sh\necho 'glibc 2.41'\n");
+	executable(
+		&bin.join("retype"),
+		"#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done\n",
+	);
+	for tool in ["rustc", "ffmpeg", "ffprobe", "pandoc", "7zz", "typst"] {
+		executable(&bin.join(tool), "#!/bin/sh\necho 'mock tool'\n");
+	}
+	executable(&bin.join("magick"), MAGICK);
+	if host == "Linux" {
+		let path = std::env::var_os("PATH").unwrap_or_default();
+		let timeout = if cfg!(target_os = "linux") {
+			retype_core::tools::find_in_path(&path, "timeout")
+		} else {
+			None
+		};
+		if let Some(timeout) = timeout {
+			symlink(timeout, bin.join("timeout")).unwrap();
+		} else {
+			executable(&bin.join("timeout"), TIMEOUT_SHIM);
+		}
+	} else {
+		for tool in ["timeout", "gtimeout"] {
+			executable(
+				&bin.join(tool),
+				"#!/bin/sh\necho 'unexpected GNU timeout' >&2\nexit 99\n",
+			);
+		}
+	}
+
+	let path = std::env::join_paths(
+		std::iter::once(bin.clone()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
+	)
+	.unwrap();
+	let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+		.parent()
+		.unwrap()
+		.parent()
+		.unwrap();
+	let record = dir.path().join("cargo-invocations");
+	let child_pid = ChildMarker(dir.path().join("stubborn-child.pid"));
+	let mut command = Command::new(root.join("tests/run.sh"));
+	command
+		.args(args)
+		.env("PATH", path)
+		.env("MOCK_OS", host)
+		.env("MOCK_MODE", mode)
+		.env("MOCK_CARGO_RECORD", &record)
+		.env("MOCK_RETYPE", bin.join("retype"))
+		.env("MOCK_CHILD_PID", &child_pid.0)
+		.env("MOCK_BOUNDED", root.join("tests/support/run-bounded.pl"))
+		.env("RETYPE_TEST_REPORT_DIR", dir.path().join("reports"))
+		.env("RETYPE_TEST_TEMP_DIR", dir.path())
+		.env("RETYPE_TEST_TIMEOUT_SECONDS", limit.to_string())
+		.env("RETYPE_STATE_DIR", dir.path().join("must-not-be-used"))
+		.env("RETYPE_NO_SPAWN", "1")
+		.env("RETYPE_DAEMON", "/no/such/daemon")
+		.env("RETYPE_FIDELITY_MANIFEST", "/no/such/manifest")
+		.env("NEXTEST_RETRIES", "9");
+	let stdin_writer = if mode == "probe-stdin" {
+		let (input, writer) = UnixStream::pair().unwrap();
+		command.stdin(Stdio::from(OwnedFd::from(input)));
+		Some(writer)
+	} else {
+		None
+	};
+	let (status, text) = capture(&mut command, Duration::from_secs(30));
+	drop(stdin_writer);
+	if matches!(mode, "stubborn" | "stubborn-leak") {
+		child_pid.assert_stopped();
+	}
+	let invocations = fs::read_to_string(record).unwrap_or_default();
+	let report = fs::read_dir(dir.path().join("reports"))
+		.ok()
+		.and_then(|mut entries| entries.next())
+		.and_then(Result::ok)
+		.map(|entry| entry.path());
+	let summary = report
+		.as_ref()
+		.and_then(|path| fs::read_to_string(path.join("summary.txt")).ok())
+		.unwrap_or_default();
+	let metadata = report
+		.as_ref()
+		.and_then(|path| fs::read_to_string(path.join("metadata.log")).ok())
+		.unwrap_or_default();
+	let workspace = report
+		.as_ref()
+		.and_then(|path| fs::read_to_string(path.join("workspace.log")).ok())
+		.unwrap_or_default();
+	Run {
+		status,
+		text,
+		invocations,
+		summary,
+		metadata,
+		workspace,
+	}
+}
+
+#[test]
+fn linux_runner_reports_a_failed_gate_and_runs_all_steps() {
+	let result = run("Linux", "fail", 5);
+	assert!(!result.status.success());
+	assert!(result.text.contains("installer: command exit 0"), "{}", result.text);
+	assert!(result.text.contains("workspace: command exit 101"), "{}", result.text);
+	assert!(result.invocations.contains("fmt --all -- --check|1|1|unset|unset"));
+	assert!(
+		result
+			.invocations
+			.contains("clippy --workspace --all-targets --locked -- -D warnings|1|1|unset|unset")
+	);
+	assert!(
+		result
+			.invocations
+			.contains("nextest run --workspace --locked --config-file tests/nextest.toml")
+	);
+}
+
+#[test]
+fn the_runner_does_not_accept_a_skipped_test_as_success() {
+	let result = run("Linux", "skip", 5);
+	assert!(!result.status.success());
+	assert!(result.text.contains("skip or ignored test"), "{}", result.text);
+}
+
+#[test]
+fn the_runner_rejects_a_failed_summary_even_if_cargo_exits_zero() {
+	let result = run("Linux", "falsepass", 5);
+	assert!(!result.status.success());
+	assert!(result.text.contains("failed or timed-out result"));
+}
+
+#[test]
+fn the_runner_rejects_a_missing_direct_native_workflow() {
+	let result = run("Linux", "missing-direct", 5);
+	assert!(!result.status.success());
+	assert!(
+		result
+			.text
+			.contains("a_real_direct_heic_conversion_and_undo_follow_watched_disposition")
+	);
+}
+
+#[test]
+fn the_runner_rejects_an_empty_workspace_result() {
+	let result = run("Linux", "empty", 5);
+	assert!(!result.status.success());
+	assert!(result.text.contains("strict native workflow test did not pass"));
+	assert!(result.text.contains("No passing nextest summary was recorded"));
+}
+
+#[test]
+fn the_runner_detects_macos_without_a_wrapper() {
+	let result = run("Darwin", "pass", 5);
+	assert!(result.status.success(), "{}", result.text);
+	assert!(result.text.contains("Native test: Darwin"));
+	assert!(result.text.contains("Native validation passed."));
+}
+
+#[test]
+fn noninteractive_probes_do_not_wait_for_the_callers_stdin() {
+	for host in ["Linux", "Darwin"] {
+		let result = run(host, "probe-stdin", 5);
+		assert!(result.status.success(), "{}", result.text);
+		assert!(result.text.contains("Native validation passed"), "{}", result.text);
+	}
+}
+
+#[test]
+fn a_failed_tool_probe_makes_the_runner_fail() {
+	let result = run("Darwin", "probe-failure", 5);
+	assert!(!result.status.success());
+	assert!(result.text.contains("workspace: command exit 0"), "{}", result.text);
+	assert!(
+		result.summary.contains("probe magick -list format: exit 42"),
+		"{}",
+		result.summary
+	);
+	assert!(result.text.contains("Result: failed"), "{}", result.text);
+}
+
+#[test]
+fn a_timed_out_tool_probe_makes_the_runner_fail() {
+	let result = run("Darwin", "probe-hang", 5);
+	assert!(!result.status.success());
+	assert!(result.text.contains("workspace: command exit 0"), "{}", result.text);
+	assert!(
+		result.summary.contains("probe magick -list format: exit 124"),
+		"{}",
+		result.summary
+	);
+	assert!(
+		result.metadata.contains("Command process snapshot for group"),
+		"{}",
+		result.metadata
+	);
+	assert!(result.text.contains("Result: failed"), "{}", result.text);
+}
+
+fn timeout_with_fake_ps(bin: &Path, marker: &Path) -> (ExitStatus, String) {
+	let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+		.parent()
+		.unwrap()
+		.parent()
+		.unwrap();
+	let mut command = Command::new("/usr/bin/perl");
+	command
+		.arg(root.join("tests/support/run-bounded.pl"))
+		.args(["1", "1", "/bin/sleep", "30"])
+		.env("PATH", bin)
+		.env("RETYPE_FAKE_PS_MARKER", marker);
+	capture(&mut command, Duration::from_secs(12))
+}
+
+#[test]
+fn the_macos_timeout_records_only_its_command_group() {
+	let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+		.parent()
+		.unwrap()
+		.parent()
+		.unwrap();
+	let dir = tempfile::tempdir().unwrap();
+	let marker = ChildMarker(dir.path().join("snapshot-child.pid"));
+	let mut unrelated = TestProcess(Command::new("sleep").arg("30").process_group(0).spawn().unwrap());
+	let unrelated_pid = unrelated.0.id();
+	let mut command = Command::new("/usr/bin/perl");
+	command
+		.arg(root.join("tests/support/run-bounded.pl"))
+		.args([
+			"1",
+			"1",
+			"/bin/sh",
+			"-c",
+			"trap '' TERM; echo $$ > \"$1\"; while :; do /bin/sleep 0.1; done",
+			"sh",
+		])
+		.arg(&marker.0);
+	let (status, text) = capture(&mut command, Duration::from_secs(12));
+	assert_eq!(status.code(), Some(124), "{text}");
+	assert!(text.contains("Command process snapshot for group"), "{text}");
+	assert!(text.contains(&*marker.0.to_string_lossy()), "{text}");
+	assert!(
+		!text.lines().any(|line| {
+			line.split_whitespace()
+				.next()
+				.and_then(|field| field.parse::<u32>().ok())
+				== Some(unrelated_pid)
+		}),
+		"snapshot included an unrelated process: {text}"
+	);
+	assert!(
+		unrelated.0.try_wait().unwrap().is_none(),
+		"unrelated process was stopped"
+	);
+	marker.assert_stopped();
+}
+
+#[test]
+fn failed_and_stalled_macos_timeout_snapshots_are_bounded() {
+	let failed = tempfile::tempdir().unwrap();
+	executable(&failed.path().join("ps"), "#!/bin/sh\nexit 42\n");
+	let (status, text) = timeout_with_fake_ps(failed.path(), &failed.path().join("unused"));
+	assert_eq!(status.code(), Some(124), "{text}");
+	assert!(
+		text.contains("Process snapshot failed or timed out (exit 42)"),
+		"{text}"
+	);
+
+	let stalled = tempfile::tempdir().unwrap();
+	let marker = ChildMarker(stalled.path().join("ps-child.pid"));
+	executable(
+		&stalled.path().join("ps"),
+		"#!/bin/sh\nexec /bin/sh -c 'trap \"\" TERM; echo $$ > \"$1\"; while :; do /bin/sleep 0.1; done' sh \"$RETYPE_FAKE_PS_MARKER\"\n",
+	);
+	let (status, text) = timeout_with_fake_ps(stalled.path(), &marker.0);
+	assert_eq!(status.code(), Some(124), "{text}");
+	assert!(
+		text.contains("Process snapshot failed or timed out (exit 124)"),
+		"{text}"
+	);
+	marker.assert_stopped();
+}
+
+#[test]
+fn the_macos_runner_times_out_a_stubborn_process_tree() {
+	let mut unrelated = TestProcess(Command::new("sleep").arg("30").process_group(0).spawn().unwrap());
+	let result = run("Darwin", "stubborn", 3);
+	assert!(!result.status.success());
+	assert!(result.text.contains("workspace: command exit 124"), "{}", result.text);
+	assert!(
+		unrelated.0.try_wait().unwrap().is_none(),
+		"an unrelated process was stopped"
+	);
+}
+
+#[test]
+fn the_macos_runner_reports_subprocesses_left_after_a_command_exits() {
+	let result = run("Darwin", "stubborn-leak", 5);
+	assert!(!result.status.success());
+	assert!(
+		result.text.contains("Command left subprocesses running"),
+		"{}",
+		result.text
+	);
+	assert!(result.text.contains("workspace: command exit 125"), "{}", result.text);
+}
+
+#[test]
+fn the_macos_timeout_helper_preserves_arguments_and_exit_status() {
+	let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+		.parent()
+		.unwrap()
+		.parent()
+		.unwrap();
+	let mut command = Command::new("/usr/bin/perl");
+	command
+		.arg(root.join("tests/support/run-bounded.pl"))
+		.args(["2", "1", "/bin/sh", "-c", "printf '%s\\n' \"$1\"; exit 42", "sh"])
+		.arg("literal ;$* & spaces");
+	let (status, text) = capture(&mut command, Duration::from_secs(8));
+	assert_eq!(status.code(), Some(42), "{text}");
+	assert_eq!(text, "literal ;$* & spaces\n");
+
+	let mut missing = Command::new("/usr/bin/perl");
+	missing
+		.arg(root.join("tests/support/run-bounded.pl"))
+		.args(["2", "1", "/no/such/retype-test-command"]);
+	let (status, text) = capture(&mut missing, Duration::from_secs(8));
+	assert_eq!(status.code(), Some(127), "{text}");
+	assert!(text.contains("Cannot execute"), "{text}");
+
+	let mut signalled = Command::new("/usr/bin/perl");
+	signalled
+		.arg(root.join("tests/support/run-bounded.pl"))
+		.args(["2", "1", "/bin/sh", "-c", "kill -TERM $$"]);
+	let (status, text) = capture(&mut signalled, Duration::from_secs(8));
+	assert_eq!(status.code(), Some(143), "{text}");
+}
+
+#[test]
+fn interrupting_the_macos_timeout_helper_stops_its_process_tree() {
+	let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+		.parent()
+		.unwrap()
+		.parent()
+		.unwrap();
+	let dir = tempfile::tempdir().unwrap();
+	let marker = ChildMarker(dir.path().join("child.pid"));
+	let mut command = Command::new("/usr/bin/perl");
+	command
+		.arg(root.join("tests/support/run-bounded.pl"))
+		.args([
+			"30",
+			"1",
+			"/bin/sh",
+			"-c",
+			"trap '' TERM; echo $$ > \"$1\"; while :; do sleep 0.1; done",
+			"sh",
+		])
+		.arg(&marker.0)
+		.stdout(Stdio::null())
+		.stderr(Stdio::null());
+	let mut process = TestProcess(command.spawn().unwrap());
+	let deadline = Instant::now() + Duration::from_secs(5);
+	while !marker.0.exists() {
+		assert!(Instant::now() < deadline, "the test child did not start");
+		std::thread::sleep(Duration::from_millis(25));
+	}
+	assert_eq!(unsafe { libc::kill(process.0.id() as i32, libc::SIGTERM) }, 0);
+	let deadline = Instant::now() + Duration::from_secs(8);
+	let status = loop {
+		if let Some(status) = process.0.try_wait().unwrap() {
+			break status;
+		}
+		assert!(Instant::now() < deadline, "the interrupted helper did not stop");
+		std::thread::sleep(Duration::from_millis(25));
+	};
+	assert_eq!(status.code(), Some(143));
+	marker.assert_stopped();
+}
+
+#[test]
+fn leaked_test_processes_are_stopped_and_reported() {
+	let result = run("Linux", "leak", 5);
+	assert!(!result.status.success());
+	assert!(
+		result.text.contains("Stopping leaked test process")
+			|| result.text.contains("Command left subprocesses running"),
+		"{}",
+		result.text
+	);
+}
+
+#[test]
+fn a_runner_refuses_an_unsupported_host_os() {
+	let result = run("Unknown", "pass", 5);
+	assert_eq!(result.status.code(), Some(2));
+	assert!(result.text.contains("Unsupported native test host: Unknown"));
+	assert!(result.invocations.is_empty());
+}
+
+#[test]
+fn a_runner_rejects_an_invalid_timeout() {
+	let result = run("Linux", "pass", 99_999);
+	assert_eq!(result.status.code(), Some(2));
+	assert!(result.text.contains("between 1 and 3600"));
+	assert!(result.invocations.is_empty());
+}
+
+#[test]
+fn a_timed_out_workspace_is_a_failure() {
+	let result = run("Linux", "hang", 2);
+	assert!(!result.status.success());
+	assert!(result.text.contains("workspace: command exit 124"), "{}", result.text);
+	assert!(
+		result
+			.summary
+			.contains("doctests: not run; shared 2s test-suite budget exhausted")
+	);
+}
+
+#[test]
+fn prerequisite_checks_do_not_build_or_run_tests() {
+	let result = run_with_args("Linux", "pass", 5, &["--check"]);
+	assert!(result.status.success(), "{}", result.text);
+	assert!(result.text.contains("not conversion or undo evidence"));
+	assert!(
+		!result
+			.invocations
+			.lines()
+			.any(|line| line.starts_with("test ") || line.starts_with("nextest run "))
+	);
+	assert!(result.invocations.contains("nextest show-config version"));
+	assert!(
+		result
+			.summary
+			.contains("probe magick fixtures/native-watch/photo.heic null:: exit 0")
+	);
+}
+
+#[test]
+fn advertised_formats_do_not_substitute_for_a_working_heic_decoder() {
+	for host in ["Linux", "Darwin"] {
+		let result = run_with_args(host, "probe-heic-unavailable", 5, &["--check"]);
+		assert!(!result.status.success());
+		assert!(result.summary.contains("probe magick -list format: exit 0"));
+		assert!(
+			result
+				.summary
+				.contains("probe magick fixtures/native-watch/photo.heic null:: exit 1")
+		);
+		assert!(result.metadata.contains("no decode delegate for this image format"));
+		assert!(result.summary.contains("Result: failed"));
+	}
+}
+
+#[test]
+fn a_single_workspace_run_keeps_strict_gates_doctests_and_isolation() {
+	let result = run("Linux", "pass", 5);
+	assert!(result.status.success(), "{}", result.text);
+	assert_eq!(
+		result
+			.invocations
+			.lines()
+			.filter(|line| line.starts_with("nextest run "))
+			.count(),
+		1
+	);
+	assert!(result.invocations.contains("test --workspace --locked --no-run"));
+	assert!(
+		result
+			.invocations
+			.contains("test --workspace --doc --locked --no-fail-fast -- --nocapture")
+	);
+	assert!(result.invocations.contains("--ignore-default-filter --run-ignored all"));
+	assert!(result.invocations.contains("|1|1|unset|unset|unset|unset|unset"));
+}
+
+#[test]
+fn successful_test_details_are_logged_without_flooding_the_terminal() {
+	let result = run("Linux", "noisy", 5);
+	assert!(result.status.success(), "{}", result.text);
+	assert!(!result.text.contains("full test details stay in the workspace log"));
+	assert!(result.workspace.contains("full test details stay in the workspace log"));
+	assert!(result.summary.contains("Result: passed"));
+	assert!(result.summary.contains("elapsed"));
+}
+
+#[test]
+fn an_empty_format_probe_is_not_accepted() {
+	let result = run_with_args("Darwin", "probe-empty", 5, &["--check"]);
+	assert!(!result.status.success());
+	assert!(result.summary.contains("empty format listing"));
+}
+
+#[test]
+fn a_failed_build_does_not_attempt_unbuilt_tests() {
+	let result = run("Linux", "build-failure", 5);
+	assert!(!result.status.success());
+	assert!(result.summary.contains("Workspace and doctests not run: build failed"));
+	assert!(!result.invocations.lines().any(|line| line.starts_with("nextest run ")));
+}
+
+#[test]
+fn missing_doctest_results_fail_validation() {
+	let result = run("Linux", "missing-doc", 5);
+	assert!(!result.status.success());
+	assert!(result.summary.contains("No doctest summaries were recorded"));
+}

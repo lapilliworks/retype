@@ -7,7 +7,7 @@ A conversion can preserve everything, preserve the content but re-encode it, or 
 A fidelity claim is evidence about one source format becoming one target format through one tool and one engine:
 
 ```
-(source, target, tool, tier, engine, engine version, engine fingerprint)
+(source, target, tool, resolved engine) + (tier, tool version, tool fingerprint, engine version, engine fingerprint)
 ```
 
 It is never a property of a format, and never a count. "Supports forty formats" says nothing about what any of those forty lose.
@@ -35,13 +35,13 @@ Three tiers, and two states that are not tiers and never appear in configuration
 |---|---|---|
 | `exact`, `converted`, `delegated` | yes | A claim, as defined above |
 | `unverified` | no | A claim exists, but the installed tool reports a version or build fingerprint other than the one it was earned with |
-| `unclaimed` | no | No claim exists for the pair, because the user declared the conversion themselves |
+| `unclaimed` | no | No release claim exists for the selected source, target, backend and resolved engine |
 
-`unverified` and `unclaimed` are reported by `retype explain`, `retype why` and the job record. They are never written to a configuration file and never accepted from one.
+`list --tiers`, `explain`, conversion output and `why` report `unverified` or `unclaimed` instead of presenting an unsupported tier as earned. JSON inspection preserves `declared_tier` separately. Each job output retains its declared `tier` and an optional `fidelity` object with the assessed state, installed builds and release claim; older outputs without that object carry no recorded evidence. Evidence states are `new`, `earned` and `unverified`, with `new` displayed as `unclaimed`. These states are not configuration tiers.
 
 ## 4. Where claims come from
 
-A claim is earned by running the conversion against the real tool and checking the result. `retype fidelity` performs that run, records the tool, the resolved engine, the version and the build fingerprint, and verifies that the output is readable and of the target format. The result is a manifest that ships with the release and is updated by a later run.
+A claim is earned by running the conversion against the real tool and checking the result. `retype fidelity` performs that run, records the tool, the resolved engine, the version and the build fingerprint, and verifies that the output is readable and of the target format. The result is a manifest that ships with the release and is updated by a later run. Claims for different resolved engine candidates coexist; recording one never replaces another engine's claim. Legacy engine claims without engine-build evidence are unverified.
 
 The same run checks a set of properties on a pair: alpha, animation, depth, embedded colour profile, EXIF orientation and palette. A pair records both the properties it kept and the ones it lost. A `converted` pair may lose one, and saying so is the point. An `exact` pair may not.
 
@@ -56,16 +56,20 @@ Size and duration are separate: they come from `retype bench`, not from the fide
 | `retype list --tiers` | Prints the claims, per pair, with engine, version and fingerprint |
 | `retype explain` | Prints the tier the plan would produce |
 | `retype why` | Prints the claim, the engine, and whether it is current |
-| `retype doctor` | Reports the manifest version, each tool source, and how many installed tools differ from the versions and fingerprints their claims were earned with |
-| Editor badge | The tier, with `unverified` shown as such rather than hidden |
+| `retype doctor` | Reports installed tools; manifest summary and stale-claim counts remain planned |
+| Editor badge | Planned: use the executing daemon's evidence, with `unverified` shown rather than hidden |
+
+Inspection and ordinary execution use the same lookup. Manifest discovery checks `RETYPE_FIDELITY_MANIFEST`, `<state>/fidelity.toml`, a local `fidelity.toml`, then `share/retype/fidelity.toml` beside an executable ancestor. Missing evidence is an empty manifest, not an earned declaration; unreadable or malformed evidence fails explicitly.
 
 ## 6. When a claim goes stale
 
-Evidence is about a version and a build. When the installed tool reports a different version or fingerprint from the one recorded:
+Evidence is about the backend and resolved engine versions and builds. When the installed tool reports a different version or fingerprint from the one recorded:
 
 - The pair still converts. A distribution's older ImageMagick must not turn an install into a product that refuses to work
 - The tier is reported `unverified`, and `why` names both versions and both fingerprints
-- A pair that declares `exact` fails with `E_UNSUPPORTED` and a hint naming the version, the fingerprint and the declaration to relax. A promise of no loss cannot rest on evidence about a different encoder, and silently downgrading a promise is worse than refusing it
+- A pair that declares `exact` fails before conversion or publication with `E_UNSUPPORTED` and a hint naming the versions, fingerprints and declaration to relax. A promise of no loss cannot rest on evidence about a different encoder, and silently downgrading a promise is worse than refusing it
+
+An exact claim with missing property evidence, recorded property loss or a tier different from the current declaration is also unverified. With no claim, conversion remains available but reports `unclaimed`. Output validation and source-disposal safety are independent of fidelity evidence.
 
 Staleness never silently upgrades either. A tool newer than the recorded one is still unverified, because a new version changing encoder defaults is exactly how a fidelity claim goes stale.
 
@@ -79,7 +83,7 @@ Three things wear the same vocabulary and are not fidelity.
 
 ## 8. Claims for this release
 
-Generated between the markers by `retype fidelity --render`, one line per claim, sorted by source, target and tool. The list is empty in the source tree until the first release run. The fingerprint is shortened here and kept whole in the manifest.
+A local table can be generated between the markers by `retype fidelity --render`, one line per claim, sorted by source, target and tool. The source tree contains no universal claims: release archives require the platform manifest earned by native verification for `png:jpg` and `png:webp`. The native report retains its tool fingerprints and log. Other pairs remain `unclaimed` until explicitly earned. A different installed tool build reports `unverified`, and the evidence does not qualify untested artifact architectures or OS floors. `retype fidelity` exits nonzero if any selected pair fails, even when another pair earns a claim.
 
 <!-- claims:start -->
 <!-- claims:end -->

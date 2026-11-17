@@ -32,6 +32,12 @@ pub fn derive(stem: &str, source_format: &str, groups: &[Group]) -> Vec<Derived>
 		"folder" => stem.to_string(),
 		_ => format!("{stem}.{source_format}"),
 	};
+	derive_with_source_name(stem, &kept, groups)
+}
+
+/// Derive names while preserving the original filename, including aliases and case.
+pub fn derive_with_source_name(stem: &str, source_name: &str, groups: &[Group]) -> Vec<Derived> {
+	let kept = source_name;
 	let mut taken: Vec<String> = Vec::new();
 	let mut derived = Vec::with_capacity(groups.len());
 
@@ -39,7 +45,7 @@ pub fn derive(stem: &str, source_format: &str, groups: &[Group]) -> Vec<Derived>
 		if group.keep_source {
 			derived.push(Derived {
 				group: index,
-				path: PathBuf::from(&kept),
+				path: PathBuf::from(kept),
 				format: group.format.clone(),
 				keep_source: true,
 			});
@@ -169,6 +175,15 @@ mod tests {
 		assert!(derived[0].keep_source);
 		assert_eq!(derived[0].path, PathBuf::from("photo.jpg"));
 		assert_eq!(derived[1].path, PathBuf::from("photo-quality60.webp"));
+	}
+
+	#[test]
+	fn a_kept_source_preserves_its_original_alias_and_case() {
+		let resolved = resolved("jpeg,webp", "jpg");
+		let derived = derive_with_source_name("Photo", "Photo.JPEG", &resolved.groups);
+		assert_eq!(derived[0].path, PathBuf::from("Photo.JPEG"));
+		assert!(derived[0].keep_source);
+		assert_eq!(derived[1].path, PathBuf::from("Photo.webp"));
 	}
 
 	#[test]

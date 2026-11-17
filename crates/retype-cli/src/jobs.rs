@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use retype_core::error::Code;
 use retype_core::identifier::normalize;
-use retype_core::job::JobId;
+use retype_core::job::{Job, JobId, JobState};
 use retype_core::print;
 use serde_json::Value;
 
@@ -164,6 +164,7 @@ pub fn logs(state_dir: &Path, prefix: &str, follow: bool, json: bool, allow_spaw
 		Err(code) => return Ok(code),
 	};
 
+	drop(client);
 	let path = crate::state::log_path(state_dir, &id);
 	let mut printed = 0;
 	let mut held = String::new();
@@ -180,6 +181,7 @@ pub fn logs(state_dir: &Path, prefix: &str, follow: bool, json: bool, allow_spaw
 			// No file: the record's tail is what there is, and saying so is better
 			// than an empty screen.
 			source = "record";
+			let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 			held = recorded_tails(&mut client, &id)?.join("\n");
 		}
 
@@ -221,15 +223,14 @@ pub fn logs(state_dir: &Path, prefix: &str, follow: bool, json: bool, allow_spaw
 			}
 		}
 
-		let job = client.jobs_get(id.as_str())?;
-		let state = serde_json::to_value(job.state)
-			.ok()
-			.and_then(|value| value.as_str().map(str::to_string))
-			.unwrap_or_default();
+		let job = {
+			let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
+			client.jobs_get(id.as_str())?
+		};
 
 		// One more read after the job ends, because the last write and the
 		// transition are not atomic with respect to each other.
-		if terminal(&state) {
+		if retype_client::jobs::is_terminal(job.state) {
 			if let Some((text, _)) = read_from(&path, printed) {
 				if json {
 					output::success(serde_json::json!({"id": id.as_str(), "source": "file", "log": text}));
@@ -243,12 +244,6 @@ pub fn logs(state_dir: &Path, prefix: &str, follow: bool, json: bool, allow_spaw
 
 		std::thread::sleep(std::time::Duration::from_millis(100));
 	}
-}
-
-/// Whether a job state will not change again. `pending` and `needs-attention` are
-/// waiting states, and a superseded job is as finished as a cancelled one.
-pub fn terminal(state: &str) -> bool {
-	matches!(state, "done" | "failed" | "partial" | "cancelled" | "superseded")
 }
 
 /// Everything in `path` from `offset`, and the new offset.
@@ -303,21 +298,50 @@ pub fn resume(state_dir: &Path, prefix: &str, force: bool, json: bool, allow_spa
 		Err(code) => return Ok(code),
 	};
 
-	let answer = client.jobs_resume(id.as_str(), force)?;
+	let mut answer = client.jobs_resume(id.as_str(), force)?;
+	drop(client);
+	let context = client::context(state_dir, allow_spawn)?;
+	let job = retype_client::jobs::wait(&context, id.as_str(), |_| {})?;
+	answer.state = job.state;
+	answer.source_disposition = job.source_disposition.clone();
+	if answer.state != JobState::Done || output::job_failure(&job).is_some() {
+		return Ok(ExitCode::from(incomplete_resume(answer.state, &job)));
+	}
 
 	match json {
-		true => output::success(serde_json::to_value(answer)?),
-		false => println!(
-			"{}  {}",
-			id.as_str(),
-			serde_json::to_value(answer.state)
-				.ok()
-				.and_then(|value| value.as_str().map(str::to_string))
-				.unwrap_or_else(|| "resumed".to_string())
-		),
+		true => {
+			let mut result = serde_json::to_value(answer)?;
+			if let Some(disposition) = &job.source_disposition {
+				result["source_disposition"] = serde_json::to_value(disposition)?;
+			}
+			output::success(result);
+		}
+		false => {
+			println!(
+				"{}  {}",
+				id.as_str(),
+				serde_json::to_value(answer.state)
+					.ok()
+					.and_then(|value| value.as_str().map(str::to_string))
+					.unwrap_or_else(|| "resumed".to_string())
+			);
+			if let Some(warning) = output::source_disposition_warning(&job) {
+				eprintln!("retype: {warning}");
+			}
+		}
 	}
 
 	Ok(ExitCode::SUCCESS)
+}
+
+fn incomplete_resume(state: JobState, job: &Job) -> u8 {
+	let (code, explanation) =
+		output::job_failure(job).unwrap_or_else(|| (Code::JobState, "the resume did not finish the job".to_string()));
+	let message = format!(
+		"resume of job {} did not finish: {explanation}; inspect it with `retype jobs get {}`",
+		job.id, job.id
+	);
+	output::fail_with_detail(&code, message, serde_json::json!({"resume_state": state, "job": job}))
 }
 
 pub fn cancel(state_dir: &Path, prefix: &str, json: bool, allow_spawn: bool) -> Result<ExitCode> {
@@ -332,11 +356,33 @@ pub fn cancel(state_dir: &Path, prefix: &str, json: bool, allow_spawn: bool) -> 
 		Err(code) => return Ok(code),
 	};
 
-	let answer = client.jobs_cancel(id.as_str())?;
+	let mut answer = client.jobs_cancel(id.as_str())?;
+	drop(client);
+	if let Some(operation) = &answer.recovery {
+		if !json {
+			eprintln!("retype: recovery {operation}; interrupt to detach, inspect with `retype recovery {operation}`");
+		}
+		loop {
+			let current = crate::client::connect(state_dir)?.recovery_get(operation.as_str())?;
+			match current.state {
+				retype_ipc::RecoveryState::Done => break,
+				retype_ipc::RecoveryState::Failed | retype_ipc::RecoveryState::Cancelled => {
+					answer.warning = current.error.map(|error| error.message);
+					break;
+				}
+				_ => std::thread::sleep(std::time::Duration::from_millis(50)),
+			}
+		}
+	}
 
 	match json {
-		true => output::success(serde_json::to_value(answer)?),
-		false => println!("{}  {}", id.as_str(), answer.state),
+		true => output::success(serde_json::to_value(&answer)?),
+		false => {
+			println!("{}  {}", id.as_str(), answer.state);
+			if let Some(warning) = &answer.warning {
+				eprintln!("retype: {warning}");
+			}
+		}
 	}
 
 	Ok(ExitCode::SUCCESS)
@@ -347,7 +393,7 @@ pub fn cancel(state_dir: &Path, prefix: &str, json: bool, allow_spawn: bool) -> 
 /// The terminal path exists so deferral does not depend on notifications: a person at
 /// a prompt can run a job now, run what can be carried, or refuse it.
 pub fn interactive(state_dir: &Path, json: bool, allow_spawn: bool) -> Result<ExitCode> {
-	use std::io::{BufRead, IsTerminal, Write};
+	use std::io::IsTerminal;
 
 	if !std::io::stdin().is_terminal() {
 		return Ok(ExitCode::from(output::fail(
@@ -358,6 +404,7 @@ pub fn interactive(state_dir: &Path, json: bool, allow_spawn: bool) -> Result<Ex
 
 	let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 	let parked = parked(&mut client)?;
+	drop(client);
 
 	if parked.is_empty() {
 		if !json {
@@ -367,11 +414,22 @@ pub fn interactive(state_dir: &Path, json: bool, allow_spawn: bool) -> Result<Ex
 		return Ok(ExitCode::SUCCESS);
 	}
 
+	interactive_jobs(state_dir, &parked, json, allow_spawn)
+}
+
+pub(crate) fn interactive_jobs(state_dir: &Path, parked: &[JobId], json: bool, allow_spawn: bool) -> Result<ExitCode> {
+	use std::io::{BufRead, Write};
 	let mut stdin = std::io::stdin().lock();
 
 	for id in parked {
-		let job = client.jobs_get(id.as_str())?;
+		let job = {
+			let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
+			client.jobs_get(id.as_str())?
+		};
 
+		if !matches!(job.state, JobState::Pending | JobState::NeedsAttention) {
+			continue;
+		}
 		if !json {
 			print!("{}", describe(&job));
 		}
@@ -391,22 +449,35 @@ pub fn interactive(state_dir: &Path, json: bool, allow_spawn: bool) -> Result<Ex
 				continue;
 			};
 
+			if matches!(action, Action::Now | Action::Convert | Action::Refuse) {
+				let current = client::connect_or_spawn(state_dir, false)?.jobs_get(id.as_str())?;
+				if current.state != job.state || current.updated != job.updated {
+					eprintln!("retype: job {id} changed while prompting; check its current state");
+					break;
+				}
+			}
 			match action {
 				Action::Quit => return Ok(ExitCode::SUCCESS),
 				Action::Skip => break,
 				Action::Now => {
+					let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 					let answer = client.jobs_resolve(id.as_str(), retype_ipc::ResolveMode::Now, false)?;
 					answer_state(&state_of(answer.state));
 					break;
 				}
 				Action::Convert => {
+					let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 					let answer = client.jobs_resolve(id.as_str(), retype_ipc::ResolveMode::Convert, false)?;
 					answer_state(&state_of(answer.state));
 					break;
 				}
 				Action::Refuse => {
+					let mut client = client::connect_or_spawn(state_dir, allow_spawn)?;
 					let answer = client.jobs_cancel(id.as_str())?;
 					answer_state(&answer.state);
+					if let Some(warning) = &answer.warning {
+						eprintln!("retype: {warning}");
+					}
 					break;
 				}
 			}
@@ -438,10 +509,10 @@ fn choose(key: char, job: &retype_core::job::Job) -> Option<Action> {
 		.unwrap_or_default();
 	let corrected = job.parked.as_ref().and_then(|parked| parked.corrected.as_deref());
 
-	// A pending job runs on its timer, and a size park may run exactly as asked once
-	// someone says so. The other needs-attention reasons cannot.
 	let can_now = job.state == retype_core::job::JobState::Pending
-		|| (job.state == retype_core::job::JobState::NeedsAttention && reason == "size");
+		|| (job.state == retype_core::job::JobState::NeedsAttention
+			&& retype_core::deferral::Reason::parse(reason)
+				.is_some_and(retype_core::deferral::Reason::can_run_as_asked));
 
 	match key {
 		'n' if can_now => Some(Action::Now),
@@ -649,6 +720,7 @@ mod tests {
 				format: "heic".to_string(),
 				size: 0,
 				mtime_ns: 0,
+				fingerprint: None,
 			},
 			intent: Some("jpg".to_string()),
 			outputs: Vec::new(),
@@ -666,8 +738,12 @@ mod tests {
 				corrected: corrected.map(str::to_string),
 				dropped: Vec::new(),
 				consume: false,
+				force: false,
+				input_fingerprint: None,
 			}),
 			consume_source: false,
+			source_disposition: None,
+			admission: None,
 		}
 	}
 
@@ -712,10 +788,19 @@ mod tests {
 			corrected: None,
 			dropped: Vec::new(),
 			consume: false,
+			force: false,
+			input_fingerprint: None,
 		});
 
 		assert_eq!(choose('n', &sized), Some(Action::Now));
 		assert_eq!(choose('c', &sized), None, "there is nothing to reduce");
+	}
+
+	#[test]
+	fn an_explicit_confirmation_can_run_as_asked() {
+		let mut asked = job(retype_core::job::JobState::NeedsAttention, None);
+		asked.parked.as_mut().unwrap().reason = "ask".to_string();
+		assert_eq!(choose('n', &asked), Some(Action::Now));
 	}
 
 	#[test]

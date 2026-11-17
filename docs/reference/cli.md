@@ -11,9 +11,10 @@ retype <command> [arguments] [flags]
 | Command | Purpose |
 |---|---|
 | `convert <input> <intent>` | One-shot conversion. Alias `c` |
-| `watch [<dir>...] [--non-recursive] [--pause\|--resume]` | Register directories; with none, the current directory |
+| `watch [<dir>...] [--register] [--non-recursive] [--pause\|--resume]` | Start and follow watching; explicit `--register` returns after registration |
 | `watching` | List registrations |
 | `unwatch <dir>...` | Deregister directories |
+| `recovery [<id>] [--cancel\|--cleanup]` | List recovery operations/records, inspect an operation, request a safe stop, or clean a proven redundant job backup |
 | `daemon [--detached] [start\|stop [--now] [--force]\|status]` | Foreground by default. `stop` drains, `--now` cancels, `--force` overrides a supervisor's refusal |
 | `jobs list\|get\|cancel\|resume\|resolve\|logs` | Queue inspection and control |
 | `undo <id\|--last>` | Reverse one job |
@@ -62,13 +63,15 @@ Shell quoting is rarely needed: the intent character set excludes every shell me
 
 `--dry-run` is `explain` with a real file: same output, including the estimate from the file's actual size and the resolved backend.
 
-Under `--json`, the result is `{v, ok, job}`: the envelope identifies the CLI shape, and the job is the journal record with its own `v`, `docs/dev/architecture/state.md` §3.
+Under `--json`, a completed conversion returns `{v, ok, job}`. An incomplete conversion or unresolved source disposition returns `ok: false` with the job under `error.detail.job` and exits nonzero. The job's `source_disposition` distinguishes removal, an explicit keep, a safe retention fallback and an unresolved result. The envelope identifies the CLI shape, and the job has its own `v`, `docs/dev/architecture/state.md` §3.
 
 The command submits an `immediate` job to the daemon and waits for it, `docs/dev/architecture/ipc.md` §6. Immediate means it does not queue behind a directory's renames: it is journalled, visible in `jobs list`, cancellable with `jobs cancel`, and shares the pool, so parallelism is bounded the same way for a person and a watcher.
 
-Everything that can fail before a byte moves fails at submission, with the code and the exit status the failure would have had locally, so a bad intent or a missing tool is reported without a job that only fails later. The client polls `jobs.get` while the job runs, which keeps the daemon free to answer anything else, including the cancel that stops it.
+An intent with `+ask` or a trailing `+` requires a person's confirmation. A terminal prompts; a non-interactive invocation reports `E_JOB_STATE` with the job id and leaves it waiting. In JSON, the id and state are in `error.detail`. `jobs resolve <id> --now` confirms it and `jobs cancel <id>` refuses it.
 
-A submitted conversion does not consume its source. Its recovery record holds an independent source snapshot and verified publication identities. Undo removes only unchanged outputs produced by the job and leaves the live source untouched. Input aliases remain protected even with `--force`.
+Submission checks declarations and paths, records the request durably and returns a job id. Tool probes, input hashing and private snapshot preparation run in the cancellable worker pool. A missing tool is recorded on the job, with its normal code and exit status. Probes have a three-second deadline. The initial input identity and change metadata are checked before and after capture; conversion uses the verified private snapshot. The client polls `jobs.get`, leaving status and cancellation available. An explicit ask is prepared before it waits for a person; scripts receive the pending job id.
+
+A submitted conversion uses the same source-disposition checks as a watched rename. Without a keep request, a validated, durable conversion with a verified undo copy may remove its visible source; undo restores the original and removes only unchanged outputs produced by the job. `+keep` or a source-format group keeps the original visible, and undo does not overwrite later edits to a successfully kept source. Missing validation or durability retains the source and is reported in the job. Reaching the undo storage goal parks work; an explicitly disabled or skipped backup retains the source. Input aliases remain protected even with `--force`.
 
 Each output is staged in a private directory on the target filesystem. Publication requires a fresh, regular, nonempty result and checked finalization. A failed output is not published; already completed sibling outputs and required recovery records are retained. Backend success alone never permits deleting the original.
 
@@ -126,20 +129,22 @@ A backend that the plan needs and the machine lacks is reported in the plan and 
 
 ```
 retype list [--tiers]
-retype watch [<dir>...] [--non-recursive] [--pause|--resume]
+retype watch [<dir>...] [--register] [--non-recursive] [--pause|--resume]
 retype watching
 retype unwatch <dir>...
 ```
 
 `list` prints what the configuration declares: every format with its family, whether it is lossy and carries alpha, and the tier a pair targeting it claims; every operation by slot with its parameter class and the formats it applies to; every preset with its tokens; and the backend order with the installed version of each. It reads configuration and the filesystem only, so it never starts a daemon.
 
-`--tiers` prints one line per pair instead: the tier the pair claims and the backend that would carry it, with that backend's installed version. A pair nothing can carry prints the diagnostic code where a backend would go, in brackets, because a blank column would read as "not declared" rather than "not possible here". A tier here is a declaration, not evidence: a claim is earned by running the conversion against the installed tool, `docs/advanced/fidelity.md` §4, and until that has happened the version beside it is what is installed now rather than what the claim was earned with.
+`--tiers` prints one line per pair instead: the evidence-qualified tier and the backend, resolved engine and installed build. Missing release evidence reports `unclaimed`; stale evidence reports `unverified`. JSON retains the format's declaration as `declared_tier`. A pair nothing can carry reports its diagnostic code, and a stale exact claim carries `E_UNSUPPORTED`. The same lookup qualifies `explain`, ordinary conversion and `why`; fixture runs earn claims, `docs/advanced/fidelity.md` §4.
 
 `--json` writes one object per line with a `kind` of `format`, `operation`, `preset`, `backend` or `pair`. A pair that cannot be carried has a null `backend` and a separate `error` field naming the code; the human line brackets the same code where a backend would go, because a blank column would read as "not declared" rather than "not possible here".
 
 `watching --json` writes one object per registration with a `kind` of `watch`; a registration result and an `unwatch` result carry the envelope and a `kind`. The `added` field is Unix milliseconds.
 
-`watching` prints registrations as `<path>  <recursive>  <policy summary>`. `watch` registers each directory it is given, and with none the current directory, so `watch` and `watch .` register the same thing. Registration is idempotent, and the daemon re-reads the file so a running one picks the directory up within a second. `--non-recursive` registers only that directory rather than its subtree. `--pause` stops converting renames in a registration until `--resume`, and applies to the current directory when none is named; a directory file with `paused = true` outranks a resume and is refused with `E_WATCH_PAUSED_BY_POLICY`. Neither command starts anything itself, so both can be scripted.
+`watching` prints registrations as `<path>  <recursive>  <policy summary>`. Default `watch` starts or reaches the daemon, registers each directory (the current one with no arguments), and follows readiness and scoped activity. Wait for `ready`; `Ctrl+C` detaches without stopping the daemon. Interactive terminals can answer parked decisions. `--json` emits status and job envelopes without prompts. Spawn suppression applies to startup and recovery.
+
+`watch --register` registers and returns without starting a daemon; it makes no readiness claim. Registration is idempotent, and a running daemon picks it up within a second. `--non-recursive` registers only that directory. `--pause` and `--resume` also return immediately; a directory file with `paused = true` outranks resume and is refused with `E_WATCH_PAUSED_BY_POLICY`. `--register` cannot be combined with pause or resume.
 
 The summary column is the directory's own `.retype.toml` policy, where it has one, because "what will happen here" is the question a listing is asked.
 
@@ -167,15 +172,15 @@ retype undo <id|prefix|--last>
 retype why <path>
 ```
 
-`jobs list`, `jobs get`, `jobs cancel`, `jobs resume`, `jobs logs`, `undo` and `why` exist today. A job is recorded when it starts, so `jobs list --state running` finds what can still be cancelled. `--state` accepts `pending`, `queued`, `running`, `done`, `partial`, `failed`, `cancelled`, `superseded` or `needs-attention`; any other value is a usage error. `--since` takes a full id, because a prefix is not an ordering boundary.
+`jobs list`, `jobs get`, `jobs cancel`, `jobs resume`, `jobs logs`, `undo` and `why` exist today. A job is recorded before it enters the ordinary worker queue. `jobs cancel` requests that waiting or running work stop and can cancel a settled partial job; completed outputs are kept. If undo retention cannot safely start, the command reports a warning, including in its JSON response. Parked and queued cancellations are recorded before success is reported. A running cancellation is not durable until its terminal snapshot is recorded; `daemon stop --now` reports queued-cancellation recording failures in the daemon log. `--state` accepts `pending`, `queued`, `running`, `done`, `partial`, `failed`, `cancelled`, `superseded` or `needs-attention`; any other value is a usage error. `--since` takes a full id, because a prefix is not an ordering boundary.
 
-`jobs get` answers with the whole record: its own `v`, the outputs, their bytes, their tier and their errors. It is the form a bug report or a script wants, so it prints JSON rather than a rendering of it. The record is not enveloped, because its `v` is `retype-journal-1` and an envelope would overwrite it.
+`jobs get` answers with the whole record: its own `v`, the outputs, their bytes, their declared tier, assessed `fidelity` evidence and their errors. It is the form a bug report or a script wants, so it prints JSON rather than a rendering of it. The record is not enveloped, because its `v` is `retype-journal-1` and an envelope would overwrite it.
 
 `why` takes a file and answers what produced it, naming the store that answered: `journal-identity` when the file is the one a record produced, which survives the rename that usually follows a conversion, `journal-path` when only the name matched, `xattr` when the intent came from the file's attribute, and `unknown` when nothing did. Its `confidence` is `exact`, `path-only` or `none`, `docs/advanced/provenance.md` §8. Identity alone is not trusted, because file ids are recycled, so the size has to agree as well. A file nothing produced is not an error: the command says so, and the record expires at twice the undo retention.
 
 `undo` reads the undo store rather than the journal, so it answers even when the journal is gone, and it removes the record it used: one record, one restore target. An active conversion or recovery returns `E_IO_LOCKED`; cancel it and wait for it to stop before undoing.
 
-`jobs resume` continues a partial or interrupted job from a private copy of its verified retained original. An output whose identity, size and digest still match is skipped. Any other occupied path is `E_IO_EXISTS`; `--force` reruns outputs but cannot replace the input itself. Successful resume retains the backup for normal undo retention. Jobs without verified recovery bytes cannot resume.
+`jobs resume` queues a partial or interrupted job and polls until completion, releasing its connection between requests. Resume shares ordinary job cancellation and daemon shutdown. Its input is a private copy of its verified retained original. An output whose identity, size and digest still match is skipped. Any other occupied path is `E_IO_EXISTS`; `--force` reruns outputs but cannot replace the input itself. A successful resume uses the original source-disposition intent and requires recorded validation for every output before source removal. It retains the backup for normal undo retention. Jobs without verified recovery bytes cannot resume. If the resume remains incomplete, the CLI exits nonzero; its JSON error detail includes the resume state and current job.
 
 Ids accept a unique prefix of at least four characters; an ambiguous prefix is `E_JOB_AMBIGUOUS` with the candidates printed, and a shorter one is a usage error. Listings print the shortest unambiguous prefix so copy-paste is short by default. Ids and `--state` values are read in either case and printed lowercase.
 
@@ -183,7 +188,7 @@ Ids accept a unique prefix of at least four characters; an ambiguous prefix is `
 
 `jobs --interactive` walks the parked jobs oldest first and reads one key each: `n` runs it as asked, `c` runs the corrected intent where there is one, `r` refuses it, `s` skips it and `q` stops. It refuses to run without a terminal rather than reading a script's stdin. `jobs resolve` is the same decisions for a script, one id at a time.
 
-`jobs resolve` acts on a parked job: `--now` runs it as asked, `--convert` runs the corrected intent with the tokens that could not be carried dropped. `--force` belongs to `--now` and overwrites an output that appeared while the job waited, which without it fails as `E_IO_EXISTS`. It is not accepted with `--convert`: a reduced request is not the place to decide about a file somebody else wrote. A job that cannot run as asked refuses `--now` with `E_JOB_STATE` and says why, except one parked for `size`, where `--now` is the confirmation. A job whose target format does not survive the reduction has nothing for `--convert` to run. Exactly one of the two is required; the states, the reasons and the timer are `docs/advanced/deferral.md`.
+`jobs resolve` acts on a parked job: `--now` runs it as asked, `--convert` runs the corrected intent with the tokens that could not be carried dropped. `--force` belongs to `--now` and overwrites an output that appeared while the job waited, which without it fails as `E_IO_EXISTS`. It is not accepted with `--convert`: a reduced request is not the place to decide about a file somebody else wrote. An `ask` or `size` job runs after `--now` confirms it; other jobs that cannot run as asked refuse with `E_JOB_STATE`. A job whose target format does not survive the reduction has nothing for `--convert` to run. Exactly one of the two is required; the states, the reasons and the timer are `docs/advanced/deferral.md`.
 
 `jobs logs` prints what the tool printed. The full output is in `<state>/logs/<id>.log`, which is written as it arrives, and the journal keeps the last four kilobytes, because a converter can print megabytes while a failure needs the last ten lines. A job whose log file is gone answers from the record instead, and says which it used. `--follow` prints what arrives while the job runs and stops when the job reaches a terminal state, so it ends by itself rather than waiting to be interrupted.
 
@@ -238,7 +243,7 @@ retype fidelity --pair heic:webp
 retype fidelity [--pair <from>:<to>] [--family <name>] [--write <path>] [--manifest <path>] [--render <path>] [--fixtures <dir>]
 ```
 
-The command runs the conversion each pair declares, records the tier, the backend, the resolved engine, the tool version, the build fingerprint and what the pair kept, and reports the state of every claim: `new` when no manifest had one, `earned` when the installed build is the one it was earned with, `unverified` when it is not, `docs/advanced/fidelity.md` §6.
+The command runs the conversion each pair declares, records the tier, the backend, the resolved engine, both tool and engine versions and build fingerprints, and what the pair kept, and reports the state of every claim: `new` when no manifest had one, `earned` when the installed build is the one it was earned with, `unverified` when it is not, `docs/advanced/fidelity.md` §6.
 
 Alongside the sample conversion, a set of small property files is converted through the same plan and probed on both sides, so the PROPERTIES column says which properties survived: `alpha,depth,icc` when all three did, `alpha; !depth` when one did not. `--fixtures` names the directory those files are read from, `docs/advanced/fidelity.md` §4.
 
@@ -255,5 +260,7 @@ retype doctor --report [<path>]
 One file, written locally, that a user can read and send: the build and every schema identifier it reads, the machine, the configuration in use with its contents, the tool table with each build's fingerprint, the watch registrations, what the state directory holds, the last forty journal records and the last three job logs.
 
 It is generated on the machine and goes nowhere unless the user sends it. The header says the file holds the configuration and the last records, because a log can hold anything a converter printed. Without a path it writes `retype-report-<UTC timestamp>.txt` in the current directory and says where it went.
+
+Reports are published atomically without replacing an occupied destination, including a dangling symlink. New report files are owner-only on Unix.
 
 `--report` cannot be combined with `--emit` or `--write`: a report and a pinning snippet answer different questions, and one command that wrote both would write a file nobody asked for.

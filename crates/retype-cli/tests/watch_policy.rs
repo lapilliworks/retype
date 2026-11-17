@@ -102,7 +102,7 @@ struct Fixture {
 }
 
 impl Fixture {
-	fn new(watch: &str, directories: &[&str]) -> Self {
+	fn new(watch: &str, directories: &[&str], sources: &[&str]) -> Self {
 		let dir = tempfile::tempdir().unwrap();
 		let photos = dir.path().join("photos");
 		fs::create_dir(&photos).unwrap();
@@ -110,11 +110,14 @@ impl Fixture {
 		for directory in directories {
 			fs::create_dir_all(photos.join(directory)).unwrap();
 		}
+		for source in sources {
+			fs::write(photos.join(source), PIXELS).unwrap();
+		}
 		let state = dir.path().join("state");
 		let config = config(dir.path(), watch);
 
 		retype()
-			.args(["watch", photos.to_str().unwrap()])
+			.args(["watch", "--register", photos.to_str().unwrap()])
 			.arg("--state-dir")
 			.arg(&state)
 			.output()
@@ -142,6 +145,8 @@ impl Fixture {
 			std::thread::sleep(Duration::from_millis(50));
 		}
 
+		support::ready(&state);
+
 		Self {
 			dir,
 			photos,
@@ -156,9 +161,8 @@ impl Fixture {
 		if let Some(parent) = source.parent() {
 			fs::create_dir_all(parent).unwrap();
 		}
-		let before = support::observed(&self.state);
+		assert!(source.is_file(), "the source exists before startup");
 		fs::write(&source, bytes).unwrap();
-		support::observe(&self.state, before);
 
 		let target = source.with_file_name(to);
 		fs::rename(&source, &target).unwrap();
@@ -214,7 +218,7 @@ const PIXELS: &[u8] = b"pixels";
 
 #[test]
 fn a_rename_inside_a_built_in_directory_is_not_a_job() {
-	let fixture = Fixture::new("", &["sub", ".git"]);
+	let fixture = Fixture::new("", &["sub", ".git"], &[".git/a.png", "sub/b.png"]);
 
 	fixture.rename(".git/a.png", "a.webp", PIXELS);
 
@@ -232,7 +236,7 @@ fn a_rename_inside_a_built_in_directory_is_not_a_job() {
 
 #[test]
 fn a_hidden_directory_is_skipped_unless_asked_for() {
-	let skipped = Fixture::new("", &[".cache"]);
+	let skipped = Fixture::new("", &[".cache"], &[".cache/a.png", "b.png"]);
 	skipped.rename(".cache/a.png", "a.webp", PIXELS);
 	skipped.rename("b.png", "b.webp", PIXELS);
 	skipped.wait_for(&skipped.photos.join("b.png"));
@@ -243,14 +247,14 @@ fn a_hidden_directory_is_skipped_unless_asked_for() {
 		skipped.records()
 	);
 
-	let asked = Fixture::new("watch_hidden = true", &[".cache"]);
+	let asked = Fixture::new("watch_hidden = true", &[".cache"], &[".cache/a.png"]);
 	asked.rename(".cache/a.png", "a.webp", PIXELS);
 	asked.wait_for(&asked.photos.join(".cache/a.png"));
 }
 
 #[test]
 fn a_user_glob_adds_to_the_list() {
-	let fixture = Fixture::new("ignore = ['*.png']", &[]);
+	let fixture = Fixture::new("ignore = ['*.png']", &[], &["a.png", "c.jpg"]);
 
 	fixture.rename("a.png", "a.webp", PIXELS);
 
@@ -268,7 +272,7 @@ fn a_user_glob_adds_to_the_list() {
 
 #[test]
 fn a_source_over_the_ceiling_waits_for_consent() {
-	let fixture = Fixture::new("max_source_size = '1kb'", &[]);
+	let fixture = Fixture::new("max_source_size = '1kb'", &[], &["big.png", "small.png"]);
 
 	let big = fixture.rename("big.png", "big.webp", &vec![b'p'; 4096]);
 	fixture.rename("small.png", "small.webp", PIXELS);
@@ -338,7 +342,7 @@ fn a_source_over_the_ceiling_waits_for_consent() {
 
 #[test]
 fn now_in_the_name_confirms_a_source_over_the_ceiling() {
-	let fixture = Fixture::new("max_source_size = '1kb'", &[]);
+	let fixture = Fixture::new("max_source_size = '1kb'", &[], &["fast.png"]);
 
 	fixture.rename("fast.png", "fast.webp+now", &vec![b'p'; 4096]);
 	fixture.wait_for(&fixture.photos.join("fast.png"));

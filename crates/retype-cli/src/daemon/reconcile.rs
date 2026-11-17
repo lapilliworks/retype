@@ -1,144 +1,218 @@
 //! Startup reconciliation, `docs/dev/architecture/state.md` §6.
 //!
-//! A daemon that dies leaves the journal holding jobs that were in flight. Two
-//! things can be true of them, and they are different:
-//!
-//! - `queued`: nothing ran, so nothing was written. The job is put back in the queue
-//!   with the request the journal recorded
-//! - `running`: a conversion was interrupted. Some of its outputs may already be
-//!   committed, so re-running it blindly would either overwrite them or fail on them.
-//!   It is marked `E_INTERRUPTED`, which is exactly the state `retype jobs resume`
-//!   exists for: the outputs that carry their recorded identity are skipped and the
-//!   rest are run again
+//! A daemon that dies leaves the journal holding jobs that were in flight.
+//! Queued jobs keep their admitted input fingerprint. Restart reports whether the
+//! input still matches, but requires explicit review rather than automatic replay. Running jobs may
+//! have committed outputs; reconciliation verifies those against the recovery ledger
+//! and marks the job interrupted for explicit recovery.
 //!
 //! A parked job is not reconciled here: it keeps its deadline and its timer is
 //! re-armed, `docs/deferral.md` §7.
 
-use std::path::Path;
-
 use retype_core::error::Code;
 use retype_core::job::{Job, JobError, JobState};
 
-use crate::daemon::immediate;
-use crate::daemon::queue::{Kind, Pool, Work};
 use crate::daemon::watcher::{self, Shared};
 
 /// Put the journal's unfinished jobs back where they belong.
-pub fn run(shared: &Shared, pool: &Pool) {
+pub fn run(shared: &Shared) {
 	let jobs: Vec<Job> = match shared.jobs.lock() {
 		Ok(jobs) => jobs.clone(),
 		Err(_) => return,
 	};
 
+	run_jobs(shared, jobs);
+}
+
+pub(super) fn run_jobs(shared: &Shared, jobs: Vec<Job>) {
+	run_cancellable(shared, jobs, &retype_core::execute::Cancellation::default());
+}
+
+pub(super) fn run_cancellable(shared: &Shared, jobs: Vec<Job>, cancellation: &retype_core::execute::Cancellation) {
+	let startup_ids = jobs
+		.iter()
+		.map(|job| job.id.clone())
+		.collect::<std::collections::BTreeSet<_>>();
 	for job in jobs {
+		if cancellation.is_cancelled() {
+			break;
+		}
 		match job.state {
-			JobState::Queued => requeue(shared, pool, &job),
-			JobState::Running => interrupted(shared, &job),
+			JobState::Queued | JobState::Running => interrupted(shared, &job, cancellation),
+			JobState::Done
+				if matches!(
+					&job.source_disposition,
+					Some(retype_core::job::SourceDisposition::Pending)
+				) =>
+			{
+				unresolved_disposition(shared, &job);
+			}
+			JobState::Pending if job.parked.as_ref().is_some_and(|parked| parked.reason == "ask") => {
+				require_confirmation(shared, &job);
+			}
+			JobState::Cancelled => finish_cancelled(shared, &job, cancellation),
 			_ => {}
 		}
 	}
-}
-
-fn requeue(shared: &Shared, pool: &Pool, job: &Job) {
-	// A job with no intent was not a conversion, so there is nothing to run again.
-	let Some(intent) = job.intent.clone() else {
-		interrupted(shared, job);
-		return;
-	};
-
-	// A queued job did not record an output yet, so the live path is still the only
-	// evidence of what it was. Refuse to run it against a replacement.
-	if !source_still_matches(shared, job) {
-		interrupted(shared, job);
-		return;
-	}
-
-	let request = immediate::Request {
-		input: job.source.path.clone(),
-		intent,
-		// The recorded path, not a fresh derivation: `-o` was part of the request and
-		// is not in the journal, so the output is the only place it survives. A
-		// rename-derived job has no `-o`.
-		output: match (job.consume_source, job.outputs.as_slice()) {
-			(false, [single]) => Some(single.path.to_string_lossy().into_owned()),
-			_ => None,
-		},
-		force: false,
-	};
-
-	// The plan is made again rather than trusted. A source that went away or a tool
-	// that was uninstalled between the two runs is then the failure it would have
-	// been, instead of a job that dies unexplained.
-	if immediate::prepare(&shared.registry(), &request).is_err() {
-		interrupted(shared, job);
-		return;
-	}
-
-	// A job that consumes its source came from a rename or a repair, not from
-	// `retype convert`. Requeueing it as an immediate job would leave the source
-	// behind after the conversion committed.
-	let kind = match job.consume_source {
-		true => Kind::Deferred {
-			root: job.source.path.parent().unwrap_or(Path::new("")).to_path_buf(),
-			source: request.input.clone(),
-			intent: request.intent.clone(),
-			force: false,
-		},
-		false => Kind::Immediate(request),
-	};
-
-	let work = Work {
-		id: job.id.clone(),
-		kind,
-	};
-
-	if !pool.submit(work) {
-		interrupted(shared, job);
-	}
-}
-
-/// Whether the live source is still the file the queued job recorded.
-fn source_still_matches(shared: &Shared, job: &Job) -> bool {
-	let Ok(metadata) = std::fs::symlink_metadata(&job.source.path) else {
-		return false;
-	};
-
-	if !metadata.file_type().is_file() {
-		return false;
-	}
-
-	if metadata.len() != job.source.size {
-		return false;
-	}
-
-	if job.source.mtime_ns != 0 {
-		let Ok(modified) = metadata.modified() else {
-			return false;
-		};
-		let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH) else {
-			return false;
-		};
-		let Ok(mtime_ns) = i64::try_from(since.as_nanos()) else {
-			return false;
-		};
-		if mtime_ns != job.source.mtime_ns {
-			return false;
+	let store = retype_core::undo::Store::open(&shared.state_dir);
+	if let Ok(records) = store.list() {
+		for record in records {
+			if cancellation.is_cancelled() {
+				break;
+			}
+			if !startup_ids.contains(&record.id)
+				|| record.source_fingerprint.is_some()
+				|| record.reservation_fingerprint.is_none()
+			{
+				continue;
+			}
+			let result = store
+				.lease(&record.id)
+				.and_then(|lease| store.retain(lease, Some(record)))
+				.and_then(|recovery| match recovery {
+					retype_core::undo::Recovery::Retained(retained) => {
+						retained.release_unpublished_cancellable(cancellation)
+					}
+					_ => Ok(()),
+				});
+			if let Err(error) = result {
+				eprintln!("retype: incomplete reservation remains protected: {error}");
+			}
 		}
 	}
-
-	let Some(name) = job.source.path.file_name().and_then(|name| name.to_str()) else {
-		return false;
-	};
-
-	shared
-		.registry()
-		.split(name)
-		.is_some_and(|(_, format)| format == job.source.format)
 }
 
-fn interrupted(shared: &Shared, job: &Job) {
-	let mut failed = job.clone();
+fn unresolved_disposition(shared: &Shared, job: &Job) {
 	let store = retype_core::undo::Store::open(&shared.state_dir);
+	let has_record = match store.load(&job.id) {
+		Ok(record) => record.is_some(),
+		Err(error) => {
+			eprintln!("retype: cannot inspect source disposition for {}: {error}", job.id);
+			return;
+		}
+	};
+	let _lease = if has_record {
+		match store.lease(&job.id) {
+			Ok(lease) => Some(lease),
+			Err(error) => {
+				eprintln!("retype: cannot reconcile source disposition for {}: {error}", job.id);
+				return;
+			}
+		}
+	} else {
+		None
+	};
+	let mut unresolved = job.clone();
+	unresolved.source_disposition = Some(retype_core::job::SourceDisposition::Unresolved {
+		reason: "source disposition was interrupted; inspect the source and any recovery data".to_string(),
+	});
+	unresolved.updated = retype_core::job::now_ms();
+	if let Err(error) = watcher::publish_checked(shared, &unresolved) {
+		eprintln!(
+			"retype: cannot record unresolved source disposition for {}: {error}",
+			job.id
+		);
+	}
+}
+
+fn finish_cancelled(shared: &Shared, job: &Job, cancellation: &retype_core::execute::Cancellation) {
+	let store = retype_core::undo::Store::open(&shared.state_dir);
+	let record = match store.load(&job.id) {
+		Ok(Some(record)) if record.pinned => record,
+		Ok(_) => return,
+		Err(error) => {
+			eprintln!("retype: cannot inspect cancelled job {}: {error}", job.id);
+			return;
+		}
+	};
+	let lease = match store.lease(&record.id) {
+		Ok(lease) => lease,
+		Err(error) => {
+			eprintln!("retype: cannot finish retention for cancelled job {}: {error}", job.id);
+			return;
+		}
+	};
+	let recovery = store.retain(lease, Some(record));
+	match recovery.and_then(|recovery| super::cancel::finish_retention_cancellable(recovery, job, cancellation)) {
+		Ok(()) => clear_retention_warning(shared, job),
+		Err(error) => eprintln!(
+			"retype: undo record for cancelled job {} remains protected: {error}",
+			job.id
+		),
+	}
+}
+
+fn clear_retention_warning(shared: &Shared, job: &Job) {
+	let is_warning = job.error.as_ref().is_some_and(|error| {
+		error.message.starts_with("undo retention was not started:")
+			|| error.message.starts_with("redundant recovery was not released:")
+	});
+	if is_warning {
+		let mut corrected = job.clone();
+		corrected.error = None;
+		if let Err(error) = watcher::publish_checked(shared, &corrected) {
+			eprintln!("retype: could not clear retention warning for job {}: {error}", job.id);
+		}
+	}
+}
+
+fn require_confirmation(shared: &Shared, job: &Job) {
+	let mut waiting = job.clone();
+	waiting.set_state(JobState::NeedsAttention);
+	if let Some(parked) = &mut waiting.parked {
+		parked.deadline = None;
+	}
+	watcher::publish(shared, &waiting);
+}
+
+fn queued_interruption(job: &Job, cancellation: &retype_core::execute::Cancellation) -> String {
+	let expected = job
+		.source
+		.fingerprint
+		.as_ref()
+		.or_else(|| job.parked.as_ref().and_then(|parked| parked.input_fingerprint.as_ref()));
+	let condition = match expected {
+		Some(expected) => match expected.matches_cancellable(&job.source.path, cancellation) {
+			Ok(true) => "the queued input still matches its admitted identity and bytes".to_string(),
+			Ok(false) => "the queued input changed or was replaced".to_string(),
+			Err(error) => format!("the queued input cannot be checked: {error}"),
+		},
+		None => match &job.admission {
+			Some(stamp) => match stamp.verify(&job.source.path) {
+				Ok(()) => "the admitted identity and metadata still match, but content preparation was interrupted"
+					.to_string(),
+				Err(error) if error.code() == Code::JobInterrupted => {
+					"the queued input changed or was replaced".to_string()
+				}
+				Err(error) => format!("the queued input cannot be checked: {error}"),
+			},
+			None => "this legacy queued record has no input fingerprint".to_string(),
+		},
+	};
+	format!(
+		"the daemon stopped while this job was queued; {condition}; review {} and existing outputs \
+		 and resubmit the recorded intent only when safe; nothing was automatically replayed",
+		job.source.path.display(),
+	)
+}
+
+fn interrupted(shared: &Shared, job: &Job, cancellation: &retype_core::execute::Cancellation) {
+	let store = retype_core::undo::Store::open(&shared.state_dir);
+	let _lease = match store.lease(&job.id) {
+		Ok(lease) => lease,
+		Err(error) => {
+			eprintln!("retype: startup recovery for {} deferred: {error}", job.id);
+			return;
+		}
+	};
+	if !shared
+		.jobs
+		.lock()
+		.is_ok_and(|jobs| jobs.iter().any(|current| current == job))
+	{
+		return;
+	}
+	let mut failed = job.clone();
 	match store.load(&job.id) {
 		Ok(Some(record)) => {
 			failed.outputs = record
@@ -147,7 +221,10 @@ fn interrupted(shared: &Shared, job: &Job) {
 				.map(|planned| {
 					let committed = record.commits.iter().find(|commit| commit.output.path == planned.path);
 					if let Some(commit) = committed {
-						if matches!(commit.fingerprint.matches(&planned.path), Ok(true)) {
+						if matches!(
+							commit.fingerprint.matches_cancellable(&planned.path, cancellation),
+							Ok(true)
+						) {
 							return commit.output.clone();
 						}
 					}
@@ -162,10 +239,13 @@ fn interrupted(shared: &Shared, job: &Job) {
 		Ok(None) => {}
 		Err(error) => eprintln!("retype: cannot read recovery ledger for {}: {error}", job.id),
 	}
+	let message = match job.state {
+		JobState::Queued => queued_interruption(job, cancellation),
+		_ => "the daemon stopped before this job finished; verified recovery bytes are required to resume".to_string(),
+	};
 	failed.fail(JobError {
 		code: Code::JobInterrupted.to_string(),
-		message: "the daemon stopped before this job finished; verified recovery bytes are required to resume"
-			.to_string(),
+		message,
 	});
 	if failed
 		.outputs

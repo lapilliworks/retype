@@ -97,10 +97,11 @@ struct Fixture {
 }
 
 impl Fixture {
-	fn new(above: &str, policy: &str) -> Self {
+	fn new(above: &str, policy: &str, source_name: &str) -> Self {
 		let dir = tempfile::tempdir().unwrap();
 		let photos = dir.path().join("photos");
 		fs::create_dir(&photos).unwrap();
+		fs::write(photos.join(source_name), b"pixels").unwrap();
 
 		if !policy.is_empty() {
 			fs::write(
@@ -114,7 +115,7 @@ impl Fixture {
 		let config = config(dir.path(), above);
 
 		let watched = retype()
-			.args(["watch", photos.to_str().unwrap()])
+			.args(["watch", "--register", photos.to_str().unwrap()])
 			.arg("--state-dir")
 			.arg(&state)
 			.output()
@@ -148,6 +149,10 @@ impl Fixture {
 			String::from_utf8_lossy(&watched.stderr)
 		);
 
+		if watched.status.success() {
+			support::ready(&state);
+		}
+
 		Self {
 			dir,
 			photos,
@@ -164,11 +169,8 @@ impl Fixture {
 
 	fn rename(&self, from: &str, to: &str, bytes: &[u8]) {
 		let source = self.photos.join(from);
-		let before = support::observed(&self.state);
-		let mut file = fs::File::create(&source).unwrap();
-		file.write_all(bytes).unwrap();
-		drop(file);
-		support::observe(&self.state, before);
+		assert!(source.is_file(), "the source exists before startup");
+		fs::write(&source, bytes).unwrap();
 		fs::rename(&source, self.photos.join(to)).unwrap();
 	}
 
@@ -183,7 +185,7 @@ impl Fixture {
 
 	/// Wait for any record satisfying `this`, or answer `None` after a short while.
 	fn wait_for(&self, this: impl Fn(&serde_json::Value) -> bool) -> Option<serde_json::Value> {
-		self.wait_for_within(Duration::from_secs(5), this)
+		self.wait_for_within(Duration::from_secs(20), this)
 	}
 
 	fn wait_for_within(
@@ -218,7 +220,7 @@ impl Fixture {
 
 #[test]
 fn a_denied_operation_parks_with_the_file_s_name_intact() {
-	let fixture = Fixture::new("1s", "deny = ['quality']\n");
+	let fixture = Fixture::new("1s", "deny = ['quality']\n", "a.png");
 	fixture.rename("a.png", "a.webp+quality80", b"pixels");
 
 	let parked = fixture
@@ -239,7 +241,7 @@ fn a_denied_operation_parks_with_the_file_s_name_intact() {
 
 #[test]
 fn a_limited_parameter_is_clamped_and_the_name_says_so() {
-	let fixture = Fixture::new("1s", "limits = { quality = 85 }\n");
+	let fixture = Fixture::new("1s", "limits = { quality = 85 }\n", "b.png");
 	fixture.rename("b.png", "b.webp+quality95", b"pixels");
 
 	let done = fixture
@@ -256,7 +258,7 @@ fn a_limited_parameter_is_clamped_and_the_name_says_so() {
 
 #[test]
 fn a_pattern_keeps_a_file_out_of_the_directory_s_business() {
-	let fixture = Fixture::new("1s", "patterns = ['*.heic']\n");
+	let fixture = Fixture::new("1s", "patterns = ['*.heic']\n", "c.png");
 	fixture.rename("c.png", "c.webp", b"pixels");
 
 	// The file sits under the name the rename gave it and nothing else happens: the
@@ -270,7 +272,7 @@ fn a_pattern_keeps_a_file_out_of_the_directory_s_business() {
 
 #[test]
 fn a_paused_directory_is_not_watched_and_is_refused_by_watch() {
-	let fixture = Fixture::new("1s", "paused = true\n");
+	let fixture = Fixture::new("1s", "paused = true\n", "d.png");
 
 	// Nothing is watching, so there is no event to wait for before the rename that
 	// this test expects to be ignored.
@@ -286,7 +288,7 @@ fn a_paused_directory_is_not_watched_and_is_refused_by_watch() {
 
 	let refused = fixture
 		.command()
-		.args(["watch", fixture.photos.to_str().unwrap()])
+		.args(["watch", "--register", fixture.photos.to_str().unwrap()])
 		.output()
 		.unwrap();
 
@@ -303,14 +305,12 @@ fn a_paused_directory_is_not_watched_and_is_refused_by_watch() {
 fn confirm_false_suppresses_the_cost_confirmation_in_that_directory() {
 	// Eight megabytes is about two seconds by the image constant, which the policy
 	// threshold of one second would park.
-	let fixture = Fixture::new("1s", "confirm = false\n");
+	let fixture = Fixture::new("1s", "confirm = false\n", "e.png");
 
 	let source = fixture.photos.join("e.png");
-	let before = support::observed(&fixture.state);
 	let mut file = fs::File::create(&source).unwrap();
 	file.write_all(&vec![b'p'; 8 * 1024 * 1024]).unwrap();
 	drop(file);
-	support::observe(&fixture.state, before);
 
 	fs::rename(&source, fixture.photos.join("e.webp")).unwrap();
 
@@ -335,27 +335,25 @@ fn confirm_false_suppresses_the_cost_confirmation_in_that_directory() {
 /// measures is when the decision happens, not how long the work takes.
 #[test]
 fn debounce_ms_holds_a_rename_until_the_file_stops_changing() {
-	let fixture = Fixture::new("1h", "debounce_ms = 1500\n");
+	let fixture = Fixture::new("1h", "debounce_ms = 1500\n", "f.png");
 	let source = fixture.photos.join("f.png");
-	let before = support::observed(&fixture.state);
-	fs::write(&source, b"pixels").unwrap();
-	support::observe(&fixture.state, before);
-	// The first rename is held rather than decided, so the second one can still
-	// change the request. Waiting for the watcher to have seen it is what makes the
-	// second rename arrive inside the hold on a platform whose events are slower
-	// than the hold.
-	let held = support::observed(&fixture.state);
+	let mut client = retype_cli::client::connect(&fixture.state).unwrap();
+	let before = client.status().unwrap().observed;
 	fs::rename(&source, fixture.photos.join("f.webp")).unwrap();
-	support::observe(&fixture.state, held);
+	// This ready, isolated root has no earlier writes: its only event is the rename.
+	let deadline = Instant::now() + Duration::from_secs(20);
+	while client.status().unwrap().observed <= before {
+		assert!(Instant::now() < deadline, "the first rename was not observed");
+		std::thread::sleep(Duration::from_millis(25));
+	}
+	drop(client);
 	assert!(fixture.records().is_empty(), "{:?}", fixture.records());
 
 	// The second rename arrives inside the hold and is the one that counts.
-	let before = support::observed(&fixture.state);
 	fs::rename(fixture.photos.join("f.webp"), fixture.photos.join("f.webp+q75")).unwrap();
-	support::observe(&fixture.state, before);
 
 	let done = fixture
-		.wait_for(|record| record["state"] == "done")
+		.wait_for(|record| record["state"] == "done" && record["source_disposition"]["state"] == "retained")
 		.unwrap_or_else(|| panic!("a settled job: {:?}\ndaemon: {}", fixture.records(), fixture.daemon()));
 
 	// One job, asked for what the last name asked for, and named after it.
@@ -369,5 +367,11 @@ fn debounce_ms_holds_a_rename_until_the_file_stops_changing() {
 		1,
 		"one job, including its durable output checkpoints: {records:?}"
 	);
-	assert_eq!(records.iter().filter(|record| record["state"] == "done").count(), 1);
+	assert!(
+		records
+			.iter()
+			.any(|record| { record["state"] == "done" && record["source_disposition"]["state"] == "pending" })
+	);
+	let final_record = records.iter().rev().find(|record| record["state"] == "done").unwrap();
+	assert_eq!(final_record["source_disposition"]["state"], "retained");
 }

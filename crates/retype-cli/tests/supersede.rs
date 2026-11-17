@@ -89,9 +89,11 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 	let photos = dir.path().to_path_buf();
 	let state = dir.path().join("state");
 	let config = slow_config(&photos);
+	let source = photos.join("photo.png");
+	fs::write(&source, b"pixels").unwrap();
 
 	retype()
-		.args(["watch", photos.to_str().unwrap()])
+		.args(["watch", "--register", photos.to_str().unwrap()])
 		.arg("--state-dir")
 		.arg(&state)
 		.output()
@@ -121,14 +123,7 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 		std::thread::sleep(Duration::from_millis(50));
 	}
 
-	// The supervisor picks registrations up within a second, so the watcher has to
-	// exist before a fact is worth producing.
-	std::thread::sleep(Duration::from_millis(1500));
-
-	let source = photos.join("photo.png");
-	let before = support::observed(&state);
-	fs::write(&source, b"pixels").unwrap();
-	support::observe(&state, before);
+	support::ready(&state);
 	fs::rename(&source, photos.join("photo.webp")).unwrap();
 
 	// The first job is running and has not finished: the tool sleeps longer than
@@ -149,9 +144,7 @@ fn a_second_rename_replaces_the_job_the_first_one_started() {
 		std::thread::sleep(Duration::from_millis(50));
 	}
 
-	let before = support::observed(&state);
 	fs::rename(photos.join("photo.png"), photos.join("photo.jpg")).unwrap();
-	support::observe(&state, before);
 
 	let deadline = Instant::now() + Duration::from_secs(30);
 	let journal = loop {

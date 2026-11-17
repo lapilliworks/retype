@@ -9,7 +9,7 @@
 //! Conversions are submitted to the runner pool, so a slow job does not hold the
 //! event thread. The queue is what makes them cancellable and concurrent.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,7 +21,7 @@ use retype_core::error::Code;
 use retype_core::execute::Cancellation;
 use retype_core::job::{Job, JobError, JobId, JobState, Output, OutputState, Source, now_ms};
 use retype_core::journal::Journal;
-use retype_core::plan::{self, Plan};
+use retype_core::plan::Plan;
 use retype_core::registry::Registry;
 use retype_core::resolve::{self, Resolved, Source as Origin};
 use retype_core::{execute, intent, print, watches};
@@ -66,8 +66,13 @@ pub struct Shared {
 	/// the file may be renamed again before then, and asking the filesystem later
 	/// would find nothing to record.
 	pub own_renames: Mutex<Vec<retype_core::correlate::Sighting>>,
+	/// Serializes parked-job decisions, timer admission and cancellation.
+	pub(crate) parked_admission: Mutex<()>,
 	/// What clients replay from, `docs/dev/architecture/ipc.md` §7.
 	pub events: Mutex<crate::daemon::events::Events>,
+	/// Installed watcher state, distinct from the persisted registrations.
+	pub(crate) watch_health: crate::daemon::watch_health::WatchHealth,
+	pub(crate) session: Mutex<super::session::State>,
 	/// Each directory's `.retype.toml`, read once per change rather than once per file,
 	/// `docs/config.md` §12.
 	pub policies: retype_core::policy::Cache,
@@ -116,6 +121,12 @@ impl Recent {
 }
 
 impl Shared {
+	pub(crate) fn lock_parked_admission(&self) -> retype_core::error::Result<std::sync::MutexGuard<'_, ()>> {
+		self.parked_admission
+			.lock()
+			.map_err(|_| retype_core::error::Error::Io(std::io::Error::other("parked admission lock poisoned")))
+	}
+
 	/// Note a path this process moved itself, for the watcher to record.
 	pub fn note_own_rename(&self, path: &Path) {
 		let Some(sighting) = retype_core::correlate::Sighting::of(path) else {
@@ -198,7 +209,15 @@ pub fn start(shared: Arc<Shared>, pool: Arc<Pool>, state_dir: &Path) -> Result<O
 		let stop = Arc::clone(&stop);
 		let state_dir = state_dir.to_path_buf();
 
-		thread::spawn(move || supervise(&shared, &pool, &state_dir, &stop, ready))
+		thread::spawn(move || {
+			let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+				supervise(&shared, &pool, &state_dir, &stop, ready);
+			}));
+			if result.is_err() {
+				eprintln!("retype: watcher supervisor stopped unexpectedly");
+				shared.watch_health.supervisor_failed();
+			}
+		})
 	};
 
 	// A daemon a client can reach has to be watching already. macOS reports only
@@ -225,70 +244,44 @@ fn supervise(
 	ready: std::sync::mpsc::Sender<()>,
 ) {
 	// One worker per root, keyed by the canonical path the registration holds.
-	let mut workers: BTreeMap<PathBuf, (Arc<AtomicBool>, JoinHandle<()>)> = BTreeMap::new();
-	// A missing path is retried on a slow clock so a deleted directory does not
-	// fill the daemon log every second, `docs/watch.md` §1.
-	let mut retry: BTreeMap<PathBuf, Instant> = BTreeMap::new();
+	let mut workers: BTreeMap<PathBuf, WorkerEntry> = BTreeMap::new();
 	let mut config_stamp = config_stamp();
 
 	while !stop.load(Ordering::Relaxed) {
 		reload_config(shared, &mut config_stamp);
+		let watching = {
+			let login = super::session::query();
+			let mut session = shared.session.lock().unwrap();
+			session.update(login, super::supervision::supervisor().is_some());
+			pool.set_automatic(session.queued);
+			session.watching
+		};
+		if !watching {
+			shared.watch_health.clear_roots();
+			stop_workers(&mut workers);
+			let _ = ready.send(());
+			thread::sleep(RELOAD);
+			continue;
+		}
 
 		let wanted = match watches::load(state_dir) {
-			Ok(registrations) => registrations,
+			Ok(registrations) => {
+				shared.watch_health.set_registry_error(None);
+				registrations
+			}
 			Err(error) => {
-				eprintln!("retype: cannot read watch registrations: {error}");
-				// Nothing can be watched, but the daemon still has to become reachable
-				// and report the error.
+				let message = format!("cannot read watch registrations: {error}");
+				eprintln!("retype: {message}");
+				shared.watch_health.set_registry_error(Some(message));
+				shared.watch_health.clear_roots();
+				stop_workers(&mut workers);
 				let _ = ready.send(());
 				thread::sleep(RELOAD);
 				continue;
 			}
 		};
 
-		// Stop what is no longer registered, paused, or whose path vanished. A
-		// paused registration is state, and a policy-paused directory is handled
-		// when a fact arrives, `docs/watch.md` §8.
-		let keep: BTreeSet<PathBuf> = wanted
-			.iter()
-			.filter(|registration| !registration.paused && registration.path.exists())
-			.map(|registration| registration.path.clone())
-			.collect();
-
-		let stale: Vec<PathBuf> = workers.keys().filter(|root| !keep.contains(*root)).cloned().collect();
-
-		for root in stale {
-			if let Some((worker_stop, handle)) = workers.remove(&root) {
-				worker_stop.store(true, Ordering::Relaxed);
-				let _ = handle.join();
-			}
-		}
-
-		for registration in wanted {
-			if registration.paused || workers.contains_key(&registration.path) {
-				continue;
-			}
-
-			if retry.get(&registration.path).is_some_and(|at| *at > Instant::now()) {
-				continue;
-			}
-
-			match spawn_worker(
-				Arc::clone(shared),
-				Arc::clone(pool),
-				&registration.path,
-				registration.recursive,
-			) {
-				Ok((worker_stop, handle)) => {
-					retry.remove(&registration.path);
-					workers.insert(registration.path.clone(), (worker_stop, handle));
-				}
-				Err(error) => {
-					eprintln!("retype: cannot watch {}: {error}", registration.path.display());
-					retry.insert(registration.path.clone(), Instant::now() + Duration::from_secs(30));
-				}
-			}
-		}
+		refresh_workers(shared, pool, wanted, &mut workers);
 
 		// Everything registered by now has a live watcher, so the daemon may say it
 		// is ready. Later rounds have nobody waiting, and the send is ignored.
@@ -297,9 +290,145 @@ fn supervise(
 		thread::sleep(RELOAD);
 	}
 
-	for (_, (worker_stop, handle)) in workers {
-		worker_stop.store(true, Ordering::Relaxed);
-		let _ = handle.join();
+	shared.watch_health.clear_roots();
+	stop_workers(&mut workers);
+}
+
+enum WorkerEntry {
+	Running(Worker),
+	RetryAt(Instant),
+}
+
+struct WorkerStop(Arc<AtomicBool>);
+
+struct Worker {
+	stop: WorkerStop,
+	handle: JoinHandle<()>,
+	health: Arc<super::watch_health::Root>,
+}
+
+impl Worker {
+	fn matches(&self, root: &Path, recursive: bool) -> bool {
+		self.health.recursive == recursive
+			&& self.health.identity.is_none_or(|identity| {
+				retype_core::correlate::Identity::of(root).is_some_and(|current| current == identity)
+			})
+	}
+
+	fn is_finished(&self) -> bool {
+		self.handle.is_finished()
+	}
+
+	fn stop(self) {
+		self.stop.0.store(true, Ordering::Relaxed);
+		let _ = self.handle.join();
+	}
+}
+
+impl Drop for WorkerStop {
+	fn drop(&mut self) {
+		self.0.store(true, Ordering::Relaxed);
+	}
+}
+
+fn stop_workers(workers: &mut BTreeMap<PathBuf, WorkerEntry>) {
+	for (_, entry) in std::mem::take(workers) {
+		if let WorkerEntry::Running(worker) = entry {
+			worker.stop();
+		}
+	}
+}
+
+fn refresh_workers(
+	shared: &Arc<Shared>,
+	pool: &Arc<Pool>,
+	registrations: Vec<watches::Registration>,
+	workers: &mut BTreeMap<PathBuf, WorkerEntry>,
+) {
+	let wanted: BTreeMap<PathBuf, bool> = registrations
+		.into_iter()
+		.filter(|registration| {
+			!registration.paused
+				&& registration.path.is_dir()
+				&& retype_core::policy::Policy::open(&registration.path).is_ok_and(|policy| !policy.paused)
+		})
+		.map(|registration| (registration.path, registration.recursive))
+		.collect();
+
+	let stale: Vec<(PathBuf, bool)> = workers
+		.iter()
+		.filter_map(|(path, entry)| {
+			let WorkerEntry::Running(worker) = entry else {
+				return None;
+			};
+			let matches = wanted
+				.get(path)
+				.is_some_and(|recursive| worker.matches(path, *recursive));
+			let finished = worker.is_finished();
+			(!matches || finished).then(|| (path.clone(), matches && finished))
+		})
+		.collect();
+
+	for (path, unexpected) in stale {
+		let WorkerEntry::Running(worker) = workers.remove(&path).expect("stale worker exists") else {
+			unreachable!("only running workers are stale");
+		};
+		let health = Arc::clone(&worker.health);
+		if !unexpected {
+			health.stopping();
+		}
+		worker.stop();
+		if unexpected {
+			if !matches!(health.phase(), super::watch_health::Phase::Failed(_)) {
+				health.fail("the watcher stopped unexpectedly");
+			}
+			shared.watch_health.set_root(&path, health);
+			workers.insert(path, WorkerEntry::RetryAt(Instant::now() + Duration::from_secs(30)));
+		} else {
+			shared.watch_health.remove_root(&path);
+		}
+	}
+
+	shared.watch_health.retain_roots(&wanted);
+	workers.retain(|path, _| wanted.contains_key(path));
+	for (path, recursive) in wanted {
+		match workers.get(&path) {
+			Some(WorkerEntry::Running(_)) => continue,
+			Some(WorkerEntry::RetryAt(at)) if *at > Instant::now() => continue,
+			_ => start_worker(shared, pool, &path, recursive, workers),
+		}
+	}
+}
+
+fn start_worker(
+	shared: &Arc<Shared>,
+	pool: &Arc<Pool>,
+	path: &Path,
+	recursive: bool,
+	workers: &mut BTreeMap<PathBuf, WorkerEntry>,
+) {
+	let identity = retype_core::correlate::Identity::of(path);
+	let health = Arc::new(super::watch_health::Root::new(recursive, identity));
+	shared.watch_health.set_root(path, Arc::clone(&health));
+	match spawn_worker(
+		Arc::clone(shared),
+		Arc::clone(pool),
+		path,
+		recursive,
+		Arc::clone(&health),
+	) {
+		Ok(worker) => {
+			workers.insert(path.to_path_buf(), WorkerEntry::Running(worker));
+		}
+		Err(error) => {
+			let message = format!("cannot install watcher: {error}");
+			eprintln!("retype: {}: {message}", path.display());
+			health.fail(message);
+			workers.insert(
+				path.to_path_buf(),
+				WorkerEntry::RetryAt(Instant::now() + Duration::from_secs(30)),
+			);
+		}
 	}
 }
 
@@ -347,12 +476,19 @@ fn spawn_worker(
 	pool: Arc<Pool>,
 	root: &Path,
 	recursive: bool,
-) -> std::result::Result<(Arc<AtomicBool>, JoinHandle<()>), retype_watch::notify::Error> {
+	health: Arc<super::watch_health::Root>,
+) -> std::result::Result<Worker, retype_watch::notify::Error> {
 	let (watcher, receiver) = retype_watch::watch_mode(root, recursive)?;
+	if health.identity.is_some() && health.identity != retype_core::correlate::Identity::of(root) {
+		return Err(retype_watch::notify::Error::generic(
+			"directory changed while its watcher was starting",
+		));
+	}
 	let stop = Arc::new(AtomicBool::new(false));
 	let window = Window::default();
 	let watched_root = root.to_path_buf();
 	let worker_stop = Arc::clone(&stop);
+	let worker_health = Arc::clone(&health);
 	// Event paths are resolved, so a filter on the state directory has to be too:
 	// macOS reports `/private/var` for a path written as `/var`, and a comparison
 	// against the unresolved form matches nothing.
@@ -369,7 +505,7 @@ fn spawn_worker(
 		// daemon started has no identity otherwise, and on macOS identity is the
 		// only correlation mechanism, `docs/watch.md` §3 and `docs/dev/measurement/events.md` §3.
 		let registry = shared.registry();
-		let primed = retype_watch::prime(
+		let primed = retype_watch::prime_checked(
 			&mut correlator,
 			&watched_root,
 			recursive,
@@ -380,8 +516,22 @@ fn spawn_worker(
 			},
 			|| worker_stop.load(Ordering::Relaxed),
 		);
-		shared.primed.fetch_add(primed as u64, Ordering::Relaxed);
-		crate::verbose::note(format!("primed {primed} file(s) under {}", watched_root.display()));
+		shared.primed.fetch_add(primed.primed as u64, Ordering::Relaxed);
+		if worker_stop.load(Ordering::Relaxed) {
+			return;
+		}
+		if let Some(error) = primed.error {
+			let message = format!("initial scan incomplete: {error}");
+			eprintln!("retype: {}: {message}", watched_root.display());
+			worker_health.fail(message);
+			return;
+		}
+		worker_health.ready();
+		crate::verbose::note(format!(
+			"primed {} file(s) under {}",
+			primed.primed,
+			watched_root.display()
+		));
 		// Renames waiting out a directory's own debounce, by directory.
 		let mut held: std::collections::BTreeMap<PathBuf, Held> = std::collections::BTreeMap::new();
 
@@ -391,6 +541,15 @@ fn spawn_worker(
 			release(&shared, &pool, &watched_root, &mut held);
 
 			let batch = retype_watch::collect(&receiver, less_than(&held, window));
+			if worker_stop.load(Ordering::Relaxed) {
+				break;
+			}
+			if batch.disconnected {
+				let message = "the filesystem event stream disconnected";
+				eprintln!("retype: {}: {message}", watched_root.display());
+				worker_health.fail(message);
+				break;
+			}
 
 			// State is not part of the watched tree even when the tree contains it, and the
 			// undo record it holds is a hard link to a file the user may rename.
@@ -437,6 +596,7 @@ fn spawn_worker(
 			// instead, and identity correlation names what moved while nothing was watching,
 			// `docs/dev/measurement/events.md` §3.
 			if retype_watch::needs_rescan(&batch) {
+				worker_health.degraded("filesystem events were lost; a rescan may not recover every rename");
 				for error in &batch.errors {
 					eprintln!("retype: {}: watching: {error}", watched_root.display());
 				}
@@ -521,7 +681,11 @@ fn spawn_worker(
 		crate::verbose::detail(format!("stopped watching {}", watched_root.display()));
 	});
 
-	Ok((stop, handle))
+	Ok(Worker {
+		stop: WorkerStop(stop),
+		handle,
+		health,
+	})
 }
 
 /// One fact from a batch or from a rescan: honour the directory's debounce, or decide.
@@ -550,7 +714,12 @@ fn dispatch(
 	let wait = Duration::from_millis(debounce);
 
 	if wait > window.first_wait {
-		held.entry(directory.to_path_buf()).or_default().hold(fact, wait);
+		match held.entry(directory.to_path_buf()) {
+			std::collections::btree_map::Entry::Vacant(entry) => {
+				entry.insert(Held::new(fact, wait));
+			}
+			std::collections::btree_map::Entry::Occupied(mut entry) => entry.get_mut().hold(fact, wait),
+		}
 		return;
 	}
 
@@ -632,6 +801,17 @@ fn decide(
 		return;
 	};
 
+	let admission = match shared.lock_parked_admission() {
+		Ok(guard) => guard,
+		Err(error) => {
+			eprintln!(
+				"retype: cannot decide the rename to {}: {error}; check the file before retrying",
+				fact.target.display()
+			);
+			return;
+		}
+	};
+
 	// A rename chain that spans two batches: the file being renamed is
 	// what an earlier job is writing, so the earlier job is spent and the
 	// chain becomes one conversion, `docs/dev/architecture/state.md` §5.3.
@@ -653,15 +833,24 @@ fn decide(
 		false => supersede(shared, pool, &earlier),
 	};
 
+	// A later rename replaces a parked job for the same file. The same lock
+	// prevents a timer from queueing that job between the lookup and this update.
+	if let Err(error) = crate::daemon::park::superseded(shared, &source, &admission) {
+		eprintln!(
+			"retype: cannot replace a parked job for {}: {error}; check {} before retrying",
+			source.display(),
+			fact.target.display()
+		);
+		return;
+	}
+	drop(admission);
+
 	// Registered before anything is published, because the first thing
 	// published may be the last thing this batch does: a parked job settles
 	// immediately.
 	if let Some(batch) = parked_batch {
 		shared.batches.open(batch, &id);
 	}
-
-	// A later rename replaces a parked job for the same file.
-	crate::daemon::park::superseded(shared, &source);
 
 	match crate::daemon::park::decide(
 		shared,
@@ -685,38 +874,175 @@ fn decide(
 		}
 	}
 
+	admit_rename(shared, pool, watched_root, &source, &fact.target, &id, parked_batch);
+}
+
+fn admit_rename(
+	shared: &Shared,
+	pool: &Pool,
+	root: &Path,
+	source: &Path,
+	target: &Path,
+	id: &JobId,
+	batch: Option<&str>,
+) {
+	if let Err(error) = restore_queued_source(shared, source, target) {
+		forget_batch(shared, batch, id);
+		eprintln!("retype: cannot restore {} before admission: {error}", target.display());
+		return;
+	}
+
+	let Some(prepared) = prepare(shared, root, source, target) else {
+		forget_batch(shared, batch, id);
+		return;
+	};
+	let job = match queued_rename(shared, source, target, id, &prepared) {
+		Ok(job) => job,
+		Err(error) => {
+			forget_batch(shared, batch, id);
+			eprintln!("retype: cannot prepare {} for admission: {error}", source.display());
+			return;
+		}
+	};
 	let work = crate::daemon::queue::Work {
-		id,
-		kind: crate::daemon::queue::Kind::Rename {
-			root: watched_root.to_path_buf(),
-			bytes: fact.target.clone(),
-			source,
-			target: fact.target,
+		id: id.clone(),
+		kind: crate::daemon::queue::Kind::Deferred {
+			root: root.to_path_buf(),
+			source: source.to_path_buf(),
+			intent: job.intent.clone().expect("a queued rename has an intent"),
+			force: false,
 		},
 	};
 
-	if !pool.submit(work) {
-		shared.dropped.fetch_add(1, Ordering::Relaxed);
-		eprintln!(
-			"retype: conversion is paused for {}: {} jobs are waiting",
-			watched_root.display(),
-			crate::daemon::queue::CAPACITY
-		);
+	match pool.submit_after(work, || publish_checked(shared, &job)) {
+		Ok(true) => {}
+		Ok(false) => {
+			forget_batch(shared, batch, id);
+			shared.dropped.fetch_add(1, Ordering::Relaxed);
+			eprintln!(
+				"retype: cannot queue {}: the queue is full or closed; the source was restored to {}",
+				target.display(),
+				source.display()
+			);
+		}
+		Err(error) => {
+			forget_batch(shared, batch, id);
+			eprintln!(
+				"retype: job {id} did not start because admission could not be recorded: {error}; \
+				 its outcome after restart is uncertain, so check the job before retrying"
+			);
+		}
 	}
 }
 
+fn forget_batch(shared: &Shared, batch: Option<&str>, id: &JobId) {
+	if let Some(batch) = batch {
+		shared.batches.forget(batch, id);
+	}
+}
+
+/// Restore the exact source name before accepting a queued rename.
+pub(super) fn restore_queued_source(shared: &Shared, source: &Path, target: &Path) -> retype_core::error::Result<()> {
+	let metadata = std::fs::symlink_metadata(target)?;
+	if !metadata.file_type().is_file() {
+		return Err(std::io::Error::other("the renamed input is not a regular file").into());
+	}
+	let expected = retype_core::job::FileIdentity::of(target)
+		.ok_or_else(|| std::io::Error::other("cannot identify the renamed input"))?;
+	retype_core::fsx::rename_noreplace(target, source)?;
+	shared.recent.note(source, target);
+	shared.note_own_rename(source);
+	let is_regular = std::fs::symlink_metadata(source).is_ok_and(|metadata| metadata.file_type().is_file());
+	let matches = retype_core::job::FileIdentity::of(source).is_some_and(|identity| expected.matches(&identity));
+	if !is_regular || !matches {
+		match retype_core::fsx::rename_noreplace(source, target) {
+			Ok(()) => {
+				shared.recent.note(target, source);
+				shared.note_own_rename(target);
+			}
+			Err(error) => eprintln!(
+				"retype: cannot restore {} after an input changed: {error}",
+				target.display()
+			),
+		}
+		return Err(std::io::Error::other("the renamed input changed during restoration").into());
+	}
+	retype_core::fsx::sync_file(source)?;
+	retype_core::fsx::sync_directory(source.parent().unwrap_or(Path::new(".")))?;
+	Ok(())
+}
+
+fn queued_rename(
+	shared: &Shared,
+	source: &Path,
+	target: &Path,
+	id: &JobId,
+	prepared: &Prepared,
+) -> retype_core::error::Result<Job> {
+	let metadata = std::fs::metadata(source)?;
+	let mtime_ns = metadata
+		.modified()
+		.ok()
+		.and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+		.and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
+		.unwrap_or_default();
+	let source_name = source
+		.file_name()
+		.and_then(|name| name.to_str())
+		.unwrap_or(&prepared.stem);
+	let derived = retype_core::output::derive_with_source_name(&prepared.stem, source_name, &prepared.resolved.groups);
+	let outputs = prepared
+		.plans
+		.iter()
+		.map(|plan| {
+			let output = derived
+				.iter()
+				.find(|output| output.group == plan.group)
+				.expect("plan has an output");
+			let mut pending = Output::pending(
+				target.parent().unwrap_or(Path::new("")).join(&output.path),
+				&plan.format,
+				plan.tier,
+			);
+			pending.fidelity = plan.fidelity.clone();
+			pending
+		})
+		.collect();
+	let mut job = settled(
+		shared,
+		id,
+		now_ms(),
+		source,
+		&prepared.format,
+		&prepared.resolved,
+		&prepared.plans,
+		outputs,
+		JobState::Queued,
+	);
+	job.source.size = metadata.len();
+	job.source.mtime_ns = mtime_ns;
+	job.source.fingerprint = Some(retype_core::safety::Fingerprint::of(source)?);
+	Ok(job)
+}
+
 /// Facts held for a directory that asked for more settled time.
-#[derive(Default)]
 struct Held {
 	facts: Vec<retype_core::correlate::RenameFact>,
-	due: Option<std::time::Instant>,
+	due: Instant,
 }
 
 impl Held {
+	fn new(fact: retype_core::correlate::RenameFact, wait: Duration) -> Self {
+		Self {
+			facts: vec![fact],
+			due: Instant::now() + wait,
+		}
+	}
+
 	fn hold(&mut self, fact: retype_core::correlate::RenameFact, wait: std::time::Duration) {
 		self.facts.push(fact);
 		// The clock restarts on every event: settling means quiet.
-		self.due = Some(std::time::Instant::now() + wait);
+		self.due = Instant::now() + wait;
 	}
 }
 
@@ -730,7 +1056,7 @@ fn release(shared: &Shared, pool: &Pool, watched_root: &Path, held: &mut std::co
 
 	let due: Vec<PathBuf> = held
 		.iter()
-		.filter(|(_, held)| held.due.is_some_and(|due| due <= now))
+		.filter(|(_, held)| held.due <= now)
 		.map(|(directory, _)| directory.clone())
 		.collect();
 
@@ -750,7 +1076,7 @@ fn release(shared: &Shared, pool: &Pool, watched_root: &Path, held: &mut std::co
 /// The window to collect with, shortened so a held directory is not waited on past its
 /// own deadline.
 fn less_than(held: &std::collections::BTreeMap<PathBuf, Held>, window: Window) -> Window {
-	let soonest = held.values().filter_map(|held| held.due).min();
+	let soonest = held.values().map(|held| held.due).min();
 
 	let Some(due) = soonest else {
 		return window;
@@ -774,11 +1100,10 @@ fn less_than(held: &std::collections::BTreeMap<PathBuf, Held>, window: Window) -
 /// source name again, because that is the name its bytes belong under,
 /// `docs/dev/architecture/state.md` §5.4.
 fn producers(shared: &Shared, pool: &Pool, path: &Path) -> Vec<Job> {
+	let in_flight = pool.ids();
 	let Ok(jobs) = shared.jobs.lock() else {
 		return Vec::new();
 	};
-
-	let in_flight = pool.ids();
 
 	jobs.iter()
 		.filter(|job| {
@@ -821,6 +1146,21 @@ fn retire(shared: &Shared, work: &crate::daemon::queue::Work, state: JobState) {
 		Kind::Rename { source, target, .. } => (source.clone(), target.clone(), true),
 		Kind::Immediate(request) => (request.input.clone(), request.input.clone(), false),
 		Kind::Deferred { source, .. } => (source.clone(), source.clone(), true),
+		Kind::Resume { job, .. } => {
+			let mut job = job.as_ref().clone();
+			job.set_state(state);
+			for output in &mut job.outputs {
+				if output.state != OutputState::Done {
+					output.state = OutputState::Skipped;
+				}
+			}
+			job.error = Some(JobError::new(
+				Code::JobSuperseded.to_string(),
+				"resume replaced by a later rename",
+			));
+			publish(shared, &job);
+			return;
+		}
 	};
 
 	let mut job = Job {
@@ -832,6 +1172,7 @@ fn retire(shared: &Shared, work: &crate::daemon::queue::Work, state: JobState) {
 			format: String::new(),
 			size: 0,
 			mtime_ns: 0,
+			fingerprint: carried_fingerprint(shared, &work.id),
 		},
 		intent: None,
 		outputs: vec![Output::pending(
@@ -849,6 +1190,8 @@ fn retire(shared: &Shared, work: &crate::daemon::queue::Work, state: JobState) {
 			message: "replaced by a later rename before it started".to_string(),
 		}),
 		parked: None,
+		source_disposition: None,
+		admission: None,
 	};
 
 	job.outputs[0].state = OutputState::Skipped;
@@ -983,7 +1326,7 @@ fn build(
 		}
 	};
 
-	let plans = match plan::compile(&registry, &retype_core::tools::Machine, &resolved) {
+	let plans = match crate::fidelity::plans(&registry, &retype_core::tools::Machine, &resolved, &shared.state_dir) {
 		Ok(plans) => plans,
 		Err(problems) => {
 			eprintln!("retype: {}: {problems}", reported.display());
@@ -1034,31 +1377,22 @@ fn run(
 	let now = now_ms();
 	let mut outputs = Vec::new();
 
-	running(shared, &id, source, &format, target, &resolved);
+	let started = running(shared, &id, source, &format, target, &resolved);
+	if let Err(error) = publish_checked(shared, &started) {
+		report_unrecorded_failure(shared, &started, &error);
+		return;
+	}
 
 	// The rename names the request; the file is called what the tokens say, the
 	// same way `convert` derives its paths.
-	let derived = retype_core::output::derive(&stem, &format, &resolved.groups);
+	let source_name = source.file_name().and_then(|name| name.to_str()).unwrap_or(&stem);
+	let derived = retype_core::output::derive_with_source_name(&stem, source_name, &resolved.groups);
 
 	let store = retype_core::undo::Store::open(&shared.state_dir);
 	let lease = match store.lease(&id) {
 		Ok(lease) => lease,
 		Err(error) => {
-			eprintln!("retype: cannot acquire job ownership: {error}");
-			publish(
-				shared,
-				&settled(
-					shared,
-					&id,
-					now,
-					source,
-					&format,
-					&resolved,
-					&plans,
-					outputs,
-					JobState::Failed,
-				),
-			);
+			fail_before_conversion(shared, &started, "cannot acquire job ownership", &error);
 			return;
 		}
 	};
@@ -1120,26 +1454,18 @@ fn run(
 	let snapshot = match retype_core::safety::Snapshot::open(&read_from) {
 		Ok(snapshot) => snapshot,
 		Err(error) => {
-			eprintln!("retype: cannot snapshot {}: {error}", read_from.display());
-			publish(
-				shared,
-				&settled(
-					shared,
-					&id,
-					now,
-					source,
-					&format,
-					&resolved,
-					&plans,
-					outputs,
-					JobState::Failed,
-				),
-			);
+			fail_before_conversion(shared, &started, "cannot create input snapshot", &error);
 			return;
 		}
 	};
+	if let Err(error) = super::park::verify_input(&started, &snapshot.original) {
+		let mut failed = started.clone();
+		failed.fail(JobError::new(error.code().to_string(), error.to_string()));
+		publish(shared, &failed);
+		return;
+	}
 	let registry = shared.registry();
-	let undo = store.save_with_policy(
+	let undo = store.save_with_policy_cancellable(
 		retype_core::undo::Subject {
 			id: id.clone(),
 			intent: print::intent(&resolved, &registry),
@@ -1147,7 +1473,7 @@ fn run(
 			bytes: read_from.clone(),
 			source_path: source.to_path_buf(),
 			source_ext: format.clone(),
-			consume_source: true,
+			consume_source: super::disposition::consumes_source(&resolved) || input_is_temporary,
 			outputs: derived
 				.iter()
 				.filter(|output| !output.keep_source)
@@ -1158,8 +1484,9 @@ fn run(
 				.collect(),
 		},
 		registry.undo(),
+		cancellation,
 	);
-	let has_backup = match &undo {
+	let retained_record = match undo {
 		Ok(Some(record)) => {
 			if record.source_fingerprint.as_ref() != Some(&snapshot.original) {
 				eprintln!("retype: input changed while its recovery copy was being prepared; source retained");
@@ -1179,15 +1506,45 @@ fn run(
 				);
 				return;
 			}
-			true
+			Some(record)
 		}
-		Ok(None) => false,
+		Ok(None) => None,
+		Err(error) if error.code() == Code::UndoLimit => {
+			park_storage(
+				shared,
+				started,
+				snapshot.original.clone(),
+				true,
+				force,
+				&error,
+				cancellation,
+			);
+			return;
+		}
+		Err(error) if cancellation.is_cancelled() => {
+			let mut cancelled = started;
+			cancelled.set_state(JobState::Cancelled);
+			cancelled.error = Some(JobError::new(
+				error.code().to_string(),
+				"cancelled during backup; incomplete recovery remains protected",
+			));
+			publish(shared, &cancelled);
+			return;
+		}
 		Err(error) => {
-			eprintln!("retype: source retained because undo could not be saved: {error}");
-			false
+			fail_before_conversion(shared, &started, "cannot save undo record", &error);
+			return;
 		}
 	};
-	let mut all_validated = true;
+	let recovery = match store.retain(lease, retained_record) {
+		Ok(recovery) => recovery,
+		Err(error) => {
+			fail_before_conversion(shared, &started, "cannot bind recovery ownership", &error);
+			return;
+		}
+	};
+	let mut validation_failure = None;
+	let mut output_gate = super::transaction::OutputGate::default();
 	let checkpoint = settled(
 		shared,
 		&id,
@@ -1207,6 +1564,10 @@ fn run(
 		};
 
 		let output = target.parent().unwrap_or(Path::new("")).join(&derived.path);
+		if let Some(reason) = output_gate.skipped() {
+			outputs.push(record(&output, plan, OutputState::Skipped, None, None, Some(reason)));
+			continue;
+		}
 
 		// A file that was not this job's source is not overwritten by a rename. The
 		// rename target itself is the source bytes under their new name, so that one
@@ -1243,11 +1604,13 @@ fn run(
 			job: &checkpoint,
 			original: &read_from,
 			completed: &outputs,
-			store: has_backup.then_some(&store),
+			recovery: recovery.retained(),
 		};
 		match transaction.run(plan, &snapshot.path, &output, cancellation, publication) {
 			Ok(report) => {
-				all_validated &= report.validated;
+				if let Some(reason) = report.validation.reason() {
+					validation_failure.get_or_insert_with(|| reason.to_string());
+				}
 				outputs.push(record(
 					&output,
 					plan,
@@ -1261,6 +1624,7 @@ fn run(
 				));
 			}
 			Err(error) => {
+				output_gate.observe(&error);
 				// A superseded job did not fail: the work was overtaken, so its output
 				// is skipped rather than failed, `docs/dev/architecture/state.md` §5.3.
 				// The code the failure came with, not a generic one: an archive that
@@ -1284,8 +1648,7 @@ fn run(
 		}
 	}
 
-	// A cancelled job is its own outcome: nothing was converted and nothing is
-	// wrong with the file, `docs/dev/architecture/state.md` §4.
+	// Cancellation stops remaining work but keeps any outputs already completed.
 	let cancelled = cancellation.is_cancelled()
 		|| outputs.iter().any(|output| {
 			output
@@ -1305,59 +1668,42 @@ fn run(
 		(false, false) => JobState::Failed,
 	};
 
-	let output_count = outputs.len();
-	let job = settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state);
-	if state == JobState::Done && !all_validated {
-		eprintln!("retype: original retained: the backend has no complete independent output validator");
-	}
-	let can_dispose = state == JobState::Done
-		&& !plans.is_empty()
-		&& output_count == plans.len()
-		&& all_validated
-		&& has_backup
-		&& !resolved.groups.iter().any(|group| group.keep_source);
-	if let Err(error) = persist(shared, &job) {
-		eprintln!("retype: original retained because completion could not be persisted: {error}");
-		return;
-	}
-	let mut disposed = false;
-	if can_dispose {
-		match cancellation.commit(|| {
-			store.verify_disposal(&id)?;
-			retype_core::safety::remove_owned(&read_from, &snapshot.original)
-		}) {
-			Ok(()) => disposed = true,
-			Err(error) => eprintln!("retype: source retained or preserved for recovery: {error}"),
+	let mut job = settled(shared, &id, now, source, &format, &resolved, &plans, outputs, state);
+	if state == JobState::Done {
+		let source = if input_is_temporary {
+			super::disposition::Source::Displaced { target }
+		} else {
+			super::disposition::Source::Live {
+				path: &read_from,
+				fingerprint: &snapshot.original,
+			}
+		};
+		let completion = super::disposition::Completion {
+			source,
+			recovery,
+			requested_outputs: plans.len(),
+			validation_failure: validation_failure.as_deref(),
+		};
+		job = match super::disposition::finish_done(shared, job, completion, cancellation) {
+			Ok(recorded) => recorded.into_job(),
+			Err(failure) => {
+				report_unrecorded_completion(shared, &failure.job, &failure.error);
+				return;
+			}
+		};
+	} else {
+		if let Err(error) = persist(shared, &job) {
+			report_unrecorded_completion(shared, &job, &error);
+			return;
+		}
+		if state == JobState::Cancelled {
+			super::cancel::finish_after_persist(shared, Ok(recovery), &mut job);
+		} else {
+			drop(recovery);
 		}
 	}
-	if has_backup && state == JobState::Done {
-		/* A failed or ambiguous disposal can leave the original only in the backup.
-		 * Keep that backup pinned until the live source is proven intact. */
-		let retained = disposed || source_holds_original(&snapshot.original, &read_from, target, input_is_temporary);
-		if !retained {
-			eprintln!("retype: undo record remains pinned: the source was not verified after disposal failed");
-		} else if let Err(error) = store.finish(&id) {
-			eprintln!("retype: undo record remains pinned: {error}");
-		}
-	}
-	drop(lease);
 	publish_persisted(shared, &job);
 	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
-}
-
-/// Whether the live source, or the occupied target that held it, still matches the
-/// snapshot the conversion used.
-fn source_holds_original(
-	original: &retype_core::safety::Fingerprint,
-	read_from: &Path,
-	target: &Path,
-	input_is_temporary: bool,
-) -> bool {
-	if !original.matches(read_from).unwrap_or(false) {
-		return false;
-	}
-
-	!input_is_temporary || original.matches(target).unwrap_or(false)
 }
 
 /// A job's last word, whether it got as far as an output or not.
@@ -1385,6 +1731,7 @@ fn settled(
 			format: format.to_string(),
 			size: 0,
 			mtime_ns: 0,
+			fingerprint: carried_fingerprint(shared, id),
 		},
 		intent: Some(print::intent(resolved, &shared.registry())),
 		outputs,
@@ -1397,8 +1744,74 @@ fn settled(
 		machine: shared.machine.clone(),
 		error: None,
 		parked: carried(shared, id),
-		consume_source: true,
+		consume_source: super::disposition::consumes_source(resolved),
+		source_disposition: None,
+		admission: None,
 	}
+}
+
+pub(super) fn park_storage(
+	shared: &Shared,
+	mut job: Job,
+	fingerprint: retype_core::safety::Fingerprint,
+	consume: bool,
+	force: bool,
+	error: &retype_core::error::Error,
+	cancellation: &Cancellation,
+) {
+	job.set_state(JobState::NeedsAttention);
+	job.source.size = fingerprint.bytes;
+	job.source.fingerprint = Some(fingerprint.clone());
+	job.error = Some(JobError::new(error.code().to_string(), error.to_string()));
+	job.parked = Some(retype_core::job::Parked {
+		reason: "storage".to_string(),
+		deadline: None,
+		batch: None,
+		estimate: None,
+		requested: job.intent.clone(),
+		corrected: None,
+		dropped: Vec::new(),
+		consume,
+		force,
+		input_fingerprint: Some(fingerprint),
+	});
+	if let Err(error) = publish_parked(shared, &mut job, cancellation) {
+		report_unrecorded_failure(shared, &job, &error);
+	}
+}
+
+/// Serialize a worker's park with cancellation and timer/client admission.
+pub(super) fn publish_parked(
+	shared: &Shared,
+	job: &mut Job,
+	cancellation: &Cancellation,
+) -> retype_core::error::Result<()> {
+	let _guard = shared.lock_parked_admission()?;
+	if cancellation.is_cancelled() {
+		job.set_state(if cancellation.is_superseded() {
+			JobState::Superseded
+		} else {
+			JobState::Cancelled
+		});
+		job.error = Some(JobError::new(
+			Code::JobCancelled.to_string(),
+			"cancelled before waiting for a decision",
+		));
+	}
+	publish_checked(shared, job)
+}
+
+/// Carry the admitted input identity through later running and terminal snapshots.
+pub(super) fn carried_fingerprint(shared: &Shared, id: &JobId) -> Option<retype_core::safety::Fingerprint> {
+	shared
+		.jobs
+		.lock()
+		.ok()?
+		.iter()
+		.find(|job| job.id == *id)?
+		.source
+		.fingerprint
+		.clone()
 }
 
 /// The reason a job waited, for the record that follows it: a job that was parked or
@@ -1444,9 +1857,79 @@ pub fn persist(shared: &Shared, job: &Job) -> retype_core::error::Result<()> {
 }
 
 /// Journal and register a snapshot before IPC readers or events can observe it.
+pub fn publish_checked(shared: &Shared, job: &Job) -> retype_core::error::Result<()> {
+	record_job(shared, job, || persist(shared, job))
+}
+
+/// Report publication failures for transitions whose caller cannot recover them.
 pub fn publish(shared: &Shared, job: &Job) {
-	if let Err(error) = record_job(shared, job, || persist(shared, job)) {
+	if let Err(error) = publish_checked(shared, job) {
 		eprintln!("retype: cannot publish {}: {error}", job.id);
+	}
+}
+
+/// Stop before any output and expose a non-durable failure if the journal is unavailable.
+pub(super) fn fail_before_conversion(shared: &Shared, started: &Job, context: &str, error: &retype_core::error::Error) {
+	let mut failed = started.clone();
+	failed.outputs.clear();
+	let mut message = format!("{context}; conversion did not start: {error}");
+	if error.code() == Code::IoSpace {
+		message.push_str("; free space before trying again");
+	}
+	failed.fail(JobError::new(error.code().to_string(), &message));
+	if let Err(journal_error) = publish_checked(shared, &failed) {
+		let message = format!("{message}; status could not be recorded and is not durable: {journal_error}");
+		eprintln!("retype: job {}: {message}", failed.id);
+		failed.fail(JobError::new(error.code().to_string(), message));
+		if let Err(error) = record_job(shared, &failed, || Ok(())) {
+			eprintln!("retype: cannot report unrecorded failure for {}: {error}", failed.id);
+		}
+	} else {
+		eprintln!("retype: job {}: {message}", failed.id);
+	}
+}
+
+/// Expose a failure that could not be journalled, without claiming it is durable.
+pub fn report_unrecorded_failure(shared: &Shared, job: &Job, error: &retype_core::error::Error) {
+	let mut failed = job.clone();
+	let message = format!(
+		"running state could not be recorded: {error}; conversion did not start and this status is not durable"
+	);
+	eprintln!("retype: job {}: {message}", failed.id);
+	failed.fail(JobError::new(error.code().to_string(), message));
+	if let Err(error) = record_job(shared, &failed, || Ok(())) {
+		eprintln!("retype: cannot report unrecorded failure for {}: {error}", failed.id);
+	}
+}
+
+/// Expose an incomplete result without claiming that the final state is durable.
+pub(super) fn report_unrecorded_completion(shared: &Shared, job: &Job, error: &retype_core::error::Error) {
+	let mut incomplete = job.clone();
+	incomplete.set_state(if job.outputs.iter().any(|output| output.state == OutputState::Done) {
+		JobState::Partial
+	} else {
+		JobState::Failed
+	});
+	let source = match &job.source_disposition {
+		Some(retype_core::job::SourceDisposition::Removed) => {
+			"the source was removed and its recovery record remains protected"
+		}
+		Some(retype_core::job::SourceDisposition::Unresolved { .. }) => {
+			"the source disposition is unresolved and recovery remains protected when available"
+		}
+		_ => "the source was not removed",
+	};
+	let mut message = format!("completion could not be recorded: {error}; {source}; this status is not durable");
+	if error.code() == Code::IoSpace {
+		message.push_str("; free space before trying again");
+	}
+	incomplete.error = Some(JobError::new(error.code().to_string(), &message));
+	eprintln!("retype: job {}: {message}", incomplete.id);
+	if let Err(error) = record_job(shared, &incomplete, || Ok(())) {
+		eprintln!(
+			"retype: cannot report unrecorded completion for {}: {error}",
+			incomplete.id
+		);
 	}
 }
 
@@ -1534,7 +2017,7 @@ fn running(
 	source_format: &str,
 	target: &Path,
 	resolved: &resolve::Resolved,
-) {
+) -> Job {
 	let metadata = std::fs::metadata(source).ok();
 	let mtime_ns = metadata
 		.as_ref()
@@ -1543,7 +2026,7 @@ fn running(
 		.map(|elapsed| elapsed.as_nanos() as i64)
 		.unwrap_or_default();
 
-	let job = Job {
+	Job {
 		id: id.clone(),
 		created: now_ms(),
 		updated: now_ms(),
@@ -1552,6 +2035,7 @@ fn running(
 			format: source_format.to_string(),
 			size: metadata.map(|metadata| metadata.len()).unwrap_or_default(),
 			mtime_ns,
+			fingerprint: carried_fingerprint(shared, id),
 		},
 		intent: Some(print::intent(resolved, &shared.registry())),
 		outputs: vec![Output {
@@ -1560,6 +2044,7 @@ fn running(
 			state: OutputState::Running,
 			bytes: None,
 			tier: retype_core::job::Tier::Converted,
+			fidelity: None,
 			identity: None,
 			stderr: None,
 			error: None,
@@ -1572,13 +2057,10 @@ fn running(
 		// A parked job keeps the reason it waited when its running snapshot
 		// replaces the parked one.
 		parked: carried(shared, id),
-		consume_source: true,
-	};
-
-	// One publish path for every transition: a deferred job already has a record,
-	// and pushing a second one would leave `jobs.get` answering from the old
-	// `running` snapshot after the job had finished.
-	publish(shared, &job);
+		consume_source: super::disposition::consumes_source(resolved),
+		source_disposition: None,
+		admission: None,
+	}
 }
 
 fn record(
@@ -1595,6 +2077,7 @@ fn record(
 		state,
 		bytes,
 		tier: plan.tier,
+		fidelity: plan.fidelity.clone(),
 		// Recorded on success only: an identity for a file that was never written
 		// would tell a resume to skip work that was never done.
 		identity: match state {

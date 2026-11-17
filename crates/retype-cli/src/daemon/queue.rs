@@ -66,6 +66,11 @@ pub enum Kind {
 	},
 	/// A conversion a client asked for, `docs/dev/architecture/ipc.md` §6.
 	Immediate(crate::daemon::immediate::Request),
+	/// A recovery request keeps its prior outputs and shares worker cancellation.
+	Resume {
+		job: Box<retype_core::job::Job>,
+		force: bool,
+	},
 	/// A parked rename whose time has come, `docs/deferral.md` §7. The bytes are
 	/// already under the source name, so nothing is relabelled, and the source is
 	/// consumed on commit.
@@ -89,13 +94,24 @@ pub enum Cancelled {
 	Unknown,
 }
 
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum QueueLifecycle {
+	#[default]
+	Accepting,
+	Draining,
+}
+
+/// Only constructed after the admission callback succeeds under the queue lock.
+struct QueuedWork(Work);
+
 #[derive(Default)]
 struct Inner {
 	/// `retype convert` and jobs a person resolves. They skip the automatic
 	/// admission order because the command is the request, `docs/cli.md` §2.
-	immediate: VecDeque<Work>,
-	waiting: VecDeque<Work>,
-	closed: bool,
+	immediate: VecDeque<QueuedWork>,
+	waiting: VecDeque<QueuedWork>,
+	lifecycle: QueueLifecycle,
+	automatic_paused: bool,
 }
 
 impl Inner {
@@ -103,8 +119,21 @@ impl Inner {
 		self.immediate.len() + self.waiting.len()
 	}
 
-	fn take_next(&mut self) -> Option<Work> {
-		self.immediate.pop_front().or_else(|| self.waiting.pop_front())
+	fn take_next(&mut self) -> Option<QueuedWork> {
+		self.immediate.pop_front().or_else(|| {
+			if self.automatic_paused {
+				None
+			} else {
+				self.waiting.pop_front()
+			}
+		})
+	}
+
+	fn return_front(&mut self, work: QueuedWork) {
+		match &work.0.kind {
+			Kind::Immediate(_) | Kind::Resume { .. } => self.immediate.push_front(work),
+			_ => self.waiting.push_front(work),
+		}
 	}
 }
 
@@ -118,29 +147,46 @@ pub struct Queue {
 }
 
 impl Queue {
-	/// Offer work to the queue. `false` means it was full and the job was dropped,
-	/// which `docs/watch.md` §8 asks for rather than absorbing churn.
+	/// Offer work without an admission callback. The caller must persist it first.
 	pub fn submit(&self, work: Work) -> bool {
-		let Ok(mut inner) = self.inner.lock() else {
-			return false;
-		};
+		match self.submit_after(work, || Ok(())) {
+			Ok(accepted) => accepted,
+			Err(error) => {
+				eprintln!("retype: cannot submit work: {error}");
+				false
+			}
+		}
+	}
 
-		if inner.closed || inner.len() >= CAPACITY {
+	/// Reserve queue capacity and persist admission before a runner can take the work.
+	pub fn submit_after(
+		&self,
+		work: Work,
+		admit: impl FnOnce() -> retype_core::error::Result<()>,
+	) -> retype_core::error::Result<bool> {
+		let mut inner = self
+			.inner
+			.lock()
+			.map_err(|_| retype_core::error::Error::Io(std::io::Error::other("queue lock poisoned")))?;
+
+		if inner.lifecycle == QueueLifecycle::Draining || inner.len() >= CAPACITY {
 			self.dropped.fetch_add(1, Ordering::Relaxed);
-			return false;
+			return Ok(false);
 		}
 
-		match &work.kind {
-			Kind::Immediate(_) => inner.immediate.push_back(work),
+		admit()?;
+		let work = QueuedWork(work);
+		match &work.0.kind {
+			Kind::Immediate(_) | Kind::Resume { .. } => inner.immediate.push_back(work),
 			_ => inner.waiting.push_back(work),
 		}
 
 		self.ready.notify_one();
-		true
+		Ok(true)
 	}
 
 	/// Wait up to `idle` for a job.
-	fn take(&self, idle: Duration) -> Take {
+	fn take<'a>(&self, idle: Duration, inflight: &'a Inflight) -> Take<'a> {
 		let deadline = Instant::now() + idle;
 		let Ok(mut inner) = self.inner.lock() else {
 			return Take::Closed;
@@ -148,10 +194,20 @@ impl Queue {
 
 		loop {
 			if let Some(work) = inner.take_next() {
-				return Take::Work(work);
+				return match inflight.begin(work) {
+					Ok(running) => Take::Work(running),
+					Err(failure) => {
+						let (work, error) = *failure;
+						eprintln!("retype: queued job {} cannot start: {error}", work.0.id);
+						inner.return_front(work);
+						inner.lifecycle = QueueLifecycle::Draining;
+						self.ready.notify_all();
+						Take::Closed
+					}
+				};
 			}
 
-			if inner.closed {
+			if inner.lifecycle == QueueLifecycle::Draining {
 				return Take::Closed;
 			}
 
@@ -171,20 +227,20 @@ impl Queue {
 	pub fn take_back(&self, id: &JobId) -> Option<Work> {
 		let mut inner = self.inner.lock().ok()?;
 
-		if let Some(index) = inner.immediate.iter().position(|work| work.id == *id) {
-			return inner.immediate.remove(index);
+		if let Some(index) = inner.immediate.iter().position(|work| work.0.id == *id) {
+			return inner.immediate.remove(index).map(|work| work.0);
 		}
 
-		let index = inner.waiting.iter().position(|work| work.id == *id)?;
-		inner.waiting.remove(index)
+		let index = inner.waiting.iter().position(|work| work.0.id == *id)?;
+		inner.waiting.remove(index).map(|work| work.0)
 	}
 
 	/// Everything still waiting, taken out in one step so a stop cannot race a runner.
 	pub fn drain(&self) -> Vec<Work> {
 		match self.inner.lock() {
 			Ok(mut inner) => {
-				let mut work: Vec<Work> = inner.immediate.drain(..).collect();
-				work.extend(inner.waiting.drain(..));
+				let mut work: Vec<Work> = inner.immediate.drain(..).map(|work| work.0).collect();
+				work.extend(inner.waiting.drain(..).map(|work| work.0));
 				work
 			}
 			Err(_) => Vec::new(),
@@ -200,7 +256,7 @@ impl Queue {
 					.immediate
 					.iter()
 					.chain(inner.waiting.iter())
-					.map(|work| work.id.clone())
+					.map(|work| work.0.id.clone())
 					.collect()
 			})
 			.unwrap_or_default()
@@ -208,7 +264,7 @@ impl Queue {
 
 	fn close(&self) {
 		if let Ok(mut inner) = self.inner.lock() {
-			inner.closed = true;
+			inner.lifecycle = QueueLifecycle::Draining;
 		}
 		self.ready.notify_all();
 	}
@@ -227,14 +283,21 @@ pub struct Inflight {
 }
 
 impl Inflight {
-	fn begin(&self, id: &JobId) -> Cancellation {
-		let token = Cancellation::default();
-
-		if let Ok(mut tokens) = self.tokens.lock() {
-			tokens.insert(id.clone(), token.clone());
+	fn begin(&self, queued: QueuedWork) -> Result<RunningWork<'_>, Box<(QueuedWork, std::io::Error)>> {
+		let mut tokens = match self.tokens.lock() {
+			Ok(tokens) => tokens,
+			Err(_) => return Err(Box::new((queued, std::io::Error::other("in-flight job lock poisoned")))),
+		};
+		if tokens.contains_key(&queued.0.id) {
+			return Err(Box::new((queued, std::io::Error::other("the job is already running"))));
 		}
-
-		token
+		let cancellation = Cancellation::default();
+		tokens.insert(queued.0.id.clone(), cancellation.clone());
+		Ok(RunningWork {
+			work: queued.0,
+			cancellation,
+			inflight: self,
+		})
 	}
 
 	fn end(&self, id: &JobId) {
@@ -251,10 +314,29 @@ impl Inflight {
 	}
 }
 
+/// Ownership of dequeued work and its cancellation registration ends together.
+struct RunningWork<'a> {
+	work: Work,
+	cancellation: Cancellation,
+	inflight: &'a Inflight,
+}
+
+impl Drop for RunningWork<'_> {
+	fn drop(&mut self) {
+		self.inflight.end(&self.work.id);
+	}
+}
+
+enum Workers {
+	Running(Vec<JoinHandle<()>>),
+	Joining,
+	Stopped,
+}
+
 pub struct Pool {
 	queue: Arc<Queue>,
 	inflight: Arc<Inflight>,
-	workers: Mutex<Vec<JoinHandle<()>>>,
+	workers: Mutex<Workers>,
 }
 
 impl Pool {
@@ -275,7 +357,7 @@ impl Pool {
 		Arc::new(Self {
 			queue,
 			inflight,
-			workers: Mutex::new(workers),
+			workers: Mutex::new(Workers::Running(workers)),
 		})
 	}
 
@@ -283,8 +365,27 @@ impl Pool {
 		self.queue.submit(work)
 	}
 
+	pub fn submit_after(
+		&self,
+		work: Work,
+		admit: impl FnOnce() -> retype_core::error::Result<()>,
+	) -> retype_core::error::Result<bool> {
+		self.queue.submit_after(work, admit)
+	}
+
 	pub fn dropped(&self) -> u64 {
 		self.queue.dropped()
+	}
+
+	pub fn set_automatic(&self, allowed: bool) {
+		if let Ok(mut inner) = self.queue.inner.lock() {
+			inner.automatic_paused = !allowed;
+		}
+		self.queue.ready.notify_all();
+	}
+
+	pub fn close_admissions(&self) {
+		self.queue.close();
 	}
 
 	/// Stop everything, waiting and running alike, which is what `daemon stop --now`
@@ -297,7 +398,7 @@ impl Pool {
 			Ok(tokens) => tokens
 				.iter()
 				.map(|(id, token)| {
-					token.cancel();
+					token.request_cancel();
 					id.clone()
 				})
 				.collect(),
@@ -350,7 +451,7 @@ impl Pool {
 		match self.inflight.tokens.lock() {
 			Ok(tokens) => match tokens.get(id) {
 				Some(token) => {
-					token.cancel();
+					token.request_cancel();
 					(Cancelled::Running, None)
 				}
 				None => (Cancelled::Unknown, None),
@@ -370,21 +471,28 @@ impl Pool {
 	pub fn stop(&self) {
 		self.queue.close();
 
-		let workers = self
-			.workers
-			.lock()
-			.map(|mut workers| std::mem::take(&mut *workers))
-			.unwrap_or_default();
-
+		let workers = match self.workers.lock() {
+			Ok(mut workers) => match std::mem::replace(&mut *workers, Workers::Joining) {
+				Workers::Running(handles) => handles,
+				state => {
+					*workers = state;
+					return;
+				}
+			},
+			Err(_) => return,
+		};
 		for handle in workers {
 			let _ = handle.join();
+		}
+		if let Ok(mut workers) = self.workers.lock() {
+			*workers = Workers::Stopped;
 		}
 	}
 }
 
 /// What a runner found when it asked for work.
-enum Take {
-	Work(Work),
+enum Take<'a> {
+	Work(RunningWork<'a>),
 	/// Nothing waiting, and the queue is still open: wait again.
 	Idle,
 	/// The queue is closed and empty, so this runner is done.
@@ -395,10 +503,10 @@ fn serve(shared: &Shared, queue: &Queue, inflight: &Inflight) {
 	// One job per turn: the loop dequeues only after the previous job is done, so
 	// a runner never holds work it is not executing.
 	loop {
-		match queue.take(IDLE) {
-			Take::Work(work) => {
-				let cancellation = inflight.begin(&work.id);
-
+		match queue.take(IDLE, inflight) {
+			Take::Work(running) => {
+				let work = &running.work;
+				let cancellation = &running.cancellation;
 				match &work.kind {
 					Kind::Rename {
 						root,
@@ -406,10 +514,13 @@ fn serve(shared: &Shared, queue: &Queue, inflight: &Inflight) {
 						source,
 						target,
 					} => {
-						convert(shared, root, bytes, source, target, &work.id, &cancellation);
+						convert(shared, root, bytes, source, target, &work.id, cancellation);
 					}
 					Kind::Immediate(request) => {
-						crate::daemon::immediate::run(shared, request, &work.id, &cancellation);
+						crate::daemon::immediate::run(shared, request, &work.id, cancellation);
+					}
+					Kind::Resume { job, force } => {
+						crate::daemon::resume::run_queued(shared, job, *force, cancellation);
 					}
 					Kind::Deferred {
 						root,
@@ -417,11 +528,9 @@ fn serve(shared: &Shared, queue: &Queue, inflight: &Inflight) {
 						intent,
 						force,
 					} => {
-						convert_deferred(shared, root, source, intent, *force, &work.id, &cancellation);
+						convert_deferred(shared, root, source, intent, *force, &work.id, cancellation);
 					}
 				}
-
-				inflight.end(&work.id);
 			}
 			Take::Idle => continue,
 			Take::Closed => break,
@@ -504,7 +613,10 @@ tier = 'converted'
 			primed: AtomicU64::new(0),
 			observed: AtomicU64::new(0),
 			own_renames: Default::default(),
+			parked_admission: std::sync::Mutex::new(()),
 			events: std::sync::Mutex::new(crate::daemon::events::Events::default()),
+			watch_health: Default::default(),
+			session: Default::default(),
 			policies: Default::default(),
 			batches: Default::default(),
 			notifier: std::sync::Mutex::new(None),
@@ -587,6 +699,75 @@ tier = 'converted'
 	}
 
 	#[test]
+	fn a_published_park_cannot_be_requeued_until_its_worker_releases_ownership() {
+		let dir = tempfile::tempdir().unwrap();
+		let shared = shared(dir.path());
+		let pool = Pool::start(Arc::clone(&shared), 0);
+		let source = dir.path().join("source.png");
+		fs::write(&source, b"original").unwrap();
+		let job: retype_core::job::Job = serde_json::from_value(serde_json::json!({
+			"id": id(1), "created": 1, "updated": 1,
+			"source": { "path": source, "format": "png", "size": 8, "mtime_ns": 0 },
+			"intent": "webp", "outputs": [], "state": "needs-attention",
+			"backend": null, "machine": "test", "error": null,
+			"parked": { "reason": "ask", "consume": false,
+				"input_fingerprint": retype_core::safety::Fingerprint::of(&source).unwrap() }
+		}))
+		.unwrap();
+		super::super::watcher::publish_checked(&shared, &job).unwrap();
+		pool.inflight
+			.tokens
+			.lock()
+			.unwrap()
+			.insert(job.id.clone(), Cancellation::default());
+
+		let outcome = super::super::timer::start_confirmed(&shared, &pool, &job, None, false).unwrap();
+
+		assert_eq!(outcome, super::super::timer::Admission::Stale);
+		assert!(pool.queue.ids().is_empty());
+		assert_eq!(
+			shared.jobs.lock().unwrap()[0].state,
+			retype_core::job::JobState::NeedsAttention
+		);
+		pool.inflight.end(&job.id);
+		pool.stop();
+	}
+
+	#[test]
+	fn a_session_pause_holds_automatic_work_but_not_explicit_requests() {
+		let queue = Queue::default();
+		queue.inner.lock().unwrap().automatic_paused = true;
+		let path = PathBuf::from("/photos/input.png");
+		let automatic = Work {
+			id: id(1),
+			kind: Kind::Deferred {
+				root: PathBuf::from("/photos"),
+				source: path.clone(),
+				intent: "webp".into(),
+				force: false,
+			},
+		};
+		assert!(queue.submit(automatic));
+		assert!(queue.submit(Work {
+			id: id(2),
+			kind: Kind::Immediate(crate::daemon::immediate::Request {
+				input: path,
+				intent: "webp".into(),
+				output: None,
+				force: false
+			})
+		}));
+		let inflight = Inflight::default();
+		match queue.take(Duration::ZERO, &inflight) {
+			Take::Work(work) => assert_eq!(work.work.id, id(2)),
+			_ => panic!("explicit request was paused"),
+		}
+		assert!(matches!(queue.take(Duration::ZERO, &inflight), Take::Idle));
+		queue.inner.lock().unwrap().automatic_paused = false;
+		assert!(matches!(queue.take(Duration::ZERO, &inflight), Take::Work(_)));
+	}
+
+	#[test]
 	fn an_immediate_job_goes_ahead_of_waiting_renames() {
 		let queue = Queue::default();
 		let photos = PathBuf::from("/photos");
@@ -612,22 +793,171 @@ tier = 'converted'
 		}));
 		assert!(queue.submit(rename(id(3))));
 
-		let first = match queue.take(Duration::ZERO) {
-			Take::Work(work) => work.id,
+		let inflight = Inflight::default();
+		let first = match queue.take(Duration::ZERO, &inflight) {
+			Take::Work(running) => running.work.id.clone(),
 			_ => panic!("the queue was empty"),
 		};
-		let second = match queue.take(Duration::ZERO) {
-			Take::Work(work) => work.id,
+		let second = match queue.take(Duration::ZERO, &inflight) {
+			Take::Work(running) => running.work.id.clone(),
 			_ => panic!("the queue was empty"),
 		};
-		let third = match queue.take(Duration::ZERO) {
-			Take::Work(work) => work.id,
+		let third = match queue.take(Duration::ZERO, &inflight) {
+			Take::Work(running) => running.work.id.clone(),
 			_ => panic!("the queue was empty"),
 		};
 
 		assert_eq!(first, id(2), "the submission skips the waiting renames");
 		assert_eq!(second, id(1), "the automatic jobs keep their own order");
 		assert_eq!(third, id(3));
+	}
+
+	#[test]
+	fn a_dequeued_job_is_already_reachable_for_cancellation() {
+		let queue = Arc::new(Queue::default());
+		let inflight = Arc::new(Inflight::default());
+		let pool = Pool {
+			queue: Arc::clone(&queue),
+			inflight: Arc::clone(&inflight),
+			workers: Mutex::new(Workers::Running(Vec::new())),
+		};
+		let work = Work {
+			id: id(1),
+			kind: Kind::Immediate(crate::daemon::immediate::Request {
+				input: PathBuf::from("/photos/a.png"),
+				intent: "webp".to_string(),
+				output: None,
+				force: false,
+			}),
+		};
+		assert!(queue.submit(work.clone()));
+		let Take::Work(running) = queue.take(Duration::ZERO, &inflight) else {
+			panic!("the queued job was not taken");
+		};
+
+		assert_eq!(running.work.id, work.id);
+		assert_eq!(pool.cancel(&work.id).0, Cancelled::Running);
+		assert!(running.cancellation.is_cancelled());
+		drop(running);
+		assert_eq!(pool.cancel(&work.id).0, Cancelled::Unknown);
+	}
+
+	#[test]
+	fn an_unavailable_inflight_registry_does_not_start_or_drop_work() {
+		let queue = Queue::default();
+		let inflight = Arc::new(Inflight::default());
+		let broken = Arc::clone(&inflight);
+		assert!(
+			thread::spawn(move || {
+				let _tokens = broken.tokens.lock().unwrap();
+				panic!("inject an in-flight registry failure");
+			})
+			.join()
+			.is_err()
+		);
+		let work = Work {
+			id: id(1),
+			kind: Kind::Immediate(crate::daemon::immediate::Request {
+				input: PathBuf::from("/photos/a.png"),
+				intent: "webp".to_string(),
+				output: None,
+				force: false,
+			}),
+		};
+		assert!(queue.submit(work.clone()));
+
+		assert!(matches!(queue.take(Duration::ZERO, &inflight), Take::Closed));
+		assert_eq!(queue.ids(), vec![work.id]);
+	}
+
+	#[test]
+	fn a_runner_cannot_take_work_before_admission_finishes() {
+		let queue = Arc::new(Queue::default());
+		let photos = PathBuf::from("/photos");
+		let work = Work {
+			id: id(1),
+			kind: Kind::Rename {
+				root: photos.clone(),
+				bytes: photos.join("a.webp"),
+				source: photos.join("a.png"),
+				target: photos.join("a.webp"),
+			},
+		};
+		let (admitting, in_admission) = std::sync::mpsc::channel();
+		let (release, proceed) = std::sync::mpsc::channel();
+		let (taken, observed) = std::sync::mpsc::channel();
+
+		std::thread::scope(|scope| {
+			let producer = Arc::clone(&queue);
+			let submitted = scope.spawn(move || {
+				producer.submit_after(work, || {
+					admitting.send(()).unwrap();
+					proceed.recv_timeout(Duration::from_secs(10)).unwrap();
+					Ok(())
+				})
+			});
+			in_admission.recv_timeout(Duration::from_secs(10)).unwrap();
+			let consumer = Arc::clone(&queue);
+			let runner = scope.spawn(move || {
+				let inflight = Inflight::default();
+				let next = consumer.take(Duration::from_secs(10), &inflight);
+				taken.send(matches!(next, Take::Work(_))).unwrap();
+			});
+			assert!(observed.recv_timeout(Duration::from_millis(100)).is_err());
+			release.send(()).unwrap();
+			assert!(submitted.join().unwrap().unwrap());
+			assert!(observed.recv_timeout(Duration::from_secs(10)).unwrap());
+			runner.join().unwrap();
+		});
+	}
+
+	#[test]
+	fn work_is_not_enqueued_when_admission_fails() {
+		let queue = Queue::default();
+		let photos = PathBuf::from("/photos");
+		let work = Work {
+			id: id(1),
+			kind: Kind::Rename {
+				root: photos.clone(),
+				bytes: photos.join("a.webp"),
+				source: photos.join("a.png"),
+				target: photos.join("a.webp"),
+			},
+		};
+
+		let result = queue.submit_after(work, || Err(std::io::Error::other("journal failed").into()));
+
+		assert!(result.is_err());
+		assert!(matches!(queue.take(Duration::ZERO, &Inflight::default()), Take::Idle));
+	}
+
+	#[test]
+	fn a_full_queue_does_not_run_the_admission_callback() {
+		let queue = Queue::default();
+		let photos = PathBuf::from("/photos");
+		let work = |index| Work {
+			id: id(index),
+			kind: Kind::Rename {
+				root: photos.clone(),
+				bytes: photos.join(format!("{index}.webp")),
+				source: photos.join(format!("{index}.png")),
+				target: photos.join(format!("{index}.webp")),
+			},
+		};
+		for index in 0..CAPACITY {
+			assert!(queue.submit(work(index)));
+		}
+
+		let called = std::cell::Cell::new(false);
+		let accepted = queue
+			.submit_after(work(CAPACITY), || {
+				called.set(true);
+				Ok(())
+			})
+			.unwrap();
+
+		assert!(!accepted);
+		assert!(!called.get(), "a rejected job must not be journalled as queued");
 	}
 
 	#[test]

@@ -4,9 +4,8 @@
 //! so a person does not wait behind a directory's renames, and shares everything
 //! else with them, one journal, one runner pool, one cancellation path.
 //!
-//! The source is never consumed. A rename moved the file, so the job that answers
-//! it replaces the name; `convert` was handed a path and leaves it where it is.
-//! That difference is the whole of `consume_source`, `docs/dev/architecture/state.md` §5.3.
+//! Source disposition uses the same validation, recovery and ownership checks as a
+//! watched rename. An explicit keep request leaves the source visible.
 
 use std::path::{Path, PathBuf};
 
@@ -41,7 +40,21 @@ pub struct Prepared {
 }
 
 /// Read the request and choose a backend for each output. Nothing is written.
-pub fn prepare(registry: &Registry, request: &Request) -> std::result::Result<Prepared, Diagnoses> {
+pub fn prepare(registry: &Registry, request: &Request, state_dir: &Path) -> std::result::Result<Prepared, Diagnoses> {
+	prepare_with(registry, request, Some(state_dir), &Cancellation::default())
+}
+
+/// Validate declarations without running tools or reading input contents.
+pub fn declare(registry: &Registry, request: &Request) -> std::result::Result<Prepared, Diagnoses> {
+	prepare_with(registry, request, None, &Cancellation::default())
+}
+
+fn prepare_with(
+	registry: &Registry,
+	request: &Request,
+	state_dir: Option<&Path>,
+	cancellation: &Cancellation,
+) -> std::result::Result<Prepared, Diagnoses> {
 	let name = request
 		.input
 		.file_name()
@@ -71,8 +84,17 @@ pub fn prepare(registry: &Registry, request: &Request) -> std::result::Result<Pr
 
 	let parsed = intent::parse(&request.intent)?;
 	let resolved = resolve::resolve(&parsed, Origin { format, is_directory }, registry)?;
-	let plans = plan::compile(registry, &tools::Machine, &resolved)?;
-	let paths = targets(request, &plans, stem, format, &resolved)?;
+	let plans = match state_dir {
+		Some(state_dir) => crate::fidelity::plans_cancellable(
+			registry,
+			&tools::CancellableMachine(cancellation),
+			&resolved,
+			state_dir,
+			cancellation,
+		)?,
+		None => plan::compile(registry, &crate::explain::Declared, &resolved)?,
+	};
+	let paths = targets(request, &plans, stem, &resolved)?;
 
 	validate(request, &paths)?;
 
@@ -104,10 +126,14 @@ fn validate(request: &Request, paths: &[PathBuf]) -> std::result::Result<(), Dia
 				)));
 			}
 		}
+		Ok(metadata) if !metadata.is_file() => problems.push(Error::Diagnostic(Diagnostic::global(
+			Code::UsageArgs,
+			format!("{} is not a regular file", request.input.display()),
+		))),
 		Ok(_) => {
-			if let Err(error) = std::fs::File::open(&request.input) {
+			if let Err(error) = retype_core::safety::InputStamp::of(&request.input) {
 				problems.push(Error::Diagnostic(Diagnostic::global(
-					retype_core::error::code_for_io(&error),
+					error.code(),
 					format!("{}: {error}", request.input.display()),
 				)));
 			}
@@ -174,10 +200,10 @@ fn targets(
 	request: &Request,
 	plans: &[plan::Plan],
 	stem: &str,
-	format: &str,
 	resolved: &resolve::Resolved,
 ) -> std::result::Result<Vec<PathBuf>, Diagnoses> {
-	let derived = output::derive(stem, format, &resolved.groups);
+	let source_name = request.input.file_name().and_then(|name| name.to_str()).unwrap_or(stem);
+	let derived = output::derive_with_source_name(stem, source_name, &resolved.groups);
 
 	match &request.output {
 		Some(_) if plans.len() > 1 => Err(Diagnoses::one(Error::Diagnostic(Diagnostic::global(
@@ -205,18 +231,24 @@ fn targets(
 /// see it waiting rather than only once it starts.
 pub fn queued(shared: &Shared, prepared: &Prepared, id: &JobId) -> Job {
 	let now = now_ms();
+	let mut source = source(prepared);
+	source.fingerprint = super::watcher::carried_fingerprint(shared, id);
 
 	Job {
 		id: id.clone(),
 		created: now,
 		updated: now,
-		source: source(prepared),
+		source,
 		intent: Some(print::intent(&prepared.resolved, &shared.registry())),
 		outputs: prepared
 			.plans
 			.iter()
 			.zip(&prepared.paths)
-			.map(|(plan, path)| Output::pending(path.clone(), plan.format.clone(), plan.tier))
+			.map(|(plan, path)| {
+				let mut output = Output::pending(path.clone(), plan.format.clone(), plan.tier);
+				output.fidelity = plan.fidelity.clone();
+				output
+			})
 			.collect(),
 		state: JobState::Queued,
 		backend: prepared.plans.first().map(|plan| plan.backend.name().to_string()),
@@ -228,43 +260,119 @@ pub fn queued(shared: &Shared, prepared: &Prepared, id: &JobId) -> Job {
 		machine: shared.machine.clone(),
 		error: None,
 		parked: None,
-		consume_source: false,
+		consume_source: super::disposition::consumes_source(&prepared.resolved),
+		source_disposition: None,
+		admission: None,
 	}
 }
 
 /// Run one submitted conversion and publish its terminal record.
 pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancellation) {
-	// The plan was made when the job was accepted. Making it again is how a tool
-	// that went away in between is reported instead of run.
-	let prepared = match prepare(&shared.registry(), request) {
+	let admitted = shared
+		.jobs
+		.lock()
+		.ok()
+		.and_then(|jobs| jobs.iter().find(|job| &job.id == id).cloned());
+	let mut preparing = match admitted {
+		Some(job) => job,
+		None => match declare(&shared.registry(), request) {
+			Ok(prepared) => queued(shared, &prepared, id),
+			Err(problems) => {
+				publish(shared, &unsatisfied(shared, request, problems, id));
+				return;
+			}
+		},
+	};
+	preparing.set_state(JobState::Running);
+	if let Err(error) = super::watcher::publish_checked(shared, &preparing) {
+		super::watcher::report_unrecorded_failure(shared, &preparing, &error);
+		return;
+	}
+	let prepared = match prepare_with(&shared.registry(), request, Some(&shared.state_dir), cancellation) {
 		Ok(prepared) => prepared,
 		Err(problems) => {
-			publish(shared, &unsatisfied(shared, request, problems, id));
+			let mut failed = unsatisfied(shared, request, problems, id);
+			if cancellation.is_cancelled() {
+				failed.set_state(JobState::Cancelled);
+				failed.error = Some(JobError::new(
+					Code::JobCancelled.to_string(),
+					"cancelled during preparation",
+				));
+			}
+			publish(shared, &failed);
 			return;
 		}
 	};
+	let snapshot = match (|| {
+		if let Some(stamp) = &preparing.admission {
+			stamp.verify(&request.input)?;
+		}
+		let snapshot = retype_core::safety::Snapshot::open_cancellable(&request.input, cancellation)?;
+		if let Some(stamp) = &preparing.admission {
+			stamp.verify(&request.input)?;
+		}
+		super::park::verify_input(&preparing, &snapshot.original)?;
+		Ok::<_, retype_core::error::Error>(snapshot)
+	})() {
+		Ok(snapshot) => snapshot,
+		Err(error) => {
+			if cancellation.is_cancelled() {
+				preparing.set_state(JobState::Cancelled);
+			} else {
+				preparing.fail(JobError::new(error.code().to_string(), error.to_string()));
+			}
+			publish(shared, &preparing);
+			return;
+		}
+	};
+	preparing.source.fingerprint = Some(snapshot.original.clone());
+	if let Err(error) = super::watcher::publish_checked(shared, &preparing) {
+		super::watcher::report_unrecorded_failure(shared, &preparing, &error);
+		return;
+	}
+	let mut started = queued(shared, &prepared, id);
+	started.admission = preparing.admission;
+	started.parked = super::watcher::carried(shared, id);
+	if cancellation.is_cancelled() {
+		started.set_state(JobState::Cancelled);
+		publish(shared, &started);
+		return;
+	}
+	if prepared.resolved.meta.ask && started.parked.is_none() {
+		started.set_state(JobState::NeedsAttention);
+		started.parked = Some(retype_core::job::Parked {
+			reason: "ask".to_string(),
+			deadline: None,
+			batch: None,
+			estimate: None,
+			requested: Some(request.intent.clone()),
+			corrected: None,
+			dropped: Vec::new(),
+			consume: false,
+			force: request.force,
+			input_fingerprint: Some(snapshot.original.clone()),
+		});
+		if let Err(error) = super::watcher::publish_parked(shared, &mut started, cancellation) {
+			super::watcher::report_unrecorded_failure(shared, &started, &error);
+		}
+		return;
+	}
+	started.set_state(JobState::Running);
+	if let Err(error) = crate::daemon::watcher::publish_checked(shared, &started) {
+		crate::daemon::watcher::report_unrecorded_failure(shared, &started, &error);
+		return;
+	}
 
-	/* A submitted conversion retains its live source and an independent recovery input. */
+	/* The live source and independent recovery input remain available during conversion. */
 	let store = retype_core::undo::Store::open(&shared.state_dir);
 	let lease = match store.lease(id) {
 		Ok(lease) => lease,
 		Err(error) => {
-			let mut failed = queued(shared, &prepared, id);
-			failed.fail(JobError::new(error.code().to_string(), error.to_string()));
-			publish(shared, &failed);
+			super::watcher::fail_before_conversion(shared, &started, "cannot acquire job ownership", &error);
 			return;
 		}
 	};
-	let snapshot = match retype_core::safety::Snapshot::open(&prepared.input) {
-		Ok(snapshot) => snapshot,
-		Err(error) => {
-			let mut failed = queued(shared, &prepared, id);
-			failed.fail(JobError::new(error.code().to_string(), error.to_string()));
-			publish(shared, &failed);
-			return;
-		}
-	};
-	let undo_record = store.save_with_policy(
+	let undo_record = store.save_with_policy_cancellable(
 		retype_core::undo::Subject {
 			id: id.clone(),
 			intent: print::intent(&prepared.resolved, &shared.registry()),
@@ -281,13 +389,36 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 					ext: plan.format.clone(),
 				})
 				.collect(),
-			consume_source: false,
+			consume_source: started.consume_source,
 		},
 		shared.registry().undo(),
+		cancellation,
 	);
 
 	if let Err(error) = &undo_record {
-		eprintln!("retype: cannot keep {} for undo: {error}", prepared.input.display());
+		if error.code() == Code::UndoLimit {
+			super::watcher::park_storage(
+				shared,
+				started,
+				snapshot.original.clone(),
+				false,
+				request.force,
+				error,
+				cancellation,
+			);
+			return;
+		}
+		if cancellation.is_cancelled() {
+			started.set_state(JobState::Cancelled);
+			started.error = Some(JobError::new(
+				Code::JobCancelled.to_string(),
+				"cancelled during backup; incomplete recovery remains protected",
+			));
+			publish(shared, &started);
+			return;
+		}
+		super::watcher::fail_before_conversion(shared, &started, "cannot save undo record", error);
+		return;
 	}
 
 	if let Ok(Some(record)) = &undo_record {
@@ -301,13 +432,22 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 			return;
 		}
 	}
-	let mut started = queued(shared, &prepared, id);
-	started.set_state(JobState::Running);
-	publish(shared, &started);
-
+	let recovery = match store.retain(lease, undo_record.expect("backup errors handled above")) {
+		Ok(recovery) => recovery,
+		Err(error) => {
+			super::watcher::fail_before_conversion(shared, &started, "cannot bind recovery ownership", &error);
+			return;
+		}
+	};
 	let mut outputs = Vec::new();
+	let mut validation_failure = None;
+	let mut output_gate = super::transaction::OutputGate::default();
 
 	for (plan, path) in prepared.plans.iter().zip(&prepared.paths) {
+		if let Some(reason) = output_gate.skipped() {
+			outputs.push(record(path, plan, OutputState::Skipped, None, None, Some(reason)));
+			continue;
+		}
 		if path.exists() && !request.force {
 			outputs.push(record(
 				path,
@@ -330,18 +470,24 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 			job: &started,
 			original: &prepared.input,
 			completed: &outputs,
-			store: matches!(undo_record, Ok(Some(_))).then_some(&store),
+			recovery: recovery.retained(),
 		};
 		match transaction.run(plan, &snapshot.path, path, cancellation, publication) {
-			Ok(report) => outputs.push(record(
-				path,
-				plan,
-				OutputState::Done,
-				Some(report.bytes),
-				tail(&report),
-				None,
-			)),
+			Ok(report) => {
+				if let Some(reason) = report.validation.reason() {
+					validation_failure.get_or_insert_with(|| reason.to_string());
+				}
+				outputs.push(record(
+					path,
+					plan,
+					OutputState::Done,
+					Some(report.bytes),
+					tail(&report),
+					None,
+				));
+			}
 			Err(error) => {
+				output_gate.observe(&error);
 				// The failure's own code, so a refusal reads as a refusal rather than as
 				// a tool that fell over.
 				let code = match cancellation.is_cancelled() {
@@ -374,16 +520,34 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 	job.outputs = outputs;
 	job.state = state;
 	job.updated = now_ms();
-	if let Err(error) = crate::daemon::watcher::persist(shared, &job) {
-		eprintln!("retype: recovery record retained because completion could not be persisted: {error}");
-		return;
-	}
-	if job.state == JobState::Done && matches!(undo_record, Ok(Some(_))) {
-		if let Err(error) = store.finish(id) {
-			eprintln!("retype: undo record remains pinned: {error}");
+	if job.state == JobState::Done {
+		let completion = super::disposition::Completion {
+			source: super::disposition::Source::Live {
+				path: &prepared.input,
+				fingerprint: &snapshot.original,
+			},
+			recovery,
+			requested_outputs: prepared.plans.len(),
+			validation_failure: validation_failure.as_deref(),
+		};
+		job = match super::disposition::finish_done(shared, job, completion, cancellation) {
+			Ok(recorded) => recorded.into_job(),
+			Err(failure) => {
+				super::watcher::report_unrecorded_completion(shared, &failure.job, &failure.error);
+				return;
+			}
+		};
+	} else {
+		if let Err(error) = crate::daemon::watcher::persist(shared, &job) {
+			super::watcher::report_unrecorded_completion(shared, &job, &error);
+			return;
+		}
+		if job.state == JobState::Cancelled {
+			super::cancel::finish_after_persist(shared, Ok(recovery), &mut job);
+		} else {
+			drop(recovery);
 		}
 	}
-	drop(lease);
 	crate::daemon::watcher::publish_persisted(shared, &job);
 	mark(shared, &job.outputs, job.intent.as_deref().unwrap_or_default());
 }
@@ -397,13 +561,19 @@ fn tail(report: &execute::Report) -> Option<String> {
 }
 
 fn source(prepared: &Prepared) -> Source {
+	let metadata = std::fs::metadata(&prepared.input).ok();
+	let mtime_ns = metadata
+		.as_ref()
+		.and_then(|metadata| metadata.modified().ok())
+		.and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+		.and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
+		.unwrap_or_default();
 	Source {
 		path: prepared.input.clone(),
 		format: prepared.format.clone(),
-		size: std::fs::metadata(&prepared.input)
-			.map(|meta| meta.len())
-			.unwrap_or_default(),
-		mtime_ns: 0,
+		size: metadata.map(|metadata| metadata.len()).unwrap_or_default(),
+		mtime_ns,
+		fingerprint: None,
 	}
 }
 
@@ -421,6 +591,7 @@ fn record(
 		state,
 		bytes,
 		tier: plan.tier,
+		fidelity: plan.fidelity.clone(),
 		// Recorded on success only: an identity for a file that was never written
 		// would tell a resume to skip work that was never done.
 		identity: match state {
@@ -460,6 +631,7 @@ fn unsatisfied(shared: &Shared, request: &Request, problems: Diagnoses, id: &Job
 			format,
 			size: 0,
 			mtime_ns: 0,
+			fingerprint: super::watcher::carried_fingerprint(shared, id),
 		},
 		intent: Some(request.intent.clone()),
 		outputs: Vec::new(),
@@ -473,5 +645,7 @@ fn unsatisfied(shared: &Shared, request: &Request, problems: Diagnoses, id: &Job
 		}),
 		parked: None,
 		consume_source: false,
+		source_disposition: None,
+		admission: None,
 	}
 }

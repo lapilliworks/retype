@@ -59,22 +59,31 @@ fn init_writes_where_it_is_told_and_refuses_to_overwrite() {
 
 #[test]
 fn doctor_emit_pins_what_the_machine_resolved() {
-	let emitted = run(&["doctor", "--emit"]);
-	let text = String::from_utf8_lossy(&emitted.stdout);
-	let stderr = String::from_utf8_lossy(&emitted.stderr);
-
-	assert_eq!(emitted.status.code(), Some(0), "{stderr}");
-	assert!(text.contains("version = 'retype-config-1'"), "{text}");
-
-	// Nothing installed, nothing to pin: the snippet is the header alone and the
-	// claim under test has nothing to say about this host.
-	if !text.contains("[tools.") {
-		eprintln!("this machine resolved no tools, so this test proves nothing");
-		return;
-	}
-
-	// Ordinary configuration, which means it has to survive its own validation.
 	let dir = tempfile::tempdir().unwrap();
+	let config = dir.path().join("tools.toml");
+	let (command, probe) = if cfg!(windows) {
+		("cmd", "['/c', 'echo ffmpeg version 6.0']")
+	} else {
+		("sh", "['-c', 'echo ffmpeg version 6.0']")
+	};
+	fs::write(
+		&config,
+		format!("version = 'retype-config-1'\n[tools.ffmpeg]\ncommand = '{command}'\nprobe = {probe}\n"),
+	)
+	.unwrap();
+	let expected = retype_core::tools::find_in_path(&std::env::var_os("PATH").unwrap(), command).unwrap();
+	assert!(expected.is_absolute());
+
+	let emitted = retype()
+		.args(["doctor", "--emit"])
+		.env("RETYPE_CONFIG", &config)
+		.output()
+		.unwrap();
+	let text = String::from_utf8_lossy(&emitted.stdout);
+	assert!(emitted.status.success(), "{}", String::from_utf8_lossy(&emitted.stderr));
+	let snippet: toml::Value = toml::from_str(&text).unwrap();
+	assert_eq!(snippet["tools"]["ffmpeg"]["command"].as_str(), expected.to_str());
+
 	let path = dir.path().join("retype.toml");
 	fs::write(&path, text.as_bytes()).unwrap();
 

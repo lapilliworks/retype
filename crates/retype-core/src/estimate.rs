@@ -155,7 +155,30 @@ impl Calibration {
 		Ok(calibration)
 	}
 
+	/// Merge measurements under the shared state-writer lock, then publish atomically.
 	pub fn save(&self, state_dir: &Path) -> Result<()> {
+		let _guard = crate::undo::store_lock(&state_dir.join("undo"))?;
+		let mut latest = Self::open(state_dir)?;
+		if latest.machine.is_empty() {
+			latest.machine.clone_from(&self.machine);
+		} else if !self.machine.is_empty() && self.machine != latest.machine {
+			return Err(std::io::Error::other("calibration belongs to another machine").into());
+		}
+		for measurement in &self.throughput {
+			let has_newer = latest.throughput.iter().any(|existing| {
+				existing.source == measurement.source
+					&& existing.target == measurement.target
+					&& existing.backend == measurement.backend
+					&& existing.measured > measurement.measured
+			});
+			if !has_newer {
+				latest.measure(measurement.clone());
+			}
+		}
+		latest.write(state_dir)
+	}
+
+	fn write(&self, state_dir: &Path) -> Result<()> {
 		let text = toml::to_string(self).map_err(|error| {
 			Error::Diagnostic(Diagnostic::global(
 				Code::InternalInvariant,
@@ -163,25 +186,20 @@ impl Calibration {
 			))
 		})?;
 
-		let path = Self::path(state_dir);
-		let temporary = path.with_extension("toml.tmp");
-
-		fs::write(&temporary, text)?;
-		set_private(&temporary)?;
-
-		// A reader sees the old file or the complete new one, never a half-written
-		// calibration while a parked job is asking for an estimate.
-		if let Err(error) = fs::rename(&temporary, &path) {
-			if path.exists() {
-				fs::remove_file(&path)?;
-				fs::rename(&temporary, &path)?;
-			} else {
-				let _ = fs::remove_file(&temporary);
-				return Err(error.into());
+		crate::convert::write_atomically(&Self::path(state_dir), |temporary| {
+			use std::io::Write;
+			let mut options = fs::OpenOptions::new();
+			options.write(true).create_new(true);
+			#[cfg(unix)]
+			{
+				use std::os::unix::fs::OpenOptionsExt;
+				options.mode(0o600);
 			}
-		}
-
-		Ok(())
+			let mut file = options.open(temporary)?;
+			file.write_all(text.as_bytes())?;
+			file.sync_all()?;
+			Ok(())
+		})
 	}
 
 	/// Record a measurement, replacing what the same pair and backend measured
@@ -221,6 +239,7 @@ impl Calibration {
 /// one machine is not calibration for another, so a file with no machine would be
 /// evidence with no subject.
 pub fn machine_identity(state_dir: &Path) -> Result<String> {
+	let _guard = crate::undo::store_lock(&state_dir.join("undo"))?;
 	let mut calibration = Calibration::open(state_dir)?;
 
 	if !calibration.machine.is_empty() {
@@ -228,7 +247,7 @@ pub fn machine_identity(state_dir: &Path) -> Result<String> {
 	}
 
 	calibration.machine = random_hex()?;
-	calibration.save(state_dir)?;
+	calibration.write(state_dir)?;
 	Ok(calibration.machine.clone())
 }
 
@@ -282,18 +301,6 @@ fn constant(family: &str) -> Option<Constant> {
 		}),
 		_ => None,
 	}
-}
-
-#[cfg(unix)]
-fn set_private(path: &Path) -> Result<()> {
-	use std::os::unix::fs::PermissionsExt;
-	fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-	Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_private(_path: &Path) -> Result<()> {
-	Ok(())
 }
 
 fn random_hex() -> Result<String> {
@@ -406,6 +413,51 @@ mod tests {
 		let read = Calibration::open(dir.path()).unwrap();
 
 		assert_eq!(read, calibration);
+	}
+
+	#[test]
+	fn stale_calibration_saves_keep_other_writers_measurements_and_newer_results() {
+		let dir = tempfile::tempdir().unwrap();
+		let mut first = Calibration::default();
+		let mut second = Calibration::default();
+		first.measure(measurement("heic", "jpg"));
+		second.measure(measurement("png", "webp"));
+		first.save(dir.path()).unwrap();
+		second.save(dir.path()).unwrap();
+		let mut newer = first.clone();
+		newer.throughput[0].measured += 1;
+		newer.throughput[0].bytes_per_second *= 2.0;
+		newer.save(dir.path()).unwrap();
+		first.save(dir.path()).unwrap();
+		let latest = Calibration::open(dir.path()).unwrap();
+		assert_eq!(latest.throughput.len(), 2);
+		assert_eq!(latest.throughput[0], newer.throughput[0]);
+		assert_eq!(latest.throughput[1], second.throughput[0]);
+	}
+
+	#[test]
+	fn concurrent_identity_creation_returns_one_durable_identity() {
+		let dir = tempfile::tempdir().unwrap();
+		let identities = std::thread::scope(|scope| {
+			let workers: Vec<_> = (0..4)
+				.map(|_| scope.spawn(|| machine_identity(dir.path()).unwrap()))
+				.collect();
+			workers
+				.into_iter()
+				.map(|worker| worker.join().unwrap())
+				.collect::<Vec<_>>()
+		});
+		assert!(identities.iter().all(|identity| identity == &identities[0]));
+		assert_eq!(Calibration::open(dir.path()).unwrap().machine, identities[0]);
+	}
+
+	#[test]
+	fn calibration_does_not_touch_the_old_shared_temporary_path() {
+		let dir = tempfile::tempdir().unwrap();
+		let temporary = Calibration::path(dir.path()).with_extension("toml.tmp");
+		fs::write(&temporary, b"unrelated data").unwrap();
+		Calibration::default().save(dir.path()).unwrap();
+		assert_eq!(fs::read(temporary).unwrap(), b"unrelated data");
 	}
 
 	#[test]

@@ -2,41 +2,56 @@ name: ci
 
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  test:
-    name: test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  debian:
+    name: Debian stable
+    uses: ./.github/workflows/debian.yml
+
+  native:
+    name: native verification
+    uses: ./.github/workflows/native.yml
+
+  workflow-lint:
+    name: workflow lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+      - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - run: '"$(go env GOPATH)/bin/actionlint"'
 
   msrv:
     name: msrv
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.85.0"
           components: clippy
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run MSRV workspace tests
+        timeout-minutes: 10
+        run: RETYPE_TEST_SESSION=terminal cargo test --workspace --locked --no-fail-fast
 
   cross:
     name: cross check (typecheck foreign targets)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -52,26 +67,40 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - run: cargo check --workspace --all-targets --target ${{ matrix.target }}
+      - run: cargo check --workspace --all-targets --locked --target ${{ matrix.target }}
 
   installer:
     name: installer
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: bash -n packaging/install.sh
-      - run: bash scripts/test-install.sh
-      - name: Parse PowerShell installer
+      - run: bash tests/install.sh
+      - run: timeout --kill-after=5s 30s bash tests/release.sh
+      - name: Parse PowerShell scripts
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'packaging/install.ps1').Path, [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
+          foreach ($path in @('packaging/install.ps1', 'tests/run.ps1',
+              'tests/prepare.ps1', 'tests/hyperv-info.ps1',
+              'tests/hyperv-check.ps1', 'tests/install.ps1',
+              'crates/retype-cli/tests/support/windows_runner_probe.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path).Path, [ref]$tokens, [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
+          }
+      - name: Test Hyper-V collector without a VM
+        shell: pwsh
+        timeout-minutes: 2
+        run: ./tests/hyperv-check.ps1
 
   site:
     name: site checks
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - run: node sites/lib/checks.mjs
@@ -84,20 +113,3 @@ jobs:
         env:
           SITE_RUNTIME: host
         run: sites/bin/bundle.sh
-
-  probe:
-    name: event probe (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Probe
-        shell: bash
-        run: |
-          set -o pipefail
-          cargo run -q -p retype-watch --example probe_events | tee "probe-${{ matrix.os }}.txt"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: probe-${{ matrix.os }}
-          path: probe-${{ matrix.os }}.txt
-          if-no-files-found: error

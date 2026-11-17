@@ -41,11 +41,13 @@ Everything else is namespaced, and the table lists every code in full so that a 
 | Watches | `E_WATCH_PAUSED_BY_POLICY` |
 | Tools | `E_TOOL_MISSING`, `E_TOOL_VERSION`, `E_TOOL_FAILED`, `E_TOOL_TIMEOUT` |
 | Filesystem and state | `E_IO_FAILED`, `E_IO_PERMISSION`, `E_IO_SPACE`, `E_IO_NOT_FOUND`, `E_IO_EXISTS`, `E_IO_LOCKED`, `E_IO_CORRUPT_JOURNAL` |
-| Jobs | `E_JOB_STATE`, `E_JOB_CANCELLED`, `E_JOB_INTERRUPTED`, `E_JOB_PARTIAL`, `E_JOB_SUPERSEDED`, `E_JOB_RESUME_UNAVAILABLE`, `E_JOB_NOT_FOUND`, `E_JOB_AMBIGUOUS` |
+| Jobs | `E_JOB_STATE`, `E_JOB_CANCELLED`, `E_JOB_INTERRUPTED`, `E_JOB_PARTIAL`, `E_JOB_SUPERSEDED`, `E_JOB_RESUME_UNAVAILABLE`, `E_JOB_NOT_FOUND`, `E_JOB_AMBIGUOUS`, `E_UNDO_LIMIT` |
 | Transport | `E_IPC_VERSION`, `E_IPC_HANDSHAKE`, `E_IPC_FRAME`, `E_IPC_METHOD`, `E_IPC_UNAVAILABLE`, `E_IPC_AMBIGUOUS`, `E_IPC_RESYNC`, `E_IPC_SUPERVISED`, `E_IPC_AUTH`, `E_IPC_INTERNAL` |
 | Bugs | `E_INTERNAL_INVARIANT`, `E_INTERNAL_PANIC`, `E_INTERNAL_UNEXPECTED` |
 
 [Daemon and client protocol](../dev/architecture/ipc.md) §8 defines the transport codes; they are listed here as well so that one table answers "what can this build emit". `E_CFG_SHADOWED` is the one configuration code that is a warning rather than a failure: a user preset replacing a shipped one is allowed and reported.
+
+`E_UNDO_LIMIT` means the undo storage goal prevents a new backup. The job waits with reason `storage`; let expired records clear, explicitly clean recovery or increase the host's `[undo] quota`. It is a state refusal, distinct from actual disk exhaustion (`E_IO_SPACE`).
 
 ## 4. Categories
 
@@ -83,7 +85,7 @@ Rules:
 - Resume skips outputs whose recorded identity and content digest still match; other occupied paths are refused without `--force`
 - Resume reads a private working copy of the verified retained original, never an arbitrary replacement at the old source path
 - Partial, failed, cancelled and superseded jobs retain originals and required recovery records
-- A queued job interrupted by a restart runs again only when the live source still matches its recorded format, size and mtime; a replacement source fails with `E_JOB_INTERRUPTED` and nothing is written from it
+- A queued job interrupted by a restart is marked `E_JOB_INTERRUPTED` for manual review and resubmission; its journal entry does not yet include a content fingerprint that would make automatic replay safe
 - Successful resume retains its backup for normal undo retention
 
 Source naming, output publication and disposal follow `docs/dev/architecture/state.md` §5. Source restoration refuses occupied destinations. A backend exit status is not permission to delete the original: every requested output must be validated and durably committed, a verified backup and completion record must be durable, and the source must still be the object the job read. Unvalidated external backends, unavailable directory durability and backup failures retain originals.

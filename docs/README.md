@@ -2,13 +2,13 @@
 
 Retype converts a file when its extension changes. Rename `photo.heic` to `photo.jpg` and the bytes follow the name.
 
-Status is alpha: some documented behaviour is still being built.
+Status is pre-alpha: some documented behaviour is still being built. Work on copies of important files and keep an independent backup.
 
 ## What you need
 
 - A terminal
 - `retype` itself. The pre-release installers fetch a release binary and update it in place: `curl -fsSL https://retype.name/install.sh | bash` on Linux and macOS, or `irm https://retype.name/install.ps1 | iex` in PowerShell on Windows. Without that, build from source with a Rust toolchain: `cargo install --git https://github.com/LapilliWorks/retype retype-cli`
-- A converter for each format you use. Retype converts nothing by itself; [The default tools](#the-default-tools) lists the ones it expects, and `retype doctor` reports which it finds
+- A converter for each format that needs one. ZIP and TAR repacking is native; [The default tools](#the-default-tools) lists external tools, and `retype doctor` reports which it finds
 
 ## The default tools
 
@@ -27,15 +27,13 @@ Install them with the platform's package manager:
 
 | Platform | Install |
 |---|---|
-| Debian, Ubuntu | `sudo apt install imagemagick ffmpeg pandoc 7zip` |
-| Fedora | `sudo dnf install ImageMagick ffmpeg-free pandoc 7zip` |
-| Arch | `sudo pacman -S imagemagick ffmpeg pandoc 7zip` |
+| Current Debian stable | `sudo apt install imagemagick ffmpeg pandoc 7zip fonts-dejavu-core` |
 | macOS | `brew install imagemagick ffmpeg pandoc sevenzip` |
 | Windows | `winget install ImageMagick.ImageMagick Gyan.FFmpeg JohnMacFarlane.Pandoc 7zip.7zip` |
 
-A package manager can hand back a build that is installed and still not enough. Fedora's `ffmpeg-free` has no `libx264`, so it can write `webm` and not `mp4`. A distribution still on ImageMagick 6 installs `convert` instead of `magick`, and is below the floor. ImageMagick needs its libheif and WebP delegates for `heic`, `avif` and `webp`. `retype doctor` reports the version and build it found, names what is missing, and [Tools](advanced/converters.md) says what each one has to be.
+Linux support targets current Debian stable. Other distributions and Debian unstable may work but are outside the support commitment. A package manager can still hand back a converter missing a required codec; a build without `libx264` cannot write the shipped MP4 defaults, and ImageMagick 6 is below the floor. ImageMagick needs its libheif and WebP delegates for `heic`, `avif` and `webp`. `retype doctor` reports the version and build it found, names what is missing, and [Tools](advanced/converters.md) says what each one has to be.
 
-Two more programs are optional, because they change one result rather than every conversion. A document to `pdf` needs a PDF engine, resolved in this order: `typst`, then `xelatex`, `lualatex` or `pdflatex`, then `weasyprint`, then `wkhtmltopdf`. A `.rar` archive needs `unrar` to be read. Neither is part of the default set.
+Two more programs are optional, because they change one result rather than every conversion. A document to `pdf` needs a PDF engine, resolved in this order: `typst`, then `xelatex`, `lualatex` or `pdflatex`, then `weasyprint`, then `wkhtmltopdf`. Debian 13's older Pandoc 3.1.11.1 is incompatible with Typst 0.15.1 (`font fallback list must not be empty`); install an older Typst alongside the current one and pin its path. [Older Pandoc and Typst](advanced/converters.md#older-pandoc-and-typst) shows the download, verification and configuration commands. A `.rar` archive needs `unrar` to be read. Neither is part of the default set.
 
 ## Convert one file
 
@@ -73,13 +71,17 @@ Neither writes anything. The plan it prints is the one that would run, with the 
 
 ## Do it by renaming
 
-Register a folder once, then rename inside it as usual, from any file manager:
+Start watching a folder:
 
 ```
 retype watch ~/Pictures
 ```
 
-Nothing already in the folder is touched. From then on, renaming `photo.heic` to `photo.jpg` in that folder converts it, and renaming it to `photo.webp+q80` converts it with a quality setting. Registrations survive a restart, and a rename that would take a long time stops and waits rather than running unattended, which is what [Deferral](advanced/deferral.md) is about.
+The command starts or reaches the daemon, reports each folder's state and follows its activity. Wait for `ready`, then try a disposable copy. `Ctrl+C` detaches the client and leaves the daemon and registrations intact. `--no-spawn` and `RETYPE_NO_SPAWN` suppress startup. Scripts can use `retype watch ~/Pictures --register` to register and return without starting a daemon, then explicitly start it and check readiness with `retype --no-spawn daemon status`.
+
+Readiness means the watcher started and its initial scan finished; it cannot guarantee every later filesystem event. A stopped daemon cannot observe renames.
+
+Nothing already in the folder is converted. While watching is active, renaming `photo.heic` to `photo.jpg` requests a conversion, and `photo.webp+q80` adds a quality setting. Registrations survive a restart; [Deferral](advanced/deferral.md) describes jobs that wait.
 
 ## Take it back
 
@@ -87,7 +89,7 @@ Nothing already in the folder is touched. From then on, renaming `photo.heic` to
 retype undo --last
 ```
 
-Every conversion keeps what it needs in order to be reversed for a week by default, including the source bytes when the rename is what consumed the source name. [Jobs, undo and history](usage/jobs.md) covers the queue, the settings behind that week, and what happens when a record has aged out.
+Undo records have a one-week retention by default when a record is successfully created. Undo can be disabled or unavailable, and Windows currently refuses destructive output cleanup. Check the job and undo record rather than assuming every conversion is reversible; keep an independent backup. [Jobs, undo and history](usage/jobs.md) covers the queue and retention settings.
 
 ## The manual
 

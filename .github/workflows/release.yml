@@ -13,6 +13,7 @@ jobs:
     name: verify tag
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - name: Tag matches the workspace version
@@ -26,9 +27,19 @@ jobs:
             exit 1
           }
 
+  debian:
+    name: Debian stable build and installed verification
+    uses: ./.github/workflows/debian.yml
+
+  native:
+    name: native verification
+    uses: ./.github/workflows/native.yml
+
   build:
     name: build (${{ matrix.target }})
+    needs: [native]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -37,34 +48,34 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            build: container
-            container: rust:1.85-bullseye
-            binary: retype
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            build: container
-            container: rust:1.85-bullseye
-            binary: retype
           - runner: macos-15-intel
             target: x86_64-apple-darwin
+            evidence: macos-arm64
             build: cargo
             binary: retype
           - runner: macos-15
             target: aarch64-apple-darwin
+            evidence: macos-arm64
             build: cargo
             binary: retype
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
+            evidence: windows-x86_64
             build: cargo
             binary: retype.exe
           - runner: windows-latest
             target: aarch64-pc-windows-msvc
+            evidence: windows-x86_64
             build: cargo
             binary: retype.exe
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download earned fidelity evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: native-${{ matrix.evidence }}
+          path: target/native-evidence
 
       - name: Version
         id: version
@@ -74,7 +85,7 @@ jobs:
             version=$GITHUB_REF_NAME
             release=true
           else
-            version=dev-$(printf '%s' "$GITHUB_SHA" | cut -c1-7)
+            version=v0.1.0-dev-$(printf '%s' "$GITHUB_SHA" | cut -c1-7)
             release=false
           fi
           printf 'version=%s\nrelease=%s\n' "$version" "$release" >> "$GITHUB_OUTPUT"
@@ -86,25 +97,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         if: matrix.build == 'cargo'
-
-      - name: Build (Linux, glibc 2.31)
-        if: matrix.build == 'container'
-        shell: bash
-        run: |
-          set -euo pipefail
-          out="$PWD/target/dist"
-          mkdir -p "$out"
-          docker run --rm \
-            --user "$(id -u):$(id -g)" \
-            --env HOME=/tmp \
-            --env CARGO_HOME=/tmp/cargo \
-            --env CARGO_TARGET_DIR=/tmp/target \
-            --volume "$PWD:/src:ro" \
-            --volume "$out:/out" \
-            --workdir /src \
-            "${{ matrix.container }}" \
-            bash -c 'cargo build --release --locked -p retype-cli --bin retype && cp /tmp/target/release/retype /out/retype'
-          "$out/retype" --version
 
       - name: Build
         if: matrix.build == 'cargo'
@@ -130,12 +122,9 @@ jobs:
           else
             cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/$name/bin/${{ matrix.binary }}"
           fi
-          # Earned by `retype fidelity --write share/retype/fidelity.toml`, and
-          # checked in, so every archive ships the same claims the release notes
-          # describe. Absent until the first release run.
-          if [ -f share/retype/fidelity.toml ]; then
-            cp share/retype/fidelity.toml "dist/$name/share/retype/fidelity.toml"
-          fi
+          # Evidence names the tested tool builds; a different installed build reports unverified.
+          test -s target/native-evidence/fidelity.toml
+          cp target/native-evidence/fidelity.toml "dist/$name/share/retype/fidelity.toml"
           if [ -d fixtures/fidelity ]; then
             mkdir -p "dist/$name/share/retype/fixtures/fidelity"
             cp -R fixtures/fidelity/. "dist/$name/share/retype/fixtures/fidelity/"
@@ -170,16 +159,20 @@ jobs:
   checks:
     name: checks
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run release workspace tests
+        timeout-minutes: 10
+        run: RETYPE_TEST_SESSION=terminal cargo test --workspace --locked --no-fail-fast
       - run: bash -n packaging/install.sh
-      - run: bash scripts/test-install.sh
+      - run: bash tests/install.sh
+      - run: timeout --kill-after=5s 30s bash tests/release.sh
       - run: test -s packaging/install.ps1
       - name: Parse PowerShell installer
         shell: pwsh
@@ -189,30 +182,48 @@ jobs:
           [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'packaging/install.ps1').Path, [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
 
-  publish:
-    name: publish release
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [verify, build, checks]
+  package:
+    name: assemble release assets
+    needs: [build, debian]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          pattern: retype-*
           path: dist
           merge-multiple: true
-      - name: Assemble release assets
-        run: |
-          set -euo pipefail
-          cp packaging/install.sh dist/install.sh
-          cp packaging/install.ps1 dist/install.ps1
-          cd dist
-          sha256sum *.tar.gz install.sh install.ps1 > SHA256SUMS
-          for file in *.tar.gz install.sh install.ps1; do
-            sha256sum "$file" > "$file.sha256"
-          done
-          sha256sum -c SHA256SUMS
+      - name: Verify and assemble release assets
+        run: bash scripts/assemble-release.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/install.sh
+            dist/install.ps1
+            dist/install.sh.sha256
+            dist/install.ps1.sha256
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [verify, package, checks, native, debian]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+      - name: Verify release assets
+        run: cd dist && sha256sum --check SHA256SUMS
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -221,9 +232,12 @@ jobs:
           set -euo pipefail
           prerelease=''
           case "$TAG" in *-*) prerelease='--prerelease' ;; esac
+          assets=(dist/*.tar.gz dist/*.tar.gz.sha256 dist/install.sh dist/install.ps1
+            dist/install.sh.sha256 dist/install.ps1.sha256 dist/SHA256SUMS)
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
+            # A retry must not replace an existing published asset.
+            gh release upload "$TAG" "${assets[@]}"
           else
             # shellcheck disable=SC2086
-            gh release create "$TAG" dist/* --title "$TAG" --generate-notes $prerelease
+            gh release create "$TAG" "${assets[@]}" --title "$TAG" --generate-notes $prerelease
           fi

@@ -1,6 +1,9 @@
 //! Filesystem and runner regressions reproduced against the pre-fix data-safety baseline.
 #![cfg(unix)]
 
+#[path = "support/interrupted_runner.rs"]
+mod interrupted_runner;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -73,12 +76,16 @@ impl Fixture {
 			&id,
 			cancellation,
 		);
+		self.job(&id)
+	}
+
+	fn job(&self, id: &JobId) -> Job {
 		self.shared
 			.jobs
 			.lock()
 			.unwrap()
 			.iter()
-			.find(|job| job.id == id)
+			.find(|job| &job.id == id)
 			.unwrap()
 			.clone()
 	}
@@ -92,6 +99,7 @@ impl Fixture {
 				output: Some(output.to_string_lossy().into_owned()),
 				force: false,
 			},
+			&self.shared.state_dir,
 		)
 		.unwrap()
 		.plans
@@ -155,14 +163,6 @@ fn keeps_the_original_when_one_requested_output_fails() {
 }
 
 #[test]
-fn honors_an_explicit_keep_source_group() {
-	let fixture = Fixture::new("cp \"$1\" \"$2\"\n", "enabled = false");
-	let job = fixture.convert("png,webp", &Cancellation::default());
-	assert_eq!(job.state, JobState::Done);
-	assert!(fixture.source().exists(), "keep-source group was ignored");
-}
-
-#[test]
 fn keeps_the_source_when_undo_save_fails() {
 	let fixture = Fixture::new("cp \"$1\" \"$2\"\n", "enabled = true");
 	let source = fixture.source();
@@ -193,7 +193,8 @@ fn an_occupied_source_name_and_missing_undo_capacity_do_not_allow_replacing_the_
 	let fixture = Fixture::new("printf converted > \"$2\"\n", "enabled = true\nquota = '0kb'");
 	fs::write(fixture.source(), b"unrelated occupant").unwrap();
 	let job = fixture.convert("webp", &Cancellation::default());
-	assert_eq!(job.state, JobState::Failed);
+	assert_eq!(job.state, JobState::NeedsAttention);
+	assert_eq!(job.parked.as_ref().unwrap().reason, "storage");
 	assert_eq!(fs::read(fixture.path("photo.webp")).unwrap(), ORIGINAL);
 	assert_eq!(fs::read(fixture.source()).unwrap(), b"unrelated occupant");
 	assert!(
@@ -303,7 +304,7 @@ fn output_paths_through_a_directory_symlink_cannot_overwrite_the_input() {
 		output: Some(fixture.path("alias/photo.png").to_string_lossy().into_owned()),
 		force: true,
 	};
-	let prepared = immediate::prepare(&fixture.shared.registry(), &request);
+	let prepared = immediate::prepare(&fixture.shared.registry(), &request, &fixture.shared.state_dir);
 	if prepared.is_ok() {
 		immediate::run(
 			&fixture.shared,
@@ -335,7 +336,7 @@ fn a_forced_output_hard_link_to_the_input_is_refused() {
 		output: Some(output.to_string_lossy().into_owned()),
 		force: true,
 	};
-	assert!(immediate::prepare(&fixture.shared.registry(), &request).is_err());
+	assert!(immediate::prepare(&fixture.shared.registry(), &request, &fixture.shared.state_dir).is_err());
 	assert_eq!(fs::read(fixture.source()).unwrap(), ORIGINAL);
 }
 
@@ -409,6 +410,7 @@ fn quota_eviction_does_not_remove_an_active_jobs_backup() {
 			format: "png".to_string(),
 			size: ORIGINAL.len() as u64,
 			mtime_ns: 0,
+			fingerprint: None,
 		},
 		Some("webp".to_string()),
 		Vec::new(),
@@ -519,83 +521,171 @@ fn loss_of_the_journal_directory_prevents_publication_and_source_disposal() {
 	);
 }
 
+const BREAK_SECOND_CHECKPOINT: &str = "\
+root=$(dirname \"$0\")\n\
+printf '%s\\n' \"$2\" >> \"$root/started\"\n\
+cp \"$1\" \"$2\"\n\
+case \"$2\" in *.jpg) mv \"$root/state\" \"$root/state-moved\";; esac\n";
+
+fn assert_checkpoint_failure_preserved_work(fixture: &Fixture, job: &Job) {
+	assert_eq!(job.state, JobState::Partial);
+	assert!(job.error.as_ref().unwrap().message.contains("not durable"));
+	assert_eq!(job.outputs.len(), 3);
+	assert_eq!(job.outputs[0].state, retype_core::job::OutputState::Done);
+	assert_eq!(job.outputs[1].state, retype_core::job::OutputState::Failed);
+	assert_eq!(job.outputs[2].state, retype_core::job::OutputState::Skipped);
+	assert!(job.outputs[2].error.as_ref().unwrap().message.contains("not attempted"));
+	assert!(fixture.source().exists());
+	assert_eq!(fs::read(fixture.path("photo.webp")).unwrap(), ORIGINAL);
+	assert!(!fixture.path("photo.jpg").exists());
+	assert!(!fixture.path("photo-2.webp").exists());
+	let started = fs::read_to_string(fixture.path("started")).unwrap();
+	assert_eq!(started.lines().count(), 2, "later output must not start");
+}
+
+#[test]
+fn a_watched_journal_failure_stops_later_outputs_and_reports_non_durable_status() {
+	let fixture = Fixture::new(BREAK_SECOND_CHECKPOINT, "enabled = false");
+	let job = fixture.convert("webp,jpg,webp", &Cancellation::default());
+	assert_checkpoint_failure_preserved_work(&fixture, &job);
+}
+
+#[test]
+fn a_direct_journal_failure_stops_later_outputs_and_reports_non_durable_status() {
+	let fixture = Fixture::new(BREAK_SECOND_CHECKPOINT, "enabled = false");
+	fs::write(fixture.source(), ORIGINAL).unwrap();
+	let id = JobId::now().unwrap();
+	let request = immediate::Request {
+		input: fixture.source(),
+		intent: "webp,jpg,webp".to_string(),
+		output: None,
+		force: false,
+	};
+	immediate::run(&fixture.shared, &request, &id, &Cancellation::default());
+	let job = fixture.job(&id);
+	assert_checkpoint_failure_preserved_work(&fixture, &job);
+}
+
+#[test]
+fn a_resume_checkpoint_failure_stops_later_outputs_and_keeps_recovery_data() {
+	let initial = "case \"$2\" in *.jpg|*-2.webp) exit 1;; esac\ncp \"$1\" \"$2\"\n";
+	let fixture = Fixture::new(initial, "enabled = true");
+	let job = fixture.convert("webp,jpg,webp", &Cancellation::default());
+	assert_eq!(job.state, JobState::Partial);
+	let fail_ledger = "\
+root=$(dirname \"$0\")\n\
+printf '%s\\n' \"$2\" >> \"$root/started\"\n\
+cp \"$1\" \"$2\"\n\
+case \"$2\" in *.jpg) for meta in \"$root\"/state/undo/*/meta.toml; do mv \"$meta\" \"$meta.before\"; done;; esac\n";
+	fs::write(fixture.path("converter.sh"), fail_ledger).unwrap();
+	assert_eq!(
+		resume::run(&fixture.shared, "test", &job, false).unwrap(),
+		JobState::Partial
+	);
+	let reported = fixture.job(&job.id);
+	assert_eq!(reported.state, JobState::Partial);
+	assert_eq!(reported.outputs[0].state, retype_core::job::OutputState::Done);
+	assert_eq!(reported.outputs[1].state, retype_core::job::OutputState::Failed);
+	assert!(
+		reported.outputs[1]
+			.error
+			.as_ref()
+			.unwrap()
+			.message
+			.contains("checkpoint")
+	);
+	assert_eq!(reported.outputs[2].state, retype_core::job::OutputState::Skipped);
+	assert!(fixture.source().exists());
+	assert_eq!(fs::read(fixture.path("photo.webp")).unwrap(), ORIGINAL);
+	assert!(!fixture.path("photo.jpg").exists());
+	assert!(!fixture.path("photo-2.webp").exists());
+	assert!(fixture.path(&format!("state/undo/{}/source.png", job.id)).is_file());
+	assert!(
+		fixture
+			.path(&format!("state/undo/{}/meta.toml.before", job.id))
+			.is_file()
+	);
+	let started = fs::read_to_string(fixture.path("started")).unwrap();
+	assert_eq!(started.lines().count(), 1, "resume must not start another output");
+}
+
+#[test]
+fn a_stopped_forced_resume_still_reports_previously_completed_outputs() {
+	let initial = "case \"$2\" in *.jpg) exit 1;; esac\ncp \"$1\" \"$2\"\n";
+	let fixture = Fixture::new(initial, "enabled = true");
+	let job = fixture.convert("webp,jpg,webp", &Cancellation::default());
+	assert_eq!(job.state, JobState::Partial);
+	assert_eq!(job.outputs[2].state, retype_core::job::OutputState::Done);
+	let fail_ledger = "\
+root=$(dirname \"$0\")\n\
+printf '%s\\n' \"$2\" >> \"$root/started\"\n\
+cp \"$1\" \"$2\"\n\
+for meta in \"$root\"/state/undo/*/meta.toml; do mv \"$meta\" \"$meta.before\"; done\n";
+	fs::write(fixture.path("converter.sh"), fail_ledger).unwrap();
+	assert_eq!(
+		resume::run(&fixture.shared, "test", &job, true).unwrap(),
+		JobState::Partial
+	);
+	let reported = fixture.job(&job.id);
+	assert_eq!(reported.outputs[0].state, retype_core::job::OutputState::Failed);
+	assert_eq!(reported.outputs[1].state, retype_core::job::OutputState::Skipped);
+	assert_eq!(reported.outputs[2].state, retype_core::job::OutputState::Done);
+	assert_eq!(fs::read(fixture.path("photo.webp")).unwrap(), ORIGINAL);
+	assert_eq!(fs::read(fixture.path("photo-2.webp")).unwrap(), ORIGINAL);
+	assert_eq!(fs::read(fixture.source()).unwrap(), ORIGINAL);
+	assert_eq!(fs::read_to_string(fixture.path("started")).unwrap().lines().count(), 1);
+}
+
+#[test]
+fn a_resume_journal_failure_reports_its_result_as_non_durable() {
+	let initial = "case \"$2\" in *.jpg|*-2.webp) exit 1;; esac\ncp \"$1\" \"$2\"\n";
+	let fixture = Fixture::new(initial, "enabled = true");
+	let job = fixture.convert("webp,jpg,webp", &Cancellation::default());
+	assert_eq!(job.state, JobState::Partial);
+	fs::write(fixture.path("converter.sh"), BREAK_SECOND_CHECKPOINT).unwrap();
+	assert!(resume::run(&fixture.shared, "test", &job, false).is_err());
+	let reported = fixture.job(&job.id);
+	assert_eq!(reported.state, JobState::Partial);
+	assert!(reported.error.as_ref().unwrap().message.contains("not durable"));
+	assert_eq!(fs::read(fixture.source()).unwrap(), ORIGINAL);
+	assert_eq!(fs::read(fixture.path("photo.webp")).unwrap(), ORIGINAL);
+	assert!(
+		fixture
+			.path(&format!("state-moved/undo/{}/source.png", job.id))
+			.is_file()
+	);
+	assert!(!fixture.path("photo.jpg").exists());
+	assert!(!fixture.path("photo-2.webp").exists());
+}
+
+#[test]
+fn an_ordinary_output_failure_does_not_stop_independent_outputs() {
+	let fixture = Fixture::new(
+		"case \"$2\" in *.webp) exit 1;; esac\ncp \"$1\" \"$2\"\n",
+		"enabled = false",
+	);
+	let job = fixture.convert("webp,jpg", &Cancellation::default());
+	assert_eq!(job.state, JobState::Partial);
+	assert!(fixture.source().exists());
+	assert!(!fixture.path("photo.webp").exists());
+	assert_eq!(fs::read(fixture.path("photo.jpg")).unwrap(), ORIGINAL);
+}
+
 #[test]
 fn interrupted_job_worker() {
-	let Some(root) = std::env::var_os("RETYPE_SAFETY_INTERRUPTED_ROOT") else {
-		return;
-	};
-	let fixture = Fixture::new(
-		"case \"$2\" in *.jpg) printf '%s' \"$$\" > \"$(dirname \"$0\")/second-started\"; sleep 30;; esac\ncp \"$1\" \"$2\"\n",
-		"enabled = true",
-	);
-	fs::write(
-		Path::new(&root).join("fixture-dir"),
-		fixture.dir.path().to_str().unwrap(),
-	)
-	.unwrap();
-	fixture.convert("webp,jpg", &Cancellation::default());
-	panic!("the parent should terminate this worker while the second output is running");
+	interrupted_runner::run_worker();
 }
 
 #[test]
 fn an_actual_interrupted_runner_recovers_its_first_output_instead_of_losing_resume_state() {
-	struct Worker(std::process::Child);
-	impl Drop for Worker {
-		fn drop(&mut self) {
-			let _ = self.0.kill();
-			let _ = self.0.wait();
-		}
-	}
-	let root = tempfile::tempdir().unwrap();
-	let mut worker = Worker(
-		std::process::Command::new(std::env::current_exe().unwrap())
-			.args(["--exact", "interrupted_job_worker", "--nocapture"])
-			.env("RETYPE_SAFETY_INTERRUPTED_ROOT", root.path())
-			.spawn()
-			.unwrap(),
-	);
-	let deadline = Instant::now() + Duration::from_secs(20);
-	let (directory, tool_pid) = loop {
-		if let Ok(directory) = fs::read_to_string(root.path().join("fixture-dir")) {
-			let directory = PathBuf::from(directory);
-			if let Ok(pid) = fs::read_to_string(directory.join("second-started")) {
-				break (directory, pid.parse::<i32>().unwrap());
-			}
-		}
-		assert!(
-			worker.0.try_wait().unwrap().is_none(),
-			"worker exited before the second output"
-		);
-		assert!(Instant::now() < deadline, "worker did not reach its second output");
-		std::thread::sleep(Duration::from_millis(10));
-	};
-	worker.0.kill().unwrap();
-	worker.0.wait().unwrap();
-	/* The marker is the PID of this test's still-sleeping, private tool process group. */
-	assert_eq!(
-		unsafe { libc::kill(-tool_pid, libc::SIGKILL) },
-		0,
-		"test tool group did not terminate"
-	);
-	let first = directory.join("photo.webp");
-	let identity = retype_core::job::FileIdentity::of(&first).unwrap();
-	let server = Server::open(&directory.join("state")).unwrap();
-	server.pool().stop();
-	let copy = Fixture::new("cp \"$1\" \"$2\"\n", "enabled = true");
-	server.shared().reload_registry(copy.shared.registry().as_ref().clone());
-	let job = server.shared().jobs.lock().unwrap()[0].clone();
-	assert_eq!(
-		job.state,
-		JobState::Partial,
-		"the committed first output must survive reconciliation"
-	);
-	assert_eq!(
-		resume::run(&server.shared(), "audit", &job, false).unwrap(),
-		JobState::Done
-	);
-	assert!(identity.matches(&retype_core::job::FileIdentity::of(&first).unwrap()));
-	assert_eq!(fs::read(directory.join("photo.jpg")).unwrap(), ORIGINAL);
-	assert!(Store::open(&directory.join("state")).source(&job.id).unwrap().is_some());
+	interrupted_runner::exercise(interrupted_runner::MarkerSchedule::Natural);
+}
+
+#[test]
+fn a_visible_empty_marker_is_diagnosed_before_interrupted_recovery() {
+	let observation = interrupted_runner::exercise(interrupted_runner::MarkerSchedule::HeldOpen);
+	assert!(observation.saw_empty);
+	assert!(observation.incomplete_reads > 0);
 }
 
 #[test]

@@ -8,7 +8,7 @@ A group with one member is not declared: repeating one operation is `E_DUPLICATE
 
 ## 1. Name space
 
-Reserved keys, all phases. Keys are permanent; a key is never reused for a different meaning.
+Reserved keys, all phases. Keys are permanent; a key is never reused for a different meaning. `keep` is a job-wide control, not an encoder operation; it preserves the original and may not be redeclared as an operation or preset.
 
 | Key | Name | Slot | Exclusive | Parameter | Status |
 |---|---|---|---|---|---|
@@ -154,4 +154,4 @@ tokens = ['cap={value}', 'quality85']
 tokens = ['crop1x1', 'cap1024', 'quality80', 'nometa']
 ```
 
-Presets MUST expand to a conflict-free token set at load; a preset that cannot satisfy its own exclusivity rules fails to load. A preset MUST NOT contain `ask` or `now`.
+Presets MUST expand to a conflict-free token set at load; a preset that cannot satisfy its own exclusivity rules fails to load. A preset MUST NOT contain `ask`, `now` or `keep`.

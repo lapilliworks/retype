@@ -148,6 +148,27 @@ axes = ['alpha']
 }
 
 #[test]
+fn a_release_selection_fails_if_only_some_pairs_can_be_checked() {
+	let fixture = Fixture::new();
+	let config = fs::read_to_string(&fixture.config)
+		.unwrap()
+		.replace("tier = 'exact'", "tier = 'converted'");
+	fs::write(
+		&fixture.config,
+		format!("{config}\n[formats.other]\nfamily = 'audio'\ndirection = 'decode'\nlossy = false\nalpha = false\ntier = 'converted'\n"),
+	)
+	.unwrap();
+	fs::write(
+		fixture.fixtures.join("fixtures.toml"),
+		"version = 'retype-fixtures-1'\n",
+	)
+	.unwrap();
+	let output = fixture.run(&["--pair", "png:other"]);
+	assert_eq!(output.status.code(), Some(4));
+	assert!(String::from_utf8_lossy(&output.stdout).contains("1 pair(s) checked"));
+}
+
+#[test]
 fn a_run_earns_a_claim_and_records_the_build() {
 	let fixture = Fixture::new();
 	if skip_if_no_decoder(&fixture.fixtures) {

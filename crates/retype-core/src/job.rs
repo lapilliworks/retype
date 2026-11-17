@@ -179,6 +179,8 @@ pub struct Source {
 	pub format: String,
 	pub size: u64,
 	pub mtime_ns: i64,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub fingerprint: Option<crate::safety::Fingerprint>,
 }
 
 /// One output of a job, and how far it got.
@@ -190,6 +192,8 @@ pub struct Output {
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub bytes: Option<u64>,
 	pub tier: Tier,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub fidelity: Option<crate::fidelity::Evidence>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub identity: Option<FileIdentity>,
 	/// The tail of what the tool printed. The full output is in
@@ -208,6 +212,7 @@ impl Output {
 			state: OutputState::Pending,
 			bytes: None,
 			tier,
+			fidelity: None,
 			identity: None,
 			stderr: None,
 			error: None,
@@ -274,18 +279,28 @@ impl FileIdentity {
 		#[cfg(windows)]
 		{
 			let (volume, file, wide) = windows_file_id(path)?;
-			let width = if wide { 32 } else { 16 };
-
-			Some(Self::Windows {
-				volume,
-				file: format!("{file:0width$x}"),
-			})
+			Some(Self::from_windows_id(volume, file, wide))
 		}
 
 		#[cfg(not(any(unix, windows)))]
 		{
 			let _ = path;
 			None
+		}
+	}
+
+	#[cfg(windows)]
+	pub(crate) fn of_open_file(file: &std::fs::File) -> Option<Self> {
+		let info = windows_file_info_from_file(file)?;
+		Some(Self::from_windows_id(info.volume, info.file, info.wide))
+	}
+
+	#[cfg(windows)]
+	fn from_windows_id(volume: u64, file: u128, wide: bool) -> Self {
+		let width = if wide { 32 } else { 16 };
+		Self::Windows {
+			volume,
+			file: format!("{file:0width$x}"),
 		}
 	}
 
@@ -336,22 +351,29 @@ pub(crate) struct WindowsFileInfo {
 
 #[cfg(windows)]
 pub(crate) fn windows_file_info(path: &std::path::Path) -> Option<WindowsFileInfo> {
-	use std::ffi::c_void;
-	use std::mem::size_of;
 	use std::os::windows::fs::OpenOptionsExt;
-	use std::os::windows::io::AsRawHandle;
 
-	use windows_sys::Win32::Foundation::HANDLE;
-	use windows_sys::Win32::Storage::FileSystem::{
-		BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
-		GetFileInformationByHandle, GetFileInformationByHandleEx,
-	};
+	use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
 
 	let file = std::fs::OpenOptions::new()
 		.read(true)
 		.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
 		.open(path)
 		.ok()?;
+	windows_file_info_from_file(&file)
+}
+
+#[cfg(windows)]
+fn windows_file_info_from_file(file: &std::fs::File) -> Option<WindowsFileInfo> {
+	use std::ffi::c_void;
+	use std::mem::size_of;
+	use std::os::windows::io::AsRawHandle;
+
+	use windows_sys::Win32::Foundation::HANDLE;
+	use windows_sys::Win32::Storage::FileSystem::{
+		BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO, FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+	};
+
 	let handle = file.as_raw_handle() as HANDLE;
 
 	let mut basic: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
@@ -433,6 +455,16 @@ pub struct Parked {
 	/// rename asked for and false for one a client submitted.
 	#[serde(default)]
 	pub consume: bool,
+	/// Whether the confirmed resolution permits replacing existing outputs.
+	#[serde(default, skip_serializing_if = "is_false")]
+	pub force: bool,
+	/// Identity and content captured before the request was parked.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub input_fingerprint: Option<crate::safety::Fingerprint>,
+}
+
+fn is_false(value: &bool) -> bool {
+	!*value
 }
 
 /// What a job is expected to cost, `docs/dev/architecture/state.md` §7.
@@ -440,6 +472,22 @@ pub struct Parked {
 pub struct Cost {
 	pub ms: u64,
 	pub bytes: u64,
+}
+
+/// What happened to the visible original after a successful conversion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum SourceDisposition {
+	/// Completion is durable, but disposal and its outcome may not be.
+	Pending,
+	Kept,
+	Removed,
+	Retained {
+		reason: String,
+	},
+	Unresolved {
+		reason: String,
+	},
 }
 
 /// One job, at one moment.
@@ -464,10 +512,15 @@ pub struct Job {
 	/// Present when the job is parked or was repaired, `docs/deferral.md` §11.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub parked: Option<Parked>,
-	/// Whether the job removes its source when it commits: true for a rename,
-	/// false for a client submission, `docs/dev/architecture/state.md` §5.
+	/// Whether the request permits source removal after all safety checks.
 	#[serde(default)]
 	pub consume_source: bool,
+	/// Absent until source disposition has been recorded, or in older jobs.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub source_disposition: Option<SourceDisposition>,
+	/// Initial file identity and metadata while cancellable preparation captures its digest.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub admission: Option<crate::safety::InputStamp>,
 }
 
 impl Job {
@@ -495,6 +548,8 @@ impl Job {
 			error: None,
 			parked: None,
 			consume_source: false,
+			source_disposition: None,
+			admission: None,
 		})
 	}
 
@@ -577,6 +632,7 @@ mod tests {
 			format: "heic".to_string(),
 			size: 2_431_002,
 			mtime_ns: 1_690_000_000_000,
+			fingerprint: None,
 		}
 	}
 
@@ -703,6 +759,8 @@ mod tests {
 			corrected: None,
 			dropped: Vec::new(),
 			consume: true,
+			force: false,
+			input_fingerprint: None,
 		});
 
 		let line = job.to_line().expect("a record");
@@ -728,6 +786,19 @@ mod tests {
 			"intent":"jpg","outputs":[],"state":"done","backend":null,"machine":"m","error":null}"#;
 		let read: Job = serde_json::from_str(old).expect("a job from an older journal");
 		assert!(read.parked.is_none());
+		assert!(read.source_disposition.is_none());
+	}
+
+	#[test]
+	fn source_disposition_round_trips_as_part_of_a_job() {
+		let mut job = job();
+		job.source_disposition = Some(SourceDisposition::Retained {
+			reason: "missing validator".to_string(),
+		});
+		let record = job.to_record().unwrap();
+		assert_eq!(record["source_disposition"]["state"], "retained");
+		assert_eq!(record["source_disposition"]["reason"], "missing validator");
+		assert_eq!(serde_json::from_value::<Job>(record).unwrap(), job);
 	}
 
 	#[test]

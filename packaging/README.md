@@ -8,8 +8,7 @@ a pre-release archive and a `curl | bash` installer for the CLI and daemon only.
 ## Asset layout
 
 Every archive is named `retype-<tag>-<target>.tar.gz` and contains `bin/retype`
-(`retype.exe` on Windows) and, when the release run has earned them, these shared
-assets:
+(`retype.exe` on Windows) and these shared assets:
 
 ```
 share/retype/fidelity.toml
@@ -18,33 +17,34 @@ share/retype/packaging/
 ```
 
 `retype why` and `retype fidelity` look in `<prefix>/share/retype`; a packaged
-build therefore reads the shipped claims rather than a source tree. The manifest
-is produced in the checkout by:
+build therefore reads the shipped claims rather than a source tree. The native verification workflow earns `png:jpg` and `png:webp` claims with real tools and property fixtures, and retains `fidelity.toml` and its log in the platform report. Every selected pair must succeed. Archive builds wait for that gate and require the downloaded evidence manifest; a missing manifest fails assembly.
+
+The manifest names the tested backend and engine builds. Each Linux archive carries evidence earned by its own Debian architecture's release executable. macOS archives carry the Apple Silicon run, and Windows archives carry the Windows x86-64 run. This is conditional tool evidence, not native qualification of every artifact architecture or OS floor. An installed build whose version or fingerprint differs reports `unverified`. No untested architecture inherits a native execution claim.
+
+To earn additional local claims:
 
 ```
-retype fidelity --write share/retype/fidelity.toml --render docs/advanced/fidelity.md
+retype fidelity --pair png:jpg --pair png:webp --write fidelity.toml
 ```
 
-It is checked in at `share/retype/fidelity.toml` and copied into every archive
-from there; a checkout without one ships archives without it.
-
-The release run must happen on the build machine whose tool builds are recorded
-in the manifest. A manifest earned elsewhere is reported `unverified`.
+Debian qualification can run independently of Windows/macOS failures and supports non-publishing manual dispatch. Cross-platform publication still requires Windows disposition/undo and all other native gates; generating a fidelity manifest does not bypass them.
 
 ## Release pipeline
+
+Current Debian stable is the Linux support baseline, currently Debian 13 (trixie), with glibc 2.41. The older Debian 11/glibc 2.31 target is retired. Other distributions may run the binary but do not carry a support commitment. Builds and converter evidence must be checked in the stable userspace.
 
 The release workflow builds every supported target from `docs/reference/platforms.md`:
 
 | Platform | Target | Build host |
 |---|---|---|
-| Linux x86_64 | `x86_64-unknown-linux-gnu` | Debian 11 container, glibc 2.31 |
-| Linux aarch64 | `aarch64-unknown-linux-gnu` | Debian 11 container on an arm64 runner, glibc 2.31 |
+| Linux x86_64 | `x86_64-unknown-linux-gnu` | Debian trixie container on x86-64 runner, exact archive installed and checked |
+| Linux aarch64 | `aarch64-unknown-linux-gnu` | Debian trixie container on ARM64 runner, exact archive installed and checked |
 | macOS x86_64 | `x86_64-apple-darwin` | `macos-15-intel` |
 | macOS aarch64 | `aarch64-apple-darwin` | `macos-15` |
 | Windows x86_64 | `x86_64-pc-windows-msvc` | `windows-latest` |
 | Windows aarch64 | `aarch64-pc-windows-msvc` | `windows-latest`, cross compiled |
 
-A tag push publishes the archives, per-archive `.sha256` files, `SHA256SUMS`,
+After native verification and required evidence succeed, a tag push publishes the archives, per-archive `.sha256` files, `SHA256SUMS`,
 `install.sh`, `install.ps1`, and GitHub build attestations. A manual dispatch
 builds the same archives without creating a release. The tag must match the
 workspace version in `Cargo.toml`.

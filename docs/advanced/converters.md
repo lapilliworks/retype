@@ -13,6 +13,8 @@ Retype converts nothing by itself. Every conversion is carried out by an externa
 
 A tool is installed with the platform's package manager and found on `PATH`, or managed by the GUI. [Quickstart](../README.md) has the install commands. `retype doctor` reports what is present, its version and its build, and names any component a format needs but the build lacks.
 
+For ImageMagick or FFmpeg JPEG output, independent output validation currently uses both `magick` and `ffmpeg` from `PATH`, regardless of the configured encoder path. If either is unavailable, the original is retained and the job and daemon log identify the missing validator. Validation checks readability, not fidelity.
+
 The defaults are not the whole story. A tool can be installed and still not carry a format, because the feature belongs to a build-time component rather than to the program:
 
 | Tool | What the build must have | Formats affected |
@@ -22,7 +24,7 @@ The defaults are not the whole story. A tool can be installed and still not carr
 | pandoc | A PDF engine | `pdf` output only |
 | 7-Zip | The unRAR code, or a separate `unrar` | `rar` input only |
 
-Fedora's `ffmpeg-free` has no `libx264`, so it produces `webm` but not `mp4`. A distribution still on ImageMagick 6 installs `convert` rather than `magick`, which is below the floor. `unrar` is not distributed with retype, so reading a `.rar` archive needs the user to install it.
+Current Debian stable is the supported Linux baseline. Other distributions are outside that support commitment; a build without `libx264` cannot produce the shipped MP4 defaults, and ImageMagick 6 is below the floor. `unrar` is not distributed with retype, so reading a `.rar` archive needs the user to install it.
 
 Two programs are optional because they change one result rather than every conversion. A document to `pdf` uses a PDF engine, and a `.rar` archive needs `unrar`. Neither is part of the default set.
 
@@ -137,6 +139,52 @@ When no candidate is present, the plan fails with `E_TOOL_MISSING` and names eve
 
 `typst` is a single binary and can be part of the managed set. `weasyprint` carries a Python and GTK stack and is never managed; it belongs to the system.
 
+### Older Pandoc and Typst
+
+Pandoc and its PDF engine must be compatible. Debian 13's Pandoc 3.1.11.1 fails with Typst 0.15.1 (`font fallback list must not be empty`). Keep Typst as the preferred engine and install an older version alongside it. The example below selects Typst 0.11.1; run the verification command before using the pair.
+
+On Linux, download the archive for your architecture from the [official Typst 0.11.1 release](https://github.com/typst/typst/releases/tag/v0.11.1):
+
+```sh
+(
+    set -eu
+    case "$(uname -m)" in
+        x86_64) typst_target=x86_64-unknown-linux-musl ;;
+        aarch64|arm64) typst_target=aarch64-unknown-linux-musl ;;
+        *) printf 'Select the matching archive from the Typst release page.\n' >&2; exit 1 ;;
+    esac
+    typst_version=0.11.1
+    typst_dir="$HOME/.local/lib/typst-$typst_version"
+    typst_download=$(mktemp -d)
+    trap 'rm -rf "$typst_download"' EXIT
+    curl -fL "https://github.com/typst/typst/releases/download/v$typst_version/typst-$typst_target.tar.xz" \
+        -o "$typst_download/typst.tar.xz"
+    tar -xJf "$typst_download/typst.tar.xz" -C "$typst_download"
+    mkdir -p "$typst_dir"
+    install -m 755 "$typst_download/typst-$typst_target/typst" "$typst_dir/typst"
+    "$typst_dir/typst" --version
+)
+```
+
+Verify Pandoc with the selected executable and a disposable document:
+
+```sh
+typst_check=$(mktemp -d)
+printf '# PDF check\n\nA paragraph and $x^2$.\n' > "$typst_check/check.md"
+pandoc "$typst_check/check.md" \
+    --pdf-engine="$HOME/.local/lib/typst-0.11.1/typst" \
+    -o "$typst_check/check.pdf"
+printf 'Inspect the PDF at %s/check.pdf\n' "$typst_check"
+```
+
+To use this copy in Retype, add its absolute path to your user configuration. This command prints the stanza with your home directory expanded; merge it with any existing PDF-engine setting:
+
+```sh
+printf '[tools.pandoc.engines]\npdf = ["%s"]\n' "$HOME/.local/lib/typst-0.11.1/typst"
+```
+
+Confirm the selected engine with `retype explain document.md pdf`. This pins the older engine for Retype without replacing the newer `typst` command used by other programs. Conversion errors remain visible; Retype does not switch engines after an incompatible engine fails.
+
 ## 6. What each tool is good for
 
 The following constraints come from the tools themselves. They are the reason a format can be listed and still fail on a particular machine.
@@ -174,8 +222,11 @@ The rules below apply when retype writes an archive, whether natively or through
 - An entry name must be relative and free of `..`. Backslashes are read as separators before that check, so a name that would escape under either convention is refused rather than copied into another container
 - A symbolic link refuses the archive, because carrying one turns a repack into a traversal for whoever unpacks it next
 - Directories, files and their permission bits are carried; devices, FIFOs and anything else are refused by name
+- Entry names that cannot be represented as UTF-8 without loss are refused
 - Every entry's declared size is checked against a budget before a byte is copied: 100,000 entries and 8 GiB of declared expansion
+- Tool listings are read from stdout, separately from stderr, and refused above 64 MiB
 - A PAX size override is authoritative over the raw header, and the bytes actually read must match it
+- Whole-second modification times are preserved. Fractional or negative PAX times, unrepresentable NTFS times and dates outside the target's timestamp range are refused rather than rounded; the original is retained
 - Names are written with `/` separators, so a zip made on Windows becomes a tarball a Unix can read
 - Entries keep the order the source lists them, so repacking one archive twice produces the same bytes
 - The staged output is reopened before publication and compared with the source inventory: every entry's name, kind, size and SHA-256 digest must agree

@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "support/journal.rs"]
+mod journal;
 mod support;
 
 fn retype() -> Command {
@@ -78,11 +80,13 @@ fn a_rename_in_a_watched_directory_is_converted() {
 	let dir = tempfile::tempdir().unwrap();
 	let photos = dir.path().join("photos");
 	fs::create_dir(&photos).unwrap();
+	let source = photos.join("holiday.png");
+	fs::write(&source, b"pixels").unwrap();
 	let state = dir.path().join("state");
 	let config = copy_config(dir.path());
 
 	let watched = retype()
-		.args(["watch", photos.to_str().unwrap()])
+		.args(["watch", "--register", photos.to_str().unwrap()])
 		.arg("--state-dir")
 		.arg(&state)
 		.output()
@@ -109,10 +113,7 @@ fn a_rename_in_a_watched_directory_is_converted() {
 		std::thread::sleep(Duration::from_millis(50));
 	}
 
-	let source = photos.join("holiday.png");
-	let before = support::observed(&state);
-	fs::write(&source, b"pixels").unwrap();
-	support::observe(&state, before);
+	support::ready(&state);
 	fs::rename(&source, photos.join("holiday.webp")).unwrap();
 
 	// The record is written after the bytes, so the wait covers both.
@@ -124,7 +125,16 @@ fn a_rename_in_a_watched_directory_is_converted() {
 		let converted = fs::read(&target).ok().as_deref() == Some(b"pixels".as_slice());
 		let recorded = fs::read_to_string(&journal_path).unwrap_or_default();
 
-		if converted && recorded.contains("\"state\":\"done\"") {
+		let jobs = journal::latest(&recorded);
+		if converted
+			&& jobs.len() == 1
+			&& jobs[0]["state"] == "done"
+			&& jobs[0]["source_disposition"]["state"] == "retained"
+		{
+			assert_eq!(
+				jobs[0]["source"]["path"],
+				source.canonicalize().unwrap().to_str().unwrap()
+			);
 			break recorded;
 		}
 
@@ -146,11 +156,13 @@ fn one_rename_with_two_outputs_converts_both() {
 	let dir = tempfile::tempdir().unwrap();
 	let photos = dir.path().join("photos");
 	fs::create_dir(&photos).unwrap();
+	let source = photos.join("holiday.png");
+	fs::write(&source, b"pixels").unwrap();
 	let state = dir.path().join("state");
 	let config = copy_config(dir.path());
 
 	let watched = retype()
-		.args(["watch", photos.to_str().unwrap()])
+		.args(["watch", "--register", photos.to_str().unwrap()])
 		.arg("--state-dir")
 		.arg(&state)
 		.output()
@@ -176,10 +188,7 @@ fn one_rename_with_two_outputs_converts_both() {
 		std::thread::sleep(Duration::from_millis(50));
 	}
 
-	let source = photos.join("holiday.png");
-	let before = support::observed(&state);
-	fs::write(&source, b"pixels").unwrap();
-	support::observe(&state, before);
+	support::ready(&state);
 	fs::rename(&source, photos.join("holiday.webp,jpg")).unwrap();
 
 	let first = photos.join("holiday.webp");
@@ -191,7 +200,14 @@ fn one_rename_with_two_outputs_converts_both() {
 		let both = fs::read(&first).is_ok() && fs::read(&second).is_ok();
 		let recorded = fs::read_to_string(&journal_path).unwrap_or_default();
 
-		if both && recorded.contains("\"state\":\"done\"") {
+		let jobs = journal::latest(&recorded);
+		if both && jobs.len() == 1 && jobs[0]["state"] == "done" && jobs[0]["source_disposition"]["state"] == "retained"
+		{
+			assert_eq!(
+				jobs[0]["source"]["path"],
+				source.canonicalize().unwrap().to_str().unwrap()
+			);
+			assert_eq!(jobs[0]["outputs"].as_array().unwrap().len(), 2);
 			break recorded;
 		}
 
@@ -201,6 +217,6 @@ fn one_rename_with_two_outputs_converts_both() {
 
 	assert_eq!(fs::read(&first).unwrap(), b"pixels");
 	assert_eq!(fs::read(&second).unwrap(), b"pixels");
-	assert!(journal.contains("\"state\":\"done\""), "{journal}");
+	assert_eq!(journal::latest(&journal)[0]["state"], "done", "{journal}");
 	assert!(source.exists(), "an unvalidated copy backend retains its source");
 }

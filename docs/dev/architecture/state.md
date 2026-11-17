@@ -17,6 +17,8 @@ retype/
   daemon.log                  output of an auto-started daemon
   daemon.sock                 IPC endpoint on Unix; a named pipe on Windows
   watches.toml                registered directories
+  lifecycle.json              boot identity, explicit-stop intent and restart budgets
+  recovery/                   durable recovery-operation requests and results
   bench.toml                  estimator calibration
   logs/
     <id>.log                  what the job's tool printed
@@ -33,7 +35,7 @@ retype/
 
 `endpoint` exists so that a client never derives the endpoint itself. On Unix the socket path is predictable, but on Windows it is a pipe name that includes the machine identity, and two places computing that name from a file that either of them may create is a race with a silent failure mode: the client waits three seconds for a name nobody listens on. The daemon publishes where it listens after it binds and removes the file when it stops, so a missing file means no daemon rather than an unknown one.
 
-Directory mode is `0700`, files `0600`. The store holds user data in plain form, so nothing here is world-readable.
+Directory mode is `0700`, metadata files `0600`. Retained snapshots remain behind owner-only directories even when copied access attributes affect their file permission bits. The store holds user data in plain form, so nothing here is publicly readable.
 
 The toolchain directory is owned by the GUI: it installs, updates and verifies the artifacts, while the CLI and daemon only read what is there. It holds executables, so its mode is `0700` on Unix. `tools/bin` is searched before `PATH`, `docs/advanced/converters.md` §2. An artifact is unpacked into its own directory and only then linked into `bin`, so an interrupted install cannot replace a working tool with a partial one.
 
@@ -77,34 +79,39 @@ One JSON object per line. Every line is self-contained and carries its own versi
 | `kind` | Record type; only `job` in version 1 |
 | `id` | ULID |
 | `created`, `updated` | Unix milliseconds |
-| `source` | Path, format, size, mtime in nanoseconds |
+| `source` | Path, format, size, mtime in nanoseconds and optional admitted input `fingerprint` |
 | `intent` | Canonical intent string, or null for a plain conversion |
-| `outputs` | Resolved outputs with format, per-output state, resulting size, tier, file identity and per-output error. `bytes`, `identity` and `error` are omitted until they exist, so a pending output is a path, a format, a state and a tier |
+| `outputs` | Resolved outputs with format, per-output state, resulting size, declared tier, optional assessed `fidelity`, file identity and per-output error. `bytes`, `identity` and `error` are omitted until they exist, so a pending output is a path, a format, a state and a tier |
 | `state` | `pending`, `queued`, `running`, `done`, `partial`, `failed`, `cancelled`, `superseded`, `needs-attention` |
 | `backend` | Backend name that ran or will run the job: a tool's name, or the codec's, such as `zip`, when this build wrote the file itself |
 | `machine` | Per-install identity |
 | `error` | Null, or `{code, message}` with a journal-level code such as `E_JOB_INTERRUPTED`, `E_JOB_SUPERSEDED` or `E_TOOL_FAILED` |
-| `parked` | Absent, or why the job is waiting and until when: `reason`, `deadline`, `batch`, `estimate`, `requested`, `corrected` and `dropped`, `docs/advanced/deferral.md` §11 |
-| `consume_source` | Whether the job may consume its source after the safety checks: true for a rename, false for `retype convert`. It is not proof that disposal happened |
+| `parked` | Absent, or its reason, deadline, batch, estimate, requested and corrected intent, dropped tokens, source disposition, input fingerprint and confirmed `force` choice |
+| `consume_source` | Whether the request permits source removal after safety checks; it is not proof that disposal happened |
+| `source_disposition` | Absent for older or unfinished jobs, otherwise `pending`, `kept`, `removed`, `retained` or `unresolved`, with a reason for retention or uncertainty |
+| `admission` | Optional initial file identity, size, modification and platform change metadata while a CLI worker captures the content digest; never authority to replay interrupted preparation |
 
 Per-output state is one of `pending`, `running`, `done`, `failed`. A `partial` job is one with at least one `done` and at least one not `done`, so the job state is derivable from its outputs and is stored anyway because a reader should not have to recompute it.
 
 A record is a full snapshot of the job at that transition, so replay is last-wins per id and no record depends on another. Snapshots are affordable because a job has a handful of transitions. Per-output publication checkpoints can carry a `done` output inside a `running` job; only the latest top-level job state establishes terminal completion.
 
-Initial publication holds the job-list mutex across journal append, synchronization and cache registration. IPC readers wait through that interval rather than returning `E_JOB_NOT_FOUND` for an already journaled job. Emit the event only after the snapshot is registered in the job list. A failed checkpoint is not published to the cache or event ring.
+CLI admission records identity/change metadata before journal publication and captures its content fingerprint in the worker; watched queues already retain their admitted fingerprint. Running snapshots retain the digest, and the worker compares it with the private working snapshot before preparing recovery or writing outputs. Parked requests retain their existing `parked.input_fingerprint`; legacy sources may omit the new field. An identity or content mismatch fails with `E_JOB_INTERRUPTED` without converting the replacement.
+
+Initial publication holds the job-list mutex across journal append, synchronization and cache registration. IPC readers wait through that interval rather than returning `E_JOB_NOT_FOUND` for an already journaled job. Emit the event only after the snapshot is registered in the job list. A failed running checkpoint can produce an explicitly non-durable failure in memory, but it does not start conversion.
 
 ## 4. Journal rules
 
 - Records are appended, never edited in place
 - Sync every appended snapshot and its parent directory where supported, including running output checkpoints and partial outcomes
+- After a journal write, sync or rewrite failure, refuse subsequent appends until reopening and recovery rather than extending a torn record or an old, replaced file
 - Require a durable recovery manifest and completion snapshot before source disposal
 - Line order defines time; wall-clock fields are informational
 - A trailing line that does not parse is a torn write and is dropped silently
-- A non-trailing line that does not parse is corruption: the file is moved to `jobs.jsonl.corrupt.<ts>`, a new journal is started, and the event is reported once. Records after the damage are still replayed, because losing jobs that are intact on disk would be a second failure on top of the first
+- A non-trailing line that does not parse is corruption: the file is copied without replacement to `jobs.jsonl.corrupt.<ts>`, then readable records are synced into a replacement journal. The damaged original remains in place until the replacement is ready; the event is reported once and records after the damage are still replayed
 - A line whose `v` is not the supported identifier is skipped and reported once, so a downgrade remains usable
 - Adding fields is compatible within an identifier. Removing or renaming a field requires a new identifier, and the previous one stays readable for one major release
 
-Compaction rewrites live records into a temporary file and renames it into place. It runs on startup when the journal exceeds 10,000 lines or when more than half the records are superseded by later ones for the same id. The horizon is twice the undo retention with a floor of thirty days, so raising retention lengthens it and lowering it never shortens the journal below a month.
+Compaction rewrites live records into a temporary file and renames it into place. It runs on startup when the journal exceeds 10,000 lines or when more than half the records are superseded by later ones for the same id. The horizon is twice the undo retention with a floor of thirty days. Queued, running, pending, needs-attention, partial and failed jobs remain beyond that horizon until resolved. Cancelled jobs with a warning or completed outputs are also retained, so reconciliation cannot lose an unfinished retention transition.
 
 ## 5. Undo records
 
@@ -132,13 +139,21 @@ path = '/home/u/Pictures/a.jpg'
 ext = 'jpg'
 ```
 
-New records always hold an independent copy. `source_fingerprint` records the original file identity, byte length and SHA-256 digest. The retained copy must match that digest whenever it is read. A hard link is not a snapshot and is no longer created. Old records without a fingerprint remain on disk but cannot authorize automatic recovery or deletion.
+New records always hold an independent copy. `source_fingerprint` records the original file identity, byte length and SHA-256 digest. On Unix, copies also preserve accessible extended attributes through open file handles; attribute read, write or verification failures stop preservation. `source_attributes_sha256` separately checks those attributes whenever the retained copy is read. The retained copy must match its content and attribute digests. Older records without an attribute digest retain their existing byte-only recovery contract; missing attributes from earlier backups cannot be reconstructed. A hard link is not a snapshot and is no longer created. Old records without a fingerprint remain on disk but cannot authorize automatic recovery or deletion.
 
-`outputs` lists intended non-keep outputs. `commits` records publication intents with staged file identities and content fingerprints before each output is published. An intent counts as a committed output only when the final file matches its identity and digest. Undo never deletes an intended output merely because its pathname exists.
+`outputs` lists intended non-keep outputs. `commits` records publication intents with staged file identities, content fingerprints and whether those exact bytes passed output validation before each output is published. An intent counts as a committed output only when the final file matches its identity and digest. Disposal additionally requires the validation flag; older intents without it do not authorize disposal. Undo never deletes an intended output merely because its pathname exists.
 
-`consume_source` is true for a rename-derived job and false for `retype convert`. Undo refuses changed or replaced outputs, restores or verifies the original source first, syncs the restoration, and only then claims and removes verified job outputs. An occupied source name is acceptable only when it still holds the recorded original. Successful undo removes the record. Unsupported directory durability refuses destructive cleanup and retains the available files.
+`consume_source` records whether undo may need to restore the original; it is not proof of disposal. A completed explicit keep does not overwrite later edits to the retained source. If that source is missing, or its recovery record is still pinned, undo verifies or restores the original first. Undo refuses changed or replaced outputs, syncs any restoration, and only then claims and removes verified job outputs. An occupied restoration name is acceptable only when it holds the recorded original or the exact file identified by a persisted restoration intent. Successful undo removes the record. Unsupported directory durability refuses destructive cleanup and retains the available files.
 
-Source disposal requires every non-keep output to be fully validated and durably published, a durable independent backup, a durable completion record, no cancellation, and a successful identity/content check on the claimed source. Recheck the backup and every committed output immediately before disposal; missing or changed files retain the source. Native archive outputs are reopened and their entry inventory is compared with the source before publication: names, kinds, sizes and content digests must agree, so a writer that drops, duplicates or alters an entry cannot authorize disposal. Partial, failed, cancelled and superseded jobs retain originals. Explicit keep-source groups retain originals. Native archive writers can authorize disposal; external encoders currently retain their originals because full source-to-output property validation is not implemented. Missing backup capacity or backup failure also retains originals. A disposal that cannot prove the live source still holds the original leaves the recovery record pinned. Windows currently retains originals because directory-durability support is not implemented.
+Starting undo pins its record and persists the existing-source policy before changing files. Before publishing a restored original, undo records the staged file's identity and digest. A retry recognizes that exact restored file, but refuses a replacement even if its bytes match. An interrupted undo remains pinned against expiry and quota eviction; normal job resume and retention completion cannot unpin it. Retype never deletes an output solely because a restoration intent exists: the live original, backup and output checks still apply. Before discarding the record, undo rechecks that the source still matches its pre-cleanup identity and bytes, including for a kept source that was edited before undo. If this check fails, the record remains pinned even if some outputs were already removed.
+
+Undo fingerprints and flushes the original through an open handle, and applies restored metadata through that handle. When recovery bytes are needed, their checked handle stays open until the original is ready and cleanup completes. On Windows these handles permit other readers but deny write and delete sharing, and final-component reparse points are refused. Windows staged publication also uses a write-through handle without write or delete sharing; validated outputs and restored originals must match their checked identity and digest through that handle before it is renamed. Create publication refuses an occupied target; replacement remains an explicit policy. If classic Windows replacement is denied, the same staged handle may use POSIX replacement to replace an open target that permits delete sharing. Existing handles still refer to the replaced file, so a journal reopens the replacement before appending. Missing access or a sharing conflict prevents completion and preserves the record. These handle checks do not establish directory durability or protect against every ancestor-path substitution; Windows destructive cleanup remains disabled.
+
+Source disposal requires every non-keep output to pass a supported validation check and be durably published, a durable independent backup, a durable completion record, no cancellation, and a successful identity/content check on the claimed source. The validation result identifies the staged file and its digest; the publication checkpoint and the final pre-publication check must match it. Recheck the backup and every committed output immediately before disposal; missing or changed files retain the source. The checked backup and output handles remain open through the disposition attempt. On Windows they deny write and delete sharing; Unix handles do not prevent noncooperating writers. Native archive outputs are reopened and their entry inventory is compared with the source before publication: names, kinds, permission bits, whole-second modification times, sizes and content digests must agree, so a writer that drops, duplicates or alters an entry cannot authorize disposal. ZIP writing refuses special permission bits that its writer cannot carry and modification times outside its unsigned 32-bit UTC field. UTC timestamp fields preserve odd seconds and pre-1980 dates; ZIP wall-clock dates without a UTC field are interpreted as UTC. Fractional or negative PAX modification times and unrepresentable NTFS modification times are refused rather than rounded. JPEG output from ImageMagick or FFmpeg must have JPEG start and end markers and decode without errors or warnings using both `magick` and `ffmpeg` from `PATH`. If either validator is unavailable, the source is retained and the job and daemon log name the missing tool. Other external output formats and custom backends cannot yet authorize disposal. These checks do not prove fidelity to the source. Partial, failed, cancelled and superseded jobs retain originals. Explicit keep-source groups retain originals. Missing backup capacity or backup failure also retains originals. A disposal that cannot prove the live source still holds the original leaves the recovery record pinned. Windows currently retains originals because directory-durability support is not implemented.
+
+A `done` checkpoint with source disposition `pending` is persisted before disposal; the resulting disposition is persisted before undo retention starts. On restart a pending disposition becomes `unresolved`, and recovery remains pinned when a record exists. If recording the outcome fails after removal, live status reports that the source was removed and the recovery record remains protected.
+
+Conversion and destructive undo assume exclusive ownership of the affected files: no other application writes them until the operation finishes. Unix renames do not revoke existing file handles, so an external writer can change a file after the final check and before deletion. This is outside the ownership boundary, not a reason to disable Unix cleanup. Default undo retention is seven days and protects the independently copied, content-verified original as it was captured; it cannot recover later edits made through an external handle. Use `+keep` when another application may still be using the source.
 
 Execution and recovery hold an OS-backed per-job lease through publication and disposal. Undo and record removal require the same exclusive lease; an active job returns `E_IO_LOCKED`. Cancellation must finish before undo proceeds. Process exit releases the lease automatically. Lock files persist; their existence is not an activity indicator.
 
@@ -164,9 +179,9 @@ The daemon owns this file. `watch` appends, `unwatch` removes, and the daemon re
 
 Resume accepts partial jobs and failed jobs marked `E_JOB_INTERRUPTED`. Its input is a private working copy of the job's digest-verified retained original, never an arbitrary file at the old source pathname. Missing or unverifiable retained bytes make resume unavailable.
 
-Resume skips only outputs whose recorded identity, size and digest still match. Any other occupied path is refused without `--force`, including paths whose platform identity is unavailable. `--force` reruns outputs but cannot override protection of the job's input. A successful resume retains its backup for normal undo retention and leaves any live source in place.
+Resume skips only outputs whose recorded identity, size and digest still match. Any other occupied path is refused without `--force`, including paths whose platform identity is unavailable. `--force` reruns outputs but cannot override protection of the job's input. A successful resume retains its backup for normal undo retention and applies the original transform or keep-source intent under the same validation, ownership, journal and durability gates as ordinary conversion. Failed removal checks retain the original and report the fallback. Resume runs through the cancellable worker pool, so status and other clients remain available.
 
-Unfinished records are pinned against both quota eviction and expiry. A successful completion releases the pin, not the backup. A failed or interrupted recovery leaves its record pinned.
+Unfinished records are pinned against both quota eviction and expiry. A successful completion releases the pin, records `retention_started` in Unix milliseconds and retains the backup. A successful resume starts a new retention period; a failed or interrupted recovery leaves its record pinned. Cancelling a partial job, or running work with completed outputs, records the cancellation before starting retention. The live original, retained original and every completed output must still verify; otherwise the record stays pinned and the job reports a warning. After durable cancellation with no completed outputs, release a pinned recovery copy only when its current ledger has no publication intents, its attribute evidence exists, and the original identity, bytes, permissions, modification time and attributes verify. Restore a missing original through the checked restoration transaction first. Keep recovery pinned for changed or replaced originals, ambiguous publication, legacy missing evidence or unsupported directory durability. Cancellation never removes an output. Records without a known retention start are not assumed expired.
 
 ## 5.3 Supersession
 
@@ -209,38 +224,32 @@ Restore the source name with an atomic no-replace rename and persist it before c
 
 The cost is visible and worth stating: during a long conversion the file shows its *source* name again, so a twenty minute video transcode looks like the rename was undone and then reapplied. That is honest, and it is preferable to a file that claims to be a JPEG for twenty minutes while holding HEVC.
 
+Repacking through a filesystem tree refuses duplicate or equivalent entry names before they can overwrite one another. Tree files are created exclusively; 7z listings are checked for duplicates before extraction.
+
 Every output reads the same verified private working snapshot. Output staging uses an exclusively created private directory on the destination filesystem, with a real output extension and no predictable shared filename. Publication uses atomic no-replace semantics unless replacement was explicitly authorized. Temporary and recovery directories are excluded from watch correlation.
 
 Source removal first atomically claims the live path into a persistent recovery directory, then checks the claimed identity and digest. A changed file is restored without overwriting another file, or left at the reported recovery path. No unchecked public pathname is unlinked.
 
 ## 5.5 Quota and overflow
 
-The store is bounded by age first and by size second. A record is kept only when it fits, and a conversion is never blocked or delayed by the bookkeeping: the answer can be "no record", and the conversion proceeds.
+Only unpinned records with a known retention start beyond the configured minimum are eligible for automatic removal. `quota` is a soft source-byte goal. Default `admission = 'stop-after'` admits one crossing job while usage is below the goal, then holds subsequent work. Optional `stop-before` holds a job whose backup would exceed it. Legacy `ask` and `evict` do not shorten retention; an explicitly selected `skip` retains the live source and omits a non-fitting backup. Interactive early-eviction decisions are not implemented.
 
-Order of decisions, for a record that costs `s` bytes:
+Quota decisions and a pinned reservation manifest are recorded under the process mutex and operating-system store lock. Backup copying runs outside that lock. A manifest without a source fingerprint reserves its source size; completion records the verified fingerprint and transfers those bytes to retained usage. The same bytes are never counted twice. Before copying, the reservation manifest also records the original fingerprint and attributes. An interrupted or failed reservation remains pinned until recovery proves the live original still matches and there are no publication or restoration intents. Only then may the private incomplete copy and reservation be removed. Missing/changed originals and legacy absent evidence remain protected; they are not assumed expired. This reconstructs accounting after restart without relying on process-local counters.
 
-1. Consider only unpinned records for expiry or eviction; unfinished recovery records are never discarded
-2. If the records kept plus `s` fit within `quota`, keep the record
-3. If `s` alone is larger than `quota`, keep no record, evict nothing for it, and retain the live original
-4. Otherwise `on_overflow` decides:
-   - `evict` drops the oldest eligible unpinned records until the new one fits; if pinned records prevent that, keep no new record and retain the original
-   - `skip` keeps no record and retains the original
-   - `ask` asks; until notifications exist this build reads it as `evict` and says so once at startup
-
-Accounting is retained source bytes, `docs/reference/config.md` §9. Quota decisions, eviction and record creation are one locked transaction. Every record selected for eviction is leased first, then the new record is written, then the old ones are removed, so a failed save leaves the old records in place rather than an empty store and no new record. A process mutex and an operating-system file lock serialize store writers, including undo clients. Pins are persisted in the manifest and survive process death.
+Records selected for expiry are removed only after the new backup is complete. Each record is leased and its pin and retention start are rechecked immediately before removal; a concurrent resume may have restarted retention. An expired record leased by another operation is left in place without rejecting the new backup. A failed copy does not evict old recovery. Work held with reason `storage` has no deadline; the daemon retries when capacity permits and verifies its recorded input again. Publishing a worker's parked transition is serialized with cancellation and resolution, and a parked job cannot be requeued until its previous worker releases ownership. Status and recovery remain usable while admission waits. Actual filesystem exhaustion is distinct from the configured goal and never authorizes a no-backup downgrade.
 
 ## 6. Startup reconciliation
 
 1. Acquire the lock. Failure means another daemon owns the state directory, and the process exits with that message
 2. Load `bench.toml`, then the journal, then the undo record index
-3. For every journal job in `queued`: nothing ran, so nothing was written. If the live source is still a regular file whose declared format, size and mtime match the record, put it back in the queue with the request the journal recorded, including the output path, which is the only place an explicit `-o` survives. Otherwise mark it `failed` with `E_JOB_INTERRUPTED`
+3. For every journal job in `queued`: inspect its admitted fingerprint or preparation stamp and mark it interrupted with `E_JOB_INTERRUPTED`. Report whether the identity and bytes still match, the input changed or is unreadable, or the legacy record lacks a fingerprint. Ask the user to review the input and existing outputs before resubmitting the recorded intent; do not automatically replay it
 4. For every journal job in `running`: verify publication intents from its recovery manifest against final files. Reconstruct the intended outputs and mark verified publications done. Mark the job interrupted, with state `partial` when any publication survived and `failed` otherwise. Both outcomes can resume using verified retained bytes, §5.2
-5. For every journal job in `pending`: it is parked, so it keeps its deadline and its timer is re-armed rather than run, `docs/advanced/deferral.md` §7
-6. Retain recovery records without journal entries for direct undo; do not infer completion from publication intents alone
+5. For every journal job in `pending`: re-arm its timer. When due, require its recorded input fingerprint, recheck state under the admission lock and journal the queued transition; older records without a fingerprint wait for review and resubmission
+6. For a cancelled job with a pinned record, finish its recovery transition. Verify completed outputs before starting retention, or release proven redundant no-output recovery through the checked restoration path. Preserve unresolved or unsupported cases. Retain records without journal entries for direct undo; do not infer completion from publication intents alone
 7. For every journal job whose record directory is missing, leave the state as recorded and mark undoing it as unavailable
 8. Drop undo records past retention, then compact if the thresholds are met
 
-Nothing is deleted during reconciliation. Anything inconsistent is reported and left in place for inspection.
+Startup reconciliation runs on the separate bounded recovery lane. It marks interrupted work and verifies ledgers while status and control remain available. It may complete an already authorized cancellation or release an interrupted reservation only through the checked redundant-recovery transition. Anything inconsistent remains protected and is reported for inspection.
 
 ## 7. Calibration
 
@@ -268,6 +277,8 @@ The two numbers are the source bytes the machine converts per second, and the ou
 
 `sample_bytes` records what the rate was measured on, since a rate taken on a 240 KB file and one taken on a 2 MB file are not the same evidence. `tool_version` is the version string of the backend that ran, because a rate is evidence about a build, `docs/advanced/fidelity.md` §1.
 
+Calibration saves and initial identity creation share the existing state-writer lock in `undo.lock`. Saves merge measurements into the latest file, keep newer measurements for the same pair, and publish through private, synchronized staging without deleting the old file first. A stale writer cannot discard another pair or replace an established machine identity.
+
 `retype bench` writes this file. It generates one sample per family in the format `[bench.seed]` names, using an argv `[bench.sample]` declares, and then measures every target that compiles from that source. `--pair` and `--family` narrow it. Measuring the same pair twice replaces the earlier answer rather than leaving two for one question.
 
 Estimates use a measurement when the pair, backend and machine match, and a family constant otherwise. Every constant carries its provenance, with the measurement it came from.
@@ -286,3 +297,23 @@ Mechanisms, guarantees and failure modes are specified in `docs/advanced/provena
 ```
 
 `kind` is `unix` or `windows`. A record without `identity` cannot answer by identity, and `retype why` then falls back to path matching or reports unknown.
+
+## 9. Runtime lifecycle ownership
+
+Journal and undo schemas remain unchanged. Runtime lifecycle enums and owning transfers do not serialize additional fields.
+
+| Lifecycle | Representation | Transfer |
+|---|---|---|
+| Journal health | Writable or unavailable | Any append or rewrite failure latches unavailable until reopen |
+| Output publication | `StagedOutput`, `CheckedOutput`, `CheckpointedOutput` | Writer and validation finish before checkpointing; checkpointing consumes the stage; the runner publishes under the cancellation gate |
+| Publication failure | Before publication or uncertain after rename | An uncertain outcome carries the target path and underlying error; compatibility entry points return the underlying error |
+| Recovery ownership | `Recovery::Unavailable` or `Recovery::Retained` | Both retain the exclusive job lease; retained recovery binds its manifest to its store and job |
+| Source disposition | `DurableCompletion`, `DispositionRecorded` | Persist the pending disposition before disposal and the outcome before consuming recovery for retention |
+| Undo | `UndoStarted`, `UndoSourceReady`, `Restoration` | Persist the pin and source policy before preparing the source; persist restoration intent before publication; verify the source before output cleanup |
+| Manifest lifecycle | Unfinished, retained, undoing or legacy | Derive the lifecycle from existing fields; preserve unknown retention starts and legacy recovery restrictions |
+
+Completion failures carry the owned job snapshot, including any source removal that occurred before outcome persistence failed. Resource drop releases locks and private staging, not recovery pins or public files. Cancellation retention consumes recovery ownership only after checking the live original, retained original and completed publications against the current durable ledger.
+
+Ownership types establish ordering and resource lifetime, not permanent filesystem validity. Publication, disposal and undo retain their identity, content, synchronization and cancellation checks. Independent lifecycle states remain independent: a done job is not by itself authorization to dispose of its source.
+
+`run_recorded`, `repack_published`, `Store::pin` and `Store::finish` remain compatibility entry points. Daemon output publication uses the consuming checkpoint API; execution and cancellation retention use job-bound recovery ownership. Resume retains its separate initial checkpoint behavior.

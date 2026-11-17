@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use retype_core::deferral::Reason;
 use retype_core::error::Code;
-use retype_core::job::{Job, JobError, JobState, Output, OutputState, Source, Tier};
+use retype_core::job::{Job, JobError, JobState, OutputState};
 use retype_core::journal::Journal;
 use retype_core::policy::Policy;
 use retype_core::watches;
@@ -19,14 +19,34 @@ use crate::daemon::machine;
 use crate::daemon::watcher::Shared;
 use crate::error::Result;
 
+#[cfg(test)]
+#[path = "server_tests.rs"]
+mod tests;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DaemonLifecycle {
+	Serving,
+	Draining,
+	Cancelling,
+	Stopped,
+}
+
 pub struct Server {
 	endpoint: Option<String>,
 	shared: Arc<Shared>,
 	pool: Arc<crate::daemon::queue::Pool>,
+	recovery: Arc<super::recovery::Pool>,
 	machine: String,
 	started: Instant,
-	stopped: bool,
+	lifecycle: DaemonLifecycle,
 	supervisor: Option<&'static str>,
+}
+
+impl Drop for Server {
+	fn drop(&mut self) {
+		self.recovery.close(true);
+		self.recovery.stop();
+	}
 }
 
 impl Server {
@@ -59,12 +79,6 @@ impl Server {
 			eprintln!("retype: dropped {} undo record(s) past retention", swept.len());
 		}
 
-		// Asking needs notifications, which are not built yet. Until
-		// then the answer is the one a user would give when a conversion is waiting.
-		if registry.undo().on_overflow == retype_core::undo::Overflow::Ask {
-			eprintln!("retype: [undo] on_overflow = 'ask' behaves as 'evict' until the overflow actions exist");
-		}
-
 		// The log directory exists before any job runs, so a tool's output has
 		// somewhere to go without the runner having to create directories mid-flight.
 		std::fs::create_dir_all(state_dir.join("logs"))?;
@@ -79,6 +93,15 @@ impl Server {
 			false => None,
 		};
 
+		let session = super::session::State::default();
+		#[cfg(all(not(test), debug_assertions))]
+		let session = {
+			let mut session = session;
+			if std::env::var_os("RETYPE_TEST_SESSION").is_some() {
+				session.update(super::session::query(), super::supervision::supervisor().is_some());
+			}
+			session
+		};
 		let shared = Arc::new(Shared {
 			registry: std::sync::RwLock::new(std::sync::Arc::new(registry)),
 			machine: machine.clone(),
@@ -91,26 +114,41 @@ impl Server {
 			primed: AtomicU64::new(0),
 			observed: AtomicU64::new(0),
 			own_renames: Default::default(),
+			parked_admission: Mutex::new(()),
 			events: Mutex::new(crate::daemon::events::Events::default()),
+			watch_health: Default::default(),
+			session: Mutex::new(session),
 			policies: Default::default(),
 			batches: Default::default(),
 			notifier: Mutex::new(notifier),
 		});
 
 		let pool = crate::daemon::queue::Pool::start(Arc::clone(&shared), crate::daemon::queue::runners());
+		pool.set_automatic(shared.session.lock().unwrap().queued);
 
 		// Before anything watches a directory or answers a client: a job that was in
 		// flight when the last daemon died is finished or declared, not left hanging,
 		// `docs/dev/architecture/state.md` §6.
-		crate::daemon::reconcile::run(&shared, &pool);
+		let recovery = super::recovery::Pool::start(state_dir)?;
+		let startup_shared = Arc::clone(&shared);
+		let startup_jobs = shared.jobs.lock().unwrap().clone();
+		recovery.submit(
+			retype_core::job::JobId::now()?,
+			retype_ipc::RecoveryAction::Reconcile,
+			move |cancellation| {
+				crate::daemon::reconcile::run_cancellable(&startup_shared, startup_jobs, cancellation);
+				Ok(None)
+			},
+		)?;
 
 		Ok(Self {
 			endpoint: None,
 			shared,
 			pool,
+			recovery,
 			machine,
 			started: Instant::now(),
-			stopped: false,
+			lifecycle: DaemonLifecycle::Serving,
 			// A server opened here was not started by a supervisor. The daemon's
 			// entry point says otherwise when the environment says so.
 			supervisor: None,
@@ -129,7 +167,11 @@ impl Server {
 
 	/// Whether the running jobs have finished, `docs/dev/architecture/ipc.md` §2.
 	pub fn idle(&self) -> bool {
-		self.pool.idle()
+		self.pool.idle() && self.recovery.idle()
+	}
+
+	pub fn recoveries(&self) -> Arc<super::recovery::Pool> {
+		Arc::clone(&self.recovery)
 	}
 
 	pub fn journal_path(&self) -> PathBuf {
@@ -140,7 +182,11 @@ impl Server {
 	}
 
 	pub fn stopped(&self) -> bool {
-		self.stopped
+		self.lifecycle != DaemonLifecycle::Serving
+	}
+
+	pub(crate) fn finish_stop(&mut self) {
+		self.lifecycle = DaemonLifecycle::Stopped;
 	}
 
 	/// The endpoint this daemon is reachable at, which changes per platform and
@@ -191,7 +237,7 @@ impl Server {
 					Ok(None) => return Ok(()),
 					Err(error) => {
 						let response = Response::error(0, WireError::new(Code::IpcFrame, error.to_string()));
-						let _ = retype_ipc::write_frame(writer, &response);
+						let _ = write_response(writer, &response);
 						return Ok(());
 					}
 				},
@@ -201,7 +247,7 @@ impl Server {
 				Ok(request) => request,
 				Err(error) => {
 					let response = Response::error(0, WireError::new(Code::IpcFrame, error.to_string()));
-					retype_ipc::write_frame(writer, &response)?;
+					write_response(writer, &response)?;
 					return Ok(());
 				}
 			};
@@ -212,7 +258,7 @@ impl Server {
 						request.id,
 						WireError::new(Code::IpcHandshake, "send hello before any other method"),
 					);
-					retype_ipc::write_frame(writer, &response)?;
+					write_response(writer, &response)?;
 					return Ok(());
 				}
 
@@ -221,7 +267,7 @@ impl Server {
 					Err(error) => {
 						let response =
 							Response::error(request.id, WireError::new(Code::IpcHandshake, error.to_string()));
-						retype_ipc::write_frame(writer, &response)?;
+						write_response(writer, &response)?;
 						return Ok(());
 					}
 				};
@@ -234,19 +280,19 @@ impl Server {
 							format!("this daemon speaks {IPC_VERSION}, the client speaks {}", hello.ipc),
 						),
 					);
-					retype_ipc::write_frame(writer, &response)?;
+					write_response(writer, &response)?;
 					return Ok(());
 				}
 
 				greeted = true;
 				let response = Response::ok(request.id, self.hello())?;
-				retype_ipc::write_frame(writer, &response)?;
+				write_response(writer, &response)?;
 				continue;
 			}
 
 			let response = self.answer(&request)?;
 			let stopping = request.method == "shutdown";
-			retype_ipc::write_frame(writer, &response)?;
+			write_response(writer, &response)?;
 
 			if stopping {
 				return Ok(());
@@ -356,6 +402,19 @@ impl Server {
 				WireError::new(Code::IpcMethod, "jobs.submit needs an intent"),
 			));
 		};
+		if !Path::new(input).is_absolute() {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::UsageArgs, "jobs.submit input must be an absolute path"),
+			));
+		}
+		let output = request.params.get("output").and_then(|output| output.as_str());
+		if output.is_some_and(|path| !Path::new(path).is_absolute()) {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::UsageArgs, "jobs.submit output must be an absolute path"),
+			));
+		}
 
 		// The only mode that exists so far. A rename is queued by the watcher
 		// rather than by a client, so there is nothing else to name yet.
@@ -371,11 +430,7 @@ impl Server {
 		let asked = Convert {
 			input: PathBuf::from(input),
 			intent: intent.to_string(),
-			output: request
-				.params
-				.get("output")
-				.and_then(|output| output.as_str())
-				.map(str::to_string),
+			output: output.map(str::to_string),
 			force: request
 				.params
 				.get("force")
@@ -383,29 +438,66 @@ impl Server {
 				.unwrap_or(false),
 		};
 
-		// Everything that can fail before a byte moves fails here, so the caller
-		// gets a diagnosis rather than a job that will only fail later.
-		let prepared = match immediate::prepare(&self.shared.registry(), &asked) {
+		// Only declarations and path checks run here; probes and hashing belong to the worker.
+		let prepared = match immediate::declare(&self.shared.registry(), &asked) {
 			Ok(prepared) => prepared,
 			Err(problems) => return Ok(Response::error(request.id, wire_problems(&problems))),
 		};
 
-		let id = retype_core::job::JobId::now()?;
-		crate::daemon::watcher::publish(&self.shared, &immediate::queued(&self.shared, &prepared, &id));
+		let id = match request.params.get("job_id") {
+			Some(serde_json::Value::String(written)) => match retype_core::job::JobId::parse(written) {
+				Ok(id) => id,
+				Err(_) => {
+					return Ok(Response::error(
+						request.id,
+						WireError::new(Code::UsageArgs, "job_id must be a full job id"),
+					));
+				}
+			},
+			Some(_) => {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(Code::UsageArgs, "job_id must be a full job id"),
+				));
+			}
+			None => retype_core::job::JobId::now()?,
+		};
+		if self.find(id.as_str()).is_some() {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(
+					Code::JobState,
+					format!("job {id} already exists; inspect it before submitting another request"),
+				),
+			));
+		}
+		let mut job = immediate::queued(&self.shared, &prepared, &id);
+		job.admission = match retype_core::safety::InputStamp::of(&job.source.path) {
+			Ok(stamp) => Some(stamp),
+			Err(error) => {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(error.code(), error.to_string()),
+				));
+			}
+		};
 
 		let work = crate::daemon::queue::Work {
 			id: id.clone(),
 			kind: crate::daemon::queue::Kind::Immediate(asked),
 		};
 
-		if !self.pool.submit(work) {
-			return Ok(Response::error(
+		match self
+			.pool
+			.submit_after(work, || crate::daemon::watcher::publish_checked(&self.shared, &job))
+		{
+			Ok(true) => Ok(Response::ok(request.id, json!({"id": id, "state": "queued"}))?),
+			Ok(false) => Ok(Response::error(
 				request.id,
-				WireError::new(Code::JobState, "the queue is full, so nothing was submitted"),
-			));
+				WireError::new(Code::JobState, "the queue is full or closed, so nothing was submitted"),
+			)),
+			Err(error) => Ok(Response::error(request.id, admission_error(&id, error))),
 		}
-
-		Ok(Response::ok(request.id, json!({"id": id, "state": "queued"}))?)
 	}
 
 	fn cancel(&self, request: &Request) -> Result<Response> {
@@ -423,6 +515,19 @@ impl Server {
 			));
 		};
 
+		if let Some(partial) = self.find(id.as_str()).filter(|job| job.state == JobState::Partial) {
+			return self.cancel_partial(request.id, partial);
+		}
+		let _guard = match self.shared.lock_parked_admission() {
+			Ok(guard) => guard,
+			Err(error) => {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(error.code(), error.to_string()),
+				));
+			}
+		};
+
 		// A parked job never reached the queue, so it is cancelled in the record rather
 		// than by stopping anything, `docs/deferral.md` §8.
 		if let Some(parked) = self
@@ -430,8 +535,19 @@ impl Server {
 			.filter(|job| matches!(job.state, JobState::Pending | JobState::NeedsAttention))
 		{
 			let mut cancelled = parked;
-			cancelled.set_state(JobState::Cancelled);
-			crate::daemon::watcher::publish(&self.shared, &cancelled);
+			cancel_unfinished_outputs(&mut cancelled);
+			if let Err(error) = crate::daemon::watcher::publish_checked(&self.shared, &cancelled) {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(
+						error.code(),
+						format!(
+							"cancellation of {id} could not be durably recorded: {error}; \
+							 the job may still run, so check it before retrying"
+						),
+					),
+				));
+			}
 
 			return Ok(Response::ok(
 				request.id,
@@ -443,11 +559,34 @@ impl Server {
 
 		let response = match found {
 			crate::daemon::queue::Cancelled::Queued => {
-				if let Some(work) = queued {
-					self.record_cancelled(&id, &work);
+				let result = match queued {
+					Some(_) => self.record_cancelled(&id),
+					None => Err(retype_core::error::Error::Io(std::io::Error::other(
+						"the removed queue entry was unavailable",
+					))),
+				};
+				match result {
+					Ok((warning, recovery)) => Response::ok(
+						request.id,
+						retype_ipc::JobCancelled {
+							id: id.clone(),
+							cancelled: true,
+							state: "cancelled".to_string(),
+							warning,
+							recovery,
+						},
+					)?,
+					Err(error) => Response::error(
+						request.id,
+						WireError::new(
+							error.code(),
+							format!(
+								"job {id} was removed from the queue, but cancellation could not be durably recorded: \
+								 {error}; check the job after restart"
+							),
+						),
+					),
 				}
-
-				Response::ok(request.id, json!({"id": id, "cancelled": true, "state": "cancelled"}))?
 			}
 			crate::daemon::queue::Cancelled::Running => {
 				Response::ok(request.id, json!({"id": id, "cancelled": true, "state": "cancelling"}))?
@@ -461,7 +600,50 @@ impl Server {
 		Ok(response)
 	}
 
-	/// Continue a `partial` job, `docs/dev/architecture/ipc.md` §6: outputs that still carry the
+	fn cancel_partial(&self, request_id: u64, mut job: Job) -> Result<Response> {
+		let store = retype_core::undo::Store::open(&self.shared.state_dir);
+		let lease = match store.lease(&job.id) {
+			Ok(lease) => lease,
+			Err(error) => {
+				return Ok(Response::error(
+					request_id,
+					WireError::new(error.code(), format!("job {} was not cancelled: {error}", job.id)),
+				));
+			}
+		};
+
+		cancel_unfinished_outputs(&mut job);
+		if let Err(error) = crate::daemon::watcher::persist(&self.shared, &job) {
+			return Ok(Response::error(
+				request_id,
+				WireError::new(
+					error.code(),
+					format!(
+						"cancellation of {} could not be durably recorded: {error}; check the job before retrying",
+						job.id
+					),
+				),
+			));
+		}
+
+		crate::daemon::watcher::publish_persisted(&self.shared, &job);
+		let (operation, warning) =
+			match super::recovery::cancel_cleanup(&self.recovery, Arc::clone(&self.shared), job.clone(), lease) {
+				Ok(operation) => (Some(operation.id), None),
+				Err(error) => {
+					let warning = format!("cancellation recorded; recovery remains protected and needs retry: {error}");
+					job.error = Some(JobError::new(error.code().to_string(), &warning));
+					crate::daemon::watcher::publish(&self.shared, &job);
+					(None, Some(warning))
+				}
+			};
+		Ok(Response::ok(
+			request_id,
+			json!({"id": job.id, "cancelled": true, "state": "cancelled", "warning": warning, "recovery": operation}),
+		)?)
+	}
+
+	/// Continue a `partial` job, `docs/dev/architecture/state.md` §6: outputs that still carry the
 	/// recorded identity are skipped, the rest run again.
 	fn resume(&self, request: &Request) -> Result<Response> {
 		let Some(written) = request.params.get("id").and_then(|id| id.as_str()) else {
@@ -500,12 +682,40 @@ impl Server {
 			));
 		}
 
-		match crate::daemon::resume::run(&self.shared, &self.machine, &job, force) {
-			Ok(state) => Ok(Response::ok(request.id, json!({"id": job.id, "state": state}))?),
-			Err(error) => Ok(Response::error(
+		match retype_core::undo::Store::open(&self.shared.state_dir).load(&job.id) {
+			Ok(Some(_)) => {}
+			Ok(None) => {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(Code::JobResumeUnavailable, "no retained original to resume"),
+				));
+			}
+			Err(error) => {
+				return Ok(Response::error(
+					request.id,
+					WireError::new(error.code(), error.to_string()),
+				));
+			}
+		}
+		let mut queued = job.clone();
+		queued.set_state(JobState::Queued);
+		let work = crate::daemon::queue::Work {
+			id: job.id.clone(),
+			kind: crate::daemon::queue::Kind::Resume {
+				job: Box::new(job),
+				force,
+			},
+		};
+		match self
+			.pool
+			.submit_after(work, || crate::daemon::watcher::publish_checked(&self.shared, &queued))
+		{
+			Ok(true) => Ok(Response::ok(request.id, json!({"id": queued.id, "state": "queued"}))?),
+			Ok(false) => Ok(Response::error(
 				request.id,
-				WireError::new(error.code(), error.to_string()),
+				WireError::new(Code::JobState, "the queue is full or closed, so resume did not start"),
 			)),
+			Err(error) => Ok(Response::error(request.id, admission_error(&queued.id, error))),
 		}
 	}
 
@@ -551,9 +761,8 @@ impl Server {
 		let reason = parked.as_ref().and_then(|parked| Reason::parse(&parked.reason));
 
 		let intent = match mode {
-			// The request as written cannot run, which is why it is parked: asking again
-			// is a state error rather than a second failure. A size park is the exception:
-			// it can run as asked, and `--now` is the consent it waits for.
+			// An explicit ask or size park can run as asked once a person confirms it.
+			// Other needs-attention reasons require correction rather than consent.
 			"now" if job.state == JobState::NeedsAttention && !reason.is_some_and(Reason::can_run_as_asked) => {
 				return Ok(Response::error(
 					request.id,
@@ -587,14 +796,26 @@ impl Server {
 			}
 		};
 
-		if !crate::daemon::timer::start_job(&self.pool, &job, intent.as_deref(), force) {
-			return Ok(Response::error(
+		use crate::daemon::timer::Admission;
+		match crate::daemon::timer::start_confirmed(&self.shared, &self.pool, &job, intent.as_deref(), force) {
+			Ok(Admission::Queued) => Ok(Response::ok(request.id, json!({"id": job.id, "state": "queued"}))?),
+			Ok(Admission::Full) => Ok(Response::error(
 				request.id,
 				WireError::new(Code::JobState, "the queue is full, so nothing was started"),
-			));
+			)),
+			Ok(Admission::Stale) => Ok(Response::error(
+				request.id,
+				WireError::new(
+					Code::JobState,
+					"the job changed while it was being resolved; check its current state",
+				),
+			)),
+			Err(error) if error.code() == Code::JobResumeUnavailable => Ok(Response::error(
+				request.id,
+				WireError::new(error.code(), format!("job {} did not start: {error}", job.id)),
+			)),
+			Err(error) => Ok(Response::error(request.id, admission_error(&job.id, error))),
 		}
-
-		Ok(Response::ok(request.id, json!({"id": job.id, "state": "queued"}))?)
 	}
 
 	/// Stop, unless a supervisor would only start us again.
@@ -641,23 +862,28 @@ impl Server {
 	/// Shared with the signal path, which cannot send itself a request: a `SIGTERM` is a
 	/// stop request whether or not a client made it, `docs/dev/architecture/ipc.md` §2.
 	pub fn stop(&mut self, now: bool) -> usize {
-		let cancelled = match now {
+		if let Err(error) = super::lifecycle::stopping(&self.shared.state_dir) {
+			eprintln!("retype: cannot record explicit stop: {error}");
+		}
+		self.pool.close_admissions();
+		self.lifecycle = match (self.lifecycle, now) {
+			(DaemonLifecycle::Stopped, _) => DaemonLifecycle::Stopped,
+			(DaemonLifecycle::Cancelling, _) | (_, true) => DaemonLifecycle::Cancelling,
+			(_, false) => DaemonLifecycle::Draining,
+		};
+		match now {
 			true => {
 				let cancelled = self.cancel_everything();
 
-				// The runners write the cancellation record after the tool is killed, and
-				// a process that exits first would leave the job saying `running` for ever.
-				if cancelled > 0 {
-					self.pool.wait_until_idle(std::time::Duration::from_secs(5));
-				}
-
+				// Acknowledge promptly; process shutdown joins workers after recording their outcomes.
+				self.recovery.close(true);
 				cancelled
 			}
-			false => 0,
-		};
-
-		self.stopped = true;
-		cancelled
+			false => {
+				self.recovery.close(false);
+				0
+			}
+		}
 	}
 
 	/// Stop every job and record the ones that never started, which is what a client
@@ -666,10 +892,73 @@ impl Server {
 		let (running, waiting) = self.pool.stop_all();
 
 		for work in &waiting {
-			self.record_cancelled(&work.id, work);
+			if let Err(error) = self.record_cancelled(&work.id) {
+				eprintln!(
+					"retype: cancellation of queued job {} was not recorded: {error}",
+					work.id
+				);
+			}
 		}
 
 		running.len() + waiting.len()
+	}
+
+	fn list_jobs(&self, request: &Request) -> Result<Response> {
+		let query: retype_ipc::JobListRequest = if request.params.is_null() {
+			Default::default()
+		} else {
+			match request.parse() {
+				Ok(query) => query,
+				Err(error) => {
+					return Ok(Response::error(
+						request.id,
+						WireError::new(Code::UsageArgs, error.to_string()),
+					));
+				}
+			}
+		};
+		let jobs = self
+			.shared
+			.jobs
+			.lock()
+			.map_err(|_| std::io::Error::other("job list lock poisoned"))?;
+		let mut page = retype_ipc::JobList::default();
+		let mut bytes = 0;
+		for job in jobs.iter().skip(query.offset).take(query.limit.unwrap_or(256).min(256)) {
+			let summary = retype_ipc::JobSummary {
+				id: job.id.clone(),
+				state: job.state,
+				source: job.source.path.clone(),
+				created: job.created,
+				updated: job.updated,
+				intent: job.intent.clone(),
+				parked_reason: job.parked.as_ref().map(|parked| parked.reason.clone()),
+				error: job.error.clone(),
+				outputs_done: job
+					.outputs
+					.iter()
+					.filter(|output| output.state == OutputState::Done)
+					.count(),
+				outputs_total: job.outputs.len(),
+			};
+			let size = serde_json::to_vec(&summary)?.len() + 1;
+			if bytes + size > retype_ipc::MAX_FRAME - 1024 {
+				if page.jobs.is_empty() {
+					return Ok(Response::error(
+						request.id,
+						WireError::new(Code::IpcFrame, "one job summary exceeds the IPC frame limit"),
+					));
+				}
+				break;
+			}
+			bytes += size;
+			page.jobs.push(summary);
+		}
+		let next = query.offset.saturating_add(page.jobs.len());
+		if !page.jobs.is_empty() && next < jobs.len() {
+			page.next_offset = Some(next);
+		}
+		Ok(Response::ok(request.id, page)?)
 	}
 
 	/// What followed `since`, or `E_IPC_RESYNC` when the window no longer holds it,
@@ -742,82 +1031,102 @@ impl Server {
 			.cloned()
 	}
 
-	/// A queued job that never started still gets a record, so its id is answerable
-	/// afterwards.
-	fn record_cancelled(&self, id: &retype_core::job::JobId, work: &crate::daemon::queue::Work) {
-		use crate::daemon::queue::Kind;
-
-		let (source, target, consume_source) = match &work.kind {
-			Kind::Rename { source, target, .. } => (source.clone(), target.clone(), true),
-			Kind::Immediate(request) => (request.input.clone(), request.input.clone(), false),
-			Kind::Deferred { source, .. } => (source.clone(), source.clone(), true),
-		};
-
-		let job = Job {
-			id: id.clone(),
-			created: retype_core::job::now_ms(),
-			updated: retype_core::job::now_ms(),
-			source: Source {
-				path: source,
-				format: String::new(),
-				size: 0,
-				mtime_ns: 0,
-			},
-			intent: None,
-			outputs: vec![Output {
-				path: target,
-				format: String::new(),
-				state: OutputState::Failed,
-				bytes: None,
-				tier: Tier::Converted,
-				identity: None,
-				stderr: None,
-				error: Some(JobError {
-					code: Code::JobCancelled.to_string(),
-					message: "cancelled before it started".to_string(),
-				}),
-			}],
-			state: JobState::Cancelled,
-			backend: None,
-			engine: None,
-			machine: self.machine.clone(),
-			error: None,
-			parked: None,
-			consume_source,
-		};
-
-		crate::daemon::watcher::publish(&self.shared, &job);
+	/// Preserve the admitted request when a queued job is cancelled before starting.
+	fn record_cancelled(
+		&self,
+		id: &retype_core::job::JobId,
+	) -> retype_core::error::Result<(Option<String>, Option<retype_core::job::JobId>)> {
+		let mut job = self.find(id.as_str()).ok_or_else(|| {
+			retype_core::error::Error::Io(std::io::Error::other("the queued job has no admission record"))
+		})?;
+		cancel_unfinished_outputs(&mut job);
+		crate::daemon::watcher::publish_checked(&self.shared, &job)?;
+		let store = retype_core::undo::Store::open(&self.shared.state_dir);
+		let lease = store.lease(id)?;
+		let operation = super::recovery::cancel_cleanup(&self.recovery, Arc::clone(&self.shared), job, lease)?;
+		Ok((None, Some(operation.id)))
 	}
 
-	/// The registrations as `daemon status` and `watch.list` report them: what is
-	/// registered, whether its path is there, and whether state or policy paused it.
-	fn watches(&self) -> Vec<serde_json::Value> {
-		let Ok(registrations) = watches::load(&self.shared.state_dir) else {
-			return Vec::new();
+	/// Registrations and the separately observed state of each installed watcher.
+	fn watches(&self) -> (Vec<serde_json::Value>, Option<String>) {
+		let registrations = match watches::load(&self.shared.state_dir) {
+			Ok(registrations) => registrations,
+			Err(error) => return (Vec::new(), Some(format!("cannot read watch registrations: {error}"))),
 		};
 
-		registrations
+		let watches = registrations
 			.into_iter()
 			.map(|registration| {
-				let available = registration.path.exists();
-				let policy = Policy::open(&registration.path).ok();
-				let paused = registration.paused || policy.as_ref().is_some_and(|policy| policy.paused);
+				let available = registration.path.is_dir();
+				let policy = Policy::open(&registration.path);
+				let paused_by_policy = policy.as_ref().is_ok_and(|policy| policy.paused);
+				let paused = registration.paused || paused_by_policy;
+				let (status, problem) = self.watch_status(&registration, available, paused, policy.as_ref().err());
 
 				json!({
 					"path": registration.path.display().to_string(),
 					"recursive": registration.recursive,
 					"added": registration.added,
 					"paused": paused,
-					"paused_by": match (registration.paused, policy.as_ref().is_some_and(|policy| policy.paused)) {
+					"paused_by": match (registration.paused, paused_by_policy) {
 						(true, _) => Some("state"),
 						(_, true) => Some("policy"),
 						_ => None,
 					},
 					"available": available,
 					"patterns": policy.map(|policy| policy.patterns).unwrap_or_default(),
+					"status": status,
+					"problem": problem,
 				})
 			})
-			.collect()
+			.collect();
+		(watches, self.shared.watch_health.registry_error())
+	}
+
+	fn watch_status(
+		&self,
+		registration: &watches::Registration,
+		available: bool,
+		paused: bool,
+		policy_error: Option<&retype_core::error::Error>,
+	) -> (&'static str, Option<String>) {
+		use super::watch_health::Phase;
+		if let Ok(session) = self.shared.session.lock() {
+			if !session.watching {
+				return ("inactive", session.reason.clone());
+			}
+		}
+
+		let phase = self
+			.shared
+			.watch_health
+			.phase(&registration.path, registration.recursive);
+		if paused {
+			return match phase {
+				Some(Phase::Starting | Phase::Ready | Phase::Stopping | Phase::Degraded(_)) => ("stopping", None),
+				None | Some(Phase::Failed(_)) => ("paused", None),
+			};
+		}
+		if !available {
+			return (
+				"unavailable",
+				Some("directory is missing or is not a directory".to_string()),
+			);
+		}
+		if let Some(error) = policy_error {
+			return ("error", Some(format!("cannot read directory policy: {error}")));
+		}
+		if let Some(error) = self.shared.watch_health.registry_error() {
+			return ("error", Some(error));
+		}
+		match phase {
+			None => ("pending", None),
+			Some(Phase::Starting) => ("starting", None),
+			Some(Phase::Ready) => ("ready", None),
+			Some(Phase::Stopping) => ("stopping", None),
+			Some(Phase::Degraded(message)) => ("degraded", Some(message)),
+			Some(Phase::Failed(message)) => ("error", Some(message)),
+		}
 	}
 
 	fn watch_add(&self, request: &Request) -> Result<Response> {
@@ -836,6 +1145,12 @@ impl Server {
 
 		let paused = request.params.get("paused").and_then(|value| value.as_bool());
 		let directory = Path::new(path);
+		if !directory.is_absolute() {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::UsageArgs, "watch.add path must be absolute"),
+			));
+		}
 
 		if !directory.is_dir() {
 			return Ok(Response::error(
@@ -897,6 +1212,12 @@ impl Server {
 			));
 		};
 
+		if !Path::new(path).is_absolute() {
+			return Ok(Response::error(
+				request.id,
+				WireError::new(Code::UsageArgs, "watch.remove path must be absolute"),
+			));
+		}
 		let removed = watches::unregister(&self.shared.state_dir, Path::new(path))?;
 		Ok(Response::ok(request.id, json!({"path": path, "removed": removed}))?)
 	}
@@ -937,6 +1258,19 @@ impl Server {
 				outputs: record.outputs,
 				pinned: record.pinned,
 				consume_source: record.consume_source,
+				reserved: record.source_fingerprint.is_none(),
+				protection_reason: if record.pinned {
+					Some(
+						if record.source_fingerprint.is_none() {
+							"incomplete backup reservation; recovery cleanup verifies the live original before releasing space"
+						} else {
+							"unfinished or ambiguous recovery; verify or undo this job"
+						}
+						.to_string(),
+					)
+				} else {
+					None
+				},
 			})
 			.collect();
 
@@ -1040,17 +1374,34 @@ impl Server {
 			));
 		}
 
-		let restored = store.restore(&record.id)?;
-
-		Ok(Response::ok(
-			request.id,
-			json!({
-				"id": restored.id,
-				"source": restored.source_path.display().to_string(),
-				"consume_source": restored.consume_source,
-				"removed": restored.outputs.iter().map(|output| output.path.display().to_string()).collect::<Vec<_>>(),
-			}),
-		)?)
+		let operation_id = match request.params.get("operation_id") {
+			Some(value) => value
+				.as_str()
+				.and_then(|id| retype_core::job::JobId::parse(id).ok())
+				.ok_or_else(|| {
+					retype_core::error::Error::Diagnostic(retype_core::error::Diagnostic::global(
+						Code::UsageArgs,
+						"operation_id must be a full recovery handle",
+					))
+				})?,
+			None => retype_core::job::JobId::now()?,
+		};
+		let lease = store.lease(&record.id)?;
+		let operation = self.recovery.submit_with_id(
+			operation_id,
+			record.id.clone(),
+			retype_ipc::RecoveryAction::Undo,
+			move |cancellation| {
+				let restored = store.restore_owned(lease, cancellation)?;
+				Ok(Some(retype_ipc::Undone {
+					id: restored.id,
+					source: restored.source_path,
+					consume_source: restored.consume_source,
+					removed: restored.outputs.into_iter().map(|output| output.path).collect(),
+				}))
+			},
+		)?;
+		Ok(Response::ok(request.id, operation)?)
 	}
 
 	fn hello(&self) -> HelloResult {
@@ -1063,7 +1414,10 @@ impl Server {
 			features: vec![
 				"events".to_string(),
 				"jobs.list.summary".to_string(),
+				"jobs.submit.id".to_string(),
+				"jobs.list.pagination".to_string(),
 				"undo.list".to_string(),
+				"recovery".to_string(),
 				"config.warnings".to_string(),
 			],
 			capabilities: json!({
@@ -1074,13 +1428,22 @@ impl Server {
 
 	fn answer(&mut self, request: &Request) -> Result<Response> {
 		let response = match request.method.as_str() {
-			"status" => Response::ok(
-				request.id,
-				json!({
+			"status" => {
+				let (watches, watch_error) = self.watches();
+				let usage = retype_core::undo::Store::open(&self.shared.state_dir).usage(self.shared.registry().undo());
+				let (undo, undo_error) = match usage {
+					Ok(usage) => (Some(usage), None),
+					Err(error) => (None, Some(error.to_string())),
+				};
+				Response::ok(
+					request.id,
+					json!({
 					"pid": std::process::id(),
 					"machine": self.machine,
 					"uptime_ms": self.started.elapsed().as_millis() as u64,
 					"jobs": self.shared.jobs.lock().map(|jobs| jobs.len()).unwrap_or_default(),
+					"undo": undo,
+					"undo_error": undo_error,
 					"parked": self.shared.jobs.lock().map(|jobs| jobs.iter().filter(|job| {
 						matches!(job.state, JobState::Pending | JobState::NeedsAttention)
 					}).count()).unwrap_or_default(),
@@ -1089,36 +1452,113 @@ impl Server {
 					"placeholders": self.shared.placeholders.load(Ordering::Relaxed),
 					"primed": self.shared.primed.load(Ordering::Relaxed),
 					"observed": self.shared.observed.load(Ordering::Relaxed),
-					"watches": self.watches(),
+					"watches": watches,
+					"watch_error": watch_error,
+					"session": self.shared.session.lock().ok().map(|session| session.clone()),
+					"recovery_active": !self.recovery.idle(),
 					"endpoint": self.endpoint,
 					"supervised": self.supervisor,
-				}),
-			)?,
-			"jobs.list" => Response::ok(
-				request.id,
-				json!({
-					"jobs": self.shared.jobs.lock().map(|jobs| jobs.iter().map(|job| {
-						json!({
-							"id": job.id,
-							"state": job.state,
-							"source": job.source.path,
-							"created": job.created,
-							"updated": job.updated,
-							"intent": job.intent,
-							"parked_reason": job.parked.as_ref().map(|parked| parked.reason.clone()),
-							"error": job.error,
-							"outputs_done": job.outputs.iter().filter(|output| output.state == OutputState::Done).count(),
-							"outputs_total": job.outputs.len(),
+					}),
+				)?
+			}
+			"recovery.list" => {
+				let result = self.recovery.list().and_then(|operations| {
+					let records = retype_core::undo::Store::open(&self.shared.state_dir).list()?;
+					Ok(json!({"operations": operations, "records": records}))
+				});
+				match result {
+					Ok(value) => Response::ok(request.id, value)?,
+					Err(error) => Response::error(request.id, WireError::new(error.code(), error.to_string())),
+				}
+			}
+			"recovery.cleanup" => {
+				let result = (|| -> retype_core::error::Result<_> {
+					let id = request
+						.params
+						.get("id")
+						.and_then(|value| value.as_str())
+						.and_then(|id| retype_core::job::JobId::parse(id).ok())
+						.ok_or_else(|| {
+							retype_core::error::Diagnostic::global(Code::UsageArgs, "cleanup needs a full job id")
+						})?;
+					if self.find(id.as_str()).is_some_and(|job| !job.is_finished()) {
+						return Err(retype_core::error::Diagnostic::global(
+							Code::JobState,
+							"cancel or finish the job before recovery cleanup",
+						)
+						.into());
+					}
+					let store = retype_core::undo::Store::open(&self.shared.state_dir);
+					let lease = store.lease(&id)?;
+					self.recovery
+						.submit(id.clone(), retype_ipc::RecoveryAction::Cleanup, move |cancellation| {
+							let record = store.load(&id)?.ok_or_else(|| {
+								retype_core::error::Diagnostic::global(Code::JobNotFound, "no recovery record")
+							})?;
+							let recovery = store.retain(lease, Some(record))?;
+							let retained = match recovery {
+								retype_core::undo::Recovery::Retained(retained) => retained,
+								_ => unreachable!(),
+							};
+							retained.release_unpublished_cancellable(cancellation)?;
+							Ok(None)
 						})
-					}).collect::<Vec<_>>()).unwrap_or_default(),
-				}),
-			)?,
+				})();
+				match result {
+					Ok(operation) => Response::ok(request.id, operation)?,
+					Err(error) => Response::error(request.id, WireError::new(error.code(), error.to_string())),
+				}
+			}
+			"recovery.get" | "recovery.cancel" => {
+				let id = request
+					.params
+					.get("id")
+					.and_then(|value| value.as_str())
+					.and_then(|id| retype_core::job::JobId::parse(id).ok());
+				match id {
+					Some(id) => {
+						let result = if request.method == "recovery.cancel" {
+							self.recovery.cancel(&id).and_then(|_| self.recovery.get(&id))
+						} else {
+							self.recovery.get(&id)
+						};
+						match result {
+							Ok(operation) => Response::ok(request.id, operation)?,
+							Err(error) => Response::error(request.id, WireError::new(error.code(), error.to_string())),
+						}
+					}
+					None => Response::error(
+						request.id,
+						WireError::new(Code::UsageArgs, "recovery needs a full operation id"),
+					),
+				}
+			}
+			"jobs.list" => self.list_jobs(request)?,
 			"events" | "events.subscribe" => self.events(request)?,
 			"watch.add" => self.watch_add(request)?,
 			"watch.remove" => self.watch_remove(request)?,
-			"watch.list" => Response::ok(request.id, json!({"watches": self.watches()}))?,
-			"undo" => self.undo(request)?,
-			"undo.list" => self.undo_list(request)?,
+			"watch.list" => {
+				let (watches, error) = self.watches();
+				Response::ok(request.id, json!({"watches": watches, "error": error}))?
+			}
+			"undo" => Response::error(
+				request.id,
+				WireError::new(
+					Code::IpcVersion,
+					"this daemon requires asynchronous recovery; use a client advertising recovery support or call recovery.undo and poll recovery.get",
+				),
+			),
+			"recovery.undo" | "undo.list" => {
+				let result = if request.method != "undo.list" {
+					self.undo(request)
+				} else {
+					self.undo_list(request)
+				};
+				match result {
+					Ok(response) => response,
+					Err(error) => Response::error(request.id, WireError::new(error.code(), error.to_string())),
+				}
+			}
 			"config.reload" => self.config_reload(request)?,
 			"why" => self.why(request)?,
 			"jobs.get" => self.get(request)?,
@@ -1138,6 +1578,42 @@ impl Server {
 	}
 }
 
+fn write_response(writer: &mut impl Write, response: &Response) -> std::result::Result<(), retype_ipc::FrameError> {
+	match retype_ipc::write_frame(writer, response) {
+		Err(retype_ipc::FrameError::TooLarge(_)) => retype_ipc::write_frame(
+			writer,
+			&Response::error(
+				response.id,
+				WireError::new(Code::IpcFrame, "response exceeds the IPC frame limit"),
+			),
+		),
+		result => result,
+	}
+}
+
+fn cancel_unfinished_outputs(job: &mut Job) {
+	job.set_state(JobState::Cancelled);
+	for output in &mut job.outputs {
+		if matches!(output.state, OutputState::Pending | OutputState::Running) {
+			output.state = OutputState::Skipped;
+			output.error = Some(JobError::new(
+				Code::JobCancelled.to_string(),
+				"cancelled before this output started",
+			));
+		}
+	}
+}
+
+fn admission_error(id: &retype_core::job::JobId, error: retype_core::error::Error) -> WireError {
+	WireError::new(
+		error.code(),
+		format!(
+			"job {id} did not start because admission could not be recorded: {error}; \
+			 its outcome after restart is uncertain, so check the job before retrying"
+		),
+	)
+}
+
 /// Turn a set of diagnostics into one wire error that keeps its first span and
 /// hint. The message still carries every problem, because a client may print it.
 fn wire_problems(problems: &retype_core::error::Diagnoses) -> WireError {
@@ -1154,6 +1630,18 @@ fn wire_problems(problems: &retype_core::error::Diagnoses) -> WireError {
 	}
 
 	error
+}
+
+/// A client can disappear while a reply is being written; that is local to the
+/// connection, not a reason to stop the daemon or its watchers.
+pub(crate) fn connection_result(result: Result<()>) -> Result<()> {
+	match result {
+		Err(crate::error::Error::Frame(retype_ipc::FrameError::Io(message))) => {
+			eprintln!("retype: client connection ended while sending a response: {message}");
+			Ok(())
+		}
+		other => other,
+	}
 }
 
 /// Accept connections until the daemon is asked to stop.
@@ -1211,7 +1699,7 @@ pub fn serve(listener: std::os::unix::net::UnixListener, server: &mut Server) ->
 
 		let mut reader = BufReader::new(stream.try_clone()?);
 
-		server.serve_connection(&mut reader, &mut stream)?;
+		connection_result(server.serve_connection(&mut reader, &mut stream))?;
 
 		if server.stopped() {
 			break;

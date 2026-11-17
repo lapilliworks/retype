@@ -19,7 +19,7 @@ fn slow_config(dir: &Path) -> PathBuf {
 	let (command, layout) = match cfg!(windows) {
 		true => (
 			"cmd",
-			"layout = ['/c', 'ping -n 30 127.0.0.1', '{input}', '{ops}', '{output}']",
+			"layout = ['/c', 'ping', '-n', '30', '127.0.0.1', '&', 'rem', '{input}', '{ops}', '{output}']",
 		),
 		false => ("sh", "layout = ['-c', 'sleep 30', '{input}', '{ops}', '{output}']"),
 	};
@@ -74,11 +74,13 @@ fn a_running_job_can_be_cancelled() {
 	let dir = tempfile::tempdir().unwrap();
 	let photos = dir.path().join("photos");
 	fs::create_dir(&photos).unwrap();
+	let source = photos.join("slow.png");
+	fs::write(&source, b"pixels").unwrap();
 	let state = dir.path().join("state");
 	let config = slow_config(dir.path());
 
 	retype()
-		.args(["watch", photos.to_str().unwrap()])
+		.args(["watch", "--register", photos.to_str().unwrap()])
 		.arg("--state-dir")
 		.arg(&state)
 		.output()
@@ -102,10 +104,7 @@ fn a_running_job_can_be_cancelled() {
 		std::thread::sleep(Duration::from_millis(50));
 	}
 
-	let source = photos.join("slow.png");
-	let before = support::observed(&state);
-	fs::write(&source, b"pixels").unwrap();
-	support::observe(&state, before);
+	support::ready(&state);
 	fs::rename(&source, photos.join("slow.webp")).unwrap();
 
 	// The job appears while it runs, which is what makes its id reachable.
@@ -125,6 +124,25 @@ fn a_running_job_can_be_cancelled() {
 		assert!(Instant::now() < deadline, "no running job appeared");
 		std::thread::sleep(Duration::from_millis(100));
 	};
+
+	let mut follower = Daemon(
+		retype()
+			.args(["jobs", "logs", &id, "--follow"])
+			.arg("--state-dir")
+			.arg(&state)
+			.env("RETYPE_CONFIG", &config)
+			.stdout(Stdio::null())
+			.stderr(Stdio::null())
+			.spawn()
+			.unwrap(),
+	);
+	std::thread::sleep(Duration::from_millis(300));
+	let follower_status = follower.0.try_wait().unwrap();
+	assert!(
+		follower_status.is_none(),
+		"log-follow exited early: {follower_status:?}; journal: {}",
+		fs::read_to_string(state.join("jobs.jsonl")).unwrap()
+	);
 
 	let cancelled = retype()
 		.args(["jobs", "cancel", &id])
