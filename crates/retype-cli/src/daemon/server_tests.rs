@@ -1289,7 +1289,7 @@ fn windows_queued_admission_excludes_mutation_and_cancel_releases_it() {
 	let state = dir.path().join("state");
 	let input = dir.path().join("input.tar");
 	fs::write(&input, b"input bytes").unwrap();
-	let server = server(&state);
+	let mut server = server(&state);
 	let response = server.submit(&submission(&input)).unwrap();
 	assert!(response.ok, "{response:?}");
 	let id = JobId::parse(response.result.unwrap()["id"].as_str().unwrap()).unwrap();
