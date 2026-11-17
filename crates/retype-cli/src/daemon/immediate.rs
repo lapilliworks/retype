@@ -283,6 +283,8 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 			}
 		},
 	};
+	#[cfg(windows)]
+	let input_guard = preparing.admission.as_ref().map(|stamp| stamp.preparation_guard());
 	preparing.set_state(JobState::Running);
 	if let Err(error) = super::watcher::publish_checked(shared, &preparing) {
 		super::watcher::report_unrecorded_failure(shared, &preparing, &error);
@@ -325,6 +327,8 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 			return;
 		}
 	};
+	#[cfg(windows)]
+	drop(input_guard);
 	preparing.source.fingerprint = Some(snapshot.original.clone());
 	if let Err(error) = super::watcher::publish_checked(shared, &preparing) {
 		super::watcher::report_unrecorded_failure(shared, &preparing, &error);

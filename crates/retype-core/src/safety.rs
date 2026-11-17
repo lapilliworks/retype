@@ -37,18 +37,50 @@ impl Snapshot {
 }
 
 /// Captured without reading contents; preparation must verify this before and after hashing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputStamp {
 	identity: FileIdentity,
 	bytes: u64,
 	modified: std::time::Duration,
 	modified_before_epoch: bool,
 	changed: Option<(i64, i64)>,
+	#[cfg(windows)]
+	#[serde(skip)]
+	held: std::sync::Arc<std::sync::Mutex<Option<File>>>,
+}
+
+impl PartialEq for InputStamp {
+	fn eq(&self, other: &Self) -> bool {
+		self.identity == other.identity
+			&& self.bytes == other.bytes
+			&& self.modified == other.modified
+			&& self.modified_before_epoch == other.modified_before_epoch
+			&& self.changed == other.changed
+	}
+}
+
+impl Eq for InputStamp {}
+
+#[cfg(windows)]
+pub struct InputGuard(std::sync::Arc<std::sync::Mutex<Option<File>>>);
+
+#[cfg(windows)]
+impl Drop for InputGuard {
+	fn drop(&mut self) {
+		self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+	}
 }
 
 impl InputStamp {
 	pub fn of(path: &Path) -> Result<Self> {
+		#[cfg(not(windows))]
 		let file = regular_file(path)?;
+		#[cfg(windows)]
+		let file = {
+			let mut options = OpenOptions::new();
+			options.read(true);
+			open_guarded_file(path, options)?
+		};
 		let metadata = file.metadata()?;
 		#[cfg(unix)]
 		let (identity, changed) = {
@@ -95,7 +127,20 @@ impl InputStamp {
 			modified,
 			modified_before_epoch,
 			changed,
+			#[cfg(windows)]
+			held: std::sync::Arc::new(std::sync::Mutex::new(Some(file))),
 		})
+	}
+
+	/// Windows change timestamps can coalesce; keep writes and replacement excluded until snapshot capture.
+	#[cfg(windows)]
+	pub fn preparation_guard(&self) -> InputGuard {
+		InputGuard(std::sync::Arc::clone(&self.held))
+	}
+
+	#[cfg(windows)]
+	pub fn release(&self) {
+		drop(self.preparation_guard());
 	}
 
 	pub fn verify(&self, path: &Path) -> Result<()> {
@@ -394,6 +439,8 @@ mod tests {
 		let replacement = dir.path().join("replacement");
 		fs::write(&source, b"original").unwrap();
 		let stamp = InputStamp::of(&source).unwrap();
+		#[cfg(windows)]
+		stamp.release();
 		fs::write(&replacement, b"original").unwrap();
 		File::options()
 			.write(true)
@@ -406,6 +453,7 @@ mod tests {
 		assert!(stamp.verify(&source).is_err());
 	}
 
+	#[cfg(not(windows))]
 	#[test]
 	fn admission_rejects_same_size_edits_with_a_restored_modification_time() {
 		let dir = tempfile::tempdir().unwrap();
@@ -424,6 +472,50 @@ mod tests {
 			stamp.verify(&source).unwrap_err().code(),
 			crate::error::Code::JobInterrupted
 		);
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn admission_blocks_edits_and_replacement_until_the_snapshot_is_captured() {
+		let dir = tempfile::tempdir().unwrap();
+		let source = dir.path().join("source");
+		fs::write(&source, b"original").unwrap();
+		let stamp = InputStamp::of(&source).unwrap();
+		let preparing = stamp.preparation_guard();
+		assert!(fs::write(&source, b"modified").is_err());
+		assert!(fs::rename(&source, dir.path().join("moved")).is_err());
+		stamp.verify(&source).unwrap();
+		let snapshot = Snapshot::open(&source).unwrap();
+		drop(preparing);
+		fs::write(&source, b"modified").unwrap();
+		assert_eq!(fs::read(&snapshot.path).unwrap(), b"original");
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn admission_refuses_an_existing_writer() {
+		let dir = tempfile::tempdir().unwrap();
+		let source = dir.path().join("source");
+		fs::write(&source, b"original").unwrap();
+		let writer = File::options().write(true).open(&source).unwrap();
+		assert!(InputStamp::of(&source).is_err());
+		drop(writer);
+		InputStamp::of(&source).unwrap();
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn releasing_a_cancelled_admission_unlocks_every_cached_clone() {
+		let dir = tempfile::tempdir().unwrap();
+		let source = dir.path().join("source");
+		fs::write(&source, b"original").unwrap();
+		let stamp = InputStamp::of(&source).unwrap();
+		let cached = stamp.clone();
+		let json = serde_json::to_string(&stamp).unwrap();
+		let restored: InputStamp = serde_json::from_str(&json).unwrap();
+		assert_eq!(stamp, restored);
+		cached.release();
+		fs::write(&source, b"modified").unwrap();
 	}
 
 	#[test]

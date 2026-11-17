@@ -1242,6 +1242,7 @@ fn a_cli_submission_is_journalled_before_it_waits_in_the_queue() {
 	server.pool.stop();
 }
 
+#[cfg(not(windows))]
 #[test]
 fn a_queued_cli_input_cannot_be_changed_or_replaced_before_execution() {
 	for change in ["modify", "replace"] {
@@ -1279,6 +1280,27 @@ fn a_queued_cli_input_cannot_be_changed_or_replaced_before_execution() {
 		assert!(retype_core::undo::Store::open(&state).load(&id).unwrap().is_none());
 		server.pool.stop();
 	}
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_queued_admission_excludes_mutation_and_cancel_releases_it() {
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	let input = dir.path().join("input.tar");
+	fs::write(&input, b"input bytes").unwrap();
+	let server = server(&state);
+	let response = server.submit(&submission(&input)).unwrap();
+	assert!(response.ok, "{response:?}");
+	let id = JobId::parse(response.result.unwrap()["id"].as_str().unwrap()).unwrap();
+	assert!(fs::write(&input, b"other bytes").is_err());
+	assert!(fs::rename(&input, dir.path().join("moved.tar")).is_err());
+	assert!(server.answer(&Request::new(2, "status")).unwrap().ok);
+	assert!(server.cancel(&cancel_request(&id)).unwrap().ok);
+	fs::write(&input, b"other bytes").unwrap();
+	assert_eq!(server.find(id.as_str()).unwrap().state, JobState::Cancelled);
+	assert!(!input.with_extension("zip").exists());
+	server.pool.stop();
 }
 
 #[test]
