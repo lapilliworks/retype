@@ -187,6 +187,10 @@ jobs:
     needs: [build, debian]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -196,6 +200,11 @@ jobs:
           merge-multiple: true
       - name: Verify and assemble release assets
         run: bash scripts/assemble-release.sh dist
+      - name: Attest qualified Debian archives
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*-unknown-linux-gnu.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: release-assets
