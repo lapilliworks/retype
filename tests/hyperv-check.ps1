@@ -74,3 +74,5 @@ try {
 	Remove-Item -LiteralPath $root -Recurse -Force
 }
 Write-Host 'Synthetic collector tests passed; not native Hyper-V evidence.'
+# The final rejection deliberately leaves git's nonzero native exit code behind.
+exit 0

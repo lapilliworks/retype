@@ -10,11 +10,6 @@ if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
 	Write-Error 'Run this script on native Windows.' -ErrorAction Continue
 	exit 2
 }
-if ($args.Count -ne 0) {
-	Write-Error 'This runner takes no arguments; see docs/dev/testing.md.' -ErrorAction Continue
-	exit 2
-}
-
 $Root = Split-Path -Parent $PSScriptRoot
 foreach ($name in @('git', 'cargo', 'rustc')) {
 	if (-not (Get-Command $name -CommandType Application -ErrorAction SilentlyContinue)) {
