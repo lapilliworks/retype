@@ -89,18 +89,46 @@ pub fn watch_mode(
 	root: &Path,
 	recursive: bool,
 ) -> notify::Result<(RecommendedWatcher, mpsc::Receiver<notify::Result<Event>>)> {
-	let (sender, receiver) = mpsc::channel();
-	let mut watcher = notify::recommended_watcher(move |event| {
-		let _ = sender.send(event);
-	})?;
-	watcher.watch(
-		root,
-		match recursive {
-			true => RecursiveMode::Recursive,
-			false => RecursiveMode::NonRecursive,
-		},
-	)?;
-	Ok((watcher, receiver))
+	let root = std::path::absolute(root).map_err(notify::Error::io)?;
+	install(&root, recursive, || {
+		let (sender, receiver) = mpsc::channel();
+		let mut watcher = notify::recommended_watcher(move |event| {
+			let _ = sender.send(event);
+		})?;
+		watcher.watch(
+			&root,
+			match recursive {
+				true => RecursiveMode::Recursive,
+				false => RecursiveMode::NonRecursive,
+			},
+		)?;
+		Ok((watcher, receiver))
+	})
+}
+
+fn install<T>(root: &Path, recursive: bool, mut attempt: impl FnMut() -> notify::Result<T>) -> notify::Result<T> {
+	let identity = retype_core::correlate::Identity::of(root);
+	for retry in 0..3 {
+		match attempt() {
+			Ok(watch) => return Ok(watch),
+			Err(error) => {
+				let vanished = matches!(error.kind, notify::ErrorKind::PathNotFound)
+					|| matches!(&error.kind, notify::ErrorKind::Io(error) if error.kind() == std::io::ErrorKind::NotFound);
+				if retry == 2
+					|| !recursive || !vanished
+					|| error.paths.is_empty()
+					|| !error.paths.iter().all(|path| path != root && path.starts_with(root))
+					|| !root.is_dir()
+					|| identity.is_none()
+					|| retype_core::correlate::Identity::of(root) != identity
+				{
+					return Err(error);
+				}
+				// Recursive installation can lose a temporary child; discard the partial watch and rebuild it.
+			}
+		}
+	}
+	unreachable!("every installation attempt returns or retries")
 }
 
 /// Collect events until the batch closes.
@@ -500,6 +528,83 @@ mod tests {
 			.iter()
 			.map(|fact| (fact.source.clone(), fact.target.clone()))
 			.collect()
+	}
+
+	#[test]
+	fn installation_retries_a_vanished_child_then_receives_real_events() {
+		let root = dir();
+		let child = root.path().join("temporary-child");
+		fs::create_dir(&child).unwrap();
+		let mut attempts = 0;
+		let (_watcher, receiver) = install(root.path(), true, || {
+			attempts += 1;
+			if attempts == 1 {
+				fs::remove_dir(&child).unwrap();
+				return Err(notify::Error::path_not_found().add_path(child.clone()));
+			}
+			watch_mode(root.path(), true)
+		})
+		.unwrap();
+		assert_eq!(attempts, 2);
+		let created = root.path().join("after-installation");
+		fs::write(&created, b"observed").unwrap();
+		let deadline = Instant::now() + Duration::from_secs(5);
+		loop {
+			let event = receiver
+				.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+				.unwrap()
+				.unwrap();
+			if event.paths.contains(&created) {
+				break;
+			}
+		}
+	}
+
+	#[test]
+	fn installation_never_hides_root_permission_or_persistent_errors() {
+		let root = dir();
+		for (recursive, missing_root, permission, expected) in [
+			(true, false, false, 3),
+			(true, true, false, 1),
+			(true, false, true, 1),
+			(false, false, false, 1),
+		] {
+			let mut attempts = 0;
+			let path = if missing_root {
+				root.path().to_path_buf()
+			} else {
+				root.path().join("child")
+			};
+			let error = install::<()>(root.path(), recursive, || {
+				attempts += 1;
+				Err(if permission {
+					notify::Error::io(std::io::Error::from(std::io::ErrorKind::PermissionDenied)).add_path(path.clone())
+				} else {
+					notify::Error::path_not_found().add_path(path.clone())
+				})
+			})
+			.unwrap_err();
+			assert_eq!(error.paths, vec![path]);
+			assert_eq!(attempts, expected);
+		}
+	}
+
+	#[test]
+	fn installation_does_not_retry_a_replaced_root() {
+		let parent = dir();
+		let root = parent.path().join("root");
+		fs::create_dir(&root).unwrap();
+		let mut attempts = 0;
+		assert!(
+			install::<()>(&root, true, || {
+				attempts += 1;
+				fs::rename(&root, parent.path().join("old-root")).unwrap();
+				fs::create_dir(&root).unwrap();
+				Err(notify::Error::path_not_found().add_path(root.join("child")))
+			})
+			.is_err()
+		);
+		assert_eq!(attempts, 1);
 	}
 
 	#[test]

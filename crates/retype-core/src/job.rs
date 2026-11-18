@@ -353,11 +353,14 @@ pub(crate) struct WindowsFileInfo {
 pub(crate) fn windows_file_info(path: &std::path::Path) -> Option<WindowsFileInfo> {
 	use std::os::windows::fs::OpenOptionsExt;
 
-	use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
+	use windows_sys::Win32::Storage::FileSystem::{
+		FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+	};
 
 	let file = std::fs::OpenOptions::new()
 		.read(true)
 		.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+		.custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
 		.open(path)
 		.ok()?;
 	windows_file_info_from_file(&file)
