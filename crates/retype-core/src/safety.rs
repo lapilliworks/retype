@@ -40,7 +40,7 @@ impl Snapshot {
 	}
 }
 
-/// Captured without reading contents; preparation must verify this before and after hashing.
+/// Metadata at request receipt; content acceptance requires a separately captured fingerprint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputStamp {
 	identity: FileIdentity,
@@ -153,6 +153,27 @@ impl InputStamp {
 				crate::error::Code::JobInterrupted,
 				format!(
 					"{} changed or was replaced while the job waited; no output was written",
+					path.display()
+				),
+			)
+			.into());
+		}
+		Ok(())
+	}
+
+	/// Metadata timestamps can coalesce; accepted contents must also match their digest.
+	pub fn verify_captured(
+		&self,
+		path: &Path,
+		expected: &Fingerprint,
+		cancellation: &crate::execute::Cancellation,
+	) -> Result<()> {
+		self.verify(path)?;
+		if !expected.matches_cancellable(path, cancellation)? {
+			return Err(crate::error::Diagnostic::global(
+				crate::error::Code::JobInterrupted,
+				format!(
+					"{} changed after its contents were accepted; no output was written",
 					path.display()
 				),
 			)
@@ -479,6 +500,7 @@ mod tests {
 		fs::write(&source, b"original").unwrap();
 		let modified = fs::metadata(&source).unwrap().modified().unwrap();
 		let stamp = InputStamp::of(&source).unwrap();
+		let captured = Snapshot::open(&source).unwrap();
 		fs::write(&source, b"modified").unwrap();
 		File::options()
 			.write(true)
@@ -487,7 +509,20 @@ mod tests {
 			.set_times(fs::FileTimes::new().set_modified(modified))
 			.unwrap();
 		assert_eq!(
-			stamp.verify(&source).unwrap_err().code(),
+			stamp
+				.verify_captured(&source, &captured.original, &crate::execute::Cancellation::default())
+				.unwrap_err()
+				.code(),
+			crate::error::Code::JobInterrupted
+		);
+		/* Exercise matching metadata independently of the filesystem's timestamp granularity. */
+		let coalesced = InputStamp::of(&source).unwrap();
+		coalesced.verify(&source).unwrap();
+		assert_eq!(
+			coalesced
+				.verify_captured(&source, &captured.original, &crate::execute::Cancellation::default())
+				.unwrap_err()
+				.code(),
 			crate::error::Code::JobInterrupted
 		);
 	}

@@ -53,17 +53,18 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	}
 
 	let context = crate::client::context(request.state_dir, request.allow_spawn)?;
-	let mut client = crate::client::connect_or_spawn(request.state_dir, request.allow_spawn)?;
-
-	let submitted = match client.jobs_submit(&JobSubmit {
-		input: PathBuf::from(request.input),
-		intent: request.intent.to_string(),
-		output: request.output.map(PathBuf::from),
-		force: request.force,
-		mode: SubmitMode::Immediate,
-	}) {
+	let submitted = match retype_client::jobs::submit(
+		&context,
+		&JobSubmit {
+			input: PathBuf::from(request.input),
+			intent: request.intent.to_string(),
+			output: request.output.map(PathBuf::from),
+			force: request.force,
+			mode: SubmitMode::Immediate,
+		},
+	) {
 		Ok(answer) => answer,
-		Err(retype_ipc::ClientError::Rpc(error)) => {
+		Err(retype_client::Error::Client(retype_ipc::ClientError::Rpc(error))) => {
 			return Ok(ExitCode::from(match error.detail {
 				Some(detail) => output::fail_with_detail(&error.code, &error.message, *detail),
 				None => output::fail(&error.code, &error.message),
@@ -73,8 +74,6 @@ pub fn run(registry: &Registry, request: &Request<'_>) -> Result<ExitCode> {
 	};
 
 	let id = submitted.id.as_str().to_string();
-	// Never hold the daemon's connection while waiting for a person or a conversion.
-	drop(client);
 	if submitted.state == JobState::NeedsAttention {
 		if let Some(exit) = confirm_or_report(request, &id)? {
 			return Ok(exit);

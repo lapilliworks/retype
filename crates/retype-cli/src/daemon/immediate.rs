@@ -290,28 +290,13 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 		super::watcher::report_unrecorded_failure(shared, &preparing, &error);
 		return;
 	}
-	let prepared = match prepare_with(&shared.registry(), request, Some(&shared.state_dir), cancellation) {
-		Ok(prepared) => prepared,
-		Err(problems) => {
-			let mut failed = unsatisfied(shared, request, problems, id);
-			if cancellation.is_cancelled() {
-				failed.set_state(JobState::Cancelled);
-				failed.error = Some(JobError::new(
-					Code::JobCancelled.to_string(),
-					"cancelled during preparation",
-				));
-			}
-			publish(shared, &failed);
-			return;
-		}
-	};
 	let snapshot = match (|| {
 		if let Some(stamp) = &preparing.admission {
 			stamp.verify(&request.input)?;
 		}
 		let snapshot = retype_core::safety::Snapshot::open_cancellable(&request.input, cancellation)?;
 		if let Some(stamp) = &preparing.admission {
-			stamp.verify(&request.input)?;
+			stamp.verify_captured(&request.input, &snapshot.original, cancellation)?;
 		}
 		super::park::verify_input(&preparing, &snapshot.original)?;
 		Ok::<_, retype_core::error::Error>(snapshot)
@@ -333,6 +318,32 @@ pub fn run(shared: &Shared, request: &Request, id: &JobId, cancellation: &Cancel
 	if let Err(error) = super::watcher::publish_checked(shared, &preparing) {
 		super::watcher::report_unrecorded_failure(shared, &preparing, &error);
 		return;
+	}
+	let prepared = match prepare_with(&shared.registry(), request, Some(&shared.state_dir), cancellation) {
+		Ok(prepared) => prepared,
+		Err(problems) => {
+			let mut failed = unsatisfied(shared, request, problems, id);
+			if cancellation.is_cancelled() {
+				failed.set_state(JobState::Cancelled);
+				failed.error = Some(JobError::new(
+					Code::JobCancelled.to_string(),
+					"cancelled during preparation",
+				));
+			}
+			publish(shared, &failed);
+			return;
+		}
+	};
+	if let Some(stamp) = &preparing.admission {
+		if let Err(error) = stamp.verify_captured(&request.input, &snapshot.original, cancellation) {
+			if cancellation.is_cancelled() {
+				preparing.set_state(JobState::Cancelled);
+			} else {
+				preparing.fail(JobError::new(error.code().to_string(), error.to_string()));
+			}
+			publish(shared, &preparing);
+			return;
+		}
 	}
 	let mut started = queued(shared, &prepared, id);
 	started.admission = preparing.admission;
