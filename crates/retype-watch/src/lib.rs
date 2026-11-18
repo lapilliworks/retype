@@ -114,8 +114,8 @@ fn install<T>(root: &Path, recursive: bool, mut attempt: impl FnMut() -> notify:
 			Err(error) => {
 				let vanished = matches!(error.kind, notify::ErrorKind::PathNotFound)
 					|| matches!(&error.kind, notify::ErrorKind::Io(error) if error.kind() == std::io::ErrorKind::NotFound);
-				if retry == 2
-					|| !recursive || !vanished
+				let can_retry = retry < 2 && recursive && vanished;
+				if !can_retry
 					|| error.paths.is_empty()
 					|| !error.paths.iter().all(|path| path != root && path.starts_with(root))
 					|| !root.is_dir()
