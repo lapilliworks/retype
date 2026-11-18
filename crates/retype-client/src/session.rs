@@ -242,8 +242,14 @@ pub fn wait_for(context: &Context, spawned: &mut Spawned) -> Result<Client> {
 		std::thread::sleep(delay.min(deadline.saturating_duration_since(Instant::now())));
 		delay = (delay * 2).min(MAX_DELAY);
 		/* The old daemon can still hold its lock after removing its endpoint. */
-		if Instant::now() < deadline && spawned.child.try_wait()?.is_some() {
-			*spawned = spawn_detached(context)?;
+		if let Some(status) = spawned.child.try_wait()? {
+			let lock_exit = retype_core::error::Code::IoLocked.category().exit_code();
+			if status.code() != Some(i32::from(lock_exit)) {
+				return Err(Error::DaemonStartFailed(START_TIMEOUT, spawned.log.clone()));
+			}
+			if Instant::now() < deadline {
+				*spawned = spawn_detached(context)?;
+			}
 		}
 	}
 
