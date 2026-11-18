@@ -7,7 +7,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use retype_ipc::Client;
@@ -135,13 +135,18 @@ pub fn connect_or_spawn(context: &Context) -> Result<Client> {
 		return Err(Error::DaemonUnavailable);
 	}
 
-	let log = spawn_detached(context)?;
-	wait_for(context, &log)
+	let mut spawned = spawn_detached(context)?;
+	wait_for(context, &mut spawned)
 }
 
-/// Start a daemon without a terminal, pointing its output at a log file so a
-/// failure to start can be reported with something to read.
-pub fn spawn_detached(context: &Context) -> Result<PathBuf> {
+/// A startup attempt, retained until the daemon answers or the deadline expires.
+pub struct Spawned {
+	child: Child,
+	log: PathBuf,
+}
+
+/// Start a daemon without a terminal, retaining the child to detect a failed handoff.
+pub fn spawn_detached(context: &Context) -> Result<Spawned> {
 	state::ensure_private_directory(&context.state_dir)?;
 
 	let log = context.state_dir.join("daemon.log");
@@ -186,8 +191,10 @@ pub fn spawn_detached(context: &Context) -> Result<PathBuf> {
 		detach_handles()?;
 	}
 
-	command.spawn()?;
-	Ok(log)
+	Ok(Spawned {
+		child: command.spawn()?,
+		log,
+	})
 }
 
 /// Stop the daemon from inheriting the standard handles this process was given.
@@ -222,20 +229,25 @@ fn detach_handles() -> std::io::Result<()> {
 }
 
 /// Wait for a daemon that was just spawned to answer.
-pub fn wait_for(context: &Context, log: &Path) -> Result<Client> {
+pub fn wait_for(context: &Context, spawned: &mut Spawned) -> Result<Client> {
 	let deadline = Instant::now() + START_TIMEOUT;
 	let mut delay = FIRST_DELAY;
 
 	while Instant::now() < deadline {
-		if let Ok(client) = connect(context) {
-			return Ok(client);
+		match connect(context) {
+			Ok(client) => return Ok(client),
+			Err(Error::Client(error)) if error.is_connection_busy() => return Err(Error::Client(error)),
+			Err(_) => {}
 		}
-
-		std::thread::sleep(delay);
+		std::thread::sleep(delay.min(deadline.saturating_duration_since(Instant::now())));
 		delay = (delay * 2).min(MAX_DELAY);
+		/* The old daemon can still hold its lock after removing its endpoint. */
+		if Instant::now() < deadline && spawned.child.try_wait()?.is_some() {
+			*spawned = spawn_detached(context)?;
+		}
 	}
 
-	Err(Error::DaemonStartFailed(START_TIMEOUT, log.to_path_buf()))
+	Err(Error::DaemonStartFailed(START_TIMEOUT, spawned.log.clone()))
 }
 
 /// Wait until the daemon has removed its endpoint, which it does after the

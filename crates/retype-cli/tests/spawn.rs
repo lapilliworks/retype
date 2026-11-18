@@ -174,6 +174,41 @@ fn a_foreground_process_group_interrupt_does_not_stop_the_spawned_daemon() {
 	drop(daemon);
 }
 
+#[cfg(unix)]
+#[test]
+fn startup_retries_a_child_that_lost_the_shutdown_lock_handoff() {
+	use std::os::fd::AsRawFd;
+	use std::time::{Duration, Instant};
+
+	let dir = tempfile::tempdir().unwrap();
+	let state = dir.path().join("state");
+	std::fs::create_dir(&state).unwrap();
+	let config = dir.path().join("retype.toml");
+	std::fs::write(&config, "version = 'retype-config-1'\n[notify]\nenabled = false\n").unwrap();
+	let held = std::fs::File::create(state.join("lock")).unwrap();
+	assert_eq!(
+		unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+		0
+	);
+	let context = retype_client::Context::new(&state)
+		.unwrap()
+		.with_daemon(retype_client::Daemon::at(env!("CARGO_BIN_EXE_retype")))
+		.with_config(Some(config));
+	let _cleanup = Daemon { state: state.clone() };
+	let mut spawned = retype_client::spawn_detached(&context).unwrap();
+	let deadline = Instant::now() + Duration::from_secs(3);
+	while !std::fs::read_to_string(state.join("daemon.log"))
+		.unwrap_or_default()
+		.contains("another daemon owns")
+	{
+		assert!(Instant::now() < deadline, "child did not encounter the held lock");
+		std::thread::sleep(Duration::from_millis(10));
+	}
+	drop(held);
+	let mut client = retype_client::wait_for(&context, &mut spawned).unwrap();
+	assert!(client.status().unwrap().pid > 0);
+}
+
 #[test]
 fn starting_twice_is_not_an_error() {
 	let dir = tempfile::tempdir().unwrap();

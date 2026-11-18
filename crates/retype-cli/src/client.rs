@@ -3,7 +3,7 @@
 //! The discovery and spawn rules live in `retype-client`; this module only adds
 //! the command line's own config path and its human-readable status rendering.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use retype_client::{Client, Context, Daemon};
@@ -30,14 +30,14 @@ pub fn connect_or_spawn(state_dir: &Path, allow_spawn: bool) -> Result<Client> {
 	Ok(retype_client::connect_or_spawn(&context(state_dir, allow_spawn)?)?)
 }
 
-/// Start a daemon without a terminal and return its log path.
-pub fn spawn_detached(state_dir: &Path) -> Result<PathBuf> {
+/// Start a daemon without a terminal and retain its startup attempt.
+pub fn spawn_detached(state_dir: &Path) -> Result<retype_client::Spawned> {
 	Ok(retype_client::spawn_detached(&context(state_dir, true)?)?)
 }
 
 /// Wait for a daemon that was just spawned to answer.
-pub fn wait_for(state_dir: &Path, log: &Path) -> Result<Client> {
-	Ok(retype_client::wait_for(&context(state_dir, true)?, log)?)
+pub fn wait_for(state_dir: &Path, spawned: &mut retype_client::Spawned) -> Result<Client> {
+	Ok(retype_client::wait_for(&context(state_dir, true)?, spawned)?)
 }
 
 /// Wait until the daemon has removed its endpoint.
