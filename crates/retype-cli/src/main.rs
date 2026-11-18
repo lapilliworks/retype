@@ -884,8 +884,8 @@ fn control(cli: &Cli, action: &DaemonAction) -> Result<ExitCode> {
 			}
 
 			retype_cli::daemon::lifecycle::reset(&state_dir)?;
-			let log = client::spawn_detached(&state_dir)?;
-			let mut client = client::wait_for(&state_dir, &log)?;
+			let mut spawned = client::spawn_detached(&state_dir)?;
+			let mut client = client::wait_for(&state_dir, &mut spawned)?;
 			let status = client.call_without_params("status")?;
 			print_status(&status, cli.json);
 			Ok(ExitCode::SUCCESS)

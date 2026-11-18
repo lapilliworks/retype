@@ -11,4 +11,4 @@ pub mod state;
 
 pub use error::{Error, Result};
 pub use retype_ipc::Client;
-pub use session::{Context, Daemon, connect, connect_or_spawn, spawn_detached, wait_for, wait_for_stop};
+pub use session::{Context, Daemon, Spawned, connect, connect_or_spawn, spawn_detached, wait_for, wait_for_stop};
