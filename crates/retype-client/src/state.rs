@@ -79,7 +79,7 @@ pub fn socket_path(state_dir: &Path) -> Result<PathBuf> {
 }
 
 pub fn ensure_private_directory(path: &Path) -> Result<()> {
-	fs::create_dir_all(path)?;
+	retype_core::fsx::create_dir_all_durable(path)?;
 	set_private(path)?;
 	Ok(())
 }

@@ -13,6 +13,10 @@
 use std::io;
 use std::path::Path;
 
+#[cfg(windows)]
+#[path = "fsx_windows.rs"]
+pub(crate) mod windows;
+
 #[cfg(all(test, windows))]
 #[path = "fsx_windows_tests.rs"]
 mod windows_tests;
@@ -136,17 +140,73 @@ pub fn supports_durable_cleanup() -> bool {
 	cfg!(unix)
 }
 
+/// Require cleanup authority before changing a public name. Windows remains disabled in production.
+pub(crate) fn require_durable_cleanup(path: &Path) -> io::Result<()> {
+	if supports_durable_cleanup() {
+		return Ok(());
+	}
+	#[cfg(all(test, windows))]
+	if crate::durability_tests::cleanup_allowed(path)? {
+		windows::Directory::open(path.parent().unwrap_or(Path::new(".")))?.sync()?;
+		return Ok(());
+	}
+	let _ = path;
+	Err(io::Error::new(
+		io::ErrorKind::Unsupported,
+		"directory durability is not authorized for destructive cleanup; original and recovery retained",
+	))
+}
+
 /// Persist directory-entry changes where supported. This does not grant cleanup authority.
-/// Windows can publish outputs, but must retain originals until directory durability is implemented.
+/// The Windows NTFS synchronization candidate remains separate from cleanup authorization.
 pub fn sync_directory(path: &Path) -> io::Result<()> {
 	#[cfg(unix)]
 	{
 		std::fs::File::open(path)?.sync_all()
 	}
-	#[cfg(not(unix))]
+	#[cfg(windows)]
+	{
+		windows::Directory::open(path)?.sync()
+	}
+	#[cfg(not(any(unix, windows)))]
 	{
 		let _ = path;
 		Ok(())
+	}
+}
+
+/// Persist newly created ancestor names before they can hold recovery state.
+pub fn create_dir_all_durable(path: &Path) -> io::Result<()> {
+	let path = if path.as_os_str().is_empty() {
+		Path::new(".")
+	} else {
+		path
+	};
+	match std::fs::create_dir(path) {
+		Ok(()) => {
+			sync_directory(path)?;
+			sync_directory(
+				path.parent()
+					.filter(|parent| !parent.as_os_str().is_empty())
+					.unwrap_or(Path::new(".")),
+			)
+		}
+		Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => Ok(()),
+		Err(error) if error.kind() == io::ErrorKind::NotFound => {
+			let parent = path
+				.parent()
+				.filter(|parent| !parent.as_os_str().is_empty())
+				.unwrap_or(Path::new("."));
+			create_dir_all_durable(parent)?;
+			match std::fs::create_dir(path) {
+				Ok(()) => {}
+				Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
+				Err(error) => return Err(error),
+			}
+			sync_directory(path)?;
+			sync_directory(parent)
+		}
+		Err(error) => Err(error),
 	}
 }
 
