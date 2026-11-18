@@ -81,7 +81,7 @@ impl Journal {
 		}
 
 		if let Some(parent) = path.parent() {
-			fs::create_dir_all(parent)?;
+			crate::fsx::create_dir_all_durable(parent)?;
 			set_private_directory(parent)?;
 		}
 

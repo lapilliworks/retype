@@ -35,7 +35,7 @@ Check mode records bounded tool probes, validates the nextest version requiremen
 
 Full validation checks formatting and Clippy, checks installer syntax, builds once, runs the entire host-selected workspace with nextest, and runs doctests separately. Unix also exercises the shell installer against a local fake release. The shared nextest profile starts the two strict HEIC workflows first; they run once, not again in a separate CLI phase. Four workers, zero retries, per-test deadlines and failed leak detection apply on all three platforms.
 
-Missing tools, probe errors, empty format listings, failed HEIC decoding, failed or absent strict workflows, skipped tests, timeouts, incomplete suites and leaked test processes fail validation. Windows source disposal and destructive undo remain disabled, so its strict HEIC gates are expected to fail until the safety protocol is implemented. No gate is suppressed to obtain a green report.
+Missing tools, probe errors, empty format listings, failed HEIC decoding, failed or absent strict workflows, skipped tests, timeouts, incomplete suites and leaked test processes fail validation. Windows source disposal and destructive undo remain disabled while the integrated NTFS protocol is qualified, so its strict HEIC gates remain required failures. The core unit suite exercises publication, cleanup and undo with fixture-scoped test authority, including interruption, cancellation and permission refusals; see [Windows durability qualification](../docs/dev/windows-durability.md). No gate is suppressed to obtain a green report.
 
 For a contributor baseline without mandatory external tools, use `cargo test --workspace --locked --no-fail-fast`. Optional guards can return early and still count as Rust passes; that command is not release evidence.
 
@@ -60,6 +60,7 @@ Compilation has its own deadline before the shared execution budget starts. Each
 - `tests/install.sh`: Local Unix installer/update/rollback checks
 - `tests/installed.py <archive> --report <dir>`: Real Debian archive install, conversions, fidelity discovery, undo, update and checksum refusal
 - `tests/storage-faults.py --binary <path> --report <dir>`: Isolated Linux restoration ENOSPC, responsive control and safe exact-byte retry
+- `tests/windows-storage-faults.ps1 -Worker <core-test-exe> -Report <new-dir>`: Actual disk exhaustion on a new 64 MiB virtual NTFS disk; requires an elevated orchestrator and active ordinary-user desktop, retains evidence and detaches the disk
 - `tests/install.ps1 -Binary <path>`: Local Windows installer/update/rollback checks, normally invoked by Cargo
 - `tests/release.sh`: Synthetic release-assembly and checksum failures, intended for Linux release CI
 - `tests/hyperv-info.ps1`: Read-only Hyper-V host/guest collection; see `docs/dev/hyperv.md`

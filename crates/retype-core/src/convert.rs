@@ -164,8 +164,12 @@ impl StagedOutput {
 		}
 		file.sync_all()?;
 		crate::fsx::sync_directory(self._directory.path())?;
+		#[cfg(test)]
+		crate::durability_tests::publication_checkpoint("publication.prepared", &self.target)?;
 		crate::fsx::rename_open(&file, &self.target, self.publication)?;
 		*progress = PublicationProgress::Published;
+		#[cfg(test)]
+		crate::durability_tests::publication_checkpoint("publication.renamed", &self.target)?;
 		file.sync_all()?;
 		if let Some(expected) = expected {
 			if !expected.matches(&self.target)? {
@@ -174,6 +178,8 @@ impl StagedOutput {
 		}
 		drop(file);
 		crate::fsx::sync_directory(self.target.parent().expect("resolved parent"))?;
+		#[cfg(test)]
+		crate::durability_tests::publication_checkpoint("publication.durable", &self.target)?;
 		Ok(())
 	}
 
@@ -193,18 +199,24 @@ impl StagedOutput {
 		}
 		crate::fsx::sync_file(&self.temp)?;
 		crate::fsx::sync_directory(self._directory.path())?;
+		#[cfg(test)]
+		crate::durability_tests::publication_checkpoint("publication.prepared", &self.target)?;
 		if self.publication == Publication::Replace {
 			crate::fsx::rename(&self.temp, &self.target)?;
 		} else {
 			crate::fsx::rename_noreplace(&self.temp, &self.target)?;
 		}
 		*progress = PublicationProgress::Published;
+		#[cfg(test)]
+		crate::durability_tests::publication_checkpoint("publication.renamed", &self.target)?;
 		crate::fsx::sync_directory(self.target.parent().expect("resolved parent"))?;
 		if let Some(expected) = expected {
 			if !expected.matches(&self.target)? {
 				return Err(changed_staged(&self.target));
 			}
 		}
+		#[cfg(test)]
+		crate::durability_tests::publication_checkpoint("publication.durable", &self.target)?;
 		Ok(())
 	}
 }

@@ -323,7 +323,7 @@ impl Store {
 	/// An OS lease prevents undo or eviction from racing a publication or source disposal.
 	pub fn lease(&self, id: &JobId) -> Result<JobLease> {
 		let state = self.root.parent().expect("state directory");
-		fs::create_dir_all(state)?;
+		crate::fsx::create_dir_all_durable(state)?;
 		let mut options = fs::OpenOptions::new();
 		options.read(true).write(true).create(true);
 		#[cfg(unix)]
@@ -457,7 +457,7 @@ impl Store {
 	}
 
 	fn reserve(&self, subject: Subject, expected: Option<Fingerprint>) -> Result<Record> {
-		fs::create_dir_all(&self.root)?;
+		crate::fsx::create_dir_all_durable(&self.root)?;
 		set_mode(&self.root, 0o700)?;
 		let directory = self.directory(&subject.id);
 		fs::create_dir(&directory)?;
@@ -605,12 +605,7 @@ impl Store {
 		UndoStarted::open_owned(self, lease, cancellation.clone())?
 			.prepare_source()?
 			.cleanup(|record| {
-				if !crate::fsx::supports_durable_cleanup() {
-					return Err(Error::Io(std::io::Error::new(
-						std::io::ErrorKind::Unsupported,
-						"original restored or retained; output removal requires directory durability",
-					)));
-				}
+				crate::fsx::require_durable_cleanup(&record.source_path)?;
 				remove_outputs_cancellable(record, cancellation)
 			})
 	}
@@ -657,6 +652,8 @@ impl Store {
 		}
 		record.undo_progress.as_mut().expect("undo started").restore_intent = Some(fingerprint.clone());
 		write_manifest(&self.directory(&record.id), record)?;
+		#[cfg(test)]
+		crate::durability_tests::checkpoint("undo.intent-durable")?;
 		Ok(Restoration { staged, fingerprint })
 	}
 
@@ -783,7 +780,10 @@ impl Store {
 			fingerprint,
 			validated: validated.is_some(),
 		});
-		write_manifest(&self.directory(id), &record)
+		write_manifest(&self.directory(id), &record)?;
+		#[cfg(test)]
+		crate::durability_tests::checkpoint("publication.intent-durable")?;
+		Ok(())
 	}
 
 	/// Recheck the retained input and complete published inventory before disposal.
@@ -953,6 +953,8 @@ impl<'a> UndoStarted<'a> {
 			let _guard = store_lock(&store.root)?;
 			store.begin_undo(&mut record, policy)?;
 		}
+		#[cfg(test)]
+		crate::durability_tests::checkpoint("undo.started")?;
 		Ok(Self {
 			store,
 			record,
@@ -1010,6 +1012,8 @@ impl<'a> UndoStarted<'a> {
 		}
 		source.sync_all()?;
 		crate::fsx::sync_directory(record.source_path.parent().unwrap_or(Path::new(".")))?;
+		#[cfg(test)]
+		crate::durability_tests::checkpoint("undo.source-durable")?;
 		Ok(UndoSourceReady {
 			undo: self,
 			source,
@@ -1043,10 +1047,14 @@ impl UndoSourceReady<'_> {
 		}
 		/* Windows cannot remove the backup while its non-delete-sharing handle is open. */
 		drop(held);
+		#[cfg(test)]
+		crate::durability_tests::checkpoint("undo.before-forget")?;
 		{
 			let _guard = store_lock(&undo.store.root)?;
 			undo.store.remove_locked(&undo.record.id)?;
 		}
+		#[cfg(test)]
+		crate::durability_tests::checkpoint("undo.complete")?;
 		drop(source);
 		Ok(undo.record)
 	}
@@ -1249,12 +1257,7 @@ impl RetainedRecovery<'_> {
 	}
 
 	pub fn release_unpublished_cancellable(self, cancellation: &crate::execute::Cancellation) -> Result<()> {
-		if !crate::fsx::supports_durable_cleanup() {
-			return Err(Error::Io(std::io::Error::new(
-				std::io::ErrorKind::Unsupported,
-				"recovery cleanup requires directory durability",
-			)));
-		}
+		crate::fsx::require_durable_cleanup(&self.record.source_path)?;
 		let record = self.store.load(&self.record.id)?.ok_or_else(|| {
 			Error::Diagnostic(Diagnostic::global(
 				Code::JobResumeUnavailable,
@@ -1379,7 +1382,7 @@ pub(crate) fn store_lock(root: &Path) -> Result<StoreLock> {
 		.lock()
 		.map_err(|_| Error::Io(std::io::Error::other("undo store lock poisoned")))?;
 	let state = root.parent().expect("state directory");
-	fs::create_dir_all(state)?;
+	crate::fsx::create_dir_all_durable(state)?;
 	let mut options = fs::OpenOptions::new();
 	options.read(true).write(true).create(true);
 	#[cfg(unix)]

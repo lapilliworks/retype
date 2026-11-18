@@ -10,6 +10,8 @@ pub mod axis;
 pub mod convert;
 pub mod correlate;
 pub mod deferral;
+#[cfg(test)]
+mod durability_tests;
 pub mod error;
 pub mod estimate;
 pub mod execute;

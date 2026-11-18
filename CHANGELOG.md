@@ -22,6 +22,8 @@ All notable changes to retype are recorded here. The format follows
 
 ### Fixed
 
+- Recursive watcher installation retries a vanished child while preserving root-identity, permission and persistent-error checks. Windows directory identities can now be read for watcher root checks.
+- The Windows NTFS synchronization and handle-owned cleanup candidate shares current cancellable recovery and per-job ownership. Interruption, cancellation, permission refusal and actual disk-exhaustion checks are available; production destructive cleanup remains disabled pending durability qualification.
 - Connection loss during follower state refresh now reconnects through the persisted budget; event-ring overflow refreshes authoritative state without requiring unavailable history. Terminal EOF and interrupts do not confirm pending work; stale prompts do not apply a second decision.
 - Cancellation during storage admission now settles as cancelled instead of leaving a waiting job. Parked-state publication is coordinated with cancellation, and resolution waits for the previous worker to release ownership.
 - An expired undo record leased by another operation no longer rejects an unrelated backup. Expiry rechecks retention after copying so a concurrent resume cannot lose its renewed recovery.

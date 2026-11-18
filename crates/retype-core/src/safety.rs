@@ -10,6 +10,10 @@ use sha2::{Digest, Sha256};
 use crate::error::{Error, Result};
 use crate::job::FileIdentity;
 
+#[cfg(windows)]
+#[path = "safety_windows.rs"]
+mod windows;
+
 pub struct Snapshot {
 	pub path: std::path::PathBuf,
 	pub original: Fingerprint,
@@ -363,13 +367,19 @@ pub fn remove_owned_cancellable(
 	cancellation: &crate::execute::Cancellation,
 ) -> Result<()> {
 	cancellation.commit(|| Ok(()))?;
-	if !crate::fsx::supports_durable_cleanup() {
-		return Err(io::Error::new(
-			io::ErrorKind::Unsupported,
-			"source retained: directory durability unavailable",
-		)
-		.into());
+	crate::fsx::require_durable_cleanup(path)?;
+	#[cfg(windows)]
+	{
+		windows::remove_owned(path, expected, cancellation)
 	}
+	#[cfg(not(windows))]
+	{
+		remove_owned_path(path, expected, cancellation)
+	}
+}
+
+#[cfg(not(windows))]
+fn remove_owned_path(path: &Path, expected: &Fingerprint, cancellation: &crate::execute::Cancellation) -> Result<()> {
 	let path = crate::fsx::entry_path(path)?;
 	let parent = path.parent().expect("resolved parent");
 	let directory = tempfile::Builder::new()
@@ -381,6 +391,8 @@ pub fn remove_owned_cancellable(
 		fs::remove_dir(&directory)?;
 		return Err(error.into());
 	}
+	#[cfg(test)]
+	crate::durability_tests::checkpoint("cleanup.claimed")?;
 	let verified = expected.matches_cancellable(&claimed, cancellation);
 	if !matches!(verified, Ok(true)) {
 		if crate::fsx::rename_noreplace(&claimed, &path).is_ok() {
@@ -395,6 +407,8 @@ pub fn remove_owned_cancellable(
 	/* A crash before unlink must leave the claimed source reachable. */
 	crate::fsx::sync_directory(&directory)?;
 	crate::fsx::sync_directory(parent)?;
+	#[cfg(test)]
+	crate::durability_tests::checkpoint("cleanup.claim-durable")?;
 	if cancellation.is_cancelled() {
 		let _ = crate::fsx::rename_noreplace(&claimed, &path);
 		return Err(crate::error::Diagnostic::global(
@@ -403,10 +417,14 @@ pub fn remove_owned_cancellable(
 		)
 		.into());
 	}
-	fs::remove_file(&claimed)?;
+	cancellation.commit(|| Ok(fs::remove_file(&claimed)?))?;
+	#[cfg(test)]
+	crate::durability_tests::checkpoint("cleanup.unlinked")?;
 	crate::fsx::sync_directory(&directory)?;
 	fs::remove_dir(&directory)?;
 	crate::fsx::sync_directory(parent)?;
+	#[cfg(test)]
+	crate::durability_tests::checkpoint("cleanup.complete")?;
 	Ok(())
 }
 
