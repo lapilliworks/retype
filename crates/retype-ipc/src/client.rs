@@ -163,6 +163,7 @@ impl Client {
 		Ok(record.job)
 	}
 
+	/// Receive a durable request handle; source.fingerprint in jobs.get marks content acceptance.
 	pub fn jobs_submit(&mut self, request: &crate::JobSubmit) -> Result<crate::JobSubmitted, ClientError> {
 		let mut request = request.clone();
 		request.input = local_path(&request.input)?;
