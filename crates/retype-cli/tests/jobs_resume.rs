@@ -15,6 +15,21 @@ fn retype() -> Command {
 	Command::new(env!("CARGO_BIN_EXE_retype"))
 }
 
+fn wait_for_partial(state: &Path, id: &str) {
+	let deadline = Instant::now() + Duration::from_secs(10);
+	loop {
+		let job = retype_cli::client::connect(state).unwrap().jobs_get(id).unwrap();
+		if job.state == retype_core::job::JobState::Partial {
+			return;
+		}
+		assert!(
+			Instant::now() < deadline,
+			"partial checkpoint was not published: {job:?}"
+		);
+		std::thread::sleep(Duration::from_millis(20));
+	}
+}
+
 fn copy_config(dir: &Path) -> PathBuf {
 	let (command, layout) = match cfg!(windows) {
 		true => ("cmd", "layout = ['/c', 'copy', '{input}', '{ops}', '{output}']"),
@@ -125,6 +140,7 @@ fn cancelling_a_settled_partial_job_keeps_its_successful_output_and_undo() {
 		std::thread::sleep(Duration::from_millis(100));
 	};
 	let id = partial["id"].as_str().unwrap();
+	wait_for_partial(&state, id);
 	let produced = photos.join("photo-fliph.webp");
 
 	let cancelled = retype()
@@ -231,6 +247,7 @@ fn a_partial_job_resumes_and_skips_what_it_already_produced() {
 	assert_eq!(fs::read(&produced).unwrap(), b"pixels", "the first output was written");
 
 	let id = partial["id"].as_str().unwrap();
+	wait_for_partial(&state, id);
 
 	let still_blocked = retype()
 		.args(["jobs", "resume", id, "--json"])
