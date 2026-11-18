@@ -1,4 +1,4 @@
-//! Slow tool preparation must leave the daemon's control path usable.
+//! Content capture and slow tool preparation must leave the daemon's control path usable.
 #![cfg(unix)]
 
 use std::fs;
@@ -193,4 +193,73 @@ fn content_acceptance_precedes_probes_and_rejects_later_same_size_edits() {
 	assert_eq!(settled.error.unwrap().code, "E_JOB_INTERRUPTED");
 	assert_eq!(fs::read(source).unwrap(), b"modified");
 	assert!(!dir.path().join("photo.webp").exists());
+}
+
+#[test]
+fn losing_content_acceptance_keeps_the_received_handle_for_inspection() {
+	use retype_ipc::{Response, read_frame, write_frame};
+	use std::io::BufReader;
+	use std::os::unix::net::UnixListener;
+
+	let dir = tempfile::tempdir().unwrap();
+	let socket = dir.path().join("daemon.sock");
+	let listener = UnixListener::bind(&socket).unwrap();
+	fs::write(dir.path().join("endpoint"), socket.to_str().unwrap()).unwrap();
+	let server = std::thread::spawn(move || {
+		let mut received = serde_json::Value::Null;
+		for connection in 0..2 {
+			let (stream, _) = listener.accept().unwrap();
+			stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+			let mut stream = BufReader::new(stream);
+			let hello = read_frame(&mut stream).unwrap().unwrap();
+			write_frame(
+				stream.get_mut(),
+				&Response::ok(
+					hello["id"].as_u64().unwrap(),
+					serde_json::json!({
+						"ipc": retype_ipc::IPC_VERSION, "pid": 1, "machine": "test", "uptime_ms": 0,
+						"features": ["jobs.submit.id"], "capabilities": {}
+					}),
+				)
+				.unwrap(),
+			)
+			.unwrap();
+			let request = read_frame(&mut stream).unwrap().unwrap();
+			if connection == 0 {
+				assert_eq!(request["method"], "jobs.submit");
+				received = request["params"]["job_id"].clone();
+				write_frame(
+					stream.get_mut(),
+					&Response::ok(
+						request["id"].as_u64().unwrap(),
+						serde_json::json!({"id": received, "state": "queued"}),
+					)
+					.unwrap(),
+				)
+				.unwrap();
+			} else {
+				assert_eq!(request["method"], "jobs.get");
+			}
+		}
+		received
+	});
+	let context = retype_client::Context::new(dir.path()).unwrap().with_spawn(false);
+	let error = retype_client::jobs::submit(
+		&context,
+		&retype_ipc::JobSubmit {
+			input: dir.path().join("photo.png"),
+			intent: "webp".into(),
+			output: None,
+			force: false,
+			mode: retype_ipc::SubmitMode::Immediate,
+		},
+	)
+	.unwrap_err();
+	let retype_client::Error::Client(retype_ipc::ClientError::Rpc(error)) = error else {
+		panic!("content acceptance failure lost the structured request handle");
+	};
+	let detail = error.detail.unwrap();
+	assert_eq!(detail["id"], server.join().unwrap());
+	assert_eq!(detail["acceptance"], "unknown");
+	assert!(error.message.contains("before retrying"));
 }

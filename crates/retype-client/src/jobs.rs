@@ -32,9 +32,25 @@ pub fn submit(context: &Context, request: &JobSubmit) -> Result<JobSubmitted> {
 		client.jobs_submit(request)?
 	};
 	loop {
-		let job = {
+		let observed: Result<Job> = (|| {
 			let mut client = session::connect_or_spawn(context)?;
-			client.jobs_get(submitted.id.as_str())?
+			Ok(client.jobs_get(submitted.id.as_str())?)
+		})();
+		let job = match observed {
+			Ok(job) => job,
+			Err(error) => {
+				let detail =
+					std::collections::BTreeMap::from([("id", submitted.id.as_str()), ("acceptance", "unknown")]);
+				let error = WireError::new(
+					Code::IpcUnavailable,
+					format!(
+						"content acceptance for {} could not be checked: {error}; inspect that job before retrying",
+						submitted.id,
+					),
+				)
+				.with_detail(detail)?;
+				return Err(ClientError::Rpc(Box::new(error)).into());
+			}
 		};
 		if job.source.fingerprint.is_some() {
 			return Ok(JobSubmitted {
