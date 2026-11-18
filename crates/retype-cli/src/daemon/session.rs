@@ -98,7 +98,10 @@ pub fn query() -> Login {
 			let args = [
 				"show-session".into(),
 				id.into(),
-				"--property=User,Type,Class,State".into(),
+				"--property=User".into(),
+				"--property=Type".into(),
+				"--property=Class".into(),
+				"--property=State".into(),
 			];
 			let Ok(properties) =
 				retype_core::execute::run_child_output("loginctl", &program, &args, &cancellation, 8192)
