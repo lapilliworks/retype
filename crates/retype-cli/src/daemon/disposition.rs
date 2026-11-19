@@ -67,13 +67,20 @@ impl DurableCompletion {
 			});
 		}
 		job.source_disposition = Some(SourceDisposition::Pending);
-		match record(shared, &job) {
-			Ok(()) => Ok(Self { job }),
-			Err(error) => Err(CompletionFailure {
+		if let Err(error) = record(shared, &job) {
+			return Err(CompletionFailure {
 				job: Box::new(job),
 				error,
-			}),
+			});
 		}
+		#[cfg(feature = "test-checkpoints")]
+		if let Err(error) = retype_core::test_checkpoints::checkpoint("disposition.pending", &job.source.path) {
+			return Err(CompletionFailure {
+				job: Box::new(job),
+				error: error.into(),
+			});
+		}
+		Ok(Self { job })
 	}
 
 	fn settle(
@@ -97,6 +104,13 @@ impl DurableCompletion {
 			return Err(CompletionFailure {
 				job: Box::new(job),
 				error,
+			});
+		}
+		#[cfg(feature = "test-checkpoints")]
+		if let Err(error) = retype_core::test_checkpoints::checkpoint("disposition.recorded", &job.source.path) {
+			return Err(CompletionFailure {
+				job: Box::new(job),
+				error: error.into(),
 			});
 		}
 		if let Recovery::Retained(recovery) = completion.recovery {
@@ -170,7 +184,15 @@ fn decide(job: &Job, completion: &Completion<'_>, cancellation: &Cancellation) -
 		let _guard = recovery.guard_disposal(&job.outputs)?;
 		retype_core::safety::remove_owned(path, fingerprint)
 	}) {
-		Ok(()) => SourceDisposition::Removed,
+		Ok(()) => {
+			#[cfg(feature = "test-checkpoints")]
+			if let Err(error) = retype_core::test_checkpoints::checkpoint("disposition.removed", path) {
+				return SourceDisposition::Unresolved {
+					reason: error.to_string(),
+				};
+			}
+			SourceDisposition::Removed
+		}
 		Err(error) => retained(path, fingerprint, Some(error.to_string())),
 	}
 }

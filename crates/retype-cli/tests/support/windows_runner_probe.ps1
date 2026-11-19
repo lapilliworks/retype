@@ -160,8 +160,12 @@ if ($clearEnvironment.Count -ne 1) { throw 'Expected one environment-clearing lo
 $env:NEXTEST_TEST_THREADS = '7'
 $env:NEXTEST_RETRIES = '4'
 $env:RETYPE_DAEMON = 'inherited-daemon'
+$env:RETYPE_TEST_RECOVERY_ROOT = 'inherited-fixture'
+$env:RETYPE_TEST_RECOVERY_TOKEN = 'inherited-token'
+$env:RETYPE_TEST_RECOVERY_CHECKPOINT = 'inherited-checkpoint'
 . ([ScriptBlock]::Create($clearEnvironment[0].Extent.Text))
-foreach ($name in @('NEXTEST_TEST_THREADS', 'NEXTEST_RETRIES', 'RETYPE_DAEMON')) {
+foreach ($name in @('NEXTEST_TEST_THREADS', 'NEXTEST_RETRIES', 'RETYPE_DAEMON',
+	'RETYPE_TEST_RECOVERY_ROOT', 'RETYPE_TEST_RECOVERY_TOKEN', 'RETYPE_TEST_RECOVERY_CHECKPOINT')) {
 	if ($null -ne [Environment]::GetEnvironmentVariable($name, 'Process')) {
 		throw "The runner left $name set instead of removing it."
 	}

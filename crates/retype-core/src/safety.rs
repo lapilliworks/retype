@@ -425,6 +425,8 @@ fn remove_owned_path(path: &Path, expected: &Fingerprint, cancellation: &crate::
 	}
 	#[cfg(test)]
 	crate::durability_tests::checkpoint("cleanup.claimed")?;
+	#[cfg(feature = "test-checkpoints")]
+	crate::test_checkpoints::checkpoint("cleanup.claimed", &path)?;
 	let verified = expected.matches_cancellable(&claimed, cancellation);
 	if !matches!(verified, Ok(true)) {
 		if crate::fsx::rename_noreplace(&claimed, &path).is_ok() {
@@ -452,6 +454,8 @@ fn remove_owned_path(path: &Path, expected: &Fingerprint, cancellation: &crate::
 	cancellation.commit(|| Ok(fs::remove_file(&claimed)?))?;
 	#[cfg(test)]
 	crate::durability_tests::checkpoint("cleanup.unlinked")?;
+	#[cfg(feature = "test-checkpoints")]
+	crate::test_checkpoints::checkpoint("cleanup.unlinked", &path)?;
 	crate::fsx::sync_directory(&directory)?;
 	fs::remove_dir(&directory)?;
 	crate::fsx::sync_directory(parent)?;

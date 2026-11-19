@@ -170,6 +170,8 @@ impl StagedOutput {
 		*progress = PublicationProgress::Published;
 		#[cfg(test)]
 		crate::durability_tests::publication_checkpoint("publication.renamed", &self.target)?;
+		#[cfg(feature = "test-checkpoints")]
+		crate::test_checkpoints::checkpoint("publication.renamed", &self.target)?;
 		file.sync_all()?;
 		if let Some(expected) = expected {
 			if !expected.matches(&self.target)? {
@@ -209,6 +211,8 @@ impl StagedOutput {
 		*progress = PublicationProgress::Published;
 		#[cfg(test)]
 		crate::durability_tests::publication_checkpoint("publication.renamed", &self.target)?;
+		#[cfg(feature = "test-checkpoints")]
+		crate::test_checkpoints::checkpoint("publication.renamed", &self.target)?;
 		crate::fsx::sync_directory(self.target.parent().expect("resolved parent"))?;
 		if let Some(expected) = expected {
 			if !expected.matches(&self.target)? {

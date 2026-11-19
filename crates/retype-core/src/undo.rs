@@ -1026,6 +1026,8 @@ impl<'a> UndoStarted<'a> {
 		crate::fsx::sync_directory(record.source_path.parent().unwrap_or(Path::new(".")))?;
 		#[cfg(test)]
 		crate::durability_tests::checkpoint("undo.source-durable")?;
+		#[cfg(feature = "test-checkpoints")]
+		crate::test_checkpoints::checkpoint("undo.source-durable", &record.source_path)?;
 		Ok(UndoSourceReady {
 			undo: self,
 			source,
@@ -1061,6 +1063,8 @@ impl UndoSourceReady<'_> {
 		drop(held);
 		#[cfg(test)]
 		crate::durability_tests::checkpoint("undo.before-forget")?;
+		#[cfg(feature = "test-checkpoints")]
+		crate::test_checkpoints::checkpoint("undo.before-forget", &undo.record.source_path)?;
 		{
 			let _guard = store_lock(&undo.store.root)?;
 			undo.store.remove_locked(&undo.record.id)?;

@@ -68,6 +68,7 @@ export RETYPE_CONFIG="$scratch/retype.toml" RETYPE_REQUIRE_TEST_TOOLS=1 RETYPE_R
 # Debug integration binaries use a controlled login; this is not real-session evidence.
 export RETYPE_TEST_SESSION=terminal
 unset RETYPE_STATE_DIR RETYPE_NO_SPAWN RETYPE_DAEMON RETYPE_FIXTURES RETYPE_FIDELITY_MANIFEST
+unset RETYPE_TEST_RECOVERY_ROOT RETYPE_TEST_RECOVERY_TOKEN RETYPE_TEST_RECOVERY_CHECKPOINT
 unset NEXTEST_RETRIES NEXTEST_TEST_THREADS NEXTEST_MESSAGE_FORMAT
 failures=0
 cleaned=0
@@ -213,12 +214,23 @@ if grep -i 'skipping installer test' "$report/installer.log" >/dev/null; then
 fi
 run_step build "$limit" cargo test --workspace --locked --no-run
 if [ "$step_code" -ne 0 ]; then summary 'Workspace and doctests not run: build failed'; exit 1; fi
+run_step recovery-build "$limit" cargo test -p retype-cli --locked --features test-checkpoints \
+	--test daemon_recovery --target-dir target/test-checkpoints --no-run
+if [ "$step_code" -ne 0 ]; then summary 'Daemon recovery tests not run: build failed'; exit 1; fi
 
 suite_started=$SECONDS
 run_suite_step workspace cargo nextest run --workspace --locked --config-file tests/nextest.toml \
 	--profile platform --user-config-file none --ignore-default-filter --run-ignored all \
 	--status-level pass --color never --success-output immediate --failure-output immediate --no-tests fail
+run_suite_step daemon-recovery cargo nextest run -p retype-cli --locked --features test-checkpoints \
+	--test daemon_recovery --target-dir target/test-checkpoints --config-file tests/nextest.toml \
+	--profile platform --user-config-file none --ignore-default-filter --run-ignored all \
+	--status-level pass --color never --success-output immediate --failure-output immediate --no-tests fail
 run_suite_step doctests cargo test --workspace --doc --locked --no-fail-fast -- --nocapture
+if ! grep -E 'Summary .* 14 tests run: 14 passed' "$report/daemon-recovery.log" >/dev/null; then
+	summary 'The daemon interruption matrix did not pass all 14 tests.'
+	failures=1
+fi
 for workflow in \
 	a_real_watched_heic_conversion_and_undo_preserve_the_original \
 	a_real_direct_heic_conversion_and_undo_follow_watched_disposition; do
@@ -237,12 +249,12 @@ if ! grep -F 'Doc-tests' "$report/doctests.log" >/dev/null ||
 	failures=1
 fi
 if grep -E 'SKIPPED:|so this test proves nothing|[1-9][0-9]* ignored|Summary .* [1-9][0-9]* skipped' \
-	"$report/workspace.log" "$report/doctests.log" >/dev/null; then
+	"$report/workspace.log" "$report/daemon-recovery.log" "$report/doctests.log" >/dev/null; then
 	summary 'Test output contains a skip or ignored test; release evidence is incomplete.'
 	failures=1
 fi
 if grep -E '^[[:space:]]*(FAIL|TIMEOUT|LEAK)[[:space:]]+\[|test result: FAILED|^error: test failed' \
-	"$report/workspace.log" "$report/doctests.log" >/dev/null; then
+	"$report/workspace.log" "$report/daemon-recovery.log" "$report/doctests.log" >/dev/null; then
 	summary 'Test output contains a failed or timed-out result.'
 	failures=1
 fi
