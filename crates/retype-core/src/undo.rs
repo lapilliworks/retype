@@ -666,6 +666,12 @@ impl Store {
 
 	fn remove_locked(&self, id: &JobId) -> Result<()> {
 		let directory = self.directory(id);
+		#[cfg(windows)]
+		match crate::fsx::sync_directory(&directory) {
+			Ok(()) => {}
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+			Err(error) => return Err(error.into()),
+		}
 
 		match fs::remove_dir_all(&directory) {
 			Ok(()) => {
@@ -797,6 +803,8 @@ impl Store {
 		let record = self
 			.load(id)?
 			.ok_or_else(|| Error::Io(std::io::Error::other("recovery record disappeared")))?;
+		#[cfg(windows)]
+		crate::fsx::sync_directory(&self.directory(id))?;
 		let source = self.source(id)?;
 		if source.is_none() || record.outputs.is_empty() || record.outputs.len() != outputs.len() {
 			return Err(Error::Io(std::io::Error::other(
@@ -842,6 +850,8 @@ impl Store {
 					output.path.display()
 				))));
 			}
+			#[cfg(windows)]
+			crate::fsx::require_durable_cleanup(&output.path)?;
 			let (file, fingerprint) = guarded_fingerprint(&output.path)?;
 			if !commit.fingerprint.same_file_and_content(&fingerprint) {
 				return Err(Error::Io(std::io::Error::other(format!(
@@ -948,6 +958,8 @@ impl<'a> UndoStarted<'a> {
 				"undo record does not belong to its job lease",
 			)));
 		}
+		#[cfg(windows)]
+		crate::fsx::sync_directory(&store.directory(&record.id))?;
 		let policy = existing_source_policy(&record);
 		{
 			let _guard = store_lock(&store.root)?;

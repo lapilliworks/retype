@@ -113,7 +113,7 @@ cargo test -p retype-cli --locked --test keep a_real_watched_heic_conversion_and
 cargo test -p retype-cli --locked --test keep a_real_direct_heic_conversion_and_undo_follow_watched_disposition -- --nocapture
 ```
 
-This gate currently fails when the validator retains the visible source or the platform cannot complete destructive undo. A passing ordinary tool suite is not a substitute for this gate.
+This gate fails when the validator retains the visible source or the platform cannot complete destructive undo. A passing ordinary tool suite is not a substitute for this gate.
 
 ## 4. Filesystem and OS preparation
 
@@ -123,7 +123,7 @@ Tests create their own temporary subdirectories. If Windows `TEMP`/`TMP` points 
 
 Use a clean/default retype configuration for validation. Avoid exporting a custom `RETYPE_CONFIG` for the whole run; fixtures that need an override supply their own. Keep the desktop GUI and any manually registered real directories out of the test setup.
 
-On Windows, destructive original cleanup remains disabled until directory-entry durability is implemented. A successful native conversion therefore retains its source, and destructive undo reports unsupported cleanup while preserving the original, outputs and recovery bytes. The portable tests assert that fallback; do not disable it merely to make Unix-style deletion assertions pass.
+On Windows, destructive cleanup requires fixed local NTFS directories without reparse or placeholder ancestors. Unsupported paths and synchronization failures retain originals and recovery. Native qualification must pass actual disposition/undo on supported storage and independently prove refusal on unsupported paths; do not weaken those assertions to hide either failure.
 
 ## 5. Focused safety and Windows process tests
 
@@ -154,7 +154,7 @@ The `Natural` case records the first PID-marker bytes observed during the ordina
 
 The Windows process tests create controlled descendants, require the process tree to finish before accepting completion, and verify kill-on-close after a timeout. The `process_worker` entry point does nothing in an ordinary parent test run. The real FFmpeg target is a separate check of the installed executable and any wrapper it uses.
 
-The directory-flush probe logs the scratch filesystem name and flags when available, and whether a temporary directory can be opened and synced with read, write and combined access. The handle-rename probe checks exclusive mutation access, collision refusal and identity preservation for a write-through rename of a synthetic file. The Windows runner includes both in its workspace output. These are diagnostics only: a filesystem name or successful call does not prove directory-entry or power-loss durability and does not enable destructive cleanup.
+The directory-flush probe logs the scratch filesystem name and flags when available, and whether a temporary directory can be opened and synced with read, write and combined access. The handle-rename probe checks exclusive mutation access, collision refusal and identity preservation for a write-through rename of a synthetic file. The Windows runner includes both in its workspace output. These are diagnostics only: a filesystem name or successful call does not prove directory-entry or power-loss durability. See [NTFS durability qualification](windows-durability.md) for the interruption matrix and cleanup scope.
 
 Twenty-five CLI archive/transaction safety tests now run on Windows instead of being excluded with their entire files. Twenty-eight cases in the three CLI safety binaries remain Unix-only: the main shell-based audit, two additional shell/symlink cases, and actual post-disposal crash recovery. Cross-platform ownership tests and Windows-specific process tests provide further coverage, not substitutes for the excluded cases.
 

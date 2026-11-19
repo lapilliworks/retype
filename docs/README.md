@@ -89,7 +89,7 @@ Nothing already in the folder is converted. While watching is active, renaming `
 retype undo --last
 ```
 
-Undo records have a one-week retention by default when a record is successfully created. Undo can be disabled or unavailable, and Windows currently refuses destructive output cleanup. Check the job and undo record rather than assuming every conversion is reversible; keep an independent backup. [Jobs, undo and history](usage/jobs.md) covers the queue and retention settings.
+Undo records have a one-week retention by default when a record is successfully created. Undo can be disabled or unavailable. Windows destructive cleanup requires checked local NTFS paths and retains files when the storage checks fail. Check the job and undo record rather than assuming every conversion is reversible; keep an independent backup. [Jobs, undo and history](usage/jobs.md) covers the queue and retention settings.
 
 ## The manual
 

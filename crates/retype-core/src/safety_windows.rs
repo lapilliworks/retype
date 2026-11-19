@@ -1,4 +1,4 @@
-/* Handle-owned cleanup candidate. The public caller retains the production durability gate. */
+/* Handle-owned cleanup on qualified local NTFS paths; failures retain checked recovery. */
 
 use std::fs::{self, File, OpenOptions};
 use std::io;

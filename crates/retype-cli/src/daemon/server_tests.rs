@@ -417,10 +417,21 @@ fn an_unreadable_undo_manifest_does_not_stop_the_daemon() {
 
 #[cfg(windows)]
 #[test]
-fn an_undo_without_directory_durability_reports_the_refusal() {
+fn an_undo_through_a_junction_reports_the_refusal_and_preserves_recovery() {
 	let dir = tempfile::tempdir().unwrap();
 	let mut server = server(&dir.path().join("state"));
-	let job = partial_job(&server, dir.path());
+	let photos = dir.path().join("photos");
+	fs::create_dir(&photos).unwrap();
+	let job = partial_job(&server, &photos);
+	let target = dir.path().join("relocated");
+	retype_core::fsx::rename_noreplace(&photos, &target).unwrap();
+	let linked = std::process::Command::new("cmd.exe")
+		.args(["/d", "/c", "mklink", "/J"])
+		.arg(&photos)
+		.arg(&target)
+		.output()
+		.unwrap();
+	assert!(linked.status.success(), "junction fixture failed: {linked:?}");
 	let undo = Request::new(2, "recovery.undo")
 		.with_params(json!({"id": job.id}))
 		.unwrap();
@@ -428,7 +439,7 @@ fn an_undo_without_directory_durability_reports_the_refusal() {
 	let replies = replies_after_undo(&mut server, undo);
 	let error = replies[1].error.as_ref().unwrap();
 	assert_eq!(error.code, Code::IoFailed);
-	assert!(error.message.contains("directory durability"));
+	assert!(error.message.contains("reparse"), "{error:?}");
 	assert!(replies[2].ok);
 	assert_eq!(fs::read(&job.source.path).unwrap(), b"original bytes");
 	assert_eq!(fs::read(&job.outputs[0].path).unwrap(), b"output");
@@ -436,6 +447,8 @@ fn an_undo_without_directory_durability_reports_the_refusal() {
 	assert!(store.load(&job.id).unwrap().is_some());
 	assert!(store.source(&job.id).unwrap().is_some());
 	server.pool.stop();
+	fs::remove_dir(&photos).unwrap();
+	retype_core::fsx::rename_noreplace(&target, &photos).unwrap();
 }
 
 fn parked_job(server: &Server, directory: &Path, reason: &str, state: JobState) -> Job {

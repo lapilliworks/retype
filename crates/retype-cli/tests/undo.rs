@@ -221,7 +221,8 @@ fn a_watched_native_archive_conversion_restores_the_original_on_undo() {
 			!state.join("daemon.log").exists(),
 			"a busy daemon must not be spawned again"
 		);
-		assert_eq!(fs::read(&source).unwrap(), original);
+		assert!(!source.exists(), "busy undo must not restore or remove anything");
+		assert_eq!(fs::read(store.source(&record.id).unwrap().unwrap()).unwrap(), original);
 		assert_eq!(fs::read(&target).unwrap(), output);
 		assert!(store.load(&record.id).unwrap().is_some());
 		drop(held);
