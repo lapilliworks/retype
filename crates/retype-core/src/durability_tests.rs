@@ -1,4 +1,4 @@
-/* Test-only cleanup authorization and named crash checkpoints. No release binary reads these controls. */
+/* Test-only named crash checkpoints. No release binary reads these controls. */
 
 use std::cell::RefCell;
 use std::fs::{self, File};
@@ -141,15 +141,6 @@ impl Drop for Scope {
 			slot.replace(self.previous.take());
 		});
 	}
-}
-
-#[cfg(windows)]
-pub(crate) fn cleanup_allowed(path: &Path) -> io::Result<bool> {
-	FAULT.with(|slot| {
-		let state = slot.borrow();
-		let Some(fault) = state.as_ref() else { return Ok(false) };
-		Ok(crate::fsx::entry_path(path)?.starts_with(&fault.root))
-	})
 }
 
 pub(crate) fn publication_checkpoint(name: &str, target: &Path) -> io::Result<()> {
@@ -601,6 +592,38 @@ fn cancellation_at_recovery_boundaries_preserves_bytes_and_can_be_retried() {
 
 #[cfg(windows)]
 #[test]
+fn recovery_and_output_junctions_refuse_source_disposal() {
+	for relative in ["state/undo", "photos"] {
+		let parent = tempfile::tempdir().unwrap();
+		let fixture = Fixture::prepare(
+			&parent.path().join("fixture"),
+			Case {
+				operation: Operation::Dispose,
+				checkpoint: "cleanup.claimed",
+			},
+		);
+		let alias = fixture.root.join(relative);
+		let target = fixture.root.join("relocated");
+		crate::fsx::rename_noreplace(&alias, &target).unwrap();
+		let linked = Command::new("cmd.exe")
+			.args(["/d", "/c", "mklink", "/J"])
+			.arg(&alias)
+			.arg(&target)
+			.output()
+			.unwrap();
+		assert!(linked.status.success(), "junction fixture failed: {linked:?}");
+		assert!(fixture.run().is_err(), "junction authorized disposal: {relative}");
+		assert_eq!(fs::read(fixture.source()).unwrap(), ORIGINAL);
+		assert_eq!(fs::read(fixture.output()).unwrap(), OUTPUT);
+		assert!(fixture.store().load(&fixture.id()).unwrap().unwrap().pinned);
+		fixture.verify();
+		fs::remove_dir(&alias).unwrap();
+		crate::fsx::rename_noreplace(&target, &alias).unwrap();
+	}
+}
+
+#[cfg(windows)]
+#[test]
 fn read_only_outputs_refuse_cleanup_without_losing_recovery() {
 	let case = Case {
 		operation: Operation::Undo,
@@ -761,27 +784,21 @@ fn recovery_worker() {
 }
 
 #[test]
-#[cfg(windows)]
-fn candidate_authority_is_confined_to_its_thread_and_fixture() {
+fn crash_checkpoints_are_confined_to_their_thread_and_publication() {
 	let parent = tempfile::tempdir().unwrap();
 	let case = Case {
-		operation: Operation::Dispose,
-		checkpoint: "cleanup.claimed",
+		operation: Operation::Publish,
+		checkpoint: "publication.prepared",
 	};
 	let fixture = Fixture::prepare(&parent.path().join("fixture"), case);
-	let _scope = Scope::enter(&fixture.root, fixture.case, Injection::None);
-	assert!(!crate::fsx::supports_durable_cleanup());
+	let _scope = Scope::enter(&fixture.root, fixture.case, Injection::Fail);
 	let outside = parent.path().join("outside");
-	fs::write(&outside, UNRELATED).unwrap();
-	let fingerprint = Fingerprint::of(&outside).unwrap();
-	assert!(crate::safety::remove_owned(&outside, &fingerprint).is_err());
-	let source = fixture.source();
-	std::thread::spawn(move || {
-		assert!(crate::fsx::require_durable_cleanup(&source).is_err());
-	})
-	.join()
-	.unwrap();
-	assert_eq!(fs::read(outside).unwrap(), UNRELATED);
+	publication_checkpoint(case.checkpoint, &outside).unwrap();
+	assert!(publication_checkpoint(case.checkpoint, &fixture.output()).is_err());
+	let output = fixture.output();
+	std::thread::spawn(move || publication_checkpoint(case.checkpoint, &output).unwrap())
+		.join()
+		.unwrap();
 	assert_eq!(fs::read(fixture.source()).unwrap(), ORIGINAL);
 }
 

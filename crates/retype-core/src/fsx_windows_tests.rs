@@ -89,10 +89,6 @@ fn directory_flush_probe_is_not_durability_evidence() {
 		probe_directory(directory.path(), label, access);
 	}
 	eprintln!("Probe only: successful calls do not prove power-loss or directory-entry durability.");
-	assert!(
-		!super::supports_durable_cleanup(),
-		"Windows destructive cleanup must remain gated"
-	);
 }
 
 #[test]
@@ -160,8 +156,4 @@ fn write_through_handle_rename_probe_is_not_durability_evidence() {
 		collision_error.raw_os_error()
 	);
 	eprintln!("Probe only: successful handle operations do not prove crash or power-loss durability.");
-	assert!(
-		!super::supports_durable_cleanup(),
-		"Windows destructive cleanup must remain gated"
-	);
 }

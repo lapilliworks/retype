@@ -1,8 +1,8 @@
 # Windows NTFS durability qualification
 
-Windows production cleanup remains disabled. The NTFS synchronization and handle-owned removal candidates are integrated with cancellable recovery, per-job ownership and short store locks. Successful API calls or process-crash tests do not authorize production source disposal or destructive undo.
+Windows source disposal and destructive undo require fixed local NTFS paths. Each operation qualifies its participating directories, propagates synchronization failures and uses handle-owned removal with cancellable recovery, per-job ownership and short store locks. Unsupported paths retain originals and recovery. Successful API calls or process-crash tests alone are not durability qualification.
 
-## Candidate scope
+## Supported cleanup scope
 
 - Fixed local NTFS volumes with volume GUID paths
 - Regular files and directories without reparse points, offline attributes or recall attributes
@@ -10,7 +10,7 @@ Windows production cleanup remains disabled. The NTFS synchronization and handle
 - File identity and content checked through the same handle used to claim and remove the file
 - Write, delete, synchronization and permission failures propagated without a pathname-deletion fallback
 
-SMB, removable media, other filesystems, junction ancestors and cloud placeholders are outside this candidate's scope. Ordinary synchronization now fails explicitly on unsupported Windows paths instead of silently reporting success. This is not qualification of every storage device or synchronization provider.
+SMB, removable media, other filesystems, junction ancestors and cloud placeholders are outside this scope. Directory synchronization and cleanup fail explicitly on unsupported paths. Recovery storage and committed output directories are checked before source disposal; record deletion also qualifies the recovery directory before changing it. This is not qualification of every storage device or synchronization provider.
 
 Directory creation persists newly created ancestor names. Publication flushes the staged file and its directory before rename, then flushes the final file and destination directory. Cleanup moves the checked file into persistent recovery space, flushes both affected directories, removes the claimed object by handle, then flushes the removal. Undo flushes the restored original before removing outputs, and synchronizes record removal before reporting completion.
 
@@ -23,9 +23,9 @@ cargo test -p retype-core --locked --lib fsx::windows::tests -- --nocapture
 cargo test -p retype-core --locked --lib durability_tests:: -- --nocapture --test-threads=1
 ```
 
-The matrix covers twenty-two operation/checkpoint pairs, cancellation at recovery boundaries, read-only outputs and denied-delete permissions. Each separately bounded test injects an error, then terminates a worker process at that checkpoint and retries recovery. Both paths check original and backup bytes, untouched unrelated files and cleanup outcomes. The Windows process test also attempts to write and rename a held claim. A same-content replacement test requires refusal without removing either replacement or recovery. The authorization test requires that candidate permission cannot escape its fixture or thread.
+The matrix covers twenty-two operation/checkpoint pairs, cancellation at recovery boundaries, read-only outputs and denied-delete permissions. Each separately bounded test injects an error, then terminates a worker process at that checkpoint and retries recovery. Both paths check original and backup bytes, untouched unrelated files and cleanup outcomes. The Windows process test also attempts to write and rename a held claim. Same-content replacements and junctions in the source/output or recovery paths must refuse cleanup without removing the original or recovery. Checkpoint injection is confined to its thread and selected publication.
 
-Candidate authorization and checkpoint controls exist only in the core unit-test build. The release executable does not read `RETYPE_DURABILITY_*`, and `supports_durable_cleanup()` remains false on Windows. The normal strict runner includes the automatic tests but still fails the two production conversion/undo gates.
+Checkpoint controls exist only in the core unit-test build; the release executable does not read `RETYPE_DURABILITY_*`. `supports_durable_cleanup()` reports implementation availability, not permission for every Windows path. The normal strict runner requires the real watched/direct HEIC disposition and undo workflows to complete on supported local NTFS.
 
 | Operation | Checkpoints |
 | --- | --- |
@@ -113,8 +113,10 @@ Inspection validates synthetic originals, retained bytes, visible outputs, unrel
 
 Close the dedicated PowerShell session after testing so its worker environment does not affect a later Cargo run. Keep failed fixtures and transcripts in persisted storage.
 
-## Enablement boundary
+## Qualification boundary
 
-Review native non-administrator results, interrupted recovery, unsupported-path refusals and the Windows API ordering before changing production authorization. The current OS-wide capability is not permission to enable every Windows path: any future enabled operation must qualify the participating directories and volumes and retain files on failure.
+Windows 11 x86-64 qualification covered all twenty-two operation/checkpoint pairs using forced guest interruption, unchanged virtual disks, pre-recovery snapshots, non-administrator inspection and repeat recovery. The matrix completed across separate runs; two earlier wrapper/OS-startup failures were preserved, and their original interrupted fixtures later recovered with the qualified worker. Native cancellation, permission refusal, mutation/replacement, actual tiny-volume ENOSPC and unsupported-path checks are separate requirements.
+
+Before any further guest interruption, verify that startup has settled and that servicing, setup and restart work are not pending. A reachable PowerShell Direct endpoint is not readiness. Keep the observed checkpoint outside the guest without adding a guest flush that could harden the tested operation. A reported OS-wide implementation capability never substitutes for the participating-directory checks.
 
 A forced VM power-off tests interruption of the guest. It does not remove host power, bypass every virtualization cache or prove physical-device flush compliance. Passing this procedure must not be described as universal power-loss or storage-fault safety.

@@ -437,7 +437,6 @@ fn windows_disposal_guard_blocks_output_and_backup_mutation() {
 		assert_sharing_violation(&error.into());
 		assert!(!target.exists());
 	}
-	assert!(!crate::fsx::supports_durable_cleanup());
 	drop(guard);
 	crate::fsx::rename_noreplace(&backup, &fixture.root.path().join("moved-backup.heic")).unwrap();
 	crate::fsx::rename_noreplace(&fixture.output, &fixture.root.path().join("moved-output.jpg")).unwrap();

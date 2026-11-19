@@ -134,31 +134,39 @@ pub fn sync_file(path: &Path) -> io::Result<()> {
 	file.sync_all()
 }
 
-/// Whether directory-entry durability is implemented on this platform.
-/// Callers must retain originals and refuse destructive undo when this is false.
+/// Whether this platform implements cleanup durability. Windows still qualifies every participating directory.
+/// Unsupported paths and synchronization failures retain originals and recovery.
 pub fn supports_durable_cleanup() -> bool {
-	cfg!(unix)
+	cfg!(any(unix, windows))
 }
 
-/// Require cleanup authority before changing a public name. Windows remains disabled in production.
+/// Qualify the actual parent before changing a public name, even on a supported platform.
 pub(crate) fn require_durable_cleanup(path: &Path) -> io::Result<()> {
-	if supports_durable_cleanup() {
-		return Ok(());
+	#[cfg(windows)]
+	{
+		let absolute = std::path::absolute(path)?;
+		windows::Directory::open(
+			absolute
+				.parent()
+				.ok_or_else(|| io::Error::other("cleanup path has no parent"))?,
+		)?
+		.sync()
 	}
-	#[cfg(all(test, windows))]
-	if crate::durability_tests::cleanup_allowed(path)? {
-		windows::Directory::open(path.parent().unwrap_or(Path::new(".")))?.sync()?;
-		return Ok(());
+	#[cfg(not(windows))]
+	{
+		let _ = path;
+		if supports_durable_cleanup() {
+			Ok(())
+		} else {
+			Err(io::Error::new(
+				io::ErrorKind::Unsupported,
+				"directory durability is not authorized for destructive cleanup; original and recovery retained",
+			))
+		}
 	}
-	let _ = path;
-	Err(io::Error::new(
-		io::ErrorKind::Unsupported,
-		"directory durability is not authorized for destructive cleanup; original and recovery retained",
-	))
 }
 
-/// Persist directory-entry changes where supported. This does not grant cleanup authority.
-/// The Windows NTFS synchronization candidate remains separate from cleanup authorization.
+/// Persist directory-entry changes. Windows rejects unsupported volumes, aliases and placeholders.
 pub fn sync_directory(path: &Path) -> io::Result<()> {
 	#[cfg(unix)]
 	{

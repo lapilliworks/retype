@@ -29,7 +29,7 @@ The collector does not start Retype, run conversions, change VM power state, cre
 
 ## Evidence boundary
 
-This is read-only preflight, not the checkpoint-driven crash harness. An abrupt `Stop-VM -TurnOff` tests interruption of the guest; it does not remove host power or establish physical device flush compliance. Preserve the same virtual disks without checkpoint reversion between a crash and inspection. Capture pre-recovery state before starting Retype. Windows destructive cleanup remains disabled.
+This is read-only preflight, not the checkpoint-driven crash harness. An abrupt `Stop-VM -TurnOff` tests interruption of the guest; it does not remove host power or establish physical device flush compliance. Preserve the same virtual disks without checkpoint reversion between a crash and inspection. Capture pre-recovery state before starting Retype. Windows destructive cleanup is restricted to checked local NTFS paths; see [NTFS durability qualification](windows-durability.md) for the interruption protocol and evidence limits.
 
 ## Synthetic checks
 

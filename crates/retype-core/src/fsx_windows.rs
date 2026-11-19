@@ -1,4 +1,4 @@
-/* NTFS synchronization candidates. Successful calls do not authorize destructive cleanup. */
+/* Qualified fixed-local NTFS directory synchronization; every participating path is checked. */
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -185,11 +185,12 @@ mod tests {
 	}
 
 	#[test]
-	fn ntfs_directories_are_flushed_without_enabling_cleanup() {
+	fn cleanup_qualifies_the_actual_ntfs_directory() {
 		let root = tempfile::tempdir().unwrap();
 		let directory = Directory::open(root.path()).unwrap();
 		directory.sync().unwrap();
-		assert!(!super::super::supports_durable_cleanup());
+		assert!(super::super::supports_durable_cleanup());
+		super::super::require_durable_cleanup(&root.path().join("file")).unwrap();
 		assert!(Directory::open(&root.path().join("..")).is_err());
 		let file = root.path().join("not-a-directory");
 		std::fs::write(&file, b"synthetic bytes").unwrap();
@@ -225,6 +226,12 @@ mod tests {
 			Directory::open(&link.join("child")).err().unwrap().kind(),
 			io::ErrorKind::Unsupported
 		);
+		assert!(super::super::require_durable_cleanup(&link.join("child/source")).is_err());
+		let source = link.join("child/source");
+		std::fs::write(&source, b"original bytes").unwrap();
+		let fingerprint = crate::safety::Fingerprint::of(&source).unwrap();
+		assert!(crate::safety::remove_owned(&source, &fingerprint).is_err());
+		assert_eq!(std::fs::read(&source).unwrap(), b"original bytes");
 		assert!(target.join("child").is_dir());
 	}
 }

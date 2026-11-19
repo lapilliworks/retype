@@ -33,11 +33,12 @@ Reasoning, not preference:
 |---|---|---|---|
 | ext4, xfs, btrfs | device and inode | `user.*` | btrfs subvolumes report distinct device ids |
 | APFS, HFS+ | device and inode | `com.*` | |
-| NTFS, ReFS | volume serial and file id | stream, pending decision | |
+| NTFS | volume serial and file id | stream, pending decision | Cleanup requires checked fixed-local NTFS directories without reparse or placeholder ancestors |
+| ReFS | volume serial and file id | stream, pending decision | Destructive cleanup unsupported |
 | exFAT, FAT32 | volume serial and file id | none | Identity works on Windows; attributes are lost |
 | Network shares | unreliable | unreliable | See `docs/reference/watch.md` §9 |
 
-Nothing in the product requires an attribute or a stream. Identity is the mechanism of record, and it works on every filesystem in the table that reports a stable identifier.
+Nothing in the product requires an attribute or a stream. Identity is the mechanism of record, and it works on every filesystem in the table that reports a stable identifier. Identity support does not establish directory durability: Windows source disposal and destructive undo qualify each recovery, source and output directory, and retain files on unsupported paths or synchronization failure. See [NTFS durability qualification](../dev/windows-durability.md) for the evidence boundary.
 
 ## 4. Path handling
 
