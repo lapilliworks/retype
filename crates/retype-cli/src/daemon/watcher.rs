@@ -24,6 +24,7 @@ use retype_core::journal::Journal;
 use retype_core::plan::Plan;
 use retype_core::registry::Registry;
 use retype_core::resolve::{self, Resolved, Source as Origin};
+use retype_core::safety::Fingerprint;
 use retype_core::{execute, intent, print, watches};
 use retype_watch::Window;
 
@@ -886,17 +887,20 @@ fn admit_rename(
 	id: &JobId,
 	batch: Option<&str>,
 ) {
-	if let Err(error) = restore_queued_source(shared, source, target) {
-		forget_batch(shared, batch, id);
-		eprintln!("retype: cannot restore {} before admission: {error}", target.display());
-		return;
-	}
+	let (_, fingerprint) = match restore_queued_source(shared, source, target) {
+		Ok(restored) => restored,
+		Err(error) => {
+			forget_batch(shared, batch, id);
+			eprintln!("retype: cannot restore {} before admission: {error}", target.display());
+			return;
+		}
+	};
 
 	let Some(prepared) = prepare(shared, root, source, target) else {
 		forget_batch(shared, batch, id);
 		return;
 	};
-	let job = match queued_rename(shared, source, target, id, &prepared) {
+	let job = match queued_rename(shared, source, target, id, &prepared, &fingerprint) {
 		Ok(job) => job,
 		Err(error) => {
 			forget_batch(shared, batch, id);
@@ -942,19 +946,38 @@ fn forget_batch(shared: &Shared, batch: Option<&str>, id: &JobId) {
 }
 
 /// Restore the exact source name before accepting a queued rename.
-pub(super) fn restore_queued_source(shared: &Shared, source: &Path, target: &Path) -> retype_core::error::Result<()> {
+pub(super) fn restore_queued_source(
+	shared: &Shared,
+	source: &Path,
+	target: &Path,
+) -> retype_core::error::Result<(Fingerprint, Fingerprint)> {
 	let metadata = std::fs::symlink_metadata(target)?;
 	if !metadata.file_type().is_file() {
 		return Err(std::io::Error::other("the renamed input is not a regular file").into());
 	}
-	let expected = retype_core::job::FileIdentity::of(target)
-		.ok_or_else(|| std::io::Error::other("cannot identify the renamed input"))?;
+	let before = Fingerprint::of(target)?;
+	#[cfg(windows)]
+	let after = retype_core::safety::restore_owned_name(target, source, &before, |old, new| {
+		shared.recent.note(new, old);
+		shared.note_own_rename(new);
+	})?;
+	#[cfg(not(windows))]
+	let after = restore_queued_source_path(shared, source, target, &before)?;
+	Ok((before, after))
+}
+
+#[cfg(not(windows))]
+fn restore_queued_source_path(
+	shared: &Shared,
+	source: &Path,
+	target: &Path,
+	before: &Fingerprint,
+) -> retype_core::error::Result<Fingerprint> {
 	retype_core::fsx::rename_noreplace(target, source)?;
 	shared.recent.note(source, target);
 	shared.note_own_rename(source);
-	let is_regular = std::fs::symlink_metadata(source).is_ok_and(|metadata| metadata.file_type().is_file());
-	let matches = retype_core::job::FileIdentity::of(source).is_some_and(|identity| expected.matches(&identity));
-	if !is_regular || !matches {
+	let after = Fingerprint::of(source);
+	if !matches!(&after, Ok(after) if before.same_file_and_content(after)) {
 		match retype_core::fsx::rename_noreplace(source, target) {
 			Ok(()) => {
 				shared.recent.note(target, source);
@@ -969,7 +992,7 @@ pub(super) fn restore_queued_source(shared: &Shared, source: &Path, target: &Pat
 	}
 	retype_core::fsx::sync_file(source)?;
 	retype_core::fsx::sync_directory(source.parent().unwrap_or(Path::new(".")))?;
-	Ok(())
+	after
 }
 
 fn queued_rename(
@@ -978,7 +1001,11 @@ fn queued_rename(
 	target: &Path,
 	id: &JobId,
 	prepared: &Prepared,
+	fingerprint: &Fingerprint,
 ) -> retype_core::error::Result<Job> {
+	if !fingerprint.matches(source)? {
+		return Err(std::io::Error::other("the restored input changed before admission").into());
+	}
 	let metadata = std::fs::metadata(source)?;
 	let mtime_ns = metadata
 		.modified()
@@ -1021,7 +1048,7 @@ fn queued_rename(
 	);
 	job.source.size = metadata.len();
 	job.source.mtime_ns = mtime_ns;
-	job.source.fingerprint = Some(retype_core::safety::Fingerprint::of(source)?);
+	job.source.fingerprint = Some(fingerprint.clone());
 	Ok(job)
 }
 
