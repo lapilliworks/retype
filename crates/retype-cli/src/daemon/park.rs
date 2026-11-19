@@ -534,20 +534,24 @@ fn repair(
 			return Some(Verdict::Ignore);
 		}
 	};
-	if let Err(error) = watcher::restore_queued_source(shared, source, target) {
-		eprintln!(
-			"retype: cannot restore {} for automatic repair: {error}",
-			target.display()
-		);
-		return Some(Verdict::Ignore);
-	}
-	if !matches!(input_fingerprint.matches(source), Ok(true)) {
+	let (before, restored) = match watcher::restore_queued_source(shared, source, target) {
+		Ok(restored) => restored,
+		Err(error) => {
+			eprintln!(
+				"retype: cannot restore {} for automatic repair: {error}",
+				target.display()
+			);
+			return Some(Verdict::Ignore);
+		}
+	};
+	if !restored_input_matches(&input_fingerprint, &before, &restored, source) {
 		eprintln!(
 			"retype: {} changed during restoration; automatic repair did not start",
 			source.display()
 		);
 		return Some(Verdict::Ignore);
 	}
+	let input_fingerprint = restored;
 	let source_metadata = fs::metadata(source).ok();
 
 	let job = Job {
@@ -679,30 +683,34 @@ fn park(
 			return Verdict::Ignore;
 		}
 	};
-	if let Err(error) = watcher::restore_queued_source(shared, source, target) {
-		let asks = reason == Reason::Ask
-			|| parking
-				.requested
-				.as_deref()
-				.and_then(|text| intent::parse(text).ok())
-				.is_some_and(|intent| requests_confirmation(&intent, &shared.registry()));
-		if asks {
-			eprintln!(
-				"retype: cannot restore {} for confirmation: {error}; conversion did not start",
-				target.display()
-			);
-			return Verdict::Ignore;
+	let (before, restored) = match watcher::restore_queued_source(shared, source, target) {
+		Ok(restored) => restored,
+		Err(error) => {
+			let asks = reason == Reason::Ask
+				|| parking
+					.requested
+					.as_deref()
+					.and_then(|text| intent::parse(text).ok())
+					.is_some_and(|intent| requests_confirmation(&intent, &shared.registry()));
+			if asks {
+				eprintln!(
+					"retype: cannot restore {} for confirmation: {error}; conversion did not start",
+					target.display()
+				);
+				return Verdict::Ignore;
+			}
+			return Verdict::Run;
 		}
-		return Verdict::Run;
-	}
+	};
 	let source_path = source.to_path_buf();
-	if !matches!(input_fingerprint.matches(&source_path), Ok(true)) {
+	if !restored_input_matches(&input_fingerprint, &before, &restored, &source_path) {
 		eprintln!(
 			"retype: {} changed during restoration; the job was not parked",
 			source_path.display()
 		);
 		return Verdict::Ignore;
 	}
+	let input_fingerprint = restored;
 
 	let state = reason.parked();
 	let deadline = match state {
@@ -802,6 +810,17 @@ fn park(
 	}
 }
 
+fn restored_input_matches(
+	expected: &retype_core::safety::Fingerprint,
+	before: &retype_core::safety::Fingerprint,
+	restored: &retype_core::safety::Fingerprint,
+	source: &Path,
+) -> bool {
+	expected.same_file_and_content(before)
+		&& before.same_content(restored)
+		&& matches!(restored.matches(source), Ok(true))
+}
+
 /// Check admitted input identity and bytes against the working snapshot before any output is written.
 pub fn verify_input(job: &Job, actual: &retype_core::safety::Fingerprint) -> retype_core::error::Result<()> {
 	let expected = match (&job.source.fingerprint, &job.parked) {
@@ -892,6 +911,23 @@ mod tests {
 		let dir = tempfile::tempdir().expect("a directory");
 		let policy = Policy::open(dir.path()).expect("a policy");
 		(dir, policy)
+	}
+
+	#[test]
+	fn a_changed_filesystem_identity_does_not_authorize_an_input_replacement() {
+		let directory = tempfile::tempdir().unwrap();
+		let old = directory.path().join("old.tar");
+		let source = directory.path().join("restored.tar");
+		fs::write(&old, b"archive bytes").unwrap();
+		fs::write(&source, b"archive bytes").unwrap();
+		let before = retype_core::safety::Fingerprint::of(&old).unwrap();
+		let restored = retype_core::safety::Fingerprint::of(&source).unwrap();
+		assert!(!before.same_file_and_content(&restored));
+		assert!(restored_input_matches(&before, &before, &restored, &source));
+		assert!(!restored_input_matches(&restored, &before, &restored, &source));
+		fs::rename(&source, directory.path().join("previous.tar")).unwrap();
+		fs::write(&source, b"archive bytes").unwrap();
+		assert!(!restored_input_matches(&before, &before, &restored, &source));
 	}
 
 	#[test]

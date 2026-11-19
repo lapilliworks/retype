@@ -375,6 +375,17 @@ fn copy_bytes(
 	}
 }
 
+/// Restore a renamed file through its checked Windows handle, even if its file ID changes.
+#[cfg(windows)]
+pub fn restore_owned_name(
+	from: &Path,
+	to: &Path,
+	expected: &Fingerprint,
+	note_rename: impl FnMut(&Path, &Path),
+) -> Result<Fingerprint> {
+	windows::restore_owned_name(from, to, expected, note_rename)
+}
+
 /// Claim first, then verify. Never unlink an unchecked public pathname.
 /// Requires exclusive ownership: Unix renames do not revoke external writers' open handles.
 /// On any ambiguous restore, the claimed file remains in a persistent recovery directory.

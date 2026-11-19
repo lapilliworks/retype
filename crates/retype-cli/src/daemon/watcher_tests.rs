@@ -281,6 +281,33 @@ fn a_watched_rename_is_restored_and_journalled_before_it_can_run() {
 }
 
 #[test]
+fn a_restored_source_with_a_longer_name_is_fingerprinted_after_rename() {
+	let (dir, shared, pool, photos) = admission_fixture();
+	let source = photos.join("bundle.tar.gz");
+	let target = photos.join("bundle.zip");
+	std::fs::write(&target, b"original bytes").unwrap();
+	decide(
+		&shared,
+		&pool,
+		&photos,
+		retype_core::correlate::RenameFact {
+			source: source.clone(),
+			target: target.clone(),
+		},
+		None,
+	);
+	assert_eq!(std::fs::read(&source).unwrap(), b"original bytes");
+	assert!(!target.exists());
+	let (_, replay) = Journal::open(&dir.path().join("state/jobs.jsonl")).unwrap();
+	assert_eq!(replay.jobs.len(), 1);
+	let job = &replay.jobs[0];
+	assert_eq!(job.state, JobState::Queued);
+	assert!(job.source.fingerprint.as_ref().unwrap().matches(&source).unwrap());
+	assert!(pool.ids().contains(&job.id));
+	pool.stop();
+}
+
+#[test]
 fn a_queued_watched_input_cannot_be_replaced_with_identical_bytes() {
 	let (_dir, shared, pool, photos) = admission_fixture();
 	let bytes = archive_bytes();
