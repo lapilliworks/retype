@@ -12,9 +12,11 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 const CARGO: &str = r#"#!/bin/sh
-printf '%s|%s|%s|%s|%s|%s|%s|%s\n' "$*" "${RETYPE_REQUIRE_TEST_TOOLS-}" \
+printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$*" "${RETYPE_REQUIRE_TEST_TOOLS-}" \
     "${RETYPE_REQUIRE_NATIVE_WORKFLOW-}" "${RETYPE_STATE_DIR-unset}" "${RETYPE_NO_SPAWN-unset}" \
-    "${RETYPE_DAEMON-unset}" "${RETYPE_FIDELITY_MANIFEST-unset}" "${NEXTEST_RETRIES-unset}" >> "$MOCK_CARGO_RECORD"
+    "${RETYPE_DAEMON-unset}" "${RETYPE_FIDELITY_MANIFEST-unset}" "${NEXTEST_RETRIES-unset}" \
+    "${RETYPE_TEST_RECOVERY_ROOT-unset}" "${RETYPE_TEST_RECOVERY_TOKEN-unset}" \
+    "${RETYPE_TEST_RECOVERY_CHECKPOINT-unset}" >> "$MOCK_CARGO_RECORD"
 case "$RETYPE_CONFIG" in "$TMPDIR"/*) ;; *) echo 'configuration is not isolated' >&2; exit 3;; esac
 case "$XDG_STATE_HOME" in "$TMPDIR"/*) ;; *) echo 'state is not isolated' >&2; exit 3;; esac
 grep -q '^enabled = false$' "$RETYPE_CONFIG" || exit 3
@@ -34,6 +36,15 @@ case "$1" in
         esac;;
     nextest)
         if [ "$2" = show-config ]; then echo 'nextest configuration OK'; exit 0; fi
+        case "$*" in
+            *--test\ daemon_recovery*)
+                case "$MOCK_MODE" in
+                    missing-recovery) exit 0;;
+                    filtered-recovery) echo 'Summary [0.01s] 13 tests run: 13 passed'; exit 0;;
+                esac
+                echo 'Summary [0.01s] 14 tests run: 14 passed'
+                exit 0;;
+        esac
         case "$MOCK_MODE" in
             empty) exit 0;;
             hang) sleep 15;;
@@ -279,6 +290,9 @@ fn run_with_args(host: &str, mode: &str, limit: u64, args: &[&str]) -> Run {
 		.env("RETYPE_NO_SPAWN", "1")
 		.env("RETYPE_DAEMON", "/no/such/daemon")
 		.env("RETYPE_FIDELITY_MANIFEST", "/no/such/manifest")
+		.env("RETYPE_TEST_RECOVERY_ROOT", "/no/such/fixture")
+		.env("RETYPE_TEST_RECOVERY_TOKEN", "inherited-token")
+		.env("RETYPE_TEST_RECOVERY_CHECKPOINT", "inherited-checkpoint")
 		.env("NEXTEST_RETRIES", "9");
 	let stdin_writer = if mode == "probe-stdin" {
 		let (input, writer) = UnixStream::pair().unwrap();
@@ -361,6 +375,32 @@ fn the_runner_rejects_a_missing_direct_native_workflow() {
 		result
 			.text
 			.contains("a_real_direct_heic_conversion_and_undo_follow_watched_disposition")
+	);
+}
+
+#[test]
+fn the_runner_requires_the_complete_daemon_interruption_matrix() {
+	for mode in ["missing-recovery", "filtered-recovery"] {
+		let result = run("Linux", mode, 5);
+		assert!(!result.status.success());
+		assert!(
+			result
+				.text
+				.contains("daemon interruption matrix did not pass all 14 tests")
+		);
+	}
+	let result = run("Linux", "pass", 5);
+	assert!(result.status.success(), "{}", result.text);
+	assert!(
+		result
+			.invocations
+			.contains("--test daemon_recovery --target-dir target/test-checkpoints")
+	);
+	assert!(
+		result
+			.invocations
+			.lines()
+			.all(|line| line.ends_with("|unset|unset|unset"))
 	);
 }
 
@@ -685,7 +725,7 @@ fn a_single_workspace_run_keeps_strict_gates_doctests_and_isolation() {
 		result
 			.invocations
 			.lines()
-			.filter(|line| line.starts_with("nextest run "))
+			.filter(|line| line.starts_with("nextest run --workspace "))
 			.count(),
 		1
 	);

@@ -25,7 +25,7 @@ cargo test -p retype-core --locked --lib durability_tests:: -- --nocapture --tes
 
 The matrix covers twenty-two operation/checkpoint pairs, cancellation at recovery boundaries, read-only outputs and denied-delete permissions. Each separately bounded test injects an error, then terminates a worker process at that checkpoint and retries recovery. Both paths check original and backup bytes, untouched unrelated files and cleanup outcomes. The Windows process test also attempts to write and rename a held claim. Same-content replacements and junctions in the source/output or recovery paths must refuse cleanup without removing the original or recovery. Checkpoint injection is confined to its thread and selected publication.
 
-Checkpoint controls exist only in the core unit-test build; the release executable does not read `RETYPE_DURABILITY_*`. `supports_durable_cleanup()` reports implementation availability, not permission for every Windows path. The normal strict runner requires the real watched/direct HEIC disposition and undo workflows to complete on supported local NTFS.
+`RETYPE_DURABILITY_*` controls exist only in the core unit-test build. The separate `test-checkpoints` feature supplies token-scoped `RETYPE_TEST_RECOVERY_*` pauses for real-daemon tests, grants no cleanup authority and refuses release builds. Normal executables read neither set of controls. `supports_durable_cleanup()` reports implementation availability, not permission for every Windows path. The strict runner requires the real watched/direct HEIC disposition and undo workflows to complete on supported local NTFS.
 
 | Operation | Checkpoints |
 | --- | --- |
@@ -35,6 +35,16 @@ Checkpoint controls exist only in the core unit-test build; the release executab
 
 `prepared` follows the durable publication intent and staged-file flushes. `renamed` precedes final publication synchronization. `claimed` precedes claim synchronization. `unlinked` precedes removal synchronization. A recovery-directory orphan may remain after interruption; it is retained rather than guessed safe to delete. Inspect it before manual cleanup.
 
+
+## Real daemon interruption
+
+The native runners require all fourteen `daemon_recovery` cases. To run that matrix directly on disposable qualified storage:
+
+```sh
+cargo test -p retype-cli --locked --features test-checkpoints --test daemon_recovery --target-dir target/test-checkpoints -- --nocapture
+```
+
+The matrix interrupts the actual daemon during direct and watched native archive conversion, publication, source disposition and undo. Restart and retry must preserve the original backup, refuse replacement sources and outputs, leave unrelated files unchanged and retain orphaned claim identities and bytes. A separate case refuses checkpoints outside the token-marked synthetic fixture. Cleanup uses the production path qualification, without fixture authorization overrides. These process crashes supplement core and guest-interruption tests; they do not discard the filesystem cache.
 
 ## Actual disk exhaustion
 

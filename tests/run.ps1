@@ -53,7 +53,8 @@ Write-Host "Platform test: Windows`nReports: $Report`nScratch retained: $Scratch
 
 $Names = @('TEMP', 'TMP', 'LOCALAPPDATA', 'RETYPE_CONFIG', 'RETYPE_STATE_DIR', 'RETYPE_NO_SPAWN',
 	'RETYPE_REQUIRE_TEST_TOOLS', 'RETYPE_REQUIRE_NATIVE_WORKFLOW', 'RETYPE_TEST_SESSION', 'RETYPE_DAEMON', 'RETYPE_FIXTURES',
-	'RETYPE_FIDELITY_MANIFEST', 'NEXTEST_RETRIES', 'NEXTEST_TEST_THREADS', 'NEXTEST_MESSAGE_FORMAT')
+	'RETYPE_FIDELITY_MANIFEST', 'RETYPE_TEST_RECOVERY_ROOT', 'RETYPE_TEST_RECOVERY_TOKEN',
+	'RETYPE_TEST_RECOVERY_CHECKPOINT', 'NEXTEST_RETRIES', 'NEXTEST_TEST_THREADS', 'NEXTEST_MESSAGE_FORMAT')
 $OriginalEnvironment = @{}
 foreach ($name in $Names) {
 	$OriginalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
@@ -279,7 +280,8 @@ try {
 	# Controlled debug session, not evidence of native login/logout behavior.
 	$env:RETYPE_TEST_SESSION = 'terminal'
 	foreach ($name in @('RETYPE_STATE_DIR', 'RETYPE_NO_SPAWN', 'RETYPE_DAEMON', 'RETYPE_FIXTURES',
-		'RETYPE_FIDELITY_MANIFEST', 'NEXTEST_RETRIES', 'NEXTEST_TEST_THREADS', 'NEXTEST_MESSAGE_FORMAT')) {
+		'RETYPE_FIDELITY_MANIFEST', 'RETYPE_TEST_RECOVERY_ROOT', 'RETYPE_TEST_RECOVERY_TOKEN',
+		'RETYPE_TEST_RECOVERY_CHECKPOINT', 'NEXTEST_RETRIES', 'NEXTEST_TEST_THREADS', 'NEXTEST_MESSAGE_FORMAT')) {
 		# A real null removes the variable; PowerShell can coerce $null to an empty .NET string.
 		[Environment]::SetEnvironmentVariable($name, [NullString]::Value, 'Process')
 	}
@@ -357,8 +359,28 @@ try {
 				'--profile', 'platform', '--user-config-file', 'none', '--ignore-default-filter', '--run-ignored', 'all',
 				'--status-level', 'pass', '--color', 'never', '--success-output', 'immediate',
 				'--failure-output', 'immediate', '--no-tests', 'fail')
+			$recoveryBuild = Run-Step -Name 'recovery-build' -Seconds $Limit -Executable 'cargo' `
+				-Arguments @('test', '-p', 'retype-cli', '--locked', '--features', 'test-checkpoints',
+					'--test', 'daemon_recovery', '--target-dir', 'target/test-checkpoints', '--no-run')
 			$script:SuiteWatch = [Diagnostics.Stopwatch]::StartNew()
 			$workspace = Run-SuiteStep -Name 'workspace' -Executable 'cargo' -Arguments $nextest
+			$recoveryLogs = @()
+			if ($recoveryBuild.Code -eq 0 -and -not $recoveryBuild.TimedOut) {
+				$recovery = Run-SuiteStep -Name 'daemon-recovery' -Executable 'cargo' `
+					-Arguments @('nextest', 'run', '-p', 'retype-cli', '--locked', '--features', 'test-checkpoints',
+						'--test', 'daemon_recovery', '--target-dir', 'target/test-checkpoints',
+						'--config-file', 'tests/nextest.toml', '--profile', 'platform', '--user-config-file', 'none',
+						'--ignore-default-filter', '--run-ignored', 'all', '--status-level', 'pass', '--color', 'never',
+						'--success-output', 'immediate', '--failure-output', 'immediate', '--no-tests', 'fail')
+				Test-NextestSummary -Name 'daemon-recovery' -Result $recovery
+				$recoveryLogs = @($recovery.Stdout, $recovery.Stderr)
+				if (-not (Select-String -Path $recoveryLogs -Pattern 'Summary .* 14 tests run: 14 passed' -Quiet)) {
+					Write-Summary 'The daemon interruption matrix did not pass all 14 tests.'
+					$script:Failed = $true
+				}
+			} else {
+				Write-Summary 'Daemon recovery tests not run: build failed.'
+			}
 			$doctests = Run-SuiteStep -Name 'doctests' -Executable 'cargo' `
 				-Arguments @('test', '--workspace', '--doc', '--locked', '--no-fail-fast', '--', '--nocapture')
 			$workspaceLogs = @($workspace.Stdout, $workspace.Stderr)
@@ -377,7 +399,7 @@ try {
 				Write-Summary 'No doctest summaries were recorded.'
 				$script:Failed = $true
 			}
-			$logs = $workspaceLogs + $docLogs
+			$logs = $workspaceLogs + $recoveryLogs + $docLogs
 			if (Select-String -Path $logs -Pattern 'SKIPPED:|so this test proves nothing|[1-9][0-9]* ignored' -Quiet) {
 				Write-Summary 'Test output contains a skip or ignored test; release evidence is incomplete.'
 				$script:Failed = $true

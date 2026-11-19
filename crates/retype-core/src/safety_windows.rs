@@ -50,6 +50,8 @@ pub(super) fn remove_owned(
 	})?;
 	#[cfg(test)]
 	crate::durability_tests::checkpoint("cleanup.claimed")?;
+	#[cfg(feature = "test-checkpoints")]
+	crate::test_checkpoints::checkpoint("cleanup.claimed", &path)?;
 	file.sync_all()?;
 	held_directory.sync()?;
 	parent.sync()?;
@@ -74,6 +76,8 @@ pub(super) fn remove_owned(
 	}
 	#[cfg(test)]
 	crate::durability_tests::checkpoint("cleanup.unlinked")?;
+	#[cfg(feature = "test-checkpoints")]
+	crate::test_checkpoints::checkpoint("cleanup.unlinked", &path)?;
 	held_directory.sync()?;
 	drop(held_directory);
 	fs::remove_dir(&directory)?;

@@ -8,6 +8,13 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+test-checkpoints = ['retype-core/test-checkpoints']
+
+[[test]]
+name = 'daemon_recovery'
+required-features = ['test-checkpoints']
+
 [lib]
 name = "retype_cli"
 path = "src/lib.rs"
