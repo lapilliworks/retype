@@ -58,16 +58,6 @@ jobs:
             evidence: macos-arm64
             build: cargo
             binary: retype
-          - runner: windows-2025
-            target: x86_64-pc-windows-msvc
-            evidence: windows-x86_64
-            build: cargo
-            binary: retype.exe
-          - runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            evidence: windows-arm64
-            build: cargo
-            binary: retype.exe
     steps:
       - uses: actions/checkout@v4
 
