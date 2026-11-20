@@ -151,6 +151,7 @@ env "${common[@]}" RETYPE_VERSION=v0.0.0-test bash "$root/packaging/install.sh" 
 if [ "$os" = unknown-linux-gnu ]; then
 	[ -f "$tmp/data/applications/retype-uri.desktop" ]
 	[ -f "$tmp/config/systemd/user/retype.service" ]
+	[ "$(stat -c '%a' "$prefix/share/retype/installation.json")" = 600 ]
 	[ "$(env "${common[@]}" xdg-mime query default x-scheme-handler/retype)" = retype-uri.desktop ]
 	[ ! -e "$tmp/service-active" ] && [ ! -e "$tmp/service-enabled" ]
 	! grep -q '@PREFIX@' "$tmp/config/systemd/user/retype.service" "$tmp/data/applications/retype-uri.desktop"

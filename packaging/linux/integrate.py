@@ -20,9 +20,10 @@ def run(*command, check=True, env=None):
 	return subprocess.run(command, check=check, text=True, capture_output=True, timeout=300, env=env)
 
 
-def write(path, contents):
+def write(path, contents, mode=None):
 	path.parent.mkdir(parents=True, exist_ok=True)
-	mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o644
+	if mode is None:
+		mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o644
 	with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as staged:
 		staged.write(contents)
 		staged.flush()
@@ -34,7 +35,7 @@ def write(path, contents):
 
 
 def save_json(path, value):
-	write(path, (json.dumps(value, indent=2) + '\n').encode())
+	write(path, (json.dumps(value, indent=2) + '\n').encode(), 0o600)
 
 
 def snapshot(path):
