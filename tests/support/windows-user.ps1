@@ -10,11 +10,13 @@ $ErrorActionPreference = 'Stop'
 $directory = Join-Path $env:RETYPE_TEST_REPORT_DIR ('user-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $directory | Out-Null
 $worker = Join-Path $directory 'worker.ps1'
+$workingDirectory = if ($env:GITHUB_WORKSPACE) { $env:GITHUB_WORKSPACE } else { (Get-Location).Path }
 $body = @'
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $directory = $PSScriptRoot
+Set-Location -LiteralPath '__WORKING_DIRECTORY__'
 $PID | Set-Content (Join-Path $directory 'pid')
 Start-Transcript -Path (Join-Path $directory 'worker.log') | Out-Null
 $code = 1
@@ -45,7 +47,7 @@ __COMMAND__
 }
 exit $code
 '@
-$body.Replace('__ARCHITECTURE__', $Architecture).Replace('__COMMAND__', $Command) | Set-Content $worker
+$body.Replace('__ARCHITECTURE__', $Architecture).Replace('__WORKING_DIRECTORY__', $workingDirectory.Replace("'", "''")).Replace('__COMMAND__', $Command) | Set-Content $worker
 $pwsh = (Get-Process -Id $PID).Path
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("& '$worker'"))
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
