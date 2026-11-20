@@ -19,7 +19,7 @@ share/retype/packaging/
 `retype why` and `retype fidelity` look in `<prefix>/share/retype`; a packaged
 build therefore reads the shipped claims rather than a source tree. The native verification workflow earns `png:jpg` and `png:webp` claims with real tools and property fixtures, and retains `fidelity.toml` and its log in the platform report. Every selected pair must succeed. Archive builds wait for that gate and require the downloaded evidence manifest; a missing manifest fails assembly.
 
-The manifest names the tested backend and engine builds. Each Linux archive carries evidence earned by its own Debian architecture's release executable. macOS archives carry the Apple Silicon run, and Windows archives carry the Windows x86-64 run. This is conditional tool evidence, not native qualification of every artifact architecture or OS floor. An installed build whose version or fingerprint differs reports `unverified`. No untested architecture inherits a native execution claim.
+The manifest names the tested backend and engine builds. Each Linux and Windows archive carries evidence earned by its own architecture's release executable and passes exact-archive installation checks before upload. Windows verifies the native OS, PowerShell, Rust host and installed executable architecture, and runs product checks with a verified non-administrator token on NTFS scratch storage. macOS archives carry the Apple Silicon run. This is conditional tool evidence, not qualification of every OS floor or desktop/session behavior. An installed build whose version or fingerprint differs reports `unverified`.
 
 To earn additional local claims:
 
@@ -41,8 +41,8 @@ The release workflow builds every supported target from `docs/reference/platform
 | Linux aarch64 | `aarch64-unknown-linux-gnu` | Debian trixie container on ARM64 runner, exact archive installed and checked |
 | macOS x86_64 | `x86_64-apple-darwin` | `macos-15-intel` |
 | macOS aarch64 | `aarch64-apple-darwin` | `macos-15` |
-| Windows x86_64 | `x86_64-pc-windows-msvc` | `windows-latest` |
-| Windows aarch64 | `aarch64-pc-windows-msvc` | `windows-latest`, cross compiled |
+| Windows x86_64 | `x86_64-pc-windows-msvc` | `windows-2025`, exact archive installed and checked |
+| Windows aarch64 | `aarch64-pc-windows-msvc` | `windows-11-arm`, exact archive installed and checked |
 
 After native verification and required evidence succeed, a tag push publishes the archives, per-archive `.sha256` files, `SHA256SUMS`,
 `install.sh`, `install.ps1`, and GitHub build attestations. A manual dispatch

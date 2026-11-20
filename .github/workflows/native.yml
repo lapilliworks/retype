@@ -10,7 +10,10 @@ jobs:
   platform:
     name: native ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 75
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: '4'
+      RETYPE_TEST_TIMEOUT_SECONDS: '900'
     strategy:
       fail-fast: false
       matrix:
@@ -21,6 +24,11 @@ jobs:
           - platform: windows-x86_64
             runner: windows-2025
             architecture: X64
+            target: x86_64-pc-windows-msvc
+          - platform: windows-arm64
+            runner: windows-11-arm
+            architecture: Arm64
+            target: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,9 +44,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $report = Join-Path $env:RUNNER_TEMP 'retype-reports'
+          $report = Join-Path $env:SystemDrive 'retype-reports'
+          $scratch = Join-Path $env:SystemDrive 'retype-temp'
+          if ((Get-Volume -DriveLetter $env:SystemDrive.TrimEnd(':')).FileSystem -ne 'NTFS') { throw 'Native cleanup tests require NTFS scratch storage.' }
           [IO.Directory]::CreateDirectory($report) | Out-Null
+          [IO.Directory]::CreateDirectory($scratch) | Out-Null
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "RETYPE_TEST_REPORT_DIR=$report" -Encoding utf8
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RETYPE_TEST_TEMP_DIR=$scratch" -Encoding utf8
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "TEMP=$scratch`nTMP=$scratch" -Encoding utf8
           if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne '${{ matrix.architecture }}') { throw 'Unexpected architecture' }
       - name: Install macOS tools
         if: runner.os == 'macOS'
@@ -73,22 +86,45 @@ jobs:
       - name: Run Windows suite
         if: runner.os == 'Windows'
         shell: pwsh
-        timeout-minutes: 20
+        timeout-minutes: 45
         run: |
+          if (-not (rustc -vV | Select-String -Pattern '^host: ${{ matrix.target }}$')) { throw 'Expected a native Rust host toolchain.' }
+          ./tests/support/windows-user.ps1 -Architecture '${{ matrix.architecture }}' -Command @'
           pwsh -NoProfile -NonInteractive -File ./tests/run.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          '@
       - name: Earn macOS fidelity evidence
         if: runner.os == 'macOS'
         shell: bash
         timeout-minutes: 5
         run: target/debug/retype fidelity --pair png:jpg --pair png:webp --state-dir "$RUNNER_TEMP/retype-fidelity" --write "$RETYPE_TEST_REPORT_DIR/fidelity.toml" --fixtures fixtures/fidelity > "$RETYPE_TEST_REPORT_DIR/fidelity.log" 2>&1
-      - name: Earn Windows fidelity evidence
+      - name: Build exact Windows release executable and earn its evidence
         if: runner.os == 'Windows'
         shell: pwsh
-        timeout-minutes: 5
+        timeout-minutes: 20
         run: |
-          & target/debug/retype.exe fidelity --pair png:jpg --pair png:webp --state-dir "$env:RUNNER_TEMP/retype-fidelity" --write (Join-Path $env:RETYPE_TEST_REPORT_DIR 'fidelity.toml') --fixtures fixtures/fidelity *> (Join-Path $env:RETYPE_TEST_REPORT_DIR 'fidelity.log')
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./tests/support/windows-user.ps1 -Architecture '${{ matrix.architecture }}' -Command @'
+          cargo build --release --locked -p retype-cli --bin retype
+          & target/release/retype.exe fidelity --pair png:jpg --pair png:webp --state-dir "$env:TEMP/retype-fidelity" --write (Join-Path $env:RETYPE_TEST_REPORT_DIR 'fidelity.toml') --fixtures fixtures/fidelity *> (Join-Path $env:RETYPE_TEST_REPORT_DIR 'fidelity.log')
+          '@
+      - name: Package and check exact Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME } else { $version = 'v0.1.0-dev-' + $env:GITHUB_SHA.Substring(0, 7) }
+          $name = 'retype-' + $version + '-${{ matrix.target }}'
+          New-Item -ItemType Directory -Path "dist/$name/bin", "dist/$name/share/retype/fixtures" | Out-Null
+          Copy-Item target/release/retype.exe "dist/$name/bin/"
+          Copy-Item (Join-Path $env:RETYPE_TEST_REPORT_DIR 'fidelity.toml') "dist/$name/share/retype/"
+          Copy-Item fixtures/fidelity "dist/$name/share/retype/fixtures/" -Recurse
+          Copy-Item packaging "dist/$name/share/retype/" -Recurse
+          Copy-Item README.md, LICENSE "dist/$name/"
+          & tar.exe -czf "dist/$name.tar.gz" -C dist $name
+          if ($LASTEXITCODE -ne 0) { throw 'Archive assembly failed.' }
+          $archive = (Resolve-Path "dist/$name.tar.gz").Path
+          $sha = (Get-FileHash -LiteralPath $archive).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$archive.sha256", "$sha  $name.tar.gz`n")
+          ./tests/support/windows-user.ps1 -Architecture '${{ matrix.architecture }}' -Command "python tests/installed.py '$archive' --report '$env:RETYPE_TEST_REPORT_DIR/installed'"
       - name: Record macOS filesystem events
         if: ${{ always() && runner.os == 'macOS' }}
         shell: bash
@@ -101,12 +137,22 @@ jobs:
         shell: pwsh
         timeout-minutes: 3
         run: |
+          ./tests/support/windows-user.ps1 -Architecture '${{ matrix.architecture }}' -Command @'
           cargo run --quiet --locked -p retype-watch --example probe_events 2>&1 | Tee-Object -FilePath (Join-Path $env:RETYPE_TEST_REPORT_DIR 'filesystem-events.log')
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          '@
       - name: Upload native reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.platform }}
-          path: ${{ runner.temp }}/retype-reports
+          path: ${{ env.RETYPE_TEST_REPORT_DIR }}
+          if-no-files-found: error
+      - name: Upload qualified Windows archive
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: retype-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
           if-no-files-found: error

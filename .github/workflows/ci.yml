@@ -84,7 +84,8 @@ jobs:
           foreach ($path in @('packaging/install.ps1', 'tests/run.ps1',
               'tests/prepare.ps1', 'tests/hyperv-info.ps1',
               'tests/hyperv-check.ps1', 'tests/windows-storage-faults.ps1', 'tests/install.ps1',
-              'crates/retype-cli/tests/support/windows_runner_probe.ps1')) {
+              'crates/retype-cli/tests/support/windows_runner_probe.ps1',
+              'tests/support/windows-user.ps1')) {
             $tokens = $null
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile(

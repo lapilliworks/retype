@@ -58,16 +58,6 @@ jobs:
             evidence: macos-arm64
             build: cargo
             binary: retype
-          - runner: windows-latest
-            target: x86_64-pc-windows-msvc
-            evidence: windows-x86_64
-            build: cargo
-            binary: retype.exe
-          - runner: windows-latest
-            target: aarch64-pc-windows-msvc
-            evidence: windows-x86_64
-            build: cargo
-            binary: retype.exe
     steps:
       - uses: actions/checkout@v4
 
@@ -105,9 +95,7 @@ jobs:
           set -euo pipefail
           binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
           cargo build --release --locked -p retype-cli --bin retype --target "${{ matrix.target }}"
-          if [ "${{ matrix.target }}" != 'aarch64-pc-windows-msvc' ]; then
-            "$binary" --version
-          fi
+          "$binary" --version
 
       - name: Assemble
         shell: bash
@@ -184,7 +172,7 @@ jobs:
 
   package:
     name: assemble release assets
-    needs: [build, debian]
+    needs: [build, debian, native]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -200,11 +188,13 @@ jobs:
           merge-multiple: true
       - name: Verify and assemble release assets
         run: bash scripts/assemble-release.sh dist
-      - name: Attest qualified Debian archives
+      - name: Attest qualified Debian and Windows archives
         if: github.event_name == 'push' && github.ref_type == 'tag'
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: dist/*-unknown-linux-gnu.tar.gz
+          subject-path: |
+            dist/*-unknown-linux-gnu.tar.gz
+            dist/*-pc-windows-msvc.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: release-assets

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Check an exact Linux release archive in a private installation prefix."""
+"""Check an exact Linux or Windows release archive in a private installation prefix."""
 import argparse
+import functools
 import hashlib
+import http.server
 import io
 import json
 import os
@@ -11,6 +13,7 @@ import signal
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 
 
@@ -32,12 +35,16 @@ def main():
         roots = {Path(member.name).parts[0] for member in package.getmembers()}
     assert len(roots) == 1
     name = roots.pop()
-    suffix = '-x86_64-unknown-linux-gnu' if 'x86_64' in name else '-aarch64-unknown-linux-gnu'
+    windows = os.name == 'nt'
+    architecture = 'x86_64' if 'x86_64' in name else 'aarch64'
+    suffix = f'-{architecture}-' + ('pc-windows-msvc' if windows else 'unknown-linux-gnu')
     assert name.startswith('retype-') and name.endswith(suffix)
     tag = name[len('retype-'):-len(suffix)]
     checks = []
     processes = []
-    with tempfile.TemporaryDirectory(prefix='rt-installed-', dir='/tmp') as private:
+    server = None
+    original_path = None
+    with tempfile.TemporaryDirectory(prefix='rt-installed-', dir=None if windows else '/tmp') as private:
         private = Path(private)
         work = private / 'work'
         work.mkdir()
@@ -55,10 +62,21 @@ def main():
         env['RETYPE_CONFIG'] = str(config)
         env['RETYPE_RELEASE_BASE'] = mirror.parent.as_uri()
         env['RETYPE_TARGET'] = suffix[1:]
+        env['RETYPE_VERSION'] = tag
+        env['RETYPE_PREFIX'] = str(prefix)
         env['XDG_CONFIG_HOME'] = str(private / 'config')
         env['XDG_STATE_HOME'] = str(private / 'state-home')
         env['XDG_DATA_HOME'] = str(private / 'data')
-        binary = prefix / 'bin/retype'
+        binary = prefix / 'bin' / ('retype.exe' if windows else 'retype')
+        installer = (['pwsh', '-NoProfile', '-NonInteractive', '-File', repo / 'packaging/install.ps1'] if windows
+                     else ['bash', repo / 'packaging/install.sh', '--version', tag, '--prefix', prefix])
+
+        def stop_process(process):
+            if windows:
+                subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=10)
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
 
         def run(label, command, success=True, timeout=40):
             process = subprocess.Popen([str(part) for part in command], cwd=work, env=env, stdin=subprocess.DEVNULL,
@@ -67,7 +85,7 @@ def main():
             try:
                 stdout, stderr = process.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
+                stop_process(process)
                 stdout, stderr = process.communicate()
                 raise AssertionError(f'{label} timed out')
             (report / f'{label}.stdout.log').write_bytes(stdout)
@@ -90,8 +108,24 @@ def main():
             cli(label, 'undo', job['id'], '--no-spawn')
 
         try:
-            run('install', ['bash', repo / 'packaging/install.sh', '--version', tag, '--prefix', prefix])
+            if windows:
+                original_path = run('user-path-before', ['pwsh', '-NoProfile', '-NonInteractive', '-Command',
+                                    "ConvertTo-Json -InputObject ([Environment]::GetEnvironmentVariable('Path', 'User'))"])
+                handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(mirror.parent))
+                server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), handler)
+                threading.Thread(target=server.serve_forever, daemon=True).start()
+                env['RETYPE_RELEASE_BASE'] = f'http://127.0.0.1:{server.server_port}'
+            run('install', installer)
             check('installed executable and evidence exist', binary.is_file() and (prefix / 'share/retype/fidelity.toml').is_file())
+            with tarfile.open(archive) as package:
+                member = package.extractfile(f'{name}/bin/{binary.name}')
+                check('exact packaged executable installed', hashlib.sha256(member.read()).hexdigest() == sha(binary))
+            if windows:
+                executable = binary.read_bytes()
+                pe = int.from_bytes(executable[60:64], 'little')
+                machine = int.from_bytes(executable[pe + 4:pe + 6], 'little')
+                check('native executable architecture', executable[pe:pe + 4] == b'PE\0\0' and
+                      machine == (0xAA64 if architecture == 'aarch64' else 0x8664))
             run('version', [binary, 'version'])
             run('doctor', [binary, 'doctor', '--check', '--state-dir', state])
             heic = work / 'photo.HEIC'
@@ -112,7 +146,7 @@ def main():
             document.write_text('# Report\n\nA paragraph, **emphasis**, and $x^2$.\n\n| a | b |\n|---|---|\n| 1 | 2 |\n')
             expected = sha(document)
             job = cli('pdf', 'convert', document, 'pdf', '--no-spawn')['job']
-            check('selected Typst produces PDF', Path(job['engine']['candidate']).name == 'typst' and (work / 'document.pdf').read_bytes().startswith(b'%PDF'))
+            check('selected Typst produces PDF', Path(job['engine']['candidate']).stem == 'typst' and (work / 'document.pdf').read_bytes().startswith(b'%PDF'))
             undo('pdf-undo', job)
             check('document undo', sha(document) == expected and not (work / 'document.pdf').exists())
             source = work / 'archive.tar'
@@ -131,22 +165,35 @@ def main():
             cli('decoder-refusal', 'convert', damaged, 'jpg', '--no-spawn', success=False)
             check('failure preserves source', damaged.read_bytes() == b'invalid source' and not damaged.with_suffix('.jpg').exists())
             before = sha(binary)
-            run('update', ['bash', repo / 'packaging/install.sh', '--version', tag, '--prefix', prefix])
-            check('update backup', sha(binary) == before and any((backup / 'retype').is_file() and sha(backup / 'retype') == before for backup in (prefix / 'share').glob('retype-backup.*')))
+            if windows:
+                run('stop-before-update', [binary, 'daemon', 'stop', '--now', '--force', '--no-spawn', '--state-dir', state])
+            run('update', installer)
+            backups = (prefix / 'share').glob('retype-backup-*' if windows else 'retype-backup.*')
+            check('update backup', sha(binary) == before and any((backup / binary.name).is_file() and sha(backup / binary.name) == before for backup in backups))
             (mirror / 'SHA256SUMS').write_text(f'{"0" * 64}  {archive.name}\n')
-            run('checksum-refusal', ['bash', repo / 'packaging/install.sh', '--version', tag, '--prefix', prefix], False)
+            run('checksum-refusal', installer, False)
             check('checksum failure preserves installation', sha(binary) == before)
         finally:
-            for process in processes:
-                if process.poll() is None:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
-            if binary.exists() and (state / 'endpoint').exists():
-                run('stop', [binary, 'daemon', 'stop', '--now', '--force', '--no-spawn', '--state-dir', state], timeout=15)
-                deadline = time.monotonic() + 5
-                while (state / 'endpoint').exists() and time.monotonic() < deadline:
-                    time.sleep(.05)
-                assert not (state / 'endpoint').exists(), 'test daemon leaked'
+            try:
+                for process in processes:
+                    if process.poll() is None:
+                        stop_process(process)
+                        process.wait()
+                if binary.exists() and (state / 'endpoint').exists():
+                    run('stop', [binary, 'daemon', 'stop', '--now', '--force', '--no-spawn', '--state-dir', state], timeout=15)
+                    deadline = time.monotonic() + 5
+                    while (state / 'endpoint').exists() and time.monotonic() < deadline:
+                        time.sleep(.05)
+                    assert not (state / 'endpoint').exists(), 'test daemon leaked'
+            finally:
+                if server:
+                    server.shutdown()
+                    server.server_close()
+                if original_path is not None:
+                    env['RETYPE_TEST_USER_PATH_BEFORE'] = original_path
+                    run('restore-user-path', ['pwsh', '-NoProfile', '-NonInteractive', '-Command',
+                        "$value = $env:RETYPE_TEST_USER_PATH_BEFORE | ConvertFrom-Json; "
+                        "[Environment]::SetEnvironmentVariable('Path', $value, 'User')"])
     (report / 'result.json').write_text(json.dumps({'checks': len(checks), 'archive': str(archive), 'sha256': sha(archive)}, indent=2) + '\n')
     print(f'{len(checks)} installed-archive checks passed')
 

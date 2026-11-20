@@ -58,7 +58,7 @@ Compilation has its own deadline before the shared execution budget starts. Each
 ## Standalone checks and diagnostics
 
 - `tests/install.sh`: Local Unix installer/update/rollback checks
-- `tests/installed.py <archive> --report <dir>`: Real Debian archive install, conversions, fidelity discovery, undo, update and checksum refusal
+- `tests/installed.py <archive> --report <dir>`: Exact Debian or Windows archive installation, executable architecture on Windows, conversions, fidelity discovery, undo, update and checksum refusal
 - `tests/storage-faults.py --binary <path> --report <dir>`: Isolated Linux restoration ENOSPC, responsive control and safe exact-byte retry
 - `tests/windows-storage-faults.ps1 -Worker <core-test-exe> -Report <new-dir>`: Actual disk exhaustion on a new 64 MiB virtual NTFS disk; requires an elevated orchestrator and active ordinary-user desktop, retains evidence and detaches the disk
 - `tests/install.ps1 -Binary <path>`: Local Windows installer/update/rollback checks, normally invoked by Cargo
@@ -67,3 +67,4 @@ Compilation has its own deadline before the shared execution budget starts. Each
 - `tests/hyperv-check.ps1`: Synthetic collector checks without a VM
 - `tests/probe-supersede.sh`: Detailed Unix watcher/supersession investigation, outside the release gate
 - `tests/support/run-bounded.pl`: Process-group supervision used by the macOS runner and its regression tests
+- `tests/support/windows-user.ps1 -Architecture X64|Arm64 -Command <trusted-code>`: Bounded native qualification with a verified non-administrator token and retained identity/log reports
