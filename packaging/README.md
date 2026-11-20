@@ -72,14 +72,22 @@ $env:RETYPE_PREFIX = 'C:\Tools\retype'; irm https://retype.name/install.ps1 | ie
 
 The scripts are copied into the product site at build time and are also release assets. On Linux, `install.sh` requires Python 3 and `xdg-mime` (`xdg-utils`). It installs `retype-uri.desktop` under `$XDG_DATA_HOME/applications` (default `~/.local/share/applications`) for notification identity and `retype://` dispatch, and `retype.service` under `$XDG_CONFIG_HOME/systemd/user` (default `~/.config/systemd/user`). Both entries use the absolute installation path. New services stay disabled; enablement is unchanged on updates, and an already active service drains its conversions before restarting. Without a running user manager for that configuration directory, the unit is available on the next user-manager start. Linux desktop support is Wayland-only.
 
+Start the installed service explicitly when automatic watching should persist across logins:
+
+```sh
+systemctl --user enable --now retype.service
+```
+
 Linux removal uses the same installer without contacting the release server:
 
 ```sh
 curl -fsSL https://retype.name/install.sh | bash -s -- --uninstall
+# Or run the installed copy while offline:
+bash "$HOME/.local/share/retype/packaging/install.sh" --uninstall
 # Include --prefix if the installation used a custom prefix.
 ```
 
-Removal stops and disables the owned service, removes installed files, restores overwritten desktop/unit definitions and previous URI preferences, and preserves configuration, watches and recovery data. Modified definitions and URI choices made after installation are preserved. Each update/removal keeps a persistent `share/retype-backup.*` directory, including integration rollback records. Other MIME preferences are preserved. macOS and Windows pre-release installers still install the binary and shared assets only.
+Removal stops and disables the owned service, removes installed files, restores overwritten desktop/unit definitions and previous URI preferences, and preserves configuration, watches and recovery data. Modified definitions and URI choices made after installation are preserved. Each update/removal keeps a persistent `share/retype-backup.*` directory, including integration rollback records. Other MIME preferences are preserved. One prefix owns these per-user definitions; remove it before installing under another prefix. Use the original `XDG_CONFIG_HOME` and `XDG_DATA_HOME` for updates and removal. macOS and Windows pre-release installers still install the binary and shared assets only.
 
 ## Per platform
 
