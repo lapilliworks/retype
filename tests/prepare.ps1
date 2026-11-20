@@ -29,6 +29,16 @@ foreach ($path in $paths) {
 	}
 }
 
+# ARM64 ImageMagick can lack its registry module path; use its installed coders directory.
+$magick = Get-Command magick -CommandType Application -ErrorAction Stop | Select-Object -First 1
+$coders = Join-Path (Split-Path -Parent $magick.Source) 'modules/coders'
+if (-not (Test-Path -LiteralPath $coders -PathType Container)) {
+	$coders = Join-Path (Split-Path -Parent $magick.Source) 'modules-Q16HDRI/coders'
+}
+if (-not (Test-Path -LiteralPath $coders -PathType Container)) { throw 'ImageMagick coder modules were not found.' }
+$env:MAGICK_CODER_MODULE_PATH = $coders
+if ($env:GITHUB_ACTIONS -eq 'true') { Add-Content -LiteralPath $env:GITHUB_ENV -Value "MAGICK_CODER_MODULE_PATH=$coders" }
+
 foreach ($tool in @('magick', 'ffmpeg', 'ffprobe', 'pandoc', 'typst')) {
 	if (-not (Get-Command $tool -CommandType Application -ErrorAction SilentlyContinue)) {
 		throw "Required command is missing after setup: $tool"
