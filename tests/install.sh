@@ -157,7 +157,7 @@ if [ "$os" = unknown-linux-gnu ]; then
 	! grep -q '@PREFIX@' "$tmp/config/systemd/user/retype.service" "$tmp/data/applications/retype-uri.desktop"
 	[ -L "$tmp/config/mimeapps.list" ]
 	env "${common[@]}" RETYPE_TEST_LAUNCH_RECORD="$tmp/launched" \
-		gio launch "$tmp/data/applications/retype-uri.desktop" 'retype://undo/example' >/dev/null
+		gio launch "$tmp/data/applications/retype-uri.desktop" 'retype://job/example' >/dev/null
 	for attempt in {1..100}; do
 		[ ! -f "$tmp/launched" ] || break
 		sleep 0.05

@@ -94,7 +94,7 @@ def main():
 
         def uri_undo(label, job, source, expected):
             (report / f'{label}.requested').write_text(job['id'] + '\n')
-            run(label, ['gio', 'open', f'retype://undo/{job["id"]}'])
+            run(label, ['gio', 'open', f'retype://job/{job["id"]}'])
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
                 if source.exists() and all(not Path(output['path']).exists() for output in job['outputs']):
