@@ -14,6 +14,7 @@ import tempfile
 DESKTOP = 'retype-uri.desktop'
 SCHEME = 'x-scheme-handler/retype'
 SECTIONS = {'[Default Applications]', '[Added Associations]', '[Removed Associations]'}
+OWNER = '# Retype installation: '
 
 
 def run(*command, check=True, env=None):
@@ -119,7 +120,16 @@ def render(template, prefix, desktop=False):
 		value = value.replace('$', '\\$').replace('`', '\\`').replace('\\', '\\\\')
 	else:
 		value = value.replace('$', '$$')
-	return template.read_text().replace('@PREFIX@', value).encode()
+	header = OWNER + json.dumps(str(prefix)) + '\n'
+	return (header + template.read_text().replace('@PREFIX@', value)).encode()
+
+
+def installation_owner(path):
+	if path.is_file():
+		for line in path.read_text().splitlines():
+			if line.startswith(OWNER):
+				return Path(json.loads(line[len(OWNER):]))
+	return None
 
 
 def manager_available(config):
@@ -160,6 +170,10 @@ def installation(prefix, backup, operation):
 		paths = list(dict.fromkeys([*map(Path, previous['preferences']), *paths]))
 	unit = config / 'systemd/user/retype.service'
 	desktop = data / 'applications' / DESKTOP
+	for path in (unit, desktop):
+		owner = installation_owner(path)
+		if owner is not None and owner.resolve() != prefix.resolve():
+			raise RuntimeError(f'{path} belongs to Retype under {owner}; update or remove that installation first')
 	manager = manager_available(config)
 	journal = {'files': {}, 'data': str(data), 'manager': manager,
 		'active': manager and run('systemctl', '--user', 'is-active', '--quiet', 'retype.service', check=False).returncode == 0,
