@@ -377,7 +377,9 @@ fn plain(message: &Message) -> Option<String> {
 /// Run `notify-send`, answering with the action the user chose, if any.
 fn notify_send(message: &Message, with_action: bool) -> Option<String> {
 	let mut command = Command::new("notify-send");
-	command.args(["--app-name", "retype", "--expire-time", "15000"]);
+	// GNOME keeps actions visible after a finite notify-send wait has timed out.
+	let expiry = if with_action { "0" } else { "15000" };
+	command.args(["--app-name", "retype", "--expire-time", expiry]);
 
 	if with_action {
 		command.args(["--wait", "--action", "undo=Undo"]);
