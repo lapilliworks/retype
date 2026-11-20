@@ -80,6 +80,8 @@ pub(crate) fn rename_open(
 		FILE_RENAME_FLAG_POSIX_SEMANTICS, FILE_RENAME_FLAG_REPLACE_IF_EXISTS,
 	};
 
+	/* Canonical parents supply the verbatim prefix required for long Win32 rename destinations. */
+	let destination = entry_path(destination)?;
 	let name: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
 	let name_bytes = name
 		.len()
