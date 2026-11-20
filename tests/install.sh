@@ -104,7 +104,7 @@ cat >"$tmp/bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$RETYPE_TEST_SYSTEMCTL_RECORD"
 case $2 in
-show-environment) printf '%q\n' "HOME=$HOME" "XDG_CONFIG_HOME=$XDG_CONFIG_HOME" ;;
+show-environment) printf '%q\n' "HOME=$HOME" "XDG_CONFIG_HOME=${RETYPE_TEST_MANAGER_CONFIG:-$XDG_CONFIG_HOME}" ;;
 is-active) [ -f "$RETYPE_TEST_SERVICE_ACTIVE" ] ;;
 is-enabled) [ -f "$RETYPE_TEST_SERVICE_ENABLED" ] && printf 'enabled\n' ;;
 stop) rm -f "$RETYPE_TEST_SERVICE_ACTIVE" ;;
@@ -298,10 +298,23 @@ EOF
 	env "${common[@]}" RETYPE_VERSION=v0.0.0-test bash "$root/packaging/install.sh" >/dev/null
 	grep -q '# local override' "$tmp/config/systemd/user/retype.service"
 	[ "$(env "${common[@]}" xdg-mime query default x-scheme-handler/retype)" = previous.desktop ]
+	touch "$tmp/service-active" "$tmp/service-enabled"
 	env "${common[@]}" bash "$root/packaging/install.sh" --uninstall >/dev/null
+	[ ! -e "$tmp/service-active" ] && [ ! -e "$tmp/service-enabled" ]
 	grep -q '# local override' "$tmp/config/systemd/user/retype.service"
 	grep -q 'text/html=browser.desktop;' "$tmp/config/mimeapps.list"
 	[ "$(env "${common[@]}" xdg-mime query default x-scheme-handler/retype)" = previous.desktop ]
+
+	# A private/offline configuration must not stop or disable another user-manager's service.
+	touch "$tmp/service-active" "$tmp/service-enabled"
+	offline=("${common[@]}" XDG_CONFIG_HOME="$tmp/offline-config" XDG_DATA_HOME="$tmp/offline-data"
+		RETYPE_TEST_MANAGER_CONFIG="$tmp/config")
+	env "${offline[@]}" RETYPE_VERSION=v0.0.1-test bash "$root/packaging/install.sh" --prefix "$tmp/offline-prefix" >/dev/null
+	mkdir -p "$tmp/offline-config/systemd/user/default.target.wants"
+	ln -s ../retype.service "$tmp/offline-config/systemd/user/default.target.wants/retype.service"
+	env "${offline[@]}" bash "$root/packaging/install.sh" --prefix "$tmp/offline-prefix" --uninstall >/dev/null
+	[ ! -L "$tmp/offline-config/systemd/user/default.target.wants/retype.service" ]
+	[ -f "$tmp/service-active" ] && [ -f "$tmp/service-enabled" ]
 fi
 
 echo 'installer test passed'

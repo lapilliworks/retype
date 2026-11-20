@@ -216,14 +216,26 @@ def preferences(state, paths):
 		raise RuntimeError('The desktop did not accept the Retype URI association')
 
 
-def remove(state, journal, journal_path, unit, desktop, data, manager):
-	unit_record = state['files'].get(str(unit))
-	if unit_record and snapshot(unit) == unit_record['installed'] and shutil.which('systemctl'):
+def stop_service(unit, journal, journal_path, manager):
+	if manager:
 		journal['enabled'] = run('systemctl', '--user', 'is-enabled', 'retype.service', check=False).stdout.strip()
 		save_json(journal_path, journal)
-		if manager:
-			run('systemctl', '--user', 'stop', 'retype.service')
+		run('systemctl', '--user', 'stop', 'retype.service')
 		run('systemctl', '--user', 'disable', 'retype.service')
+	else:
+		# A live manager for another XDG configuration must not receive this installation's commands.
+		for pattern in ('*.wants/retype.service', '*.requires/retype.service'):
+			for link in unit.parent.glob(pattern):
+				if link.is_symlink() and link.resolve() == unit.resolve():
+					remember(journal, link)
+					save_json(journal_path, journal)
+					link.unlink()
+
+
+def remove(state, journal, journal_path, unit, desktop, data, manager):
+	unit_record = state['files'].get(str(unit))
+	if unit_record and unit.exists():
+		stop_service(unit, journal, journal_path, manager)
 	for key, entry in state['preferences'].items():
 		path = Path(key)
 		current = text(path)
