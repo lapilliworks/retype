@@ -75,6 +75,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare installer test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3 xdg-utils desktop-file-utils libglib2.0-bin
       - run: bash -n packaging/install.sh
       - run: bash tests/install.sh
       - run: timeout --kill-after=5s 30s bash tests/release.sh

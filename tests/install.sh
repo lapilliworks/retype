@@ -34,6 +34,16 @@ arm64 | aarch64) arch=aarch64 ;;
 esac
 target=$arch-$os
 
+# These fixtures execute shell scripts; exercise the Debian runtime guard independently of the test host.
+if [ "$os" = unknown-linux-gnu ]; then
+	mkdir -p "$tmp/bin"
+	cat >"$tmp/bin/getconf" <<'EOF'
+#!/bin/sh
+printf 'glibc %s\n' "${RETYPE_TEST_GLIBC:-2.41}"
+EOF
+	chmod 0755 "$tmp/bin/getconf"
+fi
+
 sha256_of() {
 	if command -v sha256sum >/dev/null 2>&1; then
 		sha256sum "$1" | awk '{ print $1; exit }'
@@ -221,11 +231,6 @@ grep -q 'the installed binary does not run' "$tmp/failure.log"
 [ -n "$(find "$prefix/share" -path '*/retype-backup.*/retype' -type f -print -quit)" ]
 
 if [ "$os" = unknown-linux-gnu ]; then
-	cat >"$tmp/bin/getconf" <<'EOF'
-#!/bin/sh
-printf 'glibc %s\n' "$RETYPE_TEST_GLIBC"
-EOF
-	chmod 0755 "$tmp/bin/getconf"
 	if env "${common[@]}" PATH="$tmp/bin:$PATH" RETYPE_TEST_GLIBC=2.40 RETYPE_VERSION=v0.0.1-test \
 		bash "$root/packaging/install.sh" >"$tmp/floor.log" 2>&1; then
 		echo 'installer accepted a runtime below current Debian stable' >&2
@@ -235,7 +240,6 @@ EOF
 	[ "$("$prefix/bin/retype" --version)" = 'retype 0.0.1-test' ]
 	env "${common[@]}" PATH="$tmp/bin:$PATH" RETYPE_TEST_GLIBC=2.41 RETYPE_VERSION=v0.0.1-test \
 		bash "$root/packaging/install.sh" >"$tmp/floor.log" 2>&1
-	rm "$tmp/bin/getconf"
 fi
 
 if [ "$os" = unknown-linux-gnu ]; then
