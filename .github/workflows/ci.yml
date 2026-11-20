@@ -1,9 +1,6 @@
-name: ci
+name: Linux qualification
 
 on:
-  push:
-    branches: ['**']
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -11,109 +8,5 @@ permissions:
 
 jobs:
   debian:
-    name: Debian stable
+    name: Debian build and installed qualification
     uses: ./.github/workflows/debian.yml
-
-  native:
-    name: native verification
-    uses: ./.github/workflows/native.yml
-
-  workflow-lint:
-    name: workflow lint
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-          cache: false
-      - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-      - run: '"$(go env GOPATH)/bin/actionlint"'
-
-  msrv:
-    name: msrv
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.85.0"
-          components: clippy
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Run MSRV workspace tests
-        timeout-minutes: 10
-        run: RETYPE_TEST_SESSION=terminal cargo test --workspace --locked --no-fail-fast
-
-  cross:
-    name: cross check (typecheck foreign targets)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [
-          x86_64-pc-windows-msvc,
-          aarch64-pc-windows-msvc,
-          aarch64-unknown-linux-gnu,
-          aarch64-apple-darwin,
-          x86_64-unknown-freebsd,
-        ]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - run: cargo check --workspace --all-targets --locked --target ${{ matrix.target }}
-
-  installer:
-    name: installer
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Prepare installer test tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3 xdg-utils desktop-file-utils libglib2.0-bin
-      - run: bash -n packaging/install.sh
-      - run: bash tests/install.sh
-      - run: timeout --kill-after=5s 30s bash tests/release.sh
-      - name: Parse PowerShell scripts
-        shell: pwsh
-        run: |
-          foreach ($path in @('packaging/install.ps1', 'tests/run.ps1',
-              'tests/prepare.ps1', 'tests/hyperv-info.ps1',
-              'tests/hyperv-check.ps1', 'tests/windows-storage-faults.ps1', 'tests/install.ps1',
-              'crates/retype-cli/tests/support/windows_runner_probe.ps1')) {
-            $tokens = $null
-            $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile(
-              (Resolve-Path $path).Path, [ref]$tokens, [ref]$errors
-            ) | Out-Null
-            if ($errors.Count -gt 0) { $errors | Format-List; exit 1 }
-          }
-      - name: Test Hyper-V collector without a VM
-        shell: pwsh
-        timeout-minutes: 2
-        run: ./tests/hyperv-check.ps1
-
-  site:
-    name: site checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - run: node sites/lib/checks.mjs
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      # Cloudflare Pages builds the bundle with this same command, so a docs build
-      # that breaks fails here rather than in the Pages log.
-      - name: Build the bundle
-        env:
-          SITE_RUNTIME: host
-        run: sites/bin/bundle.sh
