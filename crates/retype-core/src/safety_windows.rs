@@ -234,6 +234,26 @@ mod tests {
 	}
 
 	#[test]
+	fn cleanup_and_name_restoration_support_long_paths() {
+		let root = tempfile::tempdir().unwrap();
+		let mut directory = root.path().to_path_buf();
+		while directory.as_os_str().len() < 320 {
+			directory.push("long directory with spaces");
+		}
+		fs::create_dir_all(&directory).unwrap();
+		let from = directory.join("requested.zip");
+		let to = directory.join("original.tar");
+		fs::write(&from, b"original bytes").unwrap();
+		let expected = Fingerprint::of(&from).unwrap();
+		let restored = restore_owned_name(&from, &to, &expected, |_, _| {}).unwrap();
+		assert!(!from.exists());
+		assert!(restored.matches(&to).unwrap());
+		remove_owned(&to, &restored, &crate::execute::Cancellation::default()).unwrap();
+		assert!(!to.exists());
+		assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+	}
+
+	#[test]
 	fn restoration_refuses_a_same_content_replacement() {
 		let directory = tempfile::tempdir().unwrap();
 		let from = directory.path().join("requested.zip");
