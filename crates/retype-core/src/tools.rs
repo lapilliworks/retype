@@ -420,21 +420,19 @@ pub fn find_in_path(path_env: &OsStr, command: &str) -> Option<PathBuf> {
 		.find(|candidate| is_executable(candidate))
 }
 
+#[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
-	if !path.is_file() {
-		return false;
-	}
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::PermissionsExt;
-		path.metadata()
+	use std::os::unix::fs::PermissionsExt;
+	path.is_file()
+		&& path
+			.metadata()
 			.map(|meta| meta.permissions().mode() & 0o111 != 0)
 			.unwrap_or(false)
-	}
-	#[cfg(not(unix))]
-	{
-		true
-	}
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+	path.is_file()
 }
 
 #[cfg(test)]
