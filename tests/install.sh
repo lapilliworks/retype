@@ -162,7 +162,16 @@ if [ "$os" = unknown-linux-gnu ]; then
 		[ ! -f "$tmp/launched" ] || break
 		sleep 0.05
 	done
-	[ "$(<"$tmp/launched")" = $'uri\nretype://undo/example' ]
+	[ "$(<"$tmp/launched")" = $'uri\nretype://job/example' ]
+	# A second prefix must not take over the current installation's global user definitions.
+	if env "${common[@]}" RETYPE_VERSION=v0.0.1-test bash "$root/packaging/install.sh" \
+		--prefix "$tmp/other-prefix" >"$tmp/ownership-failure.log" 2>&1; then
+		echo 'installer took over integration from another prefix' >&2
+		exit 1
+	fi
+	grep -q 'belongs to Retype under' "$tmp/ownership-failure.log"
+	[ ! -e "$tmp/other-prefix/bin/retype" ]
+	[ "$("$prefix/bin/retype" --version)" = 'retype 0.0.0-test' ]
 fi
 
 env "${common[@]}" bash "$root/packaging/install.sh" --version v0.0.1-test >/dev/null
