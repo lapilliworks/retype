@@ -8,7 +8,9 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -53,6 +55,7 @@ def main():
         for key in ['RETYPE_DAEMON', 'RETYPE_NO_SPAWN', 'RETYPE_STATE_DIR', 'RETYPE_FIDELITY_MANIFEST', 'RETYPE_FIXTURES', 'RETYPE_TEST_SESSION']:
             env.pop(key, None)
         env['RETYPE_CONFIG'] = str(config)
+        env['RETYPE_STATE_DIR'] = str(state)
         env['RETYPE_RELEASE_BASE'] = mirror.parent.as_uri()
         env['RETYPE_TARGET'] = suffix[1:]
         env['XDG_CONFIG_HOME'] = str(private / 'config')
@@ -89,9 +92,34 @@ def main():
         def undo(label, job):
             cli(label, 'undo', job['id'], '--no-spawn')
 
+        def uri_undo(label, job, source, expected):
+            (report / f'{label}.requested').write_text(job['id'] + '\n')
+            run(label, ['gio', 'open', f'retype://undo/{job["id"]}'])
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                if source.exists() and all(not Path(output['path']).exists() for output in job['outputs']):
+                    break
+                time.sleep(.05)
+            check(label, source.exists() and sha(source) == expected and
+                  all(not Path(output['path']).exists() for output in job['outputs']))
+
+        def stop(label):
+            if binary.exists() and (state / 'endpoint').exists():
+                run(label, [binary, 'daemon', 'stop', '--now', '--force', '--no-spawn', '--state-dir', state], timeout=15)
+                deadline = time.monotonic() + 5
+                while (state / 'endpoint').exists() and time.monotonic() < deadline:
+                    time.sleep(.05)
+                assert not (state / 'endpoint').exists(), 'test daemon leaked'
+
         try:
             run('install', ['bash', repo / 'packaging/install.sh', '--version', tag, '--prefix', prefix])
             check('installed executable and evidence exist', binary.is_file() and (prefix / 'share/retype/fidelity.toml').is_file())
+            desktop = Path(env['XDG_DATA_HOME']) / 'applications/retype-uri.desktop'
+            unit = Path(env['XDG_CONFIG_HOME']) / 'systemd/user/retype.service'
+            check('desktop identity and disabled user unit', desktop.is_file() and unit.is_file() and
+                  not list(unit.parent.glob('*.wants/retype.service')))
+            run('desktop-validate', ['desktop-file-validate', desktop])
+            check('installed URI association', run('mime-default', ['xdg-mime', 'query', 'default', 'x-scheme-handler/retype']).strip() == 'retype-uri.desktop')
             run('version', [binary, 'version'])
             run('doctor', [binary, 'doctor', '--check', '--state-dir', state])
             heic = work / 'photo.HEIC'
@@ -99,7 +127,7 @@ def main():
             expected = sha(heic)
             job = cli('heic', 'convert', heic, 'jpg')['job']
             check('real HEIC disposition', job['source_disposition']['state'] == 'removed' and not heic.exists() and (work / 'photo.jpg').exists())
-            undo('heic-undo', job)
+            uri_undo('online URI exact HEIC undo', job, heic, expected)
             check('exact HEIC undo', sha(heic) == expected and not (work / 'photo.jpg').exists())
             png = work / 'image.png'
             shutil.copy2(repo / 'fixtures/fidelity/alpha.png', png)
@@ -136,17 +164,27 @@ def main():
             (mirror / 'SHA256SUMS').write_text(f'{"0" * 64}  {archive.name}\n')
             run('checksum-refusal', ['bash', repo / 'packaging/install.sh', '--version', tag, '--prefix', prefix], False)
             check('checksum failure preserves installation', sha(binary) == before)
+            offline = work / 'offline.HEIC'
+            shutil.copy2(repo / 'fixtures/native-watch/photo.heic', offline)
+            expected = sha(offline)
+            job = cli('offline-job', 'convert', offline, 'jpg', '--no-spawn')['job']
+            stop('stop-for-offline-uri')
+            uri_undo('offline URI exact HEIC undo', job, offline, expected)
+            check('offline URI does not spawn daemon', not (state / 'endpoint').exists())
+            journal = (state / 'jobs.jsonl').read_bytes()
+            run('uninstall', ['bash', repo / 'packaging/install.sh', '--uninstall', '--prefix', prefix])
+            check('uninstall preserves state and removes integration', not binary.exists() and
+                  not desktop.exists() and not unit.exists() and (state / 'jobs.jsonl').read_bytes() == journal)
         finally:
             for process in processes:
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait()
-            if binary.exists() and (state / 'endpoint').exists():
-                run('stop', [binary, 'daemon', 'stop', '--now', '--force', '--no-spawn', '--state-dir', state], timeout=15)
-                deadline = time.monotonic() + 5
-                while (state / 'endpoint').exists() and time.monotonic() < deadline:
-                    time.sleep(.05)
-                assert not (state / 'endpoint').exists(), 'test daemon leaked'
+            stop('stop')
+            if sys.exc_info()[0] is not None:
+                shutil.copytree(private, report / 'failed-fixture',
+                                ignore=lambda folder, names: [name for name in names
+                                    if stat.S_ISSOCK((Path(folder) / name).lstat().st_mode)])
     (report / 'result.json').write_text(json.dumps({'checks': len(checks), 'archive': str(archive), 'sha256': sha(archive)}, indent=2) + '\n')
     print(f'{len(checks)} installed-archive checks passed')
 

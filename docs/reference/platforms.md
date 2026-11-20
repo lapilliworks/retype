@@ -17,6 +17,7 @@ Reasoning, not preference:
 
 - Windows 10 21H2 is the floor for unpackaged toast notifications with an AppUserModelID
 - macOS 13 is the floor for the notification API generation the notifier bundle uses, and it is old enough that no supported Mac is excluded
+- Linux desktop support is Wayland-only; X11 is unsupported
 - Linux support targets current Debian stable, currently Debian 13 (trixie). Other distributions and Debian unstable are development or portability environments, without a support commitment. Linux builds and qualification use the stable userspace; the older Debian 11/glibc 2.31 floor is retired
 
 ## 2. Toolchain
@@ -75,7 +76,7 @@ Windows, in PowerShell:
 irm https://retype.name/install.ps1 | iex
 ```
 
-They download the release archive for the host architecture, check its SHA-256 against the release checksums, and install the CLI, daemon and shared release assets under `~/.local` on Unix or `%LOCALAPPDATA%\Programs\retype` on Windows. The Windows installer adds its `bin` directory to the user `PATH`. Running either again updates the installation. They are not the installed tier: they do not register a URI scheme, install a user service or ship the notifier, and the archives are not code-signed. They exist so an alpha build can be installed without a Rust toolchain.
+They download the release archive for the host architecture, check its SHA-256 against the release checksums, and install the CLI, daemon and shared release assets under `~/.local` on Unix or `%LOCALAPPDATA%\Programs\retype` on Windows. The Windows installer adds its `bin` directory to the user `PATH`. Running either again updates the installation. On Linux, the installer requires Python 3 and `xdg-mime`, installs the notification/URI desktop entry and a disabled systemd user unit, and registers `retype://` for the current user. Updates preserve service enablement and user edits; `--uninstall` removes the owned installation while preserving configuration, watch registrations and recovery data. macOS and Windows pre-release installers do not install their service or notifier integration. These archives are not code-signed, so all three pre-release routes remain outside the signed installed tier. They exist so an alpha build can be installed without a Rust toolchain.
 
 What the installed-tier installer does, per platform:
 

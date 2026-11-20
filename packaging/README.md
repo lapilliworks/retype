@@ -2,8 +2,7 @@
 
 The source build in `README.md` is a workaround. A release is the installed tier:
 the CLI and daemon, the notifier, URI registration and a user service, with no
-external tool binaries. Until signing lands, the release workflow also publishes
-a pre-release archive and a `curl | bash` installer for the CLI and daemon only.
+external tool binaries. Until signing lands, the release workflow publishes a pre-release archive and checksum-verifying installers. Linux installation includes desktop integration; publisher signing still gates the installed tier.
 
 ## Asset layout
 
@@ -71,19 +70,26 @@ $env:RETYPE_VERSION = 'v0.1.0-alpha'; irm https://retype.name/install.ps1 | iex
 $env:RETYPE_PREFIX = 'C:\Tools\retype'; irm https://retype.name/install.ps1 | iex
 ```
 
-The scripts are copied into the product site at build time and are also release
-assets. They do not install a user service, register the URI scheme or ship the
-notifier.
+The scripts are copied into the product site at build time and are also release assets. On Linux, `install.sh` requires Python 3 and `xdg-mime` (`xdg-utils`). It installs `retype-uri.desktop` under `$XDG_DATA_HOME/applications` (default `~/.local/share/applications`) for notification identity and `retype://` dispatch, and `retype.service` under `$XDG_CONFIG_HOME/systemd/user` (default `~/.config/systemd/user`). Both entries use the absolute installation path. New services stay disabled; enablement is unchanged on updates, and an already active service drains its conversions before restarting. Without a running user manager for that configuration directory, the unit is available on the next user-manager start. Linux desktop support is Wayland-only.
+
+Linux removal uses the same installer without contacting the release server:
+
+```sh
+curl -fsSL https://retype.name/install.sh | bash -s -- --uninstall
+# Include --prefix if the installation used a custom prefix.
+```
+
+Removal stops and disables the owned service, removes installed files, restores overwritten desktop/unit definitions and previous URI preferences, and preserves configuration, watches and recovery data. Modified definitions and URI choices made after installation are preserved. Each update/removal keeps a persistent `share/retype-backup.*` directory, including integration rollback records. Other MIME preferences are preserved. macOS and Windows pre-release installers still install the binary and shared assets only.
 
 ## Per platform
 
 | Platform | Files | What installs them |
 |---|---|---|
-| Linux | `share/retype/packaging/linux/retype.service`, `share/retype/packaging/linux/retype-uri.desktop` | The package's systemd/user and xdg-mime hooks |
+| Linux | `share/retype/packaging/linux/retype.service`, `retype-uri.desktop`, `integrate.py` | `install.sh` installs per-user definitions and registers the URI through `xdg-mime`; the desktop entry also identifies libnotify notifications |
 | macOS | `share/retype/packaging/macos/Info.plist`, `share/retype/packaging/macos/com.lapilliworks.retype.cli.plist` | The app bundle and launchd |
 | Windows | `share/retype/packaging/windows/retype.manifest`, `share/retype/packaging/windows/retype.rc` | The executable's manifest resource and the Start-menu shortcut |
 
-The launchd plist and the systemd unit name the install prefix as `@PREFIX@`; the package substitutes it before installing.
+The launchd plist, Linux desktop entry and systemd unit name the install prefix as `@PREFIX@`; the installer substitutes and escapes it for the destination format.
 
 Signing is not optional for a published binary in the installed tier. Linux ships
 a detached minisign or Sigstore signature beside the checksum. macOS ships a

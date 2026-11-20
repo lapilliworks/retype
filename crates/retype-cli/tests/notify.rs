@@ -179,6 +179,7 @@ fn a_batch_that_converted_a_file_is_one_notification_with_an_undo_button() {
 	let recorded = fixture.wait_for_notification();
 
 	assert!(recorded.contains("--app-name"), "{recorded}");
+	assert!(recorded.contains("--desktop-entry\nretype-uri\n"), "{recorded}");
 	assert!(recorded.contains("--wait"), "{recorded}");
 	assert!(
 		recorded.contains("--expire-time\n0\n"),

@@ -44,7 +44,7 @@ Windows, in PowerShell:
 irm https://retype.name/install.ps1 | iex
 ```
 
-The scripts verify the release checksum, install the CLI, daemon and shared release assets under `~/.local` on Unix or `%LOCALAPPDATA%\Programs\retype` on Windows, and update that installation when run again. The Windows installer adds its `bin` directory to the user `PATH`. The default release selection includes prereleases. They do not install a service, register a URI scheme or ship the notifier, and they are not code-signed.
+The scripts verify the release checksum, install the CLI, daemon and shared release assets under `~/.local` on Unix or `%LOCALAPPDATA%\Programs\retype` on Windows, and update that installation when run again. The Windows installer adds its `bin` directory to the user `PATH`. The default release selection includes prereleases. On Linux, the installer requires Python 3 and `xdg-mime`, installs the notification/URI desktop entry and a disabled user-service unit, and registers `retype://`. Linux desktop support is Wayland-only. Run the same installer with `--uninstall` to remove that installation while keeping configuration and recovery data. macOS and Windows pre-release integration is unchanged. Publisher signing remains required for the installed tier.
 
 Updates validate the staged binary before publication, retain the previous installation in a `share/retype-backup.*` or `share/retype-backup-*` directory under the prefix, and restore it on installation failure. The scripts print the backup path; old backups are not automatically pruned.
 

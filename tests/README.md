@@ -57,7 +57,7 @@ Compilation has its own deadline before the shared execution budget starts. Each
 
 ## Standalone checks and diagnostics
 
-- `tests/install.sh`: Local Unix installer/update/rollback checks
+- `tests/install.sh`: Local Unix installer/update/rollback checks; Linux desktop/URI integration, native GIO launch from a custom prefix, symlinked MIME preferences, preserved service state and removal/rollback
 - `tests/installed.py <archive> --report <dir>`: Real Debian archive install, conversions, fidelity discovery, undo, update and checksum refusal
 - `tests/storage-faults.py --binary <path> --report <dir>`: Isolated Linux restoration ENOSPC, responsive control and safe exact-byte retry
 - `tests/windows-storage-faults.ps1 -Worker <core-test-exe> -Report <new-dir>`: Actual disk exhaustion on a new 64 MiB virtual NTFS disk; requires an elevated orchestrator and active ordinary-user desktop, retains evidence and detaches the disk

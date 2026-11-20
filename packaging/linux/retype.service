@@ -5,7 +5,9 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=@PREFIX@/bin/retype daemon
+ExecStart=/usr/bin/env "@PREFIX@/bin/retype" daemon
+# Let in-flight conversions drain before an update or removal.
+TimeoutStopSec=infinity
 Restart=on-failure
 RestartSec=2
 

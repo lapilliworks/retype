@@ -207,6 +207,8 @@ if [ "$check_only" -eq 1 ]; then exit "$failures"; fi
 run_step format 60 cargo fmt --all -- --check
 run_step clippy "$limit" cargo clippy --workspace --all-targets --locked -- -D warnings
 run_step installer-syntax 60 bash -c 'for file in packaging/install.sh tests/*.sh; do bash -n "$file" || exit; done'
+run_step integration-syntax 60 python3 -c \
+	'import ast, pathlib; ast.parse(pathlib.Path("packaging/linux/integrate.py").read_text())'
 run_step installer "$limit" bash tests/install.sh
 if grep -i 'skipping installer test' "$report/installer.log" >/dev/null; then
 	summary 'The installer test did not run on this host.'

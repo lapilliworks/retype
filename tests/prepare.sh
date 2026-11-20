@@ -15,7 +15,8 @@ Linux)
 	apt=(apt-get)
 	if [ "$(id -u)" -ne 0 ]; then apt=(sudo apt-get); fi
 	"${apt[@]}" update -y
-	"${apt[@]}" install -y --no-install-recommends imagemagick ffmpeg pandoc 7zip fonts-dejavu-core
+	"${apt[@]}" install -y --no-install-recommends imagemagick ffmpeg pandoc 7zip fonts-dejavu-core \
+		python3 xdg-utils desktop-file-utils libnotify-bin libglib2.0-bin
 	for tool in ffmpeg ffprobe; do
 		path=$(command -v "$tool")
 		owner=$(dpkg-query -S "$path")

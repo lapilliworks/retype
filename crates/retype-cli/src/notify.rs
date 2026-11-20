@@ -379,7 +379,7 @@ fn notify_send(message: &Message, with_action: bool) -> Option<String> {
 	let mut command = Command::new("notify-send");
 	// GNOME keeps actions visible after a finite notify-send wait has timed out.
 	let expiry = if with_action { "0" } else { "15000" };
-	command.args(["--app-name", "retype", "--expire-time", expiry]);
+	command.args(["--app-name", "retype", "--desktop-entry", "retype-uri", "--expire-time", expiry]);
 
 	if with_action {
 		command.args(["--wait", "--action", "undo=Undo"]);
