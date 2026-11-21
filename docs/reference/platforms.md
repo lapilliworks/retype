@@ -8,14 +8,16 @@ Supported targets, delivery tiers and their consequences.
 |---|---|---|---|
 | Linux | Current Debian stable: Debian 13 (trixie), glibc 2.41 | x86_64, aarch64 | Supported baseline; qualify each shipped architecture |
 | macOS | 13 Ventura | x86_64, aarch64 | Supported |
-| Windows | 10 21H2 | x86_64, aarch64 | Supported |
+| Windows | 10 22H2 | x86_64, aarch64 | Initial release: AMD64 (x86_64) supported; ARM64 (aarch64) best effort |
 | BSD | FreeBSD 13, OpenBSD 7 | x86_64 | Later, CLI only, no support commitment |
 | WSL 2 | Current | x86_64 | Best effort, unsupported |
 | Android, iOS | | | Out of scope |
 
+ARM64 desktop and physical-hardware qualification do not gate the first Windows AMD64 release.
+
 Reasoning, not preference:
 
-- Windows 10 21H2 is the floor for unpackaged toast notifications with an AppUserModelID
+- Windows 10 support starts at 22H2; older Windows 10 releases are outside the supported scope
 - macOS 13 is the floor for the notification API generation the notifier bundle uses, and it is old enough that no supported Mac is excluded
 - Linux support targets current Debian stable, currently Debian 13 (trixie). Other distributions and Debian unstable are development or portability environments, without a support commitment. Linux builds and qualification use the stable userspace; the older Debian 11/glibc 2.31 floor is retired
 
