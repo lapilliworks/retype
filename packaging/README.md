@@ -59,6 +59,8 @@ the latest release tag through the GitHub API, download the matching archive and
 `%LOCALAPPDATA%\Programs\retype` and adds its `bin` directory to the user
 `PATH`. Running either again updates in place.
 
+Windows executables link the MSVC C runtime statically and do not require a separate Visual C++ Redistributable installation.
+
 ```sh
 curl -fsSL https://retype.name/install.sh | bash
 curl -fsSL https://retype.name/install.sh | bash -s -- --version v0.1.0-alpha

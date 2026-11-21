@@ -11,6 +11,11 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+const _: () = assert!(
+	cfg!(target_feature = "crt-static"),
+	"Windows packages must link the C runtime statically"
+);
+
 #[test]
 fn windows_probe_and_phase_failures_are_reported() {
 	let root = Path::new(env!("CARGO_MANIFEST_DIR"))
